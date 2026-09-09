@@ -23,6 +23,7 @@ import { join, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { funnelBudgetState, recordGenerationCost } from '@/lib/ai/funnel-cost';
 import { llmActionConfig, recordLlmUsage } from '@/lib/ai/llm';
+import { missingGenerationPrerequisites } from '@/lib/discovery/generation-availability';
 import { createJob, getJob, updateJob } from '@/lib/discovery/live-jobs';
 import { isTransientPipelineFailure } from '@/lib/discovery/preview-failure';
 import { rememberClaimablePreview } from '@/lib/flowstarter/claim';
@@ -446,6 +447,26 @@ export async function POST(req: NextRequest) {
   const parsed = SpecSchema.safeParse(body);
   if (!parsed.success || !parsed.data.businessName.trim()) {
     return NextResponse.json({ skip: true }, { status: 200 });
+  }
+
+  // Generation cannot run at all without Pi, the MCP template library and
+  // Daytona configured, which is the case on Netlify Functions today (see
+  // docs/production-generation.md). Checked before a job exists, not after,
+  // so the visitor is told the honest thing (their preview will be built by
+  // hand and emailed) instead of watching a job that was never going to
+  // finish. `reason: 'not-configured'` is what the wizard reads to tell this
+  // apart from a budget-blocked or malformed-intake skip.
+  const missingPrerequisites = missingGenerationPrerequisites();
+  if (missingPrerequisites.length > 0) {
+    console.warn(
+      `[Flowstarter] preview generation is not configured in this environment; missing: ${missingPrerequisites.join(
+        ', '
+      )}`
+    );
+    return NextResponse.json(
+      { skip: true, reason: 'not-configured' },
+      { status: 200 }
+    );
   }
 
   // Budget kill-switch: over the monthly cap → deterministic demo instead.

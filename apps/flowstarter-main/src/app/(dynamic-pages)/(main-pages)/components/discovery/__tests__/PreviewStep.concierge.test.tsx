@@ -81,6 +81,8 @@ interface Calls {
   /** The signed-out deposit: straight to Stripe, no account first. */
   guestCheckout: Array<{ url: string; init: RequestInit }>;
   live: number;
+  /** Only populated by the tests that care whether a lead got captured. */
+  leads?: RequestInit[];
 }
 
 function routedFetch(
@@ -109,6 +111,10 @@ function routedFetch(
         json: async () =>
           handlers.claim?.() ?? { error: 'Stopped before navigating.' },
       };
+    }
+    if (url.startsWith('/api/discovery/lead') && method === 'POST') {
+      calls.leads?.push(init ?? {});
+      return { ok: true, json: async () => ({ ok: true, leadId: 'lead-1' }) };
     }
     if (url.startsWith('/api/discovery/preview/live') && method === 'POST') {
       calls.live += 1;
@@ -465,6 +471,38 @@ describe('when the build fails', () => {
     // A second job means a second stream, and the failure notice is gone.
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
     expect(screen.queryByText(/that build did not finish/i)).toBeNull();
+  });
+});
+
+describe('when generation cannot run here at all', () => {
+  it('ends the intake honestly and captures the lead, instead of narrating a build that was never going to finish', async () => {
+    const calls: Calls = { claim: [], guestCheckout: [], live: 0, leads: [] };
+    global.fetch = routedFetch(calls, {
+      postLive: () => ({ skip: true, reason: 'not-configured' }),
+    });
+    render(<PreviewStep data={DATA} t={t} />);
+
+    const log = await screen.findByRole('log');
+    // `t` here is the identity function (see the module-level `t` above), so
+    // this asserts the honest-ending copy comes from the dictionary key
+    // rather than being hard-coded in the component.
+    expect(
+      await within(log).findByText('landing.discovery.preview.deferredMessage')
+    ).toBeInTheDocument();
+    expect(nowLine()).toHaveTextContent(
+      'landing.discovery.preview.deferredNow'
+    );
+
+    // No live job was ever started, so no stream and no "build stopped"
+    // wording — this is not a failure, it is an honest ending.
+    expect(FakeEventSource.instances).toHaveLength(0);
+    expect(screen.queryByText(/the build stopped/i)).toBeNull();
+    expect(screen.queryByText(/that build did not finish/i)).toBeNull();
+
+    await waitFor(() => expect(calls.leads).toHaveLength(1));
+    const body = JSON.parse(String(calls.leads?.[0]?.body));
+    expect(body.source).toBe('preview-unavailable');
+    expect(body.businessName).toBe(DATA.businessName);
   });
 });
 
