@@ -5,9 +5,13 @@
  * http server (so /_astro assets + client JS like the theme toggle work).
  */
 import { createServer } from 'node:http';
-import { readFile, stat } from 'node:fs/promises';
-import { join, extname, resolve, sep } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { extname, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import {
+  collectServableFiles,
+  lookupServableFile,
+} from './lib/static-files.mjs';
 
 const distDir = resolve(process.argv[2] ?? '');
 const outPrefix = process.argv[3] ?? '/tmp/cg-shot';
@@ -18,21 +22,17 @@ const MIME = {
   '.webp': 'image/webp', '.woff2': 'font/woff2', '.json': 'application/json',
 };
 
+// Every file the build produced, keyed by the URL that serves it. Requests
+// look a key up in here; they never build a path of their own, so nothing a
+// request says can reach a file outside the build output.
+const servable = await collectServableFiles(distDir);
+
 const server = createServer(async (req, res) => {
+  const fp = lookupServableFile(servable, req.url);
+  if (fp === null) {
+    res.writeHead(404); res.end('not found'); return;
+  }
   try {
-    let p = decodeURIComponent((req.url ?? '/').split('?')[0]);
-    if (p.endsWith('/')) p += 'index.html';
-    // Strip leading slash so join stays under distDir
-    const rel = p.replace(/^\/+/, '');
-    let fp = resolve(join(distDir, rel));
-    const root = resolve(distDir);
-    if (fp !== root && !fp.startsWith(root + sep)) {
-      res.writeHead(400); res.end('bad path'); return;
-    }
-    try { if ((await stat(fp)).isDirectory()) fp = join(fp, 'index.html'); } catch {}
-    if (fp !== root && !fp.startsWith(root + sep)) {
-      res.writeHead(400); res.end('bad path'); return;
-    }
     const body = await readFile(fp);
     res.writeHead(200, { 'content-type': MIME[extname(fp)] ?? 'application/octet-stream' });
     res.end(body);
