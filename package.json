@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "license": "MIT",
   "private": true,
-  "packageManager": "pnpm@10.29.2",
+  "packageManager": "pnpm@10.34.5",
   "scripts": {
     "dev": "mprocs",
     "dev:main": "pnpm nx run flowstarter-main:dev --output-style=stream",
