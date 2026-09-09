@@ -15,6 +15,7 @@ import { MarketingShell, PageHero } from '@/components/marketing';
 import { useI18n } from '@/lib/i18n';
 import { useBookingModal } from '@/app/(dynamic-pages)/(main-pages)/components/booking-modal-store';
 import { useContactForm } from '@/hooks/useContactForm';
+import { buildContactPayload } from '@/lib/contact-payload';
 
 const cardPadding = '1.75rem 1.65rem 1.65rem';
 
@@ -74,11 +75,12 @@ export default function ContactPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     contactMutation.mutate(
-      {
+      buildContactPayload({
         name: formData.name,
         email: formData.email,
-        message: `[${formData.subject || 'General'}] ${formData.message}`,
-      },
+        subject: formData.subject,
+        message: formData.message,
+      }),
       {
         onSuccess: () => {
           setFormData({ name: '', email: '', subject: '', message: '' });

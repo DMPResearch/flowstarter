@@ -38,6 +38,7 @@ describe('useContactForm', () => {
     result.current.mutate({
       name: 'John Doe',
       email: 'john@example.com',
+      subject: 'General',
       message: 'Hello, I have a question.',
     });
 
@@ -50,6 +51,7 @@ describe('useContactForm', () => {
       body: JSON.stringify({
         name: 'John Doe',
         email: 'john@example.com',
+        subject: 'General',
         message: 'Hello, I have a question.',
       }),
     });
@@ -70,6 +72,7 @@ describe('useContactForm', () => {
     result.current.mutate({
       name: 'John',
       email: 'invalid',
+      subject: 'General',
       message: 'Test',
     });
 
@@ -92,6 +95,7 @@ describe('useContactForm', () => {
     result.current.mutate({
       name: 'Jane Doe',
       email: 'jane@company.com',
+      subject: 'Project',
       company: 'Acme Inc',
       message: 'Partnership inquiry',
     });
