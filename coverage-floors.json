@@ -5,10 +5,10 @@
     "flowstarter-main": {
       "summary": "apps/flowstarter-main/coverage/coverage-summary.json",
       "floors": {
-        "lines": 47.53,
-        "statements": 47.28,
-        "functions": 39.97,
-        "branches": 43.8
+        "lines": 47.61,
+        "statements": 47.36,
+        "functions": 40.02,
+        "branches": 43.83
       }
     },
     "agentic-codegen": {

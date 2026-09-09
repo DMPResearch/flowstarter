@@ -10,9 +10,17 @@
  * path-containment guards, and the generic git-failure branch in `runGit`.
  */
 import { execFileSync } from 'node:child_process';
-import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
+import { deepTempDir } from './helpers';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SafeGitWorktreeManager } from '../src/flowstarter/worktree';
 
@@ -26,8 +34,25 @@ afterEach(async () => {
   );
 });
 
+describe('the temp roots these tests run on', () => {
+  it('is deep enough for assertNotBroadRoot on any platform', async () => {
+    // The guard counts segments of the REALPATH, and `os.tmpdir()` is two
+    // segments on Linux and six on macOS. Every test below hands its root to
+    // the manager, so if this invariant breaks they all break at once, on one
+    // platform only, with an error that says nothing about tmpdir. Assert it
+    // here instead, where the message is the diagnosis.
+    const root = await deepTempDir('fs-depth');
+    temporaryDirectories.push(root);
+    const canonical = await realpath(root);
+    expect(
+      canonical.split(sep).filter(Boolean).length,
+      `${canonical} has too few segments; the worktree guard refuses it`,
+    ).toBeGreaterThanOrEqual(3);
+  });
+});
+
 async function initRepo(): Promise<string> {
-  const repositoryRoot = await mkdtemp(join(tmpdir(), 'fs-repo-'));
+  const repositoryRoot = await deepTempDir('fs-repo');
   temporaryDirectories.push(repositoryRoot);
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repositoryRoot });
   execFileSync(
@@ -49,7 +74,7 @@ async function initRepo(): Promise<string> {
 }
 
 async function worktreesDir(): Promise<string> {
-  const worktreesRoot = await mkdtemp(join(tmpdir(), 'fs-worktrees-'));
+  const worktreesRoot = await deepTempDir('fs-worktrees');
   temporaryDirectories.push(worktreesRoot);
   return worktreesRoot;
 }
@@ -186,7 +211,7 @@ describe('SafeGitWorktreeManager.discard', () => {
   it('does nothing when the worktrees root does not exist at all', async () => {
     const repositoryRoot = await initRepo();
     const missingWorktreesRoot = join(
-      await mkdtemp(join(tmpdir(), 'fs-missing-')),
+      await deepTempDir('fs-missing'),
       'never-created',
     );
     const manager = new SafeGitWorktreeManager({
