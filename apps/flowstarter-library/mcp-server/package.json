@@ -28,11 +28,11 @@
   "license": "MIT",
   "dependencies": {
     "@clerk/backend": "^2.27.0",
-    "@modelcontextprotocol/sdk": "^1.18.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
-    "express-rate-limit": "^8.2.2",
+    "express-rate-limit": "^8.7.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
