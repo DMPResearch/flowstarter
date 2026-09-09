@@ -47,7 +47,8 @@ function collectRenderablePaths(): Set<string> {
         : segments;
     // A placeholder anywhere else means this is not a literal path at all.
     if (literal.some(isDynamicSegment)) return;
-    paths.add(`/${literal.join('/')}`.replace(/^\/$/, '/'));
+    // No segments left is the root page, and `/${''}` already spells it `/`.
+    paths.add(`/${literal.join('/')}`);
   };
 
   const walk = (dir: string, segments: string[]) => {

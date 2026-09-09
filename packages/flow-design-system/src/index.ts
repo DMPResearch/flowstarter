@@ -64,6 +64,13 @@ export { StatCard, type StatCardProps } from './components/cards/StatCard';
 export * from './tokens';
 
 // Utilities
+export {
+  CLIENT_REDIRECT_PATH,
+  TEAM_REDIRECT_PATH,
+  currentOrigin,
+  toSameOriginPath,
+  toTrustedHandoffUrl,
+} from './utils/safe-redirect';
 export { 
   getTheme, 
   setTheme, 

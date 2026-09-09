@@ -17,15 +17,24 @@
  *   - `onTransferToken`       → optional cross-domain session hand-off
  *     (main wires /api/auth/transfer-token; editor omits it).
  *
- * `isSafeRedirectUrl` / `isTeamEmail` come straight from
- * `@flowstarter/platform-config` (already a design-system dep).
+ * `isTeamEmail` comes straight from `@flowstarter/platform-config`
+ * (already a design-system dep). Every redirect target is resolved by
+ * `../../utils/safe-redirect`, the single gate between a query string
+ * and `window.location`.
  *
  * Field chrome uses the brand tokens (--purple / --fs-* / --surface-2)
  * defined in brand.css, so it's pixel-identical across both apps.
  */
 
 import { useEffect, useState, type ReactNode } from 'react';
-import { isTeamEmail, isSafeRedirectUrl } from '@flowstarter/platform-config';
+import { isTeamEmail } from '@flowstarter/platform-config';
+import {
+  CLIENT_REDIRECT_PATH,
+  TEAM_REDIRECT_PATH,
+  currentOrigin,
+  toSameOriginPath,
+  toTrustedHandoffUrl,
+} from '../../utils/safe-redirect';
 
 /* ── Structural Clerk types ───────────────────────────────────────────
    Only the surface we touch. Keeps this package SDK-free. */
@@ -306,59 +315,56 @@ export function LoginForm({
   const isEdgeBrowser = useEdgeBrowserDetection();
   const isTeam = variant === 'team';
 
+  /**
+   * Where sign-in sends the visitor.
+   *
+   * `path` is always a same-origin path and is the only value that reaches
+   * `window.location`. `handoff` is an absolute URL on another platform
+   * origin, kept apart because it is only ever handed to the transfer-token
+   * endpoint; the browser follows the URL that endpoint mints.
+   */
   const getRedirectTarget = (
     userEmail?: string,
-  ): { url: string; external: boolean } => {
+  ): { path: string; handoff: string | null } => {
+    const origin = currentOrigin();
+    const fallback =
+      isTeam || (userEmail !== undefined && isTeamEmail(userEmail))
+        ? TEAM_REDIRECT_PATH
+        : CLIENT_REDIRECT_PATH;
+
     const redirectUrl = getSearchParam('redirect_url');
-    if (redirectUrl && isSafeRedirectUrl(redirectUrl)) {
-      try {
-        const url = new URL(redirectUrl);
-        const isCrossDomain =
-          typeof window !== 'undefined' &&
-          url.hostname !== window.location.hostname;
-        // Use the parsed href so navigation never follows an unsanitized string
-        return { url: url.href, external: isCrossDomain };
-      } catch {
-        /* invalid URL */
-      }
-    }
-    if (isTeam) {
-      const nextUrl = getSearchParam('next');
-      if (
-        nextUrl &&
-        nextUrl.startsWith('/') &&
-        !nextUrl.startsWith('//') &&
-        !nextUrl.startsWith('/\\')
-      ) {
-        return { url: nextUrl, external: false };
-      }
-      return { url: '/admin/dashboard', external: false };
-    }
-    if (userEmail && isTeamEmail(userEmail)) {
-      return { url: '/admin/dashboard', external: false };
-    }
-    return { url: '/dashboard', external: false };
+    const requested = toSameOriginPath(redirectUrl, origin);
+    const next = isTeam
+      ? toSameOriginPath(getSearchParam('next'), origin)
+      : null;
+
+    return {
+      path: requested ?? next ?? fallback,
+      handoff: toTrustedHandoffUrl(redirectUrl, origin),
+    };
   };
 
   const navigate = async (sessionId: string | null, userEmail?: string) => {
     if (!setActive) return;
     const target = getRedirectTarget(userEmail);
-    if (target.external && onTransferToken) {
-      await setActive({ session: sessionId });
+    await setActive({ session: sessionId });
+
+    if (target.handoff && onTransferToken) {
       try {
-        const url = await onTransferToken(target.url);
+        const url = await onTransferToken(target.handoff);
         if (url) {
           window.location.href = url;
           return;
         }
       } catch {
-        /* fall through */
+        /* fall through to the same-origin default */
       }
-      window.location.href = target.url;
-    } else {
-      await setActive({ session: sessionId });
-      window.location.href = target.url;
     }
+
+    // No token means the other origin cannot adopt the session, so following
+    // the cross-domain URL would only bounce the visitor back to a login page.
+    // Land on this origin instead.
+    window.location.href = target.path;
   };
 
   const [step, setStep] = useState<FlowStep>('credentials');
@@ -439,7 +445,7 @@ export function LoginForm({
       if (message === '__SESSION_EXISTS__') {
         window.location.href = getRedirectTarget(
           mfaReturnStep === 'credentials' ? email : resetEmail,
-        ).url;
+        ).path;
         return;
       }
       setError(clerkErrorMessage(err, t('auth.mfa.invalidCode')));
@@ -465,7 +471,7 @@ export function LoginForm({
     } catch (err: unknown) {
       const message = resolveClerkError(err, 'signIn', t);
       if (message === '__SESSION_EXISTS__') {
-        window.location.href = getRedirectTarget(email).url;
+        window.location.href = getRedirectTarget(email).path;
         return;
       }
       setError(message);
