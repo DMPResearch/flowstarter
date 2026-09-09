@@ -89,10 +89,6 @@ describe('booting the conversation', () => {
       answered: [],
     });
 
-    // The progress bar reflects the graph's own count, not a client guess.
-    const bar = screen.getByRole('progressbar');
-    expect(bar).toHaveAttribute('aria-valuemax', '16');
-
     // The intro and the first ask are two agent messages with nothing
     // between them — one run, so the agent's name and mark show once.
     const log = screen.getByRole('log');

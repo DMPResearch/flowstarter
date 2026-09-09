@@ -2227,7 +2227,22 @@ const en = {
   'landing.discovery.chat.agentName': 'Flowstarter agent',
   'landing.discovery.chat.logLabel': 'Your conversation',
   'landing.discovery.chat.progressLabel': 'Questions answered',
-  'landing.discovery.chat.progressCount': '{done}/{total}',
+  'landing.discovery.chat.progressCount':
+    '{done} of {total} questions answered',
+
+  // The stepper above the conversation: all 8 stages, visible from the
+  // first frame. Short labels — the long ones above are for the step
+  // headings, these need to fit a small circle's width.
+  'landing.discovery.stepper.label': 'Discovery progress',
+  'landing.discovery.stepper.about': 'About you',
+  'landing.discovery.stepper.business': 'Your business',
+  'landing.discovery.stepper.goals': 'Goals & style',
+  'landing.discovery.stepper.commerce': 'Selling online',
+  'landing.discovery.stepper.recommendation': 'Your plan',
+  'landing.discovery.stepper.subscription': 'Care plan',
+  'landing.discovery.stepper.info': 'Details',
+  'landing.discovery.stepper.preview': 'Preview',
+  'landing.discovery.stepper.position': 'Step {n} of {total}: {label}',
   'landing.discovery.chat.composerLabel': 'Your answer',
   'landing.discovery.chat.composerPlaceholder': 'Type your answer…',
   'landing.discovery.chat.send': 'Send',
