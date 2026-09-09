@@ -27,7 +27,6 @@ import {
   type IntakeQuestionId,
   answerText,
   answeredQuestions,
-  interpolate,
   optionLabel,
   promptText,
   questionById,
@@ -94,7 +93,6 @@ export function IntakeGraphConversation({
   const [threadId, setThreadId] = useState<string | null>(null);
   const [ask, setAsk] = useState<IntakeGraphAsk | null>(null);
   const [agentPrompt, setAgentPrompt] = useState<string | null>(null);
-  const [progress, setProgress] = useState({ done: 0, total: 1 });
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState('');
@@ -115,7 +113,6 @@ export function IntakeGraphConversation({
       setThreadId(result.threadId);
       setAsk(result.ask);
       setAgentPrompt(result.ask?.prompt ?? null);
-      setProgress(result.progress);
       setErrorKey(result.errorKey ?? null);
       onState({
         data: result.data,
@@ -242,34 +239,6 @@ export function IntakeGraphConversation({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-3">
-        <div
-          className="h-1 flex-1 overflow-hidden rounded-full bg-[var(--fs-rule)]"
-          role="progressbar"
-          aria-valuemin={0}
-          aria-valuemax={progress.total}
-          aria-valuenow={progress.done}
-          aria-label={t('landing.discovery.chat.progressLabel')}
-        >
-          <div
-            className="h-full rounded-full bg-[var(--purple-primary)] transition-[width] duration-300"
-            style={{
-              width: `${
-                progress.total === 0
-                  ? 100
-                  : Math.round((progress.done / progress.total) * 100)
-              }%`,
-            }}
-          />
-        </div>
-        <span className="shrink-0 text-[11px] tabular-nums text-[var(--fs-ink-faint)]">
-          {interpolate(t('landing.discovery.chat.progressCount'), {
-            done: progress.done,
-            total: progress.total,
-          })}
-        </span>
-      </div>
-
       <ConversationLog
         label={t('landing.discovery.chat.logLabel')}
         scrollSignal={answered.length + (busy ? 1 : 0)}

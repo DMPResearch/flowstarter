@@ -10,9 +10,11 @@ import {
   EMPTY_DISCOVERY,
   INFO_STEP,
   LAST_STEP,
+  STEPS,
   canProceed,
   recommendTier,
 } from './discovery.logic';
+import { DiscoveryStepper } from './DiscoveryStepper';
 import {
   type IntakeQuestionId,
   CONVERSATION_LAST_STEP,
@@ -266,9 +268,17 @@ export function DiscoveryWizard({
         </h2>
       </div>
 
+      <DiscoveryStepper
+        steps={STEPS}
+        current={step}
+        data={data}
+        answered={answered}
+        t={t}
+      />
+
       {/* Step body. Steps 1–6 are one conversation; the numbered indicator
-          they used to sit under went with the form, replaced by the quiet
-          progress line the conversation draws for itself. */}
+          they used to sit under went with the form, replaced by the stepper
+          above and the quiet progress line it draws while the script runs. */}
       <section>
         {talking &&
           (USE_INTAKE_GRAPH ? (

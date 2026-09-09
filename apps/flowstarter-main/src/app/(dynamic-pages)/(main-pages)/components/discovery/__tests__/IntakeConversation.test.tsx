@@ -404,9 +404,12 @@ describe('what makes it a conversation', () => {
     await waitFor(() => expect(draft()?.pageCount).toBe('unsure'));
   });
 
-  it('shows no progress bar and no step counter', () => {
+  it('draws its progress from the wizard-level stepper, not a bar of its own', () => {
     renderWizard();
-    expect(screen.queryByRole('progressbar')).toBeNull();
+    // The stepper above the conversation owns the progress bar now; the
+    // scripted conversation itself still draws none inside its own tree.
+    expect(screen.getByTestId('discovery-stepper')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar')).toBeInTheDocument();
   });
 });
 
