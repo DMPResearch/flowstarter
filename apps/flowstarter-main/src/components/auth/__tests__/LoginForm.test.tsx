@@ -5,20 +5,30 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 const clerkMocks = vi.hoisted(() => ({
   create: vi.fn(),
+  prepareFirstFactor: vi.fn(),
   attemptFirstFactor: vi.fn(),
   attemptSecondFactor: vi.fn(),
   setActive: vi.fn(),
   supportedSecondFactors: null as Array<{ strategy: string }> | null,
+  supportedFirstFactors: null as Array<{
+    strategy: string;
+    emailAddressId?: string;
+    phoneNumberId?: string;
+  }> | null,
 }));
 
 vi.mock('@clerk/nextjs/legacy', () => ({
   useSignIn: () => ({
     signIn: {
       create: clerkMocks.create,
+      prepareFirstFactor: clerkMocks.prepareFirstFactor,
       attemptFirstFactor: clerkMocks.attemptFirstFactor,
       attemptSecondFactor: clerkMocks.attemptSecondFactor,
       get supportedSecondFactors() {
         return clerkMocks.supportedSecondFactors;
+      },
+      get supportedFirstFactors() {
+        return clerkMocks.supportedFirstFactors;
       },
     },
     setActive: clerkMocks.setActive,
@@ -62,7 +72,9 @@ describe('LoginForm', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     clerkMocks.supportedSecondFactors = null;
+    clerkMocks.supportedFirstFactors = null;
     clerkMocks.create.mockReset();
+    clerkMocks.prepareFirstFactor.mockReset();
     clerkMocks.attemptFirstFactor.mockReset();
     clerkMocks.attemptSecondFactor.mockReset();
     clerkMocks.setActive.mockReset();
@@ -157,5 +169,113 @@ describe('LoginForm', () => {
       ).toBeInTheDocument();
     });
     expect(screen.queryByText('auth.mfa.title')).not.toBeInTheDocument();
+  });
+
+  it('shows the Client Trust step, not "incorrect password", when a new device needs verifying', async () => {
+    clerkMocks.supportedFirstFactors = [
+      { strategy: 'email_code', emailAddressId: 'idn_1' },
+    ];
+    clerkMocks.create.mockResolvedValue({
+      status: 'needs_client_trust',
+      createdSessionId: null,
+    });
+
+    render(<LoginForm variant="client" />);
+
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'user@example.com' },
+    });
+    fireEvent.change(document.getElementById('password')!, {
+      target: { value: 'secretpass' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /auth\.signIn$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('auth.clientTrust.title')).toBeInTheDocument();
+    });
+    expect(
+      screen.getByLabelText('auth.clientTrust.codeLabel')
+    ).toBeInTheDocument();
+    // The whole point of the fix: this status must never surface as a
+    // wrong-password message, which it is not.
+    expect(screen.queryByText('auth.errors.signInInvalid')).toBeNull();
+    // The code was sent (prepared) as soon as the step opened, the way
+    // the forgot-password email code already does.
+    expect(clerkMocks.prepareFirstFactor).toHaveBeenCalledWith({
+      strategy: 'email_code',
+      emailAddressId: 'idn_1',
+    });
+  });
+
+  it('completes sign-in once the Client Trust code is verified', async () => {
+    clerkMocks.supportedFirstFactors = [
+      { strategy: 'email_code', emailAddressId: 'idn_1' },
+    ];
+    clerkMocks.create.mockResolvedValue({
+      status: 'needs_client_trust',
+      createdSessionId: null,
+    });
+    clerkMocks.attemptFirstFactor.mockResolvedValue({
+      status: 'complete',
+      createdSessionId: 'sess_1',
+    });
+
+    render(<LoginForm variant="client" />);
+
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'user@example.com' },
+    });
+    fireEvent.change(document.getElementById('password')!, {
+      target: { value: 'secretpass' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /auth\.signIn$/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByLabelText('auth.clientTrust.codeLabel')
+      ).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText('auth.clientTrust.codeLabel'), {
+      target: { value: '424242' },
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: /auth\.clientTrust\.verify$/i })
+    );
+
+    await waitFor(() => {
+      expect(clerkMocks.attemptFirstFactor).toHaveBeenCalledWith({
+        strategy: 'email_code',
+        code: '424242',
+      });
+    });
+    expect(clerkMocks.setActive).toHaveBeenCalledWith({ session: 'sess_1' });
+  });
+
+  it('reports the device as needing verification when neither an email nor a phone code is offered', async () => {
+    clerkMocks.supportedFirstFactors = [];
+    clerkMocks.create.mockResolvedValue({
+      status: 'needs_client_trust',
+      createdSessionId: null,
+    });
+
+    render(<LoginForm variant="client" />);
+
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'user@example.com' },
+    });
+    fireEvent.change(document.getElementById('password')!, {
+      target: { value: 'secretpass' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /auth\.signIn$/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('auth.clientTrust.unsupportedFactor')
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText('auth.clientTrust.title')
+    ).not.toBeInTheDocument();
+    expect(clerkMocks.prepareFirstFactor).not.toHaveBeenCalled();
   });
 });

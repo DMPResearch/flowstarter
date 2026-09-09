@@ -30,6 +30,14 @@
 #     E2E_CLERK_OPERATOR_PASSWORD  Playwright projects (`setup`,
 #                                  `chromium-auth`). Absent: skip with a
 #                                  warning.
+#     CLERK_SECRET_KEY             mints the Clerk Testing Token
+#                                  `global.setup.ts` uses to get past bot
+#                                  detection on a fresh CI browser. Also
+#                                  gates `clerkConfigured()`
+#                                  (e2e/support/clerk-env.ts), so this tier
+#                                  has always skipped without it. Absent:
+#                                  skip with a warning, same as the operator
+#                                  credentials above.
 #     NETLIFY_AUTH_TOKEN           read-only Netlify PAT, used to find the
 #     NETLIFY_SITE_ID              Deploy Preview / branch deploy for the
 #                                  tagged commit. Absent: fall back to
@@ -38,6 +46,9 @@
 #     PROD_URL                     default https://flowstarter.net
 #     STAGING_URL                  unset today; the staging tier skips until
 #                                  it is set.
+#     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+#                                  not a secret (it ships to every browser);
+#                                  read alongside CLERK_SECRET_KEY above.
 #   Depot does not read GitHub's secret store. Import these with
 #   `depot ci secrets add` / `depot ci vars add`, scoped to this repository
 #   (see AGENTS.md).
@@ -224,11 +235,19 @@ jobs:
         env:
           EMAIL: ${{ secrets.E2E_CLERK_OPERATOR_EMAIL }}
           PASSWORD: ${{ secrets.E2E_CLERK_OPERATOR_PASSWORD }}
+          CLERK_KEY: ${{ secrets.CLERK_SECRET_KEY }}
+          CLERK_PUBLISHABLE: ${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
         run: |
-          if [ -n "${EMAIL:-}" ] && [ -n "${PASSWORD:-}" ]; then
+          # CLERK_SECRET_KEY (+ the publishable key) mints the Testing Token
+          # `global.setup.ts` needs to get past Clerk's bot detection on a
+          # fresh CI browser; without it `clerkConfigured()` is false and the
+          # `setup` project skips every test in it regardless of the operator
+          # credentials below, so it gates this tier exactly like they do.
+          if [ -n "${EMAIL:-}" ] && [ -n "${PASSWORD:-}" ] && \
+             [ -n "${CLERK_KEY:-}" ] && [ -n "${CLERK_PUBLISHABLE:-}" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::E2E_CLERK_OPERATOR_EMAIL / E2E_CLERK_OPERATOR_PASSWORD are not set; skipping the authenticated operator journey. This does not block the release."
+            echo "::warning::E2E_CLERK_OPERATOR_EMAIL / E2E_CLERK_OPERATOR_PASSWORD / CLERK_SECRET_KEY / NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY are not all set; skipping the authenticated operator journey. This does not block the release."
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Check the Netlify credentials
@@ -280,6 +299,8 @@ jobs:
           PLAYWRIGHT_BASE_URL: ${{ steps.authtarget.outputs.url }}
           E2E_CLERK_OPERATOR_EMAIL: ${{ secrets.E2E_CLERK_OPERATOR_EMAIL }}
           E2E_CLERK_OPERATOR_PASSWORD: ${{ secrets.E2E_CLERK_OPERATOR_PASSWORD }}
+          CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
           PLAYWRIGHT_JSON_OUTPUT_NAME: release-results/authenticated.json
           # Survives Playwright emptying test-results between the three runs.
           ROUTE_COVERAGE_DIR: route-coverage

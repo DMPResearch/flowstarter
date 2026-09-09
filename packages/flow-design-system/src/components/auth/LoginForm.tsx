@@ -38,9 +38,24 @@ import {
 
 /* ── Structural Clerk types ───────────────────────────────────────────
    Only the surface we touch. Keeps this package SDK-free. */
+export interface SharedSignInFactor {
+  readonly strategy: string;
+  readonly emailAddressId?: string;
+  readonly phoneNumberId?: string;
+}
 export interface SharedSignInResource {
-  readonly supportedSecondFactors?: ReadonlyArray<{ strategy: string }> | null;
+  /**
+   * Client Trust (Clerk's device-verification attack protection) is a
+   * first-factor step-up: a password sign-in from a client Clerk has not
+   * seen before returns `needs_client_trust`, with `email_code` and/or
+   * `phone_code` offered here, not in `supportedSecondFactors`.
+   */
+  readonly supportedFirstFactors?: ReadonlyArray<SharedSignInFactor> | null;
+  readonly supportedSecondFactors?: ReadonlyArray<SharedSignInFactor> | null;
   create(params: Record<string, unknown>): Promise<SharedSignInResult>;
+  prepareFirstFactor(
+    params: Record<string, unknown>,
+  ): Promise<SharedSignInResult>;
   attemptFirstFactor(
     params: Record<string, unknown>,
   ): Promise<SharedSignInResult>;
@@ -133,7 +148,8 @@ export function isValidEmail(value: string): boolean {
   if (at <= 0 || at !== v.lastIndexOf('@')) return false;
   const local = v.slice(0, at);
   const domain = v.slice(at + 1);
-  if (!local || !domain || local.includes(' ') || domain.includes(' ')) return false;
+  if (!local || !domain || local.includes(' ') || domain.includes(' '))
+    return false;
   const dot = domain.lastIndexOf('.');
   return dot > 0 && dot < domain.length - 1;
 }
@@ -225,7 +241,9 @@ function resolveClerkError(
         : t('auth.errors.somethingWentWrong');
   } else if (e.message) {
     message =
-      context === 'signIn' ? t('auth.errors.signInInvalid') : t('auth.errors.somethingWentWrong');
+      context === 'signIn'
+        ? t('auth.errors.signInInvalid')
+        : t('auth.errors.somethingWentWrong');
   }
   return message;
 }
@@ -237,7 +255,10 @@ function errorForCode(
   t: SharedTranslate,
 ): string {
   if (context === 'signIn') {
-    if (code === 'form_identifier_not_found' || code === 'form_password_incorrect') {
+    if (
+      code === 'form_identifier_not_found' ||
+      code === 'form_password_incorrect'
+    ) {
       return t('auth.errors.signInInvalid');
     }
   }
@@ -291,8 +312,14 @@ function SubmitButton({
   );
 }
 
-type FlowStep = 'credentials' | 'forgot' | 'forgot-code' | 'mfa';
+type FlowStep =
+  | 'credentials'
+  | 'forgot'
+  | 'forgot-code'
+  | 'mfa'
+  | 'client-trust';
 type MfaReturnStep = 'credentials' | 'forgot-code';
+type ClientTrustStrategy = 'email_code' | 'phone_code';
 
 function supportedMfaStrategies(
   factors: ReadonlyArray<{ strategy: string }> | null | undefined,
@@ -302,6 +329,29 @@ function supportedMfaStrategies(
     totp: list.some((f) => f.strategy === 'totp'),
     backup: list.some((f) => f.strategy === 'backup_code'),
   };
+}
+
+/**
+ * Client Trust offers `email_code` and/or `phone_code` on
+ * `supportedFirstFactors`, never both unavailable at once for an account
+ * that got this far (Client Trust requires password sign-in to be enabled,
+ * and Clerk always leaves at least one contactable identifier verified).
+ */
+function supportedClientTrustStrategies(
+  factors: ReadonlyArray<SharedSignInFactor> | null | undefined,
+): { email: boolean; phone: boolean } {
+  const list = factors ?? [];
+  return {
+    email: list.some((f) => f.strategy === 'email_code'),
+    phone: list.some((f) => f.strategy === 'phone_code'),
+  };
+}
+
+function findClientTrustFactor(
+  factors: ReadonlyArray<SharedSignInFactor> | null | undefined,
+  strategy: ClientTrustStrategy,
+): SharedSignInFactor | undefined {
+  return (factors ?? []).find((f) => f.strategy === strategy);
 }
 
 export function LoginForm({
@@ -391,6 +441,18 @@ export function LoginForm({
   const [mfaChoices, setMfaChoices] = useState({ totp: false, backup: false });
   const [isMfaLoading, setIsMfaLoading] = useState(false);
 
+  // Client Trust: a device Clerk has not seen before, on a password sign-in.
+  // Same shape as MFA's code entry, but a first factor, not a second one,
+  // and offered over email or SMS rather than an authenticator app.
+  const [clientTrustCode, setClientTrustCode] = useState('');
+  const [clientTrustStrategy, setClientTrustStrategy] =
+    useState<ClientTrustStrategy>('email_code');
+  const [clientTrustChoices, setClientTrustChoices] = useState({
+    email: false,
+    phone: false,
+  });
+  const [isClientTrustLoading, setIsClientTrustLoading] = useState(false);
+
   const goBackFromMfa = () => {
     setError('');
     setMfaCode('');
@@ -411,6 +473,78 @@ export function LoginForm({
     setMfaCode('');
     setMfaReturnStep(returnStep);
     setStep('mfa');
+  };
+
+  /** Sends (or resends) the Client Trust code for the chosen strategy. */
+  const sendClientTrustCode = async (strategy: ClientTrustStrategy) => {
+    if (!signIn) return;
+    const factor = findClientTrustFactor(
+      signIn.supportedFirstFactors,
+      strategy,
+    );
+    if (!factor) {
+      setError(t('auth.clientTrust.unsupportedFactor'));
+      return;
+    }
+    try {
+      await signIn.prepareFirstFactor(
+        strategy === 'email_code'
+          ? { strategy: 'email_code', emailAddressId: factor.emailAddressId }
+          : { strategy: 'phone_code', phoneNumberId: factor.phoneNumberId },
+      );
+    } catch (err: unknown) {
+      setError(clerkErrorMessage(err, t('auth.clientTrust.sendFailed')));
+    }
+  };
+  const goBackFromClientTrust = () => {
+    setError('');
+    setClientTrustCode('');
+    setStep('credentials');
+  };
+  const enterClientTrustStep = async () => {
+    if (!signIn) return;
+    const { email, phone } = supportedClientTrustStrategies(
+      signIn.supportedFirstFactors,
+    );
+    if (!email && !phone) {
+      setError(t('auth.clientTrust.unsupportedFactor'));
+      return;
+    }
+    setError('');
+    setClientTrustChoices({ email, phone });
+    const strategy: ClientTrustStrategy = email ? 'email_code' : 'phone_code';
+    setClientTrustStrategy(strategy);
+    setClientTrustCode('');
+    setStep('client-trust');
+    await sendClientTrustCode(strategy);
+  };
+  const handleClientTrustSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!signIn || !clientTrustCode.trim()) return;
+    setIsClientTrustLoading(true);
+    setError('');
+    try {
+      const result = await signIn.attemptFirstFactor({
+        strategy: clientTrustStrategy,
+        code: clientTrustCode.trim(),
+      });
+      if (result.status === 'complete') {
+        await navigate(result.createdSessionId, email);
+      } else if (result.status === 'needs_second_factor') {
+        enterMfaStep('credentials');
+      } else {
+        setError(t('auth.clientTrust.invalidCode'));
+      }
+    } catch (err: unknown) {
+      const message = resolveClerkError(err, 'signIn', t);
+      if (message === '__SESSION_EXISTS__') {
+        window.location.href = getRedirectTarget(email).path;
+        return;
+      }
+      setError(clerkErrorMessage(err, t('auth.clientTrust.invalidCode')));
+    } finally {
+      setIsClientTrustLoading(false);
+    }
   };
   const goBack = () => {
     setError('');
@@ -465,6 +599,11 @@ export function LoginForm({
         await navigate(result.createdSessionId, email);
       } else if (result.status === 'needs_second_factor') {
         enterMfaStep('credentials');
+      } else if (result.status === 'needs_client_trust') {
+        // A device Clerk has not seen before, not a wrong password. Handled
+        // at the source: `resolveClerkError`'s catch-all would otherwise
+        // report this as "Incorrect email or password", which it is not.
+        await enterClientTrustStep();
       } else {
         setError(t('auth.errors.signInInvalid'));
       }
@@ -606,11 +745,17 @@ export function LoginForm({
               />
             </div>
             {error ? (
-              <p role="alert" className="text-xs leading-snug text-red-600 dark:text-red-400">
+              <p
+                role="alert"
+                className="text-xs leading-snug text-red-600 dark:text-red-400"
+              >
                 {error}
               </p>
             ) : null}
-            <SubmitButton type="submit" disabled={isMfaLoading || !mfaCode.trim()}>
+            <SubmitButton
+              type="submit"
+              disabled={isMfaLoading || !mfaCode.trim()}
+            >
               {isMfaLoading ? t('auth.mfa.verifying') : t('auth.mfa.verify')}
             </SubmitButton>
             <button
@@ -621,6 +766,120 @@ export function LoginForm({
               <IconArrowLeft />
               {t('auth.mfa.back')}
             </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  /* ── Client Trust: verify this device (a first factor, not MFA) ── */
+  if (step === 'client-trust') {
+    const hint =
+      clientTrustStrategy === 'email_code'
+        ? t('auth.clientTrust.emailHint')
+        : t('auth.clientTrust.phoneHint');
+    const showToggle = clientTrustChoices.email && clientTrustChoices.phone;
+    return (
+      <div className="w-full">
+        <div id="clerk-captcha" />
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <h2 className="text-2xl font-semibold">
+              {t('auth.clientTrust.title')}
+            </h2>
+            <p className="text-sm text-muted-foreground">{hint}</p>
+          </div>
+          {showToggle ? (
+            <div className="flex rounded-lg border border-white/40 p-1 bg-white/50 dark:border-white/15 dark:bg-[var(--surface-2)]/60">
+              <button
+                type="button"
+                onClick={() => {
+                  setClientTrustStrategy('email_code');
+                  setClientTrustCode('');
+                  setError('');
+                  void sendClientTrustCode('email_code');
+                }}
+                className={
+                  clientTrustStrategy === 'email_code'
+                    ? 'flex-1 rounded-md bg-[var(--purple)]/15 py-2 text-sm font-medium text-foreground'
+                    : 'flex-1 rounded-md py-2 text-sm font-medium text-muted-foreground hover:text-foreground'
+                }
+              >
+                {t('auth.clientTrust.useEmail')}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setClientTrustStrategy('phone_code');
+                  setClientTrustCode('');
+                  setError('');
+                  void sendClientTrustCode('phone_code');
+                }}
+                className={
+                  clientTrustStrategy === 'phone_code'
+                    ? 'flex-1 rounded-md bg-[var(--purple)]/15 py-2 text-sm font-medium text-foreground'
+                    : 'flex-1 rounded-md py-2 text-sm font-medium text-muted-foreground hover:text-foreground'
+                }
+              >
+                {t('auth.clientTrust.usePhone')}
+              </button>
+            </div>
+          ) : null}
+          <form
+            onSubmit={handleClientTrustSubmit}
+            className="flex flex-col gap-4"
+          >
+            <div className="space-y-2">
+              <Label htmlFor="client-trust-code">
+                {t('auth.clientTrust.codeLabel')}
+              </Label>
+              <FieldInput
+                id="client-trust-code"
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="one-time-code"
+                placeholder={t('auth.clientTrust.codePlaceholder')}
+                value={clientTrustCode}
+                onChange={(e) => setClientTrustCode(e.target.value)}
+                className={FIELD_CLS}
+                autoFocus
+              />
+            </div>
+            {error ? (
+              <p
+                role="alert"
+                className="text-xs leading-snug text-red-600 dark:text-red-400"
+              >
+                {error}
+              </p>
+            ) : null}
+            <SubmitButton
+              type="submit"
+              disabled={isClientTrustLoading || !clientTrustCode.trim()}
+            >
+              {isClientTrustLoading
+                ? t('auth.clientTrust.verifying')
+                : t('auth.clientTrust.verify')}
+            </SubmitButton>
+            <div className="flex items-center justify-between pt-1">
+              <button
+                type="button"
+                onClick={() => void sendClientTrustCode(clientTrustStrategy)}
+                disabled={isClientTrustLoading}
+                className="text-sm text-[var(--fs-ink-dim)] hover:text-gray-900 dark:hover:text-gray-200 hover:underline"
+              >
+                {t('auth.clientTrust.resendCode')}
+              </button>
+              <button
+                type="button"
+                onClick={goBackFromClientTrust}
+                className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground hover:underline"
+              >
+                <IconArrowLeft />
+                {t('auth.clientTrust.back')}
+              </button>
+            </div>
           </form>
         </div>
       </div>
@@ -731,7 +990,9 @@ export function LoginForm({
                   type="button"
                   onClick={() => setShowNewPassword((v) => !v)}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  aria-label={showNewPassword ? 'Hide password' : 'Show password'}
+                  aria-label={
+                    showNewPassword ? 'Hide password' : 'Show password'
+                  }
                 >
                   {showNewPassword ? <IconEyeOff /> : <IconEye />}
                 </button>
@@ -870,7 +1131,10 @@ export function LoginForm({
             </button>
           </div>
           {error ? (
-            <p role="alert" className="text-xs leading-snug text-red-600 dark:text-red-400">
+            <p
+              role="alert"
+              className="text-xs leading-snug text-red-600 dark:text-red-400"
+            >
               {error}
             </p>
           ) : null}

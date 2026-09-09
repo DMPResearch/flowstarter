@@ -32,6 +32,7 @@
  *   - it never opens another tenant's workspace
  */
 import type { Page } from '@playwright/test';
+import { bypassClerkBotProtection } from '../support/clerk-testing-token';
 // `test` comes from the fixture, not from @playwright/test: it records the
 // routes each journey reaches so scripts/e2e-route-coverage.mjs can merge
 // them. Every spec in e2e/ imports it this way; a bare import records
@@ -103,13 +104,22 @@ function note(description: string, type = 'journey'): void {
 /**
  * Sign in through the form a person uses.
  *
- * Deliberately NOT `@clerk/testing`'s `clerk.signIn()`, which the preview
- * suite uses: that needs `CLERK_SECRET_KEY` for the same instance and injects
- * a testing token to get past bot detection. This lane is handed two
- * addresses and two passwords and nothing else, which is the right amount of
- * credential to give a job that runs unattended against a live site. The cost
- * is that the sign-in form itself is under test, which for a QA lane is a
- * feature.
+ * Not `@clerk/testing`'s `clerk.signIn()`, which the preview suite uses:
+ * that signs in programmatically and never touches the form. This lane
+ * fills `#email` and `#password` and clicks "Sign in" itself, because the
+ * form is the thing under test here.
+ *
+ * It does, however, install `@clerk/testing`'s Testing Token bypass first
+ * (`bypassClerkBotProtection`, `e2e/support/clerk-testing-token.ts`), when
+ * `CLERK_SECRET_KEY` is present: on a fresh CI browser, Clerk's Client Trust
+ * protection treats every sign-in as a device it has never seen and gates
+ * it behind a step-up the QA credentials cannot answer (no inbox to read a
+ * code from). A Testing Token is Clerk's own, sanctioned way through that
+ * gate for automated testing, without weakening it for a real visitor. When
+ * the token cannot be minted (`CLERK_SECRET_KEY` absent), sign-in still
+ * attempts the plain form and is noted as running without the bypass,
+ * consistent with the credentials-missing skip below: this warns rather
+ * than silently changing what a red result means.
  */
 async function signIn(
   page: Page,
@@ -117,6 +127,13 @@ async function signIn(
   email: string,
   password: string,
 ): Promise<void> {
+  const bypassed = await bypassClerkBotProtection(page);
+  if (!bypassed) {
+    note(
+      'CLERK_SECRET_KEY not set, so this sign-in ran without the Client Trust bypass; a device-verification step-up would fail it the way a wrong password would.',
+      'warning',
+    );
+  }
   await page.goto(path, { waitUntil: 'domcontentloaded' });
   const emailField = page.locator('#email');
   await expect(

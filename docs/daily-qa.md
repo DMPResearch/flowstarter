@@ -17,13 +17,13 @@ At **05:00 UTC every day**, and on demand. Two jobs, in order.
 no model involved, so a regression is still caught on a day the model provider
 is down.
 
-| Journey | What it proves |
-| --- | --- |
-| `qa-01-intake-canary` | A visitor can open the discovery conversation from the landing page, answer the whole scripted intake, and reach a preview that actually starts generating. It records every phase the server reported. |
-| `qa-02-client-dashboard` | The client QA user can sign in, `/dashboard` routes them somewhere real, and, when the workspace has a site, the editor loads. |
-| `qa-03-operator-pipeline` | The operator QA user can sign in, the admin masthead renders, the pipeline board shows all six columns, and the project directory renders its table. |
-| `qa-04-pricing-contact` | `/pricing` renders its headline and all three care plans; `/contact` renders its form and refuses both an empty and a malformed submit without sending anything. |
-| `qa-05-deposit-checkout` | The deposit checkout route is deployed and refuses an anonymous caller, and the deployment is still on test-mode credentials. |
+| Journey                   | What it proves                                                                                                                                                                                          |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `qa-01-intake-canary`     | A visitor can open the discovery conversation from the landing page, answer the whole scripted intake, and reach a preview that actually starts generating. It records every phase the server reported. |
+| `qa-02-client-dashboard`  | The client QA user can sign in, `/dashboard` routes them somewhere real, and, when the workspace has a site, the editor loads.                                                                          |
+| `qa-03-operator-pipeline` | The operator QA user can sign in, the admin masthead renders, the pipeline board shows all six columns, and the project directory renders its table.                                                    |
+| `qa-04-pricing-contact`   | `/pricing` renders its headline and all three care plans; `/contact` renders its form and refuses both an empty and a malformed submit without sending anything.                                        |
+| `qa-05-deposit-checkout`  | The deposit checkout route is deployed and refuses an anonymous caller, and the deployment is still on test-mode credentials.                                                                           |
 
 **2. `agent`, the judging layer.** OpenCode on `vars.QA_AGENT_MODEL`
 (default `ollama-cloud/kimi-k3`) reads the journeys' JSON report, then
@@ -106,11 +106,11 @@ The body, in order:
 
 The three verdicts:
 
-| Verdict | Means | Lane colour |
-| --- | --- | --- |
-| `healthy` | Nothing worth waking anyone for. | green |
-| `degraded` | Something is wrong, but every flow a customer needs still completes. A skipped journey lands here. | green |
-| `broken` | A visitor cannot complete a flow the business sells. | **red** |
+| Verdict    | Means                                                                                              | Lane colour |
+| ---------- | -------------------------------------------------------------------------------------------------- | ----------- |
+| `healthy`  | Nothing worth waking anyone for.                                                                   | green       |
+| `degraded` | Something is wrong, but every flow a customer needs still completes. A skipped journey lands here. | green       |
+| `broken`   | A visitor cannot complete a flow the business sells.                                               | **red**     |
 
 `degraded` stays green on purpose. A lane that goes red for both teaches people
 to ignore red.
@@ -160,17 +160,19 @@ Depot's store is separate from GitHub's. Import with
 `depot ci secrets add NAME --repo DMPResearch/flowstarter` and
 `depot ci vars add NAME --repo DMPResearch/flowstarter`.
 
-| Name | Kind | Required for | Absent means |
-| --- | --- | --- | --- |
-| `OLLAMA_API_KEY` | secret | the agent layer | the agent steps skip with a warning; the issue is filed from the journeys alone |
-| `E2E_CLERK_CLIENT_EMAIL` | secret | `qa-02` | `qa-02` skips, so the verdict floor is `degraded` |
-| `E2E_CLERK_CLIENT_PASSWORD` | secret | `qa-02` | same |
-| `E2E_CLERK_OPERATOR_EMAIL` | secret | `qa-03` | `qa-03` skips, so the verdict floor is `degraded` |
-| `E2E_CLERK_OPERATOR_PASSWORD` | secret | `qa-03` | same |
-| `GH_REVIEW_TOKEN` | secret | a stable identity on the issue | the workflow token files it instead |
-| `QA_AGENT_MODEL` | var | choosing the model | defaults to `ollama-cloud/kimi-k3` |
-| `QA_UNLOCK_WORKSPACE_ID` | var | the unlock-page leg of `qa-05` | that leg is skipped and says so |
-| `QA_STRIPE_CHECKOUT_URL` | var | the hosted-Checkout leg of `qa-05` | that leg is skipped and says so |
+| Name                                | Kind   | Required for                                                                             | Absent means                                                                                     |
+| ----------------------------------- | ------ | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `OLLAMA_API_KEY`                    | secret | the agent layer                                                                          | the agent steps skip with a warning; the issue is filed from the journeys alone                  |
+| `E2E_CLERK_CLIENT_EMAIL`            | secret | `qa-02`                                                                                  | `qa-02` skips, so the verdict floor is `degraded`                                                |
+| `E2E_CLERK_CLIENT_PASSWORD`         | secret | `qa-02`                                                                                  | same                                                                                             |
+| `E2E_CLERK_OPERATOR_EMAIL`          | secret | `qa-03`                                                                                  | `qa-03` skips, so the verdict floor is `degraded`                                                |
+| `E2E_CLERK_OPERATOR_PASSWORD`       | secret | `qa-03`                                                                                  | same                                                                                             |
+| `CLERK_SECRET_KEY`                  | secret | the Testing Token bypass `qa-02`/`qa-03` use to get past Clerk's Client Trust protection | those journeys still sign in through the plain form, and may fail on device verification instead |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | var    | same, alongside `CLERK_SECRET_KEY`                                                       | same. Not a secret: it already ships to every browser that loads the site                        |
+| `GH_REVIEW_TOKEN`                   | secret | a stable identity on the issue                                                           | the workflow token files it instead                                                              |
+| `QA_AGENT_MODEL`                    | var    | choosing the model                                                                       | defaults to `ollama-cloud/kimi-k3`                                                               |
+| `QA_UNLOCK_WORKSPACE_ID`            | var    | the unlock-page leg of `qa-05`                                                           | that leg is skipped and says so                                                                  |
+| `QA_STRIPE_CHECKOUT_URL`            | var    | the hosted-Checkout leg of `qa-05`                                                       | that leg is skipped and says so                                                                  |
 
 The two QA users must be ordinary accounts on the deployment being walked: the
 client one an ordinary client with no team role, the operator one a team member.

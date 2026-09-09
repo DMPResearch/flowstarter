@@ -38,9 +38,20 @@
 #   E2E_CLERK_CLIENT_PASSWORD   same.
 #   E2E_CLERK_OPERATOR_EMAIL    required for journey qa-03. Absent, it skips.
 #   E2E_CLERK_OPERATOR_PASSWORD same.
+#   CLERK_SECRET_KEY            mints a Clerk Testing Token so qa-02/qa-03
+#                               can sign in through Clerk's Client Trust
+#                               (device verification) protection the sanctioned
+#                               way, instead of failing it the way a wrong
+#                               password would. Absent: the journeys still run
+#                               the plain form, with a warning noted on the
+#                               result (see e2e/support/clerk-testing-token.ts).
 #   GH_REVIEW_TOKEN             optional. The issue is filed under it when
 #                               present, so it carries a stable identity;
 #                               absent, the workflow token files it.
+#   vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+#                               not a secret (it ships to every browser); read
+#                               alongside CLERK_SECRET_KEY to mint the Testing
+#                               Token above.
 #   vars.QA_AGENT_MODEL         optional. Default `ollama-cloud/kimi-k3`.
 #   vars.QA_UNLOCK_WORKSPACE_ID optional. A disposable workspace whose deposit
 #                               button journey qa-05 may look at. Never
@@ -118,6 +129,8 @@ jobs:
           E2E_CLERK_CLIENT_PASSWORD: ${{ secrets.E2E_CLERK_CLIENT_PASSWORD }}
           E2E_CLERK_OPERATOR_EMAIL: ${{ secrets.E2E_CLERK_OPERATOR_EMAIL }}
           E2E_CLERK_OPERATOR_PASSWORD: ${{ secrets.E2E_CLERK_OPERATOR_PASSWORD }}
+          CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
         run: |
           set -u
           missing=
@@ -133,6 +146,14 @@ jobs:
             echo "Missing QA credentials: ${missing}" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "missing=${missing}" >> "$GITHUB_OUTPUT"
+          # Independent of the credentials above: without this, qa-02/qa-03
+          # still attempt to sign in, but without the Testing Token bypass,
+          # so Clerk's Client Trust protection on a fresh CI browser fails
+          # them the way a wrong password would. Warn, do not skip: a red
+          # result here is still real information.
+          if [ -z "${CLERK_SECRET_KEY:-}" ] || [ -z "${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}" ]; then
+            echo "::warning::CLERK_SECRET_KEY or NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is not set; qa-02/qa-03 will sign in without the Client Trust bypass and may fail on device verification instead of testing the sign-in form."
+          fi
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -159,6 +180,12 @@ jobs:
           E2E_CLERK_CLIENT_PASSWORD: ${{ secrets.E2E_CLERK_CLIENT_PASSWORD }}
           E2E_CLERK_OPERATOR_EMAIL: ${{ secrets.E2E_CLERK_OPERATOR_EMAIL }}
           E2E_CLERK_OPERATOR_PASSWORD: ${{ secrets.E2E_CLERK_OPERATOR_PASSWORD }}
+          # Mints the Testing Token that bypasses Clerk's bot/Client Trust
+          # protection for qa-02/qa-03 (e2e/support/clerk-testing-token.ts).
+          # Absent, they still sign in through the plain form; see the
+          # `creds` step above for the warning that produces.
+          CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
           QA_UNLOCK_WORKSPACE_ID: ${{ vars.QA_UNLOCK_WORKSPACE_ID }}
           QA_STRIPE_CHECKOUT_URL: ${{ vars.QA_STRIPE_CHECKOUT_URL }}
         run: |
