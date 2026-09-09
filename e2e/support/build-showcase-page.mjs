@@ -19,8 +19,11 @@ const M = existsSync(manifestPath)
   ? JSON.parse(readFileSync(manifestPath, 'utf8'))
   : {};
 
-const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) =>
-  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const esc = (v) =>
+  String(v ?? '').replace(
+    /[&<>"]/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c],
+  );
 
 const read = (p) => (existsSync(p) ? readFileSync(p, 'utf8').trim() : '');
 
@@ -31,12 +34,24 @@ const read = (p) => (existsSync(p) ? readFileSync(p, 'utf8').trim() : '');
  */
 function durationOf(file) {
   try {
-    const out = execFileSync('ffprobe',
-      ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file],
-      { encoding: 'utf8' }).trim();
+    const out = execFileSync(
+      'ffprobe',
+      [
+        '-v',
+        'error',
+        '-show_entries',
+        'format=duration',
+        '-of',
+        'csv=p=0',
+        file,
+      ],
+      { encoding: 'utf8' },
+    ).trim();
     const n = Number(out);
     return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -65,7 +80,9 @@ const clip = (name, title, caption) => {
   </figure>`;
 };
 
-const commits = (M.commits ?? []).map((c) => `<li><code>${esc(c)}</code></li>`).join('');
+const commits = (M.commits ?? [])
+  .map((c) => `<li><code>${esc(c)}</code></li>`)
+  .join('');
 
 /**
  * Whether clip 04 on disk is the two-change take or the older single-change one.
@@ -89,7 +106,9 @@ const unlockFilmed = M.unlockFilmed === true;
 const R = M.retake ?? {};
 const E = M.notes?.editor ?? {};
 
-writeFileSync(join(OUT, 'index.html'), `<!doctype html>
+writeFileSync(
+  join(OUT, 'index.html'),
+  `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
@@ -150,77 +169,114 @@ broke and why, because a reel with the failures cut out would not tell you anyth
 </table>
 
 <h2><span class="n">01</span>Intake</h2>
-${clip('01-intake', 'Landing to brief', `A visitor opens the landing page and <strong>talks</strong> the brief
+${clip(
+  '01-intake',
+  'Landing to brief',
+  `A visitor opens the landing page and <strong>talks</strong> the brief
 through — a Bristol counsellor, from <code>e2e/support/briefs.mjs</code>. There is no form: one question
 at a time, answered by typing or by tapping a quick reply, with every earlier answer still on screen and
 editable. What is worth knowing is who decides. The order of the questions, what counts as a valid
-answer, which ones cannot be skipped and when the intake is <em>finished</em> are all data in
+answer, which ones are required and when the intake is <em>finished</em> are all data in
 <code>intake-script.ts</code> — <strong>no model is consulted</strong> for any of it. Notice the optional
-question being skipped outright, and <strong>Skip ahead to the preview</strong> sitting under the
-composer the whole way: the conversation is never a trap. The two commercial decisions keep their cards,
-and the recommendation is computed first by <strong>deterministic rules</strong>
+question being skipped outright, and notice too that there is nothing that jumps ahead of it: the two
+commercial decisions at the end are turns in the same conversation, not something a visitor can skip past
+to reach the preview early. The recommendation is computed first by <strong>deterministic rules</strong>
 (<code>recommendTier</code> in <code>discovery.logic.ts</code>); a model call may then refine it, and if
 that call fails the rules stand. The reasons listed are the rules that actually fired, not a generated
-explanation.`)}
+explanation.`,
+)}
 
 <h2><span class="n">02</span>The info agent</h2>
-${clip('02-info-agent', 'What is still missing', `The gate lists what it does not yet know in plain language.
+${clip(
+  '02-info-agent',
+  'What is still missing',
+  `The gate lists what it does not yet know in plain language.
 The replies are typed in, and the follow-up question is a live model call through OpenRouter — not a
 scripted line: the agent introduces itself, then picks a concrete detail out of the answer
 (&ldquo;trauma-informed and paced by the client&rdquo;) before asking the next question. That is phrasing
 only — the sufficiency gate still decides what gets asked and in what order, and it stops asking as soon
 as it has enough, which is why the last answer draws no reply.
 <strong>Skip and show me the preview</strong> stays visible the whole time; the agent
-can never trap someone in a conversation.`)}
+can never trap someone in a conversation.`,
+)}
 
 <h2><span class="n">03</span>Generation</h2>
-${clip('03-generation', 'Skeleton, phases, then the site', `The preview step is a conversation. A sticky
+${clip(
+  '03-generation',
+  'Skeleton, phases, then the site',
+  `The preview step is a conversation. A sticky
 <strong>NOW</strong> line names the phase and counts the seconds, the site pane starts as an empty
 skeleton — deliberately blank bars, never invented headlines — and each phase arrives as a message
 signed by the agent that owns it: Brand analyst, Site builder, Honesty editor. The deposit is stated
-before the build starts, not after. Then the finished site, desktop and phone.`)}
+before the build starts, not after. Then the finished site, desktop and phone.`,
+)}
 <div class="note"><b>What is real, what is local:</b> the model is a live OpenRouter call and it writes
 real files. <code>FLOWSTARTER_LOCAL_PREVIEW=true</code> means those files are served from a local
 directory instead of a Daytona sandbox. ${esc(M.generation ?? '')}. The build takes about five and a
 half minutes; the waiting is cut, nothing is sped up.</div>
-${M.iframeNotCaptured ? `<div class="note"><b>The site pane is shown full-frame, not through the wizard.</b>
+${
+  M.iframeNotCaptured
+    ? `<div class="note"><b>The site pane is shown full-frame, not through the wizard.</b>
 That pane is a cross-origin iframe and headless Chromium does not composite it into a captured video —
 it comes out white on the recording even though it is loading and a visitor sees it. So the finished
 site is filmed by opening the same preview URL the pane points at. The conversation, the phases and
-the timings are the original take.</div>` : ''}
+the timings are the original take.</div>`
+    : ''
+}
 
 <h2><span class="n">04</span>Editing by prompt</h2>
-${twoChanges
-  ? clip('04-prompt-edit', 'Two changes on the house, then the ask', `The site arrives with an offer of
+${
+  twoChanges
+    ? clip(
+        '04-prompt-edit',
+        'Two changes on the house, then the ask',
+        `The site arrives with an offer of
 <strong>two changes</strong>, not a price — a counter on the edit box tracks them. Both are spent here:
 the headline is rewritten to say the intro call is free, then evening and online sessions are worked
 into the services. Each instruction is plain English, and each change lands in the same iframe; no
 template picker, no CSS. The deposit ask stays out of the conversation until the second change is in
 &mdash; deterministic, a counter and a click, with a quiet <em>Happy already?</em> link for anyone who
-wants to skip ahead.`)
-  : clip('04-prompt-edit', 'One sentence, one change', `A plain-English instruction is sent to the live
+wants to skip ahead.`,
+      )
+    : clip(
+        '04-prompt-edit',
+        'One sentence, one change',
+        `A plain-English instruction is sent to the live
 preview and the change lands in the iframe. No template picker, no CSS — the visitor describes the
-change and the model applies it to the generated source.`)}
-${twoChanges ? '' : `<div class="note"><b>This clip predates the two-change flow.</b> The product now offers
+change and the model applies it to the generated source.`,
+      )
+}
+${
+  twoChanges
+    ? ''
+    : `<div class="note"><b>This clip predates the two-change flow.</b> The product now offers
 two free changes before it mentions money, and holds the deposit ask back until both are spent
 (<code>6f57cdc0</code>). The take above is the earlier single-change version; it is kept because it is
-the most recent footage in which a prompt edit actually completed.</div>`}
+the most recent footage in which a prompt edit actually completed.</div>`
+}
 
 <h2><span class="n">05</span>Claim and deposit</h2>
-${clip('05-claim-and-deposit', 'The offer, then the money',
+${clip(
+  '05-claim-and-deposit',
+  'The offer, then the money',
   `${twoChanges ? 'The offer the second change unlocked, with' : 'The offer is restated next to the preview with'}
 the real split — a &euro;159.80 deposit against a &euro;799 build, &euro;639.20 on completion — and a
 quieter way out beside it. A signed-out click opens Clerk's modal rather than navigating, because a
-redirect here would throw away the preview.${unlockFilmed
-  ? ' Then the unlock page, and the deposit landing on it.'
-  : ''}`)}
-${unlockFilmed ? '' : `<div class="note"><b>The unlock page is not in this clip, and the reason is a bug of
+redirect here would throw away the preview.${
+    unlockFilmed ? ' Then the unlock page, and the deposit landing on it.' : ''
+  }`,
+)}
+${
+  unlockFilmed
+    ? ''
+    : `<div class="note"><b>The unlock page is not in this clip, and the reason is a bug of
 ours.</b> The deposit below is real and the workspace really moved to <code>DEPOSIT_PAID</code> — the
 transcript is printed underneath. What could not be filmed is the page the client lands on afterwards:
 <code>NavigationWrapper</code> keeps its own hardcoded list of public routes, <code>/unlock</code> was
 never added to it (the middleware does treat it as public), so the route is held behind a full-screen
 loading screen until Clerk reports <code>isLoaded</code> — and on this route Clerk never does, so the
-screen never lifts. Rather than publish twenty-six seconds of a spinner, the clip stops at the claim.</div>`}
+screen never lifts. Rather than publish twenty-six seconds of a spinner, the clip stops at the claim.</div>`
+}
 <div class="note"><b>One click is not on camera.</b> This Clerk instance answers a scripted sign-in with
 <code>needs_client_trust</code> — bot protection a headless browser cannot satisfy — and redeeming a
 sign-in token calls <code>setActive</code>, which navigates and would destroy the preview. So the modal
@@ -234,14 +290,21 @@ event (the ledger must not build twice) and posts a forged one, which is refused
 ${read('/tmp/deposit-run.txt') ? `<pre>${esc(read('/tmp/deposit-run.txt'))}</pre>` : ''}
 
 <h2><span class="n">06</span>The client dashboard</h2>
-${clip('06-client-dashboard', 'The asks, the thread, and a photo going up', `The client's own project, on the
-route that used to throw. The stepper puts the build at <em>${esc(R.built?.project_state === 'HUMAN_QA'
-  ? 'a person is checking every page' : R.built?.project_state ?? 'its current stage')}</em>; the open
+${clip(
+  '06-client-dashboard',
+  'The asks, the thread, and a photo going up',
+  `The client's own project, on the
+route that used to throw. The stepper puts the build at <em>${esc(
+    R.built?.project_state === 'HUMAN_QA'
+      ? 'a person is checking every page'
+      : (R.built?.project_state ?? 'its current stage'),
+  )}</em>; the open
 asks are listed with a way to answer each one; the thread carries the operator's clarification, and a
 typed reply lands in it — <strong>${esc(R.inbound ?? 0)} inbound message</strong> in
 <code>project_messages</code> where there were none. Then one photograph goes up against the ask it
 answers, the rights are confirmed, and the panel underneath is the server's recomputed reading of what
-is <em>still</em> missing.`)}
+is <em>still</em> missing.`,
+)}
 <div class="note"><b>The previous take of this clip filmed a real bug, and it is fixed.</b> That take was
 a 500: <code>dashboard/projects/[workspaceId]/page.tsx</code> called <code>messagesFromPayload()</code>
 — a client-module export — from a server component, and Next refused to render the page at all. Filming
@@ -249,8 +312,9 @@ is what found it. It is fixed at this commit, so this is the honest re-take rath
 one, and the failure is left in the record above as part of how the work went.</div>
 <div class="note"><b>What the server did with the photo.</b> The file is a
 ${esc(R.assets?.[0]?.size ?? '1200x800')} interior from the template library's own photo set — no one's
-face in a filmed clip — and it is stored <code>usable_for: ${esc(R.assets?.[0]?.usableFor?.join(', ') ??
-'section')}</code> with the rights confirmation recorded against it. Nothing is placed on the site until
+face in a filmed clip — and it is stored <code>usable_for: ${esc(
+    R.assets?.[0]?.usableFor?.join(', ') ?? 'section',
+  )}</code> with the rights confirmation recorded against it. Nothing is placed on the site until
 that box is ticked. The readiness line then <em>changes its mind in public</em>: the main-photo ask stops
 being "we have nothing" and becomes "the one we have is too small or too tall for the top of the page",
 because the gate measured the file rather than counting it. Two asset requests are still open, so eight
@@ -258,11 +322,15 @@ asks are listed — the operator raised the same request twice on the earlier ru
 left on screen rather than tidied out of the recording.</div>
 
 <h2><span class="n">07</span>The operator console</h2>
-${clip('07-operator-console', 'Where a stall becomes visible', `A different account, with the operator role.
+${clip(
+  '07-operator-console',
+  'Where a stall becomes visible',
+  `A different account, with the operator role.
 The pipeline board counts the projects that need attention and shows this one in
 <code>DEPOSIT_PAID</code> with its <code>FULL_SITE_BUILD</code> job flagged as queued and stalled. The
 project's Pipeline tab carries the real job ledger and the real timeline, and <strong>Re-dispatch</strong>
-returns the honest failure rather than pretending to send work somewhere.`)}
+returns the honest failure rather than pretending to send work somewhere.`,
+)}
 <div class="note"><b>The build worker cannot run here.</b> It needs a GitHub sites repository and a token
 this machine does not have. So the deposit enqueues <code>FULL_SITE_BUILD</code>, the dispatcher logs
 that it is not configured, and the job sits queued — which is exactly the stall the console exists to
@@ -278,7 +346,10 @@ and it is fixed at this commit: the operator filmed in clips 06 and 08 above is 
 flowstarter.dev account with no metadata set on it at all.</div>
 
 <h2><span class="n">08</span>The editor</h2>
-${clip('08-editor', 'The plan goes on, and the editor runs', `Two halves, both real. The operator opens the
+${clip(
+  '08-editor',
+  'The plan goes on, and the editor runs',
+  `Two halves, both real. The operator opens the
 workspace the client claimed minutes earlier with the Pro care plan: its Billing tab reads
 <strong>&euro;${esc(R.claimed?.monthly_fee ?? 99)}/mo</strong>, mapped server-side from the plan's name —
 the browser never sends a price, and this is the &euro;0 that used to gate everything. Activation there
@@ -288,7 +359,8 @@ Stripe returns a subscription on trial (<code>${esc((R.built?.stripe_subscriptio
 Then the client's editor, on that workspace — <strong>${esc(E.targets ?? 247)} editable targets</strong>
 read out of their site, an instruction typed against one of them, and the model's actual rewrite shown
 word-by-word against the old sentence before anything is saved. Applied as a new version, then put back:
-<code>${esc((R.siteVersions ?? []).join(' · '))}</code>.`)}
+<code>${esc((R.siteVersions ?? []).join(' · '))}</code>.`,
+)}
 <div class="note"><b>The previous take of this clip filmed a real bug, and it is fixed.</b> That take was
 a dead end: the editor loaded the client's site and refused every control, because the policy wants an
 active care plan and the claim had never put a price on the workspace — which left the operator's own
@@ -322,22 +394,30 @@ posts to, from the client's own session: a stylesheet target answers
 That request is not on camera; the response is quoted verbatim.</div>
 
 <h2><span class="n">09</span>Balance, and a finished site</h2>
-${clip('09-balance-and-live', 'Two moves, the other 80%, and the output', `The operator advances the project
+${clip(
+  '09-balance-and-live',
+  'Two moves, the other 80%, and the output',
+  `The operator advances the project
 with a written reason each time — and because only neighbouring states are allowed, getting from
 <code>DEPOSIT_PAID</code> to <code>HUMAN_QA</code> takes two moves, not one. The Billing tab then shows
 both invoices paid, &euro;159.80 and &euro;639.20, the balance having gone through the invoice path the
 webhook already handles. The two finished sites at the end came out of this pipeline on earlier runs: a
-Bristol counselling practice and a Romanian bakery, written in Romanian.`)}
+Bristol counselling practice and a Romanian bakery, written in Romanian.`,
+)}
 <div class="note"><b>The client's side of the balance is the unlock page.</b> It reads the same workspace
 row the webhook wrote. This clip was filmed when the client project page was still throwing; that page
 works now, and clip 06 above is the re-take. The project finished this recording in
 <code>HUMAN_QA</code> with both the deposit and the balance marked paid.</div>
 
 <h2><span class="n">10</span>Preview hosting</h2>
-${clip('10-previews-hosting', 'The lever, not pulled', `The provisioner's default is a dry run: it prints the exact
+${clip(
+  '10-previews-hosting',
+  'The lever, not pulled',
+  `The provisioner's default is a dry run: it prints the exact
 server, the cloud-init size and the DNS record it would write, and exits without calling a mutating API.
 The operator's reap endpoint is shown in <code>GET</code> form, which lists what would be reaped and
-tears down nothing.`)}
+tears down nothing.`,
+)}
 <div class="note"><b>No server was created and no DNS was changed.</b> The Hetzner host is unprovisioned
 by design — applying costs money and edits a live zone, so it requires
 <code>--yes-i-understand-this-costs-money</code> spelled out in full. The output below is the plan only.</div>
@@ -384,5 +464,6 @@ The two Clerk users created for the recording were deleted afterwards.
 Timings are from these runs, not a benchmark.
 ${M.recordedAt ? `Recorded ${esc(M.recordedAt)}.` : ''}
 </footer>
-</div></body></html>`);
+</div></body></html>`,
+);
 console.log('wrote', join(OUT, 'index.html'));

@@ -397,56 +397,29 @@ describe('what makes it a conversation', () => {
   });
 });
 
-describe('the escape hatch', () => {
-  it('is on screen from the first question', () => {
+describe('no way past the required questions', () => {
+  it('has no skip-ahead affordance on screen', () => {
     renderWizard();
     expect(
-      screen.getByRole('button', {
-        name: t('landing.discovery.chat.skipRest'),
-      })
-    ).toBeEnabled();
+      screen.queryByRole('button', { name: /skip ahead/i })
+    ).not.toBeInTheDocument();
   });
 
-  it('drops everything optional and asks only what the wizard has always required', async () => {
+  it('still lets an optional question be skipped, one at a time', async () => {
     const { user } = renderWizard();
-
-    await tap(user, t('landing.discovery.chat.skipRest'));
-
-    expect(
-      await screen.findByText(
-        said('landing.discovery.chat.stillNeeded', { count: '5' })
-      )
-    ).toBeInTheDocument();
-
     await say(user, 'Maria Ionescu');
     await say(user, 'maria@example.com');
-    // Straight past the business name, industry, audience and links.
-    await screen.findByText(
-      said('landing.discovery.chat.q.description.prompt', {
-        business: 'your business',
-      })
-    );
-    await say(user, 'A boutique dental clinic in Cluj doing cosmetic work.');
+    await tap(user, t('landing.discovery.chat.skip')); // business name
 
-    // Goals: a multi-select, still one question.
-    await screen.findByText(t('landing.discovery.chat.q.goal.prompt'));
-    await tap(user, 'Take bookings or appointments');
-    await tap(user, t('landing.discovery.chat.done'));
-
-    await screen.findByText(t('landing.discovery.chat.q.commerceMode.prompt'));
-    await tap(user, t('landing.discovery.options.commerce.none.label'));
-
-    // Last required answer given: the preview, with no plan panels in between.
-    expect(await screen.findByTestId('preview-stub')).toBeInTheDocument();
-    // The build package fell back to the deterministic recommendation rather
-    // than being left blank or guessed by a model.
-    await waitFor(() =>
-      expect(draft()).toMatchObject({
-        goal: 'Take bookings or appointments',
-        commerceMode: 'none',
-        selectedTier: 'starter',
-      })
-    );
+    // Business name really was skipped, not silently filled in.
+    await waitFor(() => expect(draft()?.businessName).toBe(''));
+    expect(
+      screen.getByText(
+        said('landing.discovery.chat.q.description.prompt', {
+          business: 'your business',
+        })
+      )
+    ).toBeInTheDocument();
   });
 });
 

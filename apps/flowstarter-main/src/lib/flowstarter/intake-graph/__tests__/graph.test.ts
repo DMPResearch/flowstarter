@@ -7,6 +7,7 @@ import {
   EMPTY_DISCOVERY,
   type DiscoveryData,
 } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/discovery.logic';
+import { nextQuestion } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/intake-script';
 import {
   resetIntakeGraphDeps,
   resumeIntakeGraph,
@@ -21,6 +22,12 @@ describe('intake graph', () => {
       phraseAsk: async ({ scriptedPrompt, question }) =>
         `Graph: ${question.id} — ${scriptedPrompt}`,
       extractAnswers: async () => [],
+      answerVisitorQuestion: async () => {
+        throw new Error('not stubbed for this test');
+      },
+      phraseClarification: async () => {
+        throw new Error('not stubbed for this test');
+      },
       translate: () => (key) => key,
     });
   });
@@ -111,32 +118,26 @@ describe('intake graph', () => {
     expect(next.ask?.questionId).not.toBe('businessName');
   });
 
-  it('reports complete when the script is already spent', async () => {
-    // Essentials-only with everything required already answered.
+  it('reports complete only once every applicable question — both panels included — is answered', async () => {
     const turn = await startIntakeGraph({
-      essentialsOnly: true,
-      data: {
-        ...EMPTY_DISCOVERY,
-        fullName: 'Maria',
-        email: 'maria@example.com',
-        businessName: 'Clinic',
-        description: 'A dental clinic in Cluj with evening appointments.',
-        industry: 'Therapy & wellness',
-        goal: 'Take bookings or appointments',
-        commerceMode: 'none',
-      },
-      answered: [
-        'fullName',
-        'email',
-        'businessName',
-        'description',
-        'industry',
-        'goal',
-        'commerceMode',
-      ],
+      data: FULLY_ANSWERED,
+      answered: EVERY_QUESTION_ANSWERED,
     });
     expect(turn.status).toBe('complete');
     expect(turn.ask).toBeNull();
+  });
+
+  it('never reports complete while a required commercial panel is still open', async () => {
+    // Every other required question in, the last one (the monthly plan)
+    // deliberately left out. There is no narrowed pool any more: the graph
+    // must still have something to ask.
+    const turn = await startIntakeGraph({
+      data: { ...FULLY_ANSWERED, subscription: '' },
+      answered: EVERY_QUESTION_ANSWERED.filter((id) => id !== 'subscription'),
+    });
+    expect(turn.status).not.toBe('complete');
+    expect(turn.ask?.questionId).toBe('subscription');
+    expect(turn.ask?.type).toBe('panel');
   });
 });
 
@@ -163,23 +164,50 @@ const ESSENTIALS_FILLED: DiscoveryData = {
   commerceMode: 'none',
 };
 
+const EVERY_QUESTION_ANSWERED = [
+  ...ESSENTIALS_ANSWERED,
+  'targetAudience',
+  'links',
+  'brandTone',
+  'pageCount',
+  'timeline',
+  'calComUrl',
+  'customIntegrations',
+  'selectedTier',
+  'subscription',
+];
+
+const FULLY_ANSWERED: DiscoveryData = {
+  ...ESSENTIALS_FILLED,
+  targetAudience: 'Adults who avoided the dentist for years.',
+  instagramUrl: '',
+  linkedinUrl: '',
+  brandTone: 'Calm, Trustworthy',
+  pageCount: '5-7',
+  timeline: 'asap',
+  calComUrl: 'https://cal.com/ionescu-dental',
+  customIntegrations: '',
+  selectedTier: 'starter',
+  subscription: 'pro',
+};
+
 describe('the scripted prompt, with no model in the picture', () => {
   it('reads the built-in dictionary rather than echoing a locale key', () => {
     resetIntakeGraphDeps();
 
-    const english = scriptedPromptFor(EMPTY_DISCOVERY, [], false);
+    const english = scriptedPromptFor(EMPTY_DISCOVERY, []);
     expect(english).toBeTruthy();
     expect(english).not.toContain('landing.discovery');
 
     // Romanian has no discovery-chat lines yet, so it falls back to English
     // rather than showing the visitor a key.
-    expect(scriptedPromptFor(EMPTY_DISCOVERY, [], false, 'ro')).toBe(english);
+    expect(scriptedPromptFor(EMPTY_DISCOVERY, [], 'ro')).toBe(english);
   });
 
   it('has nothing left to say once the script is spent', () => {
     resetIntakeGraphDeps();
     expect(
-      scriptedPromptFor(ESSENTIALS_FILLED, ESSENTIALS_ANSWERED, true)
+      scriptedPromptFor(FULLY_ANSWERED, EVERY_QUESTION_ANSWERED)
     ).toBeNull();
   });
 });
@@ -222,9 +250,8 @@ describe('resuming a conversation the server no longer remembers', () => {
     const recovered = await resumeIntakeGraph({
       threadId: '00000000-0000-4000-8000-000000000002',
       resume: { kind: 'text', text: 'anything' },
-      data: ESSENTIALS_FILLED,
-      answered: ESSENTIALS_ANSWERED,
-      essentialsOnly: true,
+      data: FULLY_ANSWERED,
+      answered: EVERY_QUESTION_ANSWERED,
     });
 
     expect(recovered.status).toBe('complete');
@@ -251,9 +278,8 @@ describe('resuming a conversation the server no longer remembers', () => {
     const finished = await resumeIntakeGraph({
       threadId: '',
       resume: { kind: 'text', text: 'anything' },
-      data: ESSENTIALS_FILLED,
-      answered: ESSENTIALS_ANSWERED,
-      essentialsOnly: true,
+      data: FULLY_ANSWERED,
+      answered: EVERY_QUESTION_ANSWERED,
     });
     expect(finished.status).toBe('complete');
     expect(finished.skipped).toBe(true);
@@ -261,6 +287,10 @@ describe('resuming a conversation the server no longer remembers', () => {
 });
 
 describe('the pricing panel', () => {
+  // Seven real round trips through the compiled graph (invoke + getState
+  // each) are occasionally slower than the suite's default 10s budget once
+  // every fork is under load from the rest of the suite running alongside
+  // it; the assertions are what matters, not finishing inside the default.
   it('pauses as a panel, not as something to type into', async () => {
     const start = await startIntakeGraph({
       data: ESSENTIALS_FILLED,
@@ -287,7 +317,7 @@ describe('the pricing panel', () => {
       resume: { kind: 'panel', value: 'pro' },
     });
     expect(chosen.data.selectedTier).toBe('pro');
-  });
+  }, 60_000);
 });
 
 describe('when the model misbehaves', () => {
@@ -390,23 +420,278 @@ describe('resume shapes the client may send', () => {
 });
 
 describe('finishing', () => {
-  it('reports complete once the last essential question is answered', async () => {
+  it('reports complete only once the very last required turn — a commercial panel — is answered', async () => {
     const start = await startIntakeGraph({
-      essentialsOnly: true,
-      data: { ...ESSENTIALS_FILLED, commerceMode: '' as const },
-      answered: ESSENTIALS_ANSWERED.filter((id) => id !== 'commerceMode'),
+      data: { ...FULLY_ANSWERED, subscription: '' as const },
+      answered: EVERY_QUESTION_ANSWERED.filter((id) => id !== 'subscription'),
     });
-    expect(start.ask?.questionId).toBe('commerceMode');
+    expect(start.ask?.questionId).toBe('subscription');
+    expect(start.status).not.toBe('complete');
 
     const done = await resumeIntakeGraph({
       threadId: start.threadId,
-      resume: { kind: 'text', text: 'none' },
-      essentialsOnly: true,
+      resume: { kind: 'panel', value: 'pro' },
     });
 
     expect(done.status).toBe('complete');
     expect(done.ask).toBeNull();
-    expect(done.data.commerceMode).toBe('none');
+    expect(done.data.subscription).toBe('pro');
     expect(done.progress.done).toBe(done.progress.total);
+  });
+});
+
+describe('the graph never gets ahead of the script', () => {
+  beforeEach(() => {
+    setIntakeGraphDeps({
+      phraseAsk: async ({ scriptedPrompt }) => scriptedPrompt,
+      extractAnswers: async () => [],
+      answerVisitorQuestion: async () => {
+        throw new Error('unused in this walk');
+      },
+      phraseClarification: async () => {
+        throw new Error('unused in this walk');
+      },
+      translate: () => (key) => key,
+    });
+  });
+
+  it('is complete exactly when intake-script.nextQuestion says nothing is left — every real turn checked against it', async () => {
+    const answers: Record<string, string> = {
+      fullName: 'Maria Ionescu',
+      email: 'maria@example.com',
+      businessName: 'Ionescu Dental',
+      description: 'A boutique dental clinic in Cluj doing cosmetic work.',
+      industry: 'Therapy & wellness',
+      targetAudience: 'Adults in Cluj who avoided the dentist for a decade.',
+      links: 'instagram.com/ionescudental',
+      goal: 'Take bookings or appointments',
+      brandTone: 'Calm, Trustworthy',
+      pageCount: '5-7',
+      timeline: 'asap',
+      commerceMode: 'none',
+      calComUrl: 'https://cal.com/ionescu-dental/intro',
+      customIntegrations: 'Mailchimp for newsletters',
+      selectedTier: 'starter',
+      subscription: 'pro',
+    };
+
+    let turn = await startIntakeGraph({ locale: 'en' });
+    for (let guard = 0; guard < 20 && turn.status !== 'complete'; guard += 1) {
+      // The invariant, checked on every turn: the graph's own script-derived
+      // `nextQuestion` must agree the intake is not done yet.
+      expect(nextQuestion(turn.data, turn.answered)).not.toBeNull();
+      const id = turn.ask!.questionId;
+      const raw = answers[id] ?? '';
+      turn = await resumeIntakeGraph({
+        threadId: turn.threadId,
+        resume:
+          turn.ask!.type === 'panel'
+            ? { kind: 'panel', value: raw || 'confirmed' }
+            : { kind: 'text', text: raw },
+      });
+    }
+
+    expect(turn.status).toBe('complete');
+    // And the reverse: complete only ever lines up with the script's own
+    // verdict, never ahead of it.
+    expect(nextQuestion(turn.data, turn.answered)).toBeNull();
+  }, 60_000);
+});
+
+describe('reacting to what was just said', () => {
+  it('feeds phraseAsk the visitor’s last answer, so it can react before asking the next thing', async () => {
+    const seenLastAnswers: unknown[] = [];
+    setIntakeGraphDeps({
+      phraseAsk: async ({ scriptedPrompt, lastAnswer }) => {
+        seenLastAnswers.push(lastAnswer);
+        return scriptedPrompt;
+      },
+      extractAnswers: async () => [],
+      answerVisitorQuestion: async () => {
+        throw new Error('unused');
+      },
+      phraseClarification: async () => {
+        throw new Error('unused');
+      },
+      translate: () => (key) => key,
+    });
+
+    const start = await startIntakeGraph({ locale: 'en' });
+    expect(start.ask?.questionId).toBe('fullName');
+
+    await resumeIntakeGraph({
+      threadId: start.threadId,
+      resume: { kind: 'text', text: 'Maria Ionescu' },
+    });
+
+    // No answer yet for the opening question — nothing to react to.
+    expect(seenLastAnswers[0]).toBeNull();
+    // The email ask was built with exactly what the visitor just said. (A
+    // LangGraph resume replays the node body up to its newest interrupt, so
+    // `phraseAsk` for `fullName` itself is called again first, with the same
+    // `null` — the important thing pinned here is that the *next* question
+    // is never phrased blind to the answer that unlocked it.)
+    expect(seenLastAnswers).toContainEqual({
+      questionId: 'fullName',
+      text: 'Maria Ionescu',
+    });
+  });
+});
+
+describe('a question asked back', () => {
+  it('answers it and puts the same pending question back, never validating the question itself as an answer', async () => {
+    setIntakeGraphDeps({
+      phraseAsk: async ({ scriptedPrompt }) => scriptedPrompt,
+      extractAnswers: async () => [],
+      answerVisitorQuestion: async () =>
+        'We use it to send your preview link, nothing else.',
+      phraseClarification: async () => {
+        throw new Error('unused');
+      },
+      translate: () => (key) => key,
+    });
+
+    const start = await startIntakeGraph({
+      data: { ...EMPTY_DISCOVERY, fullName: 'Maria' },
+      answered: ['fullName'],
+    });
+    expect(start.ask?.questionId).toBe('email');
+
+    const asked = await resumeIntakeGraph({
+      threadId: start.threadId,
+      resume: { kind: 'text', text: 'why do you need my email?' },
+      data: start.data,
+      answered: start.answered,
+    });
+
+    // Still on email — "why do you need my email?" never ran through the
+    // email validator as if it were an attempted address.
+    expect(asked.ask?.questionId).toBe('email');
+    expect(asked.errorKey).toBeNull();
+    expect(asked.ask?.note).toBe(
+      'We use it to send your preview link, nothing else.'
+    );
+    expect(asked.data.email).toBe('');
+    expect(asked.answered).toEqual(['fullName']);
+
+    const answered = await resumeIntakeGraph({
+      threadId: start.threadId,
+      resume: { kind: 'text', text: 'maria@example.com' },
+      data: asked.data,
+      answered: asked.answered,
+    });
+    expect(answered.data.email).toBe('maria@example.com');
+    expect(answered.ask?.questionId).not.toBe('email');
+  });
+
+  it('attaches the answer to the next ask when a question arrives bundled with a real answer', async () => {
+    setIntakeGraphDeps({
+      phraseAsk: async ({ scriptedPrompt }) => scriptedPrompt,
+      extractAnswers: async () => [{ id: 'email', value: 'maria@example.com' }],
+      answerVisitorQuestion: async () => 'We use it to send your preview link.',
+      phraseClarification: async () => {
+        throw new Error('unused');
+      },
+      translate: () => (key) => key,
+    });
+
+    const start = await startIntakeGraph({
+      data: { ...EMPTY_DISCOVERY, fullName: 'Maria' },
+      answered: ['fullName'],
+    });
+
+    const next = await resumeIntakeGraph({
+      threadId: start.threadId,
+      resume: {
+        kind: 'text',
+        text: "it's maria@example.com — why do you need it though?",
+      },
+      data: start.data,
+      answered: start.answered,
+    });
+
+    expect(next.data.email).toBe('maria@example.com');
+    expect(next.ask?.questionId).not.toBe('email');
+    expect(next.ask?.note).toBe('We use it to send your preview link.');
+  });
+
+  it('never calls the model for an ordinary answer with no question mark in it', async () => {
+    const answerVisitorQuestion = vi.fn();
+    setIntakeGraphDeps({
+      phraseAsk: async ({ scriptedPrompt }) => scriptedPrompt,
+      extractAnswers: async () => [],
+      answerVisitorQuestion,
+      phraseClarification: async () => {
+        throw new Error('unused');
+      },
+      translate: () => (key) => key,
+    });
+
+    const start = await startIntakeGraph({ locale: 'en' });
+    await resumeIntakeGraph({
+      threadId: start.threadId,
+      resume: { kind: 'text', text: 'Maria Ionescu' },
+    });
+
+    expect(answerVisitorQuestion).not.toHaveBeenCalled();
+  });
+});
+
+describe('a validation failure', () => {
+  it('shows a model-phrased clarification instead of the raw scripted error, but keeps the same errorKey', async () => {
+    setIntakeGraphDeps({
+      phraseAsk: async ({ scriptedPrompt }) => scriptedPrompt,
+      extractAnswers: async () => [],
+      answerVisitorQuestion: async () => {
+        throw new Error('unused');
+      },
+      phraseClarification: async ({ scriptedError }) =>
+        `Let's try that again — ${scriptedError.toLowerCase()}`,
+      translate: () => (key) => key,
+    });
+
+    const start = await startIntakeGraph({
+      data: { ...EMPTY_DISCOVERY, fullName: 'Maria' },
+      answered: ['fullName'],
+    });
+
+    const bad = await resumeIntakeGraph({
+      threadId: start.threadId,
+      resume: { kind: 'text', text: 'nope' },
+      data: start.data,
+      answered: start.answered,
+    });
+
+    expect(bad.errorKey).toBe('landing.discovery.chat.errors.email');
+    expect(bad.ask?.note).toContain("Let's try that again");
+  });
+
+  it('fails open to the raw scripted error when the clarification call itself throws', async () => {
+    setIntakeGraphDeps({
+      phraseAsk: async ({ scriptedPrompt }) => scriptedPrompt,
+      extractAnswers: async () => [],
+      answerVisitorQuestion: async () => {
+        throw new Error('unused');
+      },
+      phraseClarification: async () => {
+        throw new Error('provider unavailable');
+      },
+      translate: () => (key) => key,
+    });
+
+    const start = await startIntakeGraph({
+      data: { ...EMPTY_DISCOVERY, fullName: 'Maria' },
+      answered: ['fullName'],
+    });
+
+    const bad = await resumeIntakeGraph({
+      threadId: start.threadId,
+      resume: { kind: 'text', text: 'nope' },
+      data: start.data,
+      answered: start.answered,
+    });
+
+    expect(bad.errorKey).toBe('landing.discovery.chat.errors.email');
+    expect(bad.ask?.note).toBeUndefined();
   });
 });

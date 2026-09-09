@@ -41,10 +41,11 @@
  *
  * What has not changed: the order, the validation, the required-field gate
  * and the decision that the intake is finished are all `intake-script.ts`'s,
- * deterministic and model-free. This component only draws them. The escape
- * to the preview is live at every point of the conversation, exactly as
- * before, and the two commercial panels keep their cards: a four-way price
- * comparison is not something a chat bubble does well.
+ * deterministic and model-free. This component only draws them. There is no
+ * way to reach the preview with a required question unanswered — the two
+ * commercial panels keep their cards, and a four-way price comparison is not
+ * something a chat bubble does well, but they are turns in the same
+ * conversation like any other, not something a visitor can skip past.
  */
 import {
   useCallback,
@@ -64,8 +65,6 @@ import {
   type IntakeQuestionId,
   answerText,
   answeredQuestions,
-  essentialRemaining,
-  interpolate,
   nextQuestion,
   optionLabel,
   promptText,
@@ -112,9 +111,7 @@ export function IntakeConversation({
   data,
   update,
   answered,
-  essentialsOnly,
   onAnswer,
-  onSkipRest,
   paceMs = DEFAULT_PACE_MS,
   t,
 }: {
@@ -125,12 +122,8 @@ export function IntakeConversation({
   ) => void;
   /** Question ids the visitor has dealt with, in the order they dealt with them. */
   answered: readonly IntakeQuestionId[];
-  /** The visitor asked to skip ahead: only the unskippable questions are left. */
-  essentialsOnly: boolean;
   /** Applies one answer and files the question as answered. Empty = skipped. */
   onAnswer: (id: IntakeQuestionId, raw: string) => void;
-  /** Narrows the conversation to the essentials and heads for the preview. */
-  onSkipRest: () => void;
   /** The agent's pause before a question it has not asked yet. 0 = none. */
   paceMs?: number;
   t: (key: string) => string;
@@ -145,20 +138,13 @@ export function IntakeConversation({
   /** Questions the agent has already put on screen: those come back at once. */
   const revealed = useRef<Set<IntakeQuestionId>>(new Set());
 
-  const pending = useMemo(
-    () => nextQuestion(data, answered, essentialsOnly),
-    [data, answered, essentialsOnly]
-  );
+  const pending = useMemo(() => nextQuestion(data, answered), [data, answered]);
   const current: IntakeQuestion | null = editing
     ? questionById(editing) ?? null
     : pending;
 
   const history = useMemo(
     () => answeredQuestions(data, answered),
-    [data, answered]
-  );
-  const stillRequired = useMemo(
-    () => essentialRemaining(data, answered),
     [data, answered]
   );
 
@@ -230,11 +216,6 @@ export function IntakeConversation({
     [current, onAnswer]
   );
 
-  const skipRest = useCallback(() => {
-    setEditing(null);
-    onSkipRest();
-  }, [onSkipRest]);
-
   const lettered = useMemo(
     () =>
       current?.kind === 'choice' &&
@@ -288,14 +269,6 @@ export function IntakeConversation({
           />
         ))}
 
-        {essentialsOnly && stillRequired.length > 0 && (
-          <ChatBubble tone="agent">
-            {interpolate(t('landing.discovery.chat.stillNeeded'), {
-              count: stillRequired.length,
-            })}
-          </ChatBubble>
-        )}
-
         {thinking && (
           <div role="status" aria-label={t('landing.discovery.chat.thinking')}>
             <ChatBubble tone="agent">
@@ -347,18 +320,6 @@ export function IntakeConversation({
           t={t}
         />
       )}
-
-      {/* The escape, live at every point of the conversation. */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-1">
-        <Button variant="ghost" size="sm" onClick={skipRest}>
-          {t('landing.discovery.chat.skipRest')}
-        </Button>
-        {essentialsOnly && (
-          <p className="text-[12px] leading-snug text-[var(--fs-ink-faint)]">
-            {t('landing.discovery.chat.skipRestActive')}
-          </p>
-        )}
-      </div>
     </div>
   );
 }

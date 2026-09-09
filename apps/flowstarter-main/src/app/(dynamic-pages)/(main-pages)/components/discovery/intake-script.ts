@@ -635,21 +635,16 @@ export function applicableQuestions(data: DiscoveryData): IntakeQuestion[] {
  * The question on screen: the first applicable one not yet answered.
  *
  * `null` means the scripted conversation is over — and *that* is what ends the
- * intake. No model is asked whether there is more to talk about.
- *
- * `essentialsOnly` is the escape hatch: a visitor who has asked to skip ahead
- * is only ever asked the handful of things the wizard cannot build without.
- * It narrows the pool rather than pre-filling answers, so nothing they were
- * never asked shows up in the transcript as something they skipped.
+ * intake. No model is asked whether there is more to talk about, and there is
+ * no way to reach that `null` without every applicable `required` question
+ * (the two commercial panels included) having a stored answer: the preview
+ * only ever starts once the script itself is spent.
  */
 export function nextQuestion(
   data: DiscoveryData,
-  answered: readonly string[],
-  essentialsOnly = false
+  answered: readonly string[]
 ): IntakeQuestion | null {
-  const pool = essentialsOnly
-    ? essentialRemaining(data, answered)
-    : applicableQuestions(data);
+  const pool = applicableQuestions(data);
   return pool.find((question) => !answered.includes(question.id)) ?? null;
 }
 
@@ -670,44 +665,15 @@ export function answeredQuestions(
 }
 
 /**
- * The answers the wizard has always insisted on before it will build anything:
- * a name, an email, what the business does, what the site is for, and whether
- * it sells. Exactly `canProceed`'s conditions for steps 1–4, and the only
- * questions "skip ahead to the preview" is not allowed to drop.
- *
- * The two commercial panels are excluded deliberately. A build package has a
- * deterministic default (`recommendTier`) and a monthly plan is a decision for
- * after the preview, so neither is worth standing between a visitor and the
- * thing they came for.
- */
-export function essentialRemaining(
-  data: DiscoveryData,
-  answered: readonly string[]
-): IntakeQuestion[] {
-  return applicableQuestions(data).filter(
-    (question) =>
-      question.required &&
-      question.kind !== 'panel' &&
-      !answered.includes(question.id)
-  );
-}
-
-/**
- * How far along the conversation is. Both numbers move as `when` changes, and
- * both shrink to the essentials once the visitor has asked to skip ahead — a
- * progress bar that still counted the questions they will never be asked would
- * be lying to them.
+ * How far along the conversation is. Both numbers move as `when` changes: a
+ * catalog-size question that stopped applying (the visitor said they sell
+ * nothing) drops out of the total the moment it does.
  */
 export function conversationProgress(
   data: DiscoveryData,
-  answered: readonly string[],
-  essentialsOnly = false
+  answered: readonly string[]
 ): { done: number; total: number } {
-  const pool = essentialsOnly
-    ? applicableQuestions(data).filter(
-        (question) => question.required && question.kind !== 'panel'
-      )
-    : applicableQuestions(data);
+  const pool = applicableQuestions(data);
   return {
     done: pool.filter((question) => answered.includes(question.id)).length,
     total: pool.length,
@@ -721,10 +687,9 @@ export function conversationProgress(
 export function stepForConversation(
   data: DiscoveryData,
   answered: readonly string[],
-  finishedStep: Step,
-  essentialsOnly = false
+  finishedStep: Step
 ): Step {
-  return nextQuestion(data, answered, essentialsOnly)?.step ?? finishedStep;
+  return nextQuestion(data, answered)?.step ?? finishedStep;
 }
 
 // ---------------------------------------------------------------------------

@@ -24,9 +24,15 @@ import { IntakeGraphConversation } from './steps/IntakeGraphConversation';
 import { InfoAgentStep } from './steps/InfoAgentStep';
 import { PreviewStep } from './steps/PreviewStep';
 
-/** Opt-in LangGraph HITL intake. Scripted conversation stays the default. */
+/**
+ * The LangGraph HITL intake is the default: the model leads the conversation,
+ * reacting to what the visitor said before it asks the next scripted
+ * question. `NEXT_PUBLIC_FLOWSTARTER_INTAKE_GRAPH=false` is the kill switch —
+ * set it to fall back to the fully scripted conversation, with no model in
+ * the loop at all.
+ */
 const USE_INTAKE_GRAPH =
-  process.env.NEXT_PUBLIC_FLOWSTARTER_INTAKE_GRAPH === 'true' &&
+  process.env.NEXT_PUBLIC_FLOWSTARTER_INTAKE_GRAPH !== 'false' &&
   process.env.VITEST !== 'true' &&
   process.env.NODE_ENV !== 'test';
 
@@ -52,8 +58,6 @@ interface Draft {
    * its composer — asked again, but never from nothing.
    */
   answered: IntakeQuestionId[];
-  /** The visitor asked to skip ahead: only the essentials are still asked. */
-  skippedAhead: boolean;
 }
 
 function loadDraft(): Draft | null {
@@ -77,7 +81,6 @@ function loadDraft(): Draft | null {
       data: { ...EMPTY_DISCOVERY, ...parsed.data },
       step,
       answered,
-      skippedAhead: parsed.skippedAhead === true,
     };
   } catch {
     return null;
@@ -131,9 +134,6 @@ export function DiscoveryWizard({
   const [answered, setAnswered] = useState<IntakeQuestionId[]>(
     () => loadDraft()?.answered ?? []
   );
-  const [skippedAhead, setSkippedAhead] = useState<boolean>(
-    () => loadDraft()?.skippedAhead ?? false
-  );
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -143,12 +143,12 @@ export function DiscoveryWizard({
     try {
       window.sessionStorage.setItem(
         DRAFT_KEY,
-        JSON.stringify({ data, step, answered, skippedAhead })
+        JSON.stringify({ data, step, answered })
       );
     } catch {
       // storage full / disabled — autosave is best-effort
     }
-  }, [answered, data, skippedAhead, step]);
+  }, [answered, data, step]);
 
   /**
    * The conversation moves the wizard, not the other way round.
@@ -158,33 +158,15 @@ export function DiscoveryWizard({
    * while the intake is being talked through, the step is a *consequence* of
    * which question is on screen rather than something the visitor navigates.
    * The script decides the order; this only follows it. When the script runs
-   * out of questions the conversation is over, and the wizard hands off to the
-   * info agent.
+   * out of questions — every applicable required question answered, the two
+   * commercial panels included — the conversation is over, and the wizard
+   * hands off to the info agent. There is no other way to reach it.
    */
   useEffect(() => {
     if (step > CONVERSATION_LAST_STEP) return;
-    const target = stepForConversation(
-      data,
-      answered,
-      // A visitor who asked to skip ahead gets the preview when the essentials
-      // are in, not another conversation.
-      skippedAhead ? LAST_STEP : INFO_STEP,
-      skippedAhead
-    );
+    const target = stepForConversation(data, answered, INFO_STEP);
     if (target !== step) setStep(target);
-  }, [answered, data, skippedAhead, step]);
-
-  // Skipped ahead and arrived: the build package falls back to the
-  // deterministic recommendation, which is the same rule the submit path uses.
-  // Idempotent, so a visitor who picked one themselves is never overruled.
-  useEffect(() => {
-    if (!skippedAhead || step < LAST_STEP) return;
-    setData((previous) =>
-      previous.selectedTier
-        ? previous
-        : { ...previous, selectedTier: recommendTier(previous).tier }
-    );
-  }, [skippedAhead, step]);
+  }, [answered, data, step]);
 
   // The concierge stage — the info agent and the preview it flows into — is
   // two panes wide, so the modal widens one step earlier than it used to and
@@ -240,17 +222,6 @@ export function DiscoveryWizard({
     );
   }, []);
 
-  /**
-   * The escape hatch, and the reason the conversation can never be a trap.
-   *
-   * It narrows the script to the five answers the wizard has always required —
-   * dropping every optional question and both commercial panels — and from
-   * there the next stop is the preview. A one-way flag rather than a pile of
-   * pre-filled skips, so nothing the visitor was never asked turns up in the
-   * transcript as something they declined.
-   */
-  const handleSkipRest = useCallback(() => setSkippedAhead(true), []);
-
   const handleSubmit = useCallback(async () => {
     if (!proceed) return;
     setSubmitting(true);
@@ -305,12 +276,10 @@ export function DiscoveryWizard({
               data={data}
               update={update}
               answered={answered}
-              essentialsOnly={skippedAhead}
               onState={({ data: nextData, answered: nextAnswered }) => {
                 setData(nextData);
                 setAnswered(nextAnswered);
               }}
-              onSkipRest={handleSkipRest}
               t={t}
             />
           ) : (
@@ -318,9 +287,7 @@ export function DiscoveryWizard({
               data={data}
               update={update}
               answered={answered}
-              essentialsOnly={skippedAhead}
               onAnswer={handleAnswer}
-              onSkipRest={handleSkipRest}
               paceMs={conversationPaceMs}
               t={t}
             />
