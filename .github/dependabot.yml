@@ -1,0 +1,61 @@
+version: 2
+
+updates:
+  # Root pnpm workspace: apps/flowstarter-main, apps/build-worker,
+  # apps/flowstarter-selfserve, apps/flowstarter-templates/*, packages/*,
+  # and the flowstarter-library workspace member.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+      security:
+        applies-to: security-updates
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"
+
+  # Standalone npm project: the template library MCP server.
+  - package-ecosystem: "npm"
+    directory: "/apps/flowstarter-library/mcp-server"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+      security:
+        applies-to: security-updates
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"
+
+  # Standalone npm project: the template showcase site.
+  - package-ecosystem: "npm"
+    directory: "/apps/flowstarter-library/showcase"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+      security:
+        applies-to: security-updates
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"
