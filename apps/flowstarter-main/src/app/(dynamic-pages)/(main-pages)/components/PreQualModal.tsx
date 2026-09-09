@@ -149,8 +149,20 @@ export function PreQualModal({
             'relative w-full my-auto rounded-2xl border border-white/10 bg-white dark:bg-[#0f1117] shadow-2xl shadow-black/30 p-6 sm:p-8 transition-all duration-300',
             step === 'calendar'
               ? 'max-w-3xl'
-              : step === 'discovery' && wizardWide
-              ? 'max-w-[min(96vw,1600px)]'
+              : step === 'discovery'
+              ? wizardWide
+                ? // The concierge stage (info agent + preview) is two panes
+                  // wide — unchanged.
+                  'max-w-[min(96vw,1600px)]'
+                : // The conversation itself: full width minus margins below
+                  // 768px (nothing narrower than that to cap against), the
+                  // existing card width from 768px up to 1024px, and a wider
+                  // ~960px card from 1024px up — the log, the composer and
+                  // the suggestion-chip row all stretch to fill it, so a
+                  // wider pane means agent bubbles wrap at a wider 78% cap
+                  // too instead of the conversation staying pinched inside a
+                  // modal sized for the narrower commercial panels.
+                  'max-w-full md:max-w-2xl lg:max-w-[960px]'
               : 'max-w-2xl',
           ].join(' ')}
         >

@@ -22,6 +22,7 @@ import {
   type CSSProperties,
   type ReactNode,
 } from 'react';
+import { Bot } from 'lucide-react';
 
 /**
  * The site pane's height, shared by the skeleton, the live frame and the
@@ -299,6 +300,63 @@ export function SiteSkeleton({ caption }: { caption: string }) {
 export type BubbleTone = 'agent' | 'you' | 'earlier' | 'offer' | 'alert';
 
 /**
+ * Where a bubble sits inside a run of consecutive same-side messages, so the
+ * corners can read like a messaging app: rounded on the outer edges of the
+ * whole group, squared on the seams between consecutive bubbles. `solo` is
+ * every existing caller's shape today (a lone bubble, tail corner squared).
+ */
+export type BubblePosition = 'solo' | 'first' | 'middle' | 'last';
+
+type Corner = 'tl' | 'tr' | 'bl' | 'br';
+
+/**
+ * The corner shape for a bubble at `position`, one side's worth at a time.
+ * `innerTop`/`innerBottom` are the corners nearest a same-side neighbour
+ * (top when something precedes it, bottom when something follows); the
+ * opposite corners always stay fully rounded so the group keeps a single
+ * outer silhouette. `solo` and `first` share a shape (both are the top of
+ * whatever run they are in), same as `middle` and the run's `last` bubble
+ * differ only by which seam is still open.
+ */
+function bubbleCornerClass(
+  side: 'left' | 'right',
+  position: BubblePosition
+): string {
+  const innerTop: Corner = side === 'left' ? 'tl' : 'tr';
+  const innerBottom: Corner = side === 'left' ? 'bl' : 'br';
+  const squareTop = position === 'middle' || position === 'last';
+  const squareBottom =
+    position === 'solo' || position === 'first' || position === 'middle';
+  return [
+    'rounded-2xl',
+    squareTop ? `rounded-${innerTop}-md` : '',
+    squareBottom ? `rounded-${innerBottom}-md` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/**
+ * Positions for an ordered list of message "sides" (which edge of the log a
+ * bubble sits on): consecutive equal sides form a group (`first` … `last`,
+ * or `middle` in between), a side with different neighbours on both sides is
+ * `solo`. Both intake components call this with their own turn order so the
+ * grouping rule can never drift between them.
+ */
+export function chatGroupPositions(
+  sides: readonly ('agent' | 'you')[]
+): BubblePosition[] {
+  return sides.map((side, index) => {
+    const prevSame = index > 0 && sides[index - 1] === side;
+    const nextSame = index < sides.length - 1 && sides[index + 1] === side;
+    if (prevSame && nextSame) return 'middle';
+    if (prevSame) return 'last';
+    if (nextSame) return 'first';
+    return 'solo';
+  });
+}
+
+/**
  * One turn of the conversation. Phases, the visitor's answers, the agents'
  * replies and the offer all use this, because in the product they are all
  * the same thing: messages in one conversation.
@@ -308,6 +366,9 @@ export function ChatBubble({
   author,
   meta,
   state,
+  position = 'solo',
+  animate = false,
+  fitWidth = false,
   children,
 }: {
   tone: BubbleTone;
@@ -316,12 +377,36 @@ export function ChatBubble({
   meta?: string;
   /** Only meaningful for phase messages. */
   state?: 'working' | 'done';
+  /** Corner shape within a run of same-side bubbles. Defaults to a lone bubble. */
+  position?: BubblePosition;
+  /** Plays the message-arrives entrance once, on mount. Off by default so
+   *  callers that redraw the same bubble every render (`InfoAgentStep`,
+   *  `PreviewStep`) are unaffected. */
+  animate?: boolean;
+  /** Hugs its own content, capped at 78% of the log, instead of stretching
+   *  to the full width of its row. Off by default: `PreviewStep`'s phase
+   *  and offer bubbles lay out buttons and lists that want the full row.
+   *  The two intake conversations turn this on for every bubble, since
+   *  theirs only ever hold a sentence or two. */
+  fitWidth?: boolean;
   children: ReactNode;
 }) {
+  const enterClass = animate
+    ? 'motion-safe:animate-[fs-message-in_0.22s_ease-out]'
+    : '';
   if (tone === 'you') {
     return (
-      <div className="flex justify-end">
-        <span className="max-w-[88%] rounded-2xl rounded-br-md bg-[var(--purple-primary)] px-3 py-1.5 text-[13px] leading-snug text-white">
+      <div
+        className={['flex w-full justify-end', enterClass]
+          .filter(Boolean)
+          .join(' ')}
+      >
+        <span
+          className={[
+            'w-fit max-w-[78%] px-3 py-1.5 text-[13px] leading-snug text-white bg-[var(--purple-primary)]',
+            bubbleCornerClass('right', position),
+          ].join(' ')}
+        >
           {children}
         </span>
       </div>
@@ -330,14 +415,17 @@ export function ChatBubble({
   return (
     <div
       className={[
-        'rounded-2xl rounded-bl-md border px-3 py-2 text-[13px] leading-snug',
+        bubbleCornerClass('left', position),
+        'border px-3 py-2 text-[13px] leading-snug',
         tone === 'earlier'
           ? 'border-[var(--fs-rule)] bg-transparent text-[var(--fs-ink-faint)]'
           : tone === 'offer'
           ? 'border-[var(--purple-primary)]/30 bg-[var(--purple-primary)]/[0.06] text-[var(--fs-ink)]'
           : tone === 'alert'
           ? 'border-amber-500/40 bg-amber-500/[0.08] text-[var(--fs-ink)]'
-          : 'border-[var(--fs-rule)] bg-[var(--fs-bg-elevated)] text-[var(--fs-ink)]',
+          : 'border-[color-mix(in_oklab,var(--purple-primary)_22%,var(--fs-bg-elevated))] bg-[color-mix(in_oklab,var(--purple-primary)_7%,var(--fs-bg-elevated))] text-[var(--fs-ink)]',
+        fitWidth ? 'w-fit max-w-[78%]' : '',
+        enterClass,
       ].join(' ')}
     >
       {(author || meta) && (
@@ -384,6 +472,116 @@ export function ChatBubble({
 }
 
 /**
+ * The agent's small round mark, shown once at the head of a run of its
+ * messages. `aria-hidden`: the agent's name (rendered as text alongside it)
+ * is the accessible label, so the icon would only repeat it for a screen
+ * reader.
+ */
+export function AgentAvatar() {
+  return (
+    <span
+      data-testid="agent-avatar"
+      aria-hidden
+      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--purple-primary)]/25 bg-[var(--purple-primary)]/15"
+    >
+      <Bot className="h-[18px] w-[18px] text-[var(--purple-primary)]" />
+    </span>
+  );
+}
+
+/**
+ * Lays an agent-side message (or run of them) out beside the avatar, the way
+ * a messaging app does: the mark and the agent's name show once, at the head
+ * of the run, and every bubble after that lines up under it without either.
+ * `ChatBubble`'s own `author` prop is untouched by this — `InfoAgentStep` and
+ * `PreviewStep` still render it on every bubble — this is purely how the two
+ * intake conversations draw the same information once per group instead.
+ */
+export function AgentMessageRow({
+  position,
+  agentName,
+  children,
+}: {
+  position: BubblePosition;
+  agentName: string;
+  children: ReactNode;
+}) {
+  const headOfRun = position === 'solo' || position === 'first';
+  return (
+    <div className="flex items-start gap-2">
+      <div className="flex w-8 shrink-0 justify-center pt-0.5">
+        {headOfRun && <AgentAvatar />}
+      </div>
+      <div className="min-w-0 flex-1 space-y-1">
+        {headOfRun && (
+          <span className="block text-[11px] font-semibold text-[var(--fs-ink-faint)]">
+            {agentName}
+          </span>
+        )}
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The agent "typing" beat: three dots in an agent-toned bubble. Replaces
+ * both the scripted conversation's own `ThinkingDots` and the graph
+ * conversation's static "loading" line, so a turn in flight always reads
+ * the same way. `motion-safe:` keeps the bounce off under
+ * `prefers-reduced-motion: reduce` — the dots just sit still instead.
+ */
+export function TypingIndicator({
+  label,
+  position = 'solo',
+}: {
+  label: string;
+  position?: BubblePosition;
+}) {
+  return (
+    <div role="status" aria-label={label}>
+      <ChatBubble tone="agent" position={position} animate fitWidth>
+        <span className="inline-flex items-center gap-1 py-0.5" aria-hidden>
+          {[0, 1, 2].map((index) => (
+            <span
+              key={index}
+              className="h-1.5 w-1.5 rounded-full bg-[var(--fs-ink-faint)] motion-safe:animate-bounce"
+              style={{ animationDelay: `${index * 140}ms` }}
+            />
+          ))}
+        </span>
+      </ChatBubble>
+    </div>
+  );
+}
+
+/**
+ * A row of quick-reply chips (or a chip-shaped skip link), sitting above the
+ * composer rather than inside a message bubble — the reply options are
+ * controls the visitor operates, not something the agent said.
+ *
+ * Capped so a long option list never pushes the composer off screen: on a
+ * narrow pane it is one horizontally-scrolling row (`flex-nowrap`); from
+ * `sm:` up it wraps into rows inside a fixed-height (~88px) scroll region
+ * instead of growing without bound. `[&>*]:shrink-0` keeps each pill at its
+ * natural width in the scrolling row — without it a nowrap flex row squeezes
+ * its children the same way the visitor bubble used to (see `ChatBubble`).
+ */
+export function SuggestionChips({ children }: { children: ReactNode }) {
+  return (
+    <div
+      className={[
+        'flex flex-nowrap items-start gap-2 overflow-x-auto overflow-y-hidden pb-1',
+        '[&>*]:shrink-0',
+        'sm:flex-wrap sm:max-h-[88px] sm:overflow-x-visible sm:overflow-y-auto sm:pb-0',
+      ].join(' ')}
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
  * The scrolling conversation column itself.
  *
  * It scrolls *itself* to the newest message rather than calling
@@ -395,17 +593,37 @@ export function ChatBubble({
 export function ConversationLog({
   label,
   scrollSignal,
+  heightClassName = 'max-h-[46vh] min-h-[180px] min-[900px]:max-h-[calc(68vh-1.5rem)]',
   children,
 }: {
   label: string;
   /** Bump to scroll to the newest message (message count is the usual value). */
   scrollSignal?: number;
+  /** Overrides the log's own height. Defaults to the tall desktop allowance
+   *  tuned for `ConciergePanes`' two-column site-building layout (`InfoAgentStep`,
+   *  `PreviewStep`). The intake conversations pass a shorter, viewport-only
+   *  cap here: their modal is a single column with a composer and (on some
+   *  questions) a row of suggestion chips below the log, and the 68vh
+   *  desktop allowance left too little of the modal for either — the chips
+   *  and composer could end up below the fold even after the chips themselves
+   *  were capped (see `SuggestionChips`). */
+  heightClassName?: string;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  // Starts `true`: the first paint has nothing to scroll away from, so the
+  // very first `scrollSignal` change still snaps to the bottom.
+  const atBottom = useRef(true);
+
+  const onScroll = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  }, []);
+
   useEffect(() => {
     const el = ref.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el && atBottom.current) el.scrollTop = el.scrollHeight;
   }, [scrollSignal]);
 
   return (
@@ -413,7 +631,8 @@ export function ConversationLog({
       ref={ref}
       role="log"
       aria-label={label}
-      className="max-h-[46vh] min-h-[180px] space-y-2 overflow-y-auto rounded-xl border border-[var(--fs-rule)] bg-[var(--fs-bg-elevated)]/40 p-3 min-[900px]:max-h-[calc(68vh-1.5rem)]"
+      onScroll={onScroll}
+      className={`${heightClassName} space-y-2 overflow-y-auto rounded-xl border border-[var(--fs-rule)] bg-[var(--fs-bg-elevated)]/40 p-3`}
     >
       {children}
     </div>

@@ -118,6 +118,19 @@ describe('the intake conversation', () => {
     ).toBeNull();
   });
 
+  it('groups the intro and the first question under one name and avatar', () => {
+    renderWizard();
+
+    // The intro and the opening question are two agent messages with
+    // nothing between them — one run, so the agent's name and mark show
+    // once, not once per bubble.
+    const log = screen.getByRole('log');
+    expect(
+      within(log).getAllByText(t('landing.discovery.chat.agentName'))
+    ).toHaveLength(1);
+    expect(within(log).getAllByTestId('agent-avatar')).toHaveLength(1);
+  });
+
   it('asks one thing at a time and keeps every answer in the transcript', async () => {
     const { user } = renderWizard();
 
