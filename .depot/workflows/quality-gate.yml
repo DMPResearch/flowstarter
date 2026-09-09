@@ -13,7 +13,14 @@
 # Steps:
 #   1. Lint  — flowstarter-main
 #   2. Typecheck — flow-design-system + flowstarter-main
-#   3. Unit tests — flowstarter-main (vitest)
+#   3. Unit tests with coverage for flowstarter-main, agentic-codegen and
+#      build-worker (vitest), then the coverage ratchet. Each package's vitest
+#      config carries a global floor at the level that package has already
+#      reached, plus a 90% bar (80% on branches) on every glob that handles
+#      money or another tenant's data. Below either and this job is red. The
+#      floors themselves live in coverage-floors.json and only ever rise:
+#      `node scripts/coverage-ratchet.mjs --update` raises them, nothing
+#      lowers them.
 #   4. Tenant isolation — real local Supabase stack + verify-rls-local.mjs
 ##############################################################################
 
@@ -69,7 +76,7 @@ jobs:
         run: pnpm nx run flowstarter-main:typecheck
   # ── 3. Unit tests ─────────────────────────────────────────────────────────
   unit-tests:
-    name: Unit Tests
+    name: Unit Tests and Coverage
     runs-on: depot-ubuntu-latest # was: ubuntu-latest. Mapped standard GitHub runner to Depot equivalent.
     steps:
       - uses: actions/checkout@v4
@@ -80,20 +87,76 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Run unit tests — flowstarter-main
-        run: pnpm nx run flowstarter-main:test
+      # Each suite runs with --coverage and each vitest config carries
+      # thresholds, so a drop below a floor or below the 90% bar on a
+      # money-or-data glob ends the step non-zero and the gate goes red. That
+      # is the enforcement; the ratchet below is the part that stops the
+      # floors from quietly staying where they were set.
+      #
+      # `continue-on-error` on the first two so one suite's threshold failure
+      # does not hide the other two suites' numbers. The `Enforce` step at the
+      # bottom is what actually fails the job.
+      - name: Unit tests with coverage, flowstarter-main
+        id: cov_main
+        continue-on-error: true
+        run: pnpm --dir apps/flowstarter-main test:coverage
         env:
           # Optional — tests mock Supabase but some imports need the env var defined
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co' }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-anon-key' }}
-      - name: Upload coverage report
+      - name: Unit tests with coverage, agentic-codegen
+        id: cov_codegen
+        continue-on-error: true
+        run: pnpm --dir packages/agentic-codegen test:coverage
+      - name: Unit tests with coverage, build-worker
+        id: cov_worker
+        continue-on-error: true
+        run: pnpm --dir apps/build-worker test:coverage
+      # The floors in coverage-floors.json only rise. A metric below its floor
+      # fails here even when the package's own thresholds passed, which is the
+      # case that matters: a suite that was at 84% and is now at 80% still
+      # clears a threshold set at 77.
+      - name: Coverage ratchet, no metric may fall below its floor
+        id: ratchet
+        continue-on-error: true
+        run: node scripts/coverage-ratchet.mjs
+      # The score itself never fails a build -- it is a report, and a report
+      # that blocks merges stops being read. What does fail here is the
+      # scorecard naming a route pattern that no longer resolves under
+      # src/app, which means a route was renamed and readiness/journeys.json
+      # was not. That is a stale document, and it is cheap to catch now.
+      - name: MVP readiness, and the routes it names still exist
+        id: readiness
+        continue-on-error: true
+        run: node scripts/mvp-readiness.mjs
+      - name: Coverage and readiness summary
+        if: always()
+        run: |
+          {
+            echo "## Coverage"
+            echo
+            node scripts/coverage-ratchet.mjs --markdown
+            echo
+            echo "## MVP readiness (unit signal only)"
+            echo
+            echo '```'
+            node scripts/mvp-readiness.mjs || true
+            echo '```'
+            echo
+            echo "The E2E and production signals need a Playwright report; the release lane scores all three."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-flowstarter-main
+          name: coverage-summaries
           path: |
             apps/flowstarter-main/coverage/
+            packages/agentic-codegen/coverage/
+            apps/build-worker/coverage/
+            coverage-floors.json
           retention-days: 14
+          if-no-files-found: warn
       - name: Upload test results
         if: failure()
         uses: actions/upload-artifact@v4
@@ -101,6 +164,29 @@ jobs:
           name: unit-test-results-flowstarter-main
           path: apps/flowstarter-main/test-results/
           retention-days: 7
+      # The step that turns the lane red. It runs after the summary so a
+      # failing run still publishes the table that explains it.
+      - name: Enforce the coverage gates
+        if: always()
+        env:
+          MAIN: ${{ steps.cov_main.outcome }}
+          CODEGEN: ${{ steps.cov_codegen.outcome }}
+          WORKER: ${{ steps.cov_worker.outcome }}
+          RATCHET: ${{ steps.ratchet.outcome }}
+          READINESS: ${{ steps.readiness.outcome }}
+        run: |
+          set -euo pipefail
+          failed=""
+          [ "$MAIN" = "success" ] || failed="${failed} flowstarter-main"
+          [ "$CODEGEN" = "success" ] || failed="${failed} agentic-codegen"
+          [ "$WORKER" = "success" ] || failed="${failed} build-worker"
+          [ "$RATCHET" = "success" ] || failed="${failed} coverage-ratchet"
+          [ "$READINESS" = "success" ] || failed="${failed} mvp-readiness"
+          if [ -n "$failed" ]; then
+            echo "::error title=Coverage gate::Failed:${failed}. A money-or-data glob is below 90%, a package is below its floor, a test failed, or readiness/journeys.json names a route that no longer exists. Write the test or fix the document; do not lower the number."
+            exit 1
+          fi
+          echo "Every suite passed its thresholds and every metric is at or above its floor."
   # ── 4. Tenant isolation ───────────────────────────────────────────────────
   # Proves tenant B cannot read tenant A's rows, by direct query (RLS, via a
   # real local Postgres + PostgREST) or via the API (requireWorkspaceAccess in

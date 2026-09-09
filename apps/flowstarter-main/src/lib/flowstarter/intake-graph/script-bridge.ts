@@ -156,6 +156,22 @@ export function applyResumeTurn(input: {
     };
   }
 
+  // A missing resume is a turn that said nothing, so it fails the same way an
+  // empty answer does. The type says this cannot happen and the route parses
+  // the body with zod first, but `resumeIntakeGraph` reaches here through
+  // `recoverFromClientMirror`, which runs from a catch block and outside any
+  // try of its own: dereferencing `input.resume.kind` on null threw past
+  // every handler instead of failing open, which is the one thing this
+  // recovery path exists not to do.
+  if (input.resume === null || input.resume === undefined) {
+    return {
+      data: input.data,
+      answered: sanitizeAnswered(input.answered),
+      errorKey: 'landing.discovery.chat.errors.required',
+      applied: [],
+    };
+  }
+
   let data = input.data;
   const answered = sanitizeAnswered(input.answered);
   const applied: AppliedTurn['applied'] = [];

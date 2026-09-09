@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { ProjectState } from '@flowstarter/agentic-codegen';
 import {
   buildJobFromRows,
@@ -6,6 +7,7 @@ import {
   JobArtifactError,
   parseApprovedPreviewFiles,
   parseRequiredIntegrations,
+  SupabaseFullSiteBuildJobStore,
   type JobLedgerRow,
 } from '../src/job-store';
 
@@ -203,5 +205,897 @@ describe('artifact parsing', () => {
         {},
       ),
     ).toThrow(JobArtifactError);
+  });
+});
+
+/**
+ * `SupabaseFullSiteBuildJobStore` behaviour, driven against a hand-rolled
+ * scripted mock of the Supabase query builder (same recording style as
+ * `tenancy.test.ts`). Each test enqueues exactly the `{ data, error }`
+ * responses the code path under test will pull off, one per `.from(table)`
+ * call, in call order -- so a test that supplies too few responses for a
+ * path is itself a signal the path changed shape.
+ *
+ * This worker bypasses RLS (module doc on `../src/job-store.ts`), so several
+ * assertions below exist purely to prove the tenant boundary rather than
+ * assume it: every `workspaces` access is keyed by that row's own `id`
+ * (which *is* the workspace id -- see the allow-list in
+ * `worker-tenant-filter.test.ts`), and every `flowstarter_project_artifacts`
+ * access carries an explicit `workspace_id` filter via `withTenant`.
+ */
+type Scripted = { data?: unknown; error?: unknown };
+
+interface RecordedQuery {
+  table: string;
+  op: 'select' | 'update' | 'insert' | 'delete';
+  values?: unknown;
+  eqCalls: Array<[string, unknown]>;
+  gtCalls: Array<[string, unknown]>;
+}
+
+function makeScriptedClient(script: Record<string, Scripted[]>) {
+  const calls: RecordedQuery[] = [];
+  const remaining: Record<string, Scripted[]> = Object.fromEntries(
+    Object.entries(script).map(([table, responses]) => [table, [...responses]]),
+  );
+
+  const client = {
+    from(table: string) {
+      const queue = remaining[table];
+      const response: Scripted = queue?.length
+        ? (queue.shift() as Scripted)
+        : { data: null, error: null };
+      const record: RecordedQuery = {
+        table,
+        op: 'select',
+        eqCalls: [],
+        gtCalls: [],
+      };
+      calls.push(record);
+      // `update(...)`/`insert(...)`/`delete()` lock the recorded op. A
+      // `.select('id')` chained after `.update(...)` (asking for the
+      // updated row back) must not relabel the call as a plain read.
+      let opLocked = false;
+
+      const builder: Record<string, unknown> = {
+        select(_columns?: string) {
+          if (!opLocked) record.op = 'select';
+          return builder;
+        },
+        update(values: unknown) {
+          record.op = 'update';
+          opLocked = true;
+          record.values = values;
+          return builder;
+        },
+        insert(values: unknown) {
+          record.op = 'insert';
+          opLocked = true;
+          record.values = values;
+          return builder;
+        },
+        delete() {
+          record.op = 'delete';
+          opLocked = true;
+          return builder;
+        },
+        eq(column: string, value: unknown) {
+          record.eqCalls.push([column, value]);
+          return builder;
+        },
+        gt(column: string, value: unknown) {
+          record.gtCalls.push([column, value]);
+          return builder;
+        },
+        order() {
+          return builder;
+        },
+        limit() {
+          return builder;
+        },
+        maybeSingle() {
+          return Promise.resolve(response);
+        },
+        single() {
+          return Promise.resolve(response);
+        },
+        // Several call sites `await` the builder itself (an insert or an
+        // update with no trailing `.select()`), the same way the real
+        // supabase-js builder is thenable.
+        then(
+          onFulfilled: (value: Scripted) => unknown,
+          onRejected?: (reason: unknown) => unknown,
+        ) {
+          return Promise.resolve(response).then(onFulfilled, onRejected);
+        },
+      };
+      return builder;
+    },
+  };
+
+  return { client: client as unknown as SupabaseClient, calls };
+}
+
+const dbError = (message: string) => ({ name: 'PostgrestError', message });
+
+function worktree() {
+  return { branch: 'client/flowstarter-test', path: '/tmp/worktree' };
+}
+
+describe('SupabaseFullSiteBuildJobStore', () => {
+  describe('appendEvent (and the workspaceFor lookup it shares)', () => {
+    it('looks up the job workspace once and stamps it onto the event', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        flowstarter_agent_job_events: [{ error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.appendEvent('job-1', { kind: 'log', body: 'building' });
+
+      const insertCall = calls.find(
+        (c) => c.table === 'flowstarter_agent_job_events',
+      );
+      expect(insertCall?.op).toBe('insert');
+      expect(insertCall?.values).toMatchObject({
+        job_id: 'job-1',
+        workspace_id: WORKSPACE_ID,
+        kind: 'log',
+        actor: 'system',
+        body: 'building',
+        payload: {},
+      });
+    });
+
+    it('truncates an event body to 4000 characters', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        flowstarter_agent_job_events: [{ error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.appendEvent('job-1', {
+        kind: 'log',
+        body: 'x'.repeat(5_000),
+      });
+
+      const insertCall = calls.find(
+        (c) => c.table === 'flowstarter_agent_job_events',
+      );
+      expect((insertCall?.values as { body: string }).body).toHaveLength(4_000);
+    });
+
+    it('caches the workspace id, so a second event does not re-read the ledger', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        flowstarter_agent_job_events: [{ error: null }, { error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.appendEvent('job-1', { kind: 'log', body: 'first' });
+      await store.appendEvent('job-1', { kind: 'log', body: 'second' });
+
+      expect(
+        calls.filter((c) => c.table === 'flowstarter_agent_jobs'),
+      ).toHaveLength(1);
+      expect(
+        calls.filter((c) => c.table === 'flowstarter_agent_job_events'),
+      ).toHaveLength(2);
+    });
+
+    it('refuses to post an event against a job that does not exist', async () => {
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: null, error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.appendEvent('missing-job', { kind: 'log', body: 'x' }),
+      ).rejects.toThrow(JobArtifactError);
+    });
+
+    it('propagates a Supabase error from the workspace lookup', async () => {
+      const error = dbError('connection reset');
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: null, error }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.appendEvent('job-1', { kind: 'log', body: 'x' }),
+      ).rejects.toBe(error);
+    });
+
+    it('propagates a Supabase error from the insert itself', async () => {
+      const error = dbError('insert failed');
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        flowstarter_agent_job_events: [{ error }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.appendEvent('job-1', { kind: 'log', body: 'x' }),
+      ).rejects.toBe(error);
+    });
+  });
+
+  describe('readOperatorNotes', () => {
+    it('maps rows into operator notes, coercing every field to a string', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_job_events: [
+          {
+            data: [
+              {
+                id: 7,
+                body: 'looks good',
+                actor: 'operator',
+                created_at: '2026-01-01T00:00:00Z',
+              },
+            ],
+          },
+        ],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      const notes = await store.readOperatorNotes('job-1', null);
+
+      expect(notes).toEqual([
+        {
+          id: '7',
+          body: 'looks good',
+          actor: 'operator',
+          createdAt: '2026-01-01T00:00:00Z',
+        },
+      ]);
+      const call = calls[0];
+      expect(call?.eqCalls).toContainEqual(['job_id', 'job-1']);
+      expect(call?.eqCalls).toContainEqual(['kind', 'note']);
+      expect(call?.gtCalls).toHaveLength(0);
+    });
+
+    it('applies the after cursor as a gt filter when one is given', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_job_events: [{ data: [] }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.readOperatorNotes('job-1', '2026-01-01T00:00:00Z');
+
+      expect(calls[0]?.gtCalls).toContainEqual([
+        'created_at',
+        '2026-01-01T00:00:00Z',
+      ]);
+    });
+
+    it('returns an empty list rather than null when there are no notes yet', async () => {
+      const { client } = makeScriptedClient({
+        flowstarter_agent_job_events: [{ data: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.readOperatorNotes('job-1', null)).resolves.toEqual([]);
+    });
+
+    it('propagates a Supabase error', async () => {
+      const error = dbError('read failed');
+      const { client } = makeScriptedClient({
+        flowstarter_agent_job_events: [{ data: null, error }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.readOperatorNotes('job-1', null)).rejects.toBe(error);
+    });
+  });
+
+  describe('claim', () => {
+    it('claims a queued job and materializes it from the workspace and artifact rows', async () => {
+      const row = ledgerRow();
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: row }, { data: { id: row.id } }],
+        workspaces: [
+          {
+            data: {
+              id: WORKSPACE_ID,
+              project_state: ProjectState.DEPOSIT_PAID,
+              cal_com_url: null,
+            },
+          },
+        ],
+        flowstarter_project_artifacts: [{ data: artifacts() }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      const job = await store.claim(row.id);
+
+      expect(job?.projectId).toBe(WORKSPACE_ID);
+      expect(job?.projectState).toBe(ProjectState.DEPOSIT_PAID);
+
+      // Tenant boundary, asserted rather than assumed: `workspaces` is keyed
+      // by its own id (the allow-list's reasoning), and the artifacts read
+      // carries an explicit workspace_id filter via withTenant.
+      const workspaceCall = calls.find((c) => c.table === 'workspaces');
+      expect(workspaceCall?.eqCalls).toContainEqual(['id', WORKSPACE_ID]);
+      const artifactCall = calls.find(
+        (c) => c.table === 'flowstarter_project_artifacts',
+      );
+      expect(artifactCall?.eqCalls).toContainEqual([
+        'workspace_id',
+        WORKSPACE_ID,
+      ]);
+    });
+
+    it('returns null for a job id that does not exist, without claiming anything', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: null, error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.claim('missing')).resolves.toBeNull();
+      expect(calls).toHaveLength(1);
+    });
+
+    it('returns null for a job already running elsewhere, without issuing the CAS update', async () => {
+      const row = ledgerRow({ status: 'running' });
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: row }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.claim(row.id)).resolves.toBeNull();
+      expect(
+        calls.filter((c) => c.table === 'flowstarter_agent_jobs'),
+      ).toHaveLength(1);
+    });
+
+    it('returns null when a concurrent dispatch wins the compare-and-set race', async () => {
+      const row = ledgerRow();
+      const { client, calls } = makeScriptedClient({
+        // Read succeeds, but the CAS update matches zero rows -- another
+        // worker already advanced (status, attempt_count) first.
+        flowstarter_agent_jobs: [{ data: row }, { data: null, error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.claim(row.id)).resolves.toBeNull();
+      expect(calls.filter((c) => c.table === 'workspaces')).toHaveLength(0);
+      expect(
+        calls.filter((c) => c.table === 'flowstarter_project_artifacts'),
+      ).toHaveLength(0);
+    });
+
+    it('propagates a Supabase error from the initial read, before any CAS attempt', async () => {
+      const error = dbError('read failed');
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: null, error }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.claim('job-1')).rejects.toBe(error);
+      expect(calls).toHaveLength(1);
+    });
+
+    it('propagates a Supabase error from the compare-and-set update', async () => {
+      const row = ledgerRow();
+      const error = dbError('cas failed');
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: row }, { data: null, error }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.claim(row.id)).rejects.toBe(error);
+    });
+
+    it('marks the job failed and rethrows when the workspace row is missing', async () => {
+      const row = ledgerRow();
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: row },
+          { data: { id: row.id } },
+          // markFailed()'s own update+select, triggered from the catch block.
+          { data: { workspace_id: WORKSPACE_ID } },
+        ],
+        workspaces: [{ data: null, error: null }, { error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.claim(row.id)).rejects.toThrow(
+        /Build workspace does not exist/,
+      );
+
+      const jobUpdates = calls.filter(
+        (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+      );
+      // [0] is claim()'s own compare-and-set; [1] is markFailed()'s cleanup.
+      expect(jobUpdates).toHaveLength(2);
+      const failedUpdate = jobUpdates[1];
+      expect(failedUpdate?.values).toMatchObject({
+        status: 'failed',
+        error_code: 'BUILD_JOB_UNCLAIMABLE',
+      });
+    });
+
+    it('marks the job failed and rethrows when the artifacts row is missing', async () => {
+      const row = ledgerRow();
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: row },
+          { data: { id: row.id } },
+          { data: { workspace_id: WORKSPACE_ID } },
+        ],
+        workspaces: [
+          {
+            data: {
+              id: WORKSPACE_ID,
+              project_state: ProjectState.DEPOSIT_PAID,
+              cal_com_url: null,
+            },
+          },
+          { error: null },
+        ],
+        flowstarter_project_artifacts: [{ data: null, error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.claim(row.id)).rejects.toThrow(
+        /no approved preview artifacts/,
+      );
+    });
+
+    it('still surfaces the original claim failure even when markFailed cleanup itself errors', async () => {
+      const row = ledgerRow();
+      const cleanupError = dbError('cleanup update failed');
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: row },
+          { data: { id: row.id } },
+          // markFailed's own update+select fails outright.
+          { data: null, error: cleanupError },
+        ],
+        workspaces: [{ data: null, error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      // The original cause -- workspace missing -- not the cleanup failure.
+      await expect(store.claim(row.id)).rejects.toThrow(
+        /Build workspace does not exist/,
+      );
+    });
+
+    it('propagates a Supabase error from the artifacts read, after marking the job failed', async () => {
+      const row = ledgerRow();
+      const artifactError = dbError('artifacts read failed');
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: row },
+          { data: { id: row.id } },
+          { data: { workspace_id: WORKSPACE_ID } },
+        ],
+        workspaces: [
+          {
+            data: {
+              id: WORKSPACE_ID,
+              project_state: ProjectState.DEPOSIT_PAID,
+              cal_com_url: null,
+            },
+          },
+          { error: null },
+        ],
+        flowstarter_project_artifacts: [{ data: null, error: artifactError }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.claim(row.id)).rejects.toBe(artifactError);
+    });
+
+    it('ignores a job whose attempt budget is already spent', async () => {
+      const row = ledgerRow({ status: 'failed', attempt_count: 3 });
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: row }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.claim(row.id)).resolves.toBeNull();
+      expect(calls).toHaveLength(1);
+    });
+  });
+
+  describe('markAgentWorking', () => {
+    it('records the worktree and advances the workspace from DEPOSIT_PAID to AGENTS_WORKING', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        workspaces: [{ error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.markAgentWorking('job-1', worktree());
+
+      const jobUpdate = calls.find((c) => c.table === 'flowstarter_agent_jobs');
+      expect(jobUpdate?.values).toMatchObject({
+        worktree_branch: 'client/flowstarter-test',
+        worktree_path: '/tmp/worktree',
+      });
+      expect(jobUpdate?.eqCalls).toContainEqual(['id', 'job-1']);
+
+      const workspaceUpdate = calls.find((c) => c.table === 'workspaces');
+      expect(workspaceUpdate?.values).toEqual({
+        project_state: ProjectState.AGENTS_WORKING,
+      });
+      expect(workspaceUpdate?.eqCalls).toContainEqual(['id', WORKSPACE_ID]);
+      expect(workspaceUpdate?.eqCalls).toContainEqual([
+        'project_state',
+        ProjectState.DEPOSIT_PAID,
+      ]);
+    });
+
+    it('propagates a Supabase error from the job update', async () => {
+      const error = dbError('update failed');
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: null, error }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.markAgentWorking('job-1', worktree())).rejects.toBe(
+        error,
+      );
+    });
+
+    it('propagates a Supabase error from the workspace state transition', async () => {
+      const error = dbError('state update failed');
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        workspaces: [{ error }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.markAgentWorking('job-1', worktree())).rejects.toBe(
+        error,
+      );
+    });
+  });
+
+  describe('markHumanQa', () => {
+    const result = {
+      commitSha: 'abc123',
+      pullRequestUrl: 'https://github.com/example/site/pull/1',
+      stagingUrl: 'https://project.staging.flowstarter.net',
+    };
+
+    it('merges the result onto the existing payload and moves the workspace to HUMAN_QA', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: { payload: { trigger: 'deposit_paid' } } },
+          { data: { workspace_id: WORKSPACE_ID } },
+        ],
+        workspaces: [{ error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.markHumanQa('job-1', result);
+
+      const update = calls.find(
+        (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+      );
+      expect(update?.values).toMatchObject({
+        status: 'succeeded',
+        pull_request_url: result.pullRequestUrl,
+        payload: {
+          trigger: 'deposit_paid',
+          commitSha: result.commitSha,
+          stagingUrl: result.stagingUrl,
+          pullRequestUrl: result.pullRequestUrl,
+        },
+      });
+
+      const workspaceUpdate = calls.find((c) => c.table === 'workspaces');
+      expect(workspaceUpdate?.values).toEqual({
+        project_state: ProjectState.HUMAN_QA,
+      });
+      expect(workspaceUpdate?.eqCalls).toContainEqual(['id', WORKSPACE_ID]);
+      expect(workspaceUpdate?.eqCalls).toContainEqual([
+        'project_state',
+        ProjectState.AGENTS_WORKING,
+      ]);
+    });
+
+    it('falls back to an empty payload when the ledger payload is missing or not an object', async () => {
+      for (const existingPayload of [null, undefined, ['not', 'a', 'record']]) {
+        const { client, calls } = makeScriptedClient({
+          flowstarter_agent_jobs: [
+            { data: { payload: existingPayload } },
+            { data: { workspace_id: WORKSPACE_ID } },
+          ],
+          workspaces: [{ error: null }],
+        });
+        const store = new SupabaseFullSiteBuildJobStore(client, {
+          maxAttempts: 3,
+        });
+
+        await store.markHumanQa('job-1', result);
+
+        const update = calls.find(
+          (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+        );
+        expect(update?.values).toMatchObject({
+          payload: {
+            commitSha: result.commitSha,
+            stagingUrl: result.stagingUrl,
+            pullRequestUrl: result.pullRequestUrl,
+          },
+        });
+      }
+    });
+
+    it('propagates a Supabase error from the payload read', async () => {
+      const error = dbError('payload read failed');
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: null, error }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.markHumanQa('job-1', result)).rejects.toBe(error);
+    });
+
+    it('propagates a Supabase error from the job update', async () => {
+      const error = dbError('update failed');
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: { payload: {} } },
+          { data: null, error },
+        ],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.markHumanQa('job-1', result)).rejects.toBe(error);
+    });
+
+    it('propagates a Supabase error from the workspace state transition', async () => {
+      const error = dbError('state update failed');
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: { payload: {} } },
+          { data: { workspace_id: WORKSPACE_ID } },
+        ],
+        workspaces: [{ error }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.markHumanQa('job-1', result)).rejects.toBe(error);
+    });
+  });
+
+  describe('markRebuildStarted', () => {
+    it('records the worktree without touching the workspace state', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.markRebuildStarted('job-1', worktree());
+
+      const update = calls.find((c) => c.table === 'flowstarter_agent_jobs');
+      expect(update?.values).toMatchObject({
+        worktree_branch: 'client/flowstarter-test',
+        worktree_path: '/tmp/worktree',
+      });
+      expect(update?.eqCalls).toContainEqual(['id', 'job-1']);
+      // A client publishing an edit does not change where the engagement
+      // stands; a rebuild must not perturb project_state.
+      expect(calls.filter((c) => c.table === 'workspaces')).toHaveLength(0);
+    });
+
+    it('propagates a Supabase error', async () => {
+      const error = dbError('update failed');
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ error }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.markRebuildStarted('job-1', worktree())).rejects.toBe(
+        error,
+      );
+    });
+  });
+
+  describe('markRebuilt', () => {
+    const result = {
+      commitSha: 'def456',
+      pullRequestUrl: 'https://github.com/example/site/pull/2',
+      stagingUrl: 'https://project.staging.flowstarter.net',
+    };
+
+    it('merges the result onto the existing payload without moving project_state', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: { payload: { trigger: 'client_publish' } } },
+          { error: null },
+        ],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.markRebuilt('job-1', result);
+
+      const update = calls.find(
+        (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+      );
+      expect(update?.values).toMatchObject({
+        status: 'succeeded',
+        pull_request_url: result.pullRequestUrl,
+        payload: {
+          trigger: 'client_publish',
+          commitSha: result.commitSha,
+          stagingUrl: result.stagingUrl,
+          pullRequestUrl: result.pullRequestUrl,
+        },
+      });
+      expect(calls.filter((c) => c.table === 'workspaces')).toHaveLength(0);
+    });
+
+    it('propagates a Supabase error from the payload read', async () => {
+      const error = dbError('payload read failed');
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: null, error }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.markRebuilt('job-1', result)).rejects.toBe(error);
+    });
+
+    it('propagates a Supabase error from the job update', async () => {
+      const error = dbError('update failed');
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { payload: {} } }, { error }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(store.markRebuilt('job-1', result)).rejects.toBe(error);
+    });
+  });
+
+  describe('markFailed', () => {
+    it('records the failure and rolls the workspace back to DEPOSIT_PAID for a retry', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        workspaces: [{ error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.markFailed('job-1', {
+        code: 'BUILD_TIMEOUT',
+        detail: 'timed out',
+      });
+
+      const jobUpdate = calls.find((c) => c.table === 'flowstarter_agent_jobs');
+      expect(jobUpdate?.values).toMatchObject({
+        status: 'failed',
+        error_code: 'BUILD_TIMEOUT',
+        error_detail: 'timed out',
+      });
+      expect(jobUpdate?.eqCalls).toContainEqual(['id', 'job-1']);
+
+      const workspaceUpdate = calls.find((c) => c.table === 'workspaces');
+      expect(workspaceUpdate?.values).toEqual({
+        project_state: ProjectState.DEPOSIT_PAID,
+      });
+      expect(workspaceUpdate?.eqCalls).toContainEqual(['id', WORKSPACE_ID]);
+      expect(workspaceUpdate?.eqCalls).toContainEqual([
+        'project_state',
+        ProjectState.AGENTS_WORKING,
+      ]);
+    });
+
+    it('truncates the error detail to 2000 characters', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        workspaces: [{ error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.markFailed('job-1', { code: 'X', detail: 'y'.repeat(3_000) });
+
+      const jobUpdate = calls.find((c) => c.table === 'flowstarter_agent_jobs');
+      expect(
+        (jobUpdate?.values as { error_detail: string }).error_detail,
+      ).toHaveLength(2_000);
+    });
+
+    it('propagates a Supabase error from the job update', async () => {
+      const error = dbError('update failed');
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: null, error }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.markFailed('job-1', { code: 'X', detail: 'y' }),
+      ).rejects.toBe(error);
+    });
+
+    it('propagates a Supabase error from the workspace rollback', async () => {
+      const error = dbError('rollback failed');
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        workspaces: [{ error }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.markFailed('job-1', { code: 'X', detail: 'y' }),
+      ).rejects.toBe(error);
+    });
   });
 });

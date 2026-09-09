@@ -111,6 +111,51 @@ describe('CommandSiteValidator', () => {
     });
     await expect(validator.validate(root, 'full')).rejects.toThrow(/timed out/);
   });
+
+  it('refuses a workspace that has a manifest but no source directory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'flowstarter-validator-'));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, 'package.json'), '{"name":"site"}', 'utf8');
+    const validator = new CommandSiteValidator({
+      commands: [{ bin: 'node', args: ['-e', 'process.exit(1)'] }],
+      timeoutMs: 30_000,
+    });
+    await expect(validator.validate(root, 'full')).rejects.toThrow(
+      /no source directory/,
+    );
+  });
+
+  it('fails on stdout alone when a command exits non-zero without writing to stderr', async () => {
+    const root = await siteWorkspace();
+    const validator = new CommandSiteValidator({
+      commands: [
+        {
+          bin: 'node',
+          args: ['-e', 'console.log("only stdout, no stderr");process.exit(1)'],
+        },
+      ],
+      timeoutMs: 30_000,
+    });
+    await expect(validator.validate(root, 'full')).rejects.toThrow(
+      /only stdout, no stderr/,
+    );
+  });
+
+  it('reports a spawn failure (missing binary) through the message fallback, not a crash', async () => {
+    const root = await siteWorkspace();
+    const validator = new CommandSiteValidator({
+      commands: [
+        { bin: 'flowstarter-command-that-does-not-exist-anywhere', args: [] },
+      ],
+      timeoutMs: 30_000,
+    });
+    // Neither stdout nor stderr exist on a spawn failure, so tailLines() and
+    // the error detail both have to fall all the way back to error.message
+    // rather than throwing on `undefined`.
+    await expect(validator.validate(root, 'full')).rejects.toThrow(
+      SiteValidationError,
+    );
+  });
 });
 
 /**

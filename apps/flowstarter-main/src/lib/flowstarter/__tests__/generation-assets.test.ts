@@ -64,6 +64,58 @@ describe('loadUsableAssets', () => {
     expect(assets.map((a) => a.id)).toEqual(['a']);
   });
 
+  it('reports an unusable asset as having no usable dimensions, not as absent', async () => {
+    // A confirmed row whose optional columns were never filled must still be
+    // offered to the generator; only rights and a file are load-bearing.
+    const { chain } = builder([
+      {
+        id: 'a',
+        storage_path: 'tenant/x/assets/a.png',
+        mime: null,
+        width: null,
+        height: null,
+        usable_for: null,
+        caption: null,
+        rights_confirmed_at: '2026-08-30T00:00:00Z',
+      },
+    ]);
+    from.mockReturnValue(chain);
+
+    expect(await loadUsableAssets(WS)).toEqual([
+      {
+        id: 'a',
+        storagePath: 'tenant/x/assets/a.png',
+        mime: null,
+        width: null,
+        height: null,
+        usableFor: [],
+        caption: null,
+      },
+    ]);
+  });
+
+  it('treats a query that returned nothing at all as an empty library', async () => {
+    const { chain } = builder(null as never);
+    from.mockReturnValue(chain);
+    expect(await loadUsableAssets(WS)).toEqual([]);
+  });
+
+  it('refuses to build with a half-read library', async () => {
+    // Swallowing this would publish a site missing the client's own photos.
+    const chain: Record<string, unknown> = {
+      select: () => chain,
+      eq: () => chain,
+      not: () => chain,
+      then: (resolve: (v: unknown) => unknown) =>
+        resolve({ data: null, error: { message: 'assets unavailable' } }),
+    };
+    from.mockReturnValue(chain);
+
+    await expect(loadUsableAssets(WS)).rejects.toMatchObject({
+      message: 'assets unavailable',
+    });
+  });
+
   it('skips a row with no stored file rather than emitting a broken path', async () => {
     const { chain } = builder([
       {

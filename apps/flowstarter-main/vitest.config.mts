@@ -3,6 +3,18 @@ import { defineConfig } from 'vitest/config';
 import path from 'path';
 import { readFileSync } from 'fs';
 
+/**
+ * The bar every money-or-data glob below has to clear. Branches sit lower
+ * than the rest on purpose: v8 counts an optional-chain arm and a default
+ * parameter as branches, so 90% there would be padding, not proof.
+ */
+const MONEY_AND_DATA = {
+  lines: 90,
+  functions: 90,
+  statements: 90,
+  branches: 80,
+};
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
@@ -31,24 +43,63 @@ export default defineConfig({
     hookTimeout: 10000,
     coverage: {
       provider: 'v8',
-      reporter: ['text', 'html', 'json'],
-      include: ['src/**/*.{ts,tsx}'],
+      reporter: ['text', 'text-summary', 'html', 'json', 'json-summary'],
+      // `package.json` runs vitest with `--root src`, so the default
+      // `./coverage` would land in `src/coverage`, which is not where CI
+      // uploads from. Pin it to the package root instead.
+      reportsDirectory: path.resolve(__dirname, './coverage'),
+      // These are relative to the Vitest root, and `package.json` runs
+      // `vitest --root src`. They used to be written `src/**`, which from
+      // that root resolved to `src/src/**` and matched nothing -- so v8 only
+      // ever reported the files a test happened to import, and 414 source
+      // files were invisible. The measured global was 77.6% of the loaded
+      // half; across the whole tree it is 41.6%. A file nobody tests now
+      // costs coverage, which is the only reason to have a floor at all.
+      include: ['**/*.{ts,tsx}'],
       exclude: [
-        'src/**/*.test.{ts,tsx}',
-        'src/**/*.spec.{ts,tsx}',
-        'src/**/__tests__/**',
-        'src/test/**',
-        'src/**/*.d.ts',
-        'src/components/template-preview/**',
-        'src/components/editor/index.ts',
-        'src/app/global-error.tsx',
-        'src/app/not-found.tsx',
+        '**/*.test.{ts,tsx}',
+        '**/*.spec.{ts,tsx}',
+        '**/__tests__/**',
+        'test/**',
+        '**/*.d.ts',
+        'components/template-preview/**',
+        'components/editor/index.ts',
+        'app/global-error.tsx',
+        'app/not-found.tsx',
       ],
+      // Two tiers.
+      //
+      // The global numbers are a floor, not a target: they are the coverage
+      // measured on 2026-09-09 rounded down to the integer, so the suite can
+      // only get better. `scripts/coverage-ratchet.mjs` raises them from
+      // `coverage-floors.json` when a run beats them; nothing lowers them.
+      //
+      // The per-glob numbers are a bar. Money and tenant-data code -- the
+      // pricing and checkout helpers, the hosting and deploy chain, the
+      // webhook signature check, and the route handlers that read or write
+      // another tenant's rows -- has to be at 90% (80% on branches, where a
+      // v8 branch is often an optional-chain arm rather than a decision) or
+      // the gate goes red. A glob below its bar is a signal to write the
+      // test, never to lower the number.
+      //
+      // The keys have no `src/` prefix for the same reason `include` above
+      // does not: they resolve against the Vitest root, which `--root src`
+      // makes `src`. A key written `src/lib/billing/**` matches no file and
+      // enforces nothing, silently.
       thresholds: {
-        lines: 82,
-        functions: 82,
-        branches: 65,
-        statements: 82,
+        lines: 47,
+        functions: 39,
+        branches: 43,
+        statements: 47,
+
+        'lib/flowstarter/**': MONEY_AND_DATA,
+        'lib/billing/**': MONEY_AND_DATA,
+        'lib/hosting/**': MONEY_AND_DATA,
+        'lib/webhook-verification.ts': MONEY_AND_DATA,
+        'app/api/webhooks/**': MONEY_AND_DATA,
+        'app/api/client/**': MONEY_AND_DATA,
+        'app/api/admin/projects/**': MONEY_AND_DATA,
+        'app/api/team/projects/**': MONEY_AND_DATA,
       },
     },
   },

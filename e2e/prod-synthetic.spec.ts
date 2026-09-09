@@ -16,7 +16,7 @@
  * because a keyless Deploy Preview is not given one. Production is, so the
  * health check here is a hard 200.
  */
-import { expect, test } from '@playwright/test';
+import { expect, test } from './support/coverage-fixture';
 
 const BASE_URL = (
   process.env.PLAYWRIGHT_BASE_URL ?? 'https://flowstarter.net'

@@ -54,7 +54,16 @@ const tables: Record<string, Row[]> = {
 
 let idCounter = 0;
 
-class FakeBuilder implements PromiseLike<{ data: Row[]; error: null }> {
+/**
+ * Tables — or `table:op` pairs — whose next query comes back as a Postgrest
+ * error. Every handler here has an `if (error)` arm that decides between a
+ * 500 and carrying on with less; that decision is the thing worth pinning.
+ */
+const failing = new Set<string>();
+
+type Result = { data: Row[] | null; error: unknown };
+
+class FakeBuilder implements PromiseLike<Result> {
   private op: 'select' | 'insert' | 'update' = 'select';
   private predicates: Array<(row: Row) => boolean> = [];
   private values: Row = {};
@@ -129,25 +138,31 @@ class FakeBuilder implements PromiseLike<{ data: Row[]; error: null }> {
     return this.limitN === null ? matched : matched.slice(0, this.limitN);
   }
 
+  private failure(): Result | null {
+    if (failing.has(this.table) || failing.has(`${this.table}:${this.op}`)) {
+      return { data: null, error: { message: `fake: ${this.table} is down` } };
+    }
+    return null;
+  }
+
   async maybeSingle() {
-    return { data: this.run()[0] ?? null, error: null };
+    return this.failure() ?? { data: this.run()[0] ?? null, error: null };
   }
   async single() {
+    const failed = this.failure();
+    if (failed) return failed;
     const rows = this.run();
     return rows.length === 1
       ? { data: rows[0], error: null }
       : { data: null, error: { code: 'PGRST116', message: 'no rows' } };
   }
   then<T1, T2 = never>(
-    onFulfilled?:
-      | ((value: { data: Row[]; error: null }) => T1 | PromiseLike<T1>)
-      | null,
+    onFulfilled?: ((value: Result) => T1 | PromiseLike<T1>) | null,
     onRejected?: ((reason: unknown) => T2 | PromiseLike<T2>) | null
   ): PromiseLike<T1 | T2> {
-    return Promise.resolve({ data: this.run(), error: null as null }).then(
-      onFulfilled,
-      onRejected
-    );
+    return Promise.resolve(
+      this.failure() ?? { data: this.run(), error: null }
+    ).then(onFulfilled, onRejected);
   }
 }
 
@@ -254,6 +269,7 @@ beforeEach(() => {
   tables.flowstarter_agent_jobs = [];
   tables.flowstarter_agent_job_events = [];
   tables.project_events = [];
+  failing.clear();
   idCounter = 0;
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
@@ -1020,5 +1036,242 @@ describe('the full build log', () => {
 
     const res = await jobLogHandler(get(), jobCtx());
     expect(res.status).toBe(403);
+  });
+});
+
+// ── When the database is having a bad day ──────────────────────────────────
+//
+// Each handler decides for itself whether a failed query is fatal. Losing the
+// jobs behind the board costs stall detection; losing the workspaces costs the
+// page. Losing the audit row costs neither, and must never cost the operator
+// the action they came to perform.
+
+describe('a query that fails', () => {
+  const silence = () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  };
+
+  it('takes the board down only when the projects themselves cannot be read', async () => {
+    silence();
+    seedWorkspace();
+    failing.add('workspaces');
+
+    const res = await pipelineBoardHandler();
+    expect(res.status).toBe(500);
+    expect((await res.json()).code).toBe('DB_ERROR');
+  });
+
+  it('still renders the board without its jobs and events', async () => {
+    silence();
+    seedWorkspace();
+    seedJob();
+    failing.add('flowstarter_agent_jobs');
+    failing.add('project_events');
+
+    const res = await pipelineBoardHandler();
+    expect(res.status).toBe(200);
+    const board = await res.json();
+    expect(board.total).toBe(1);
+    // No job means no job-shaped stall reason, which is the price paid.
+    const card = board.columns
+      .flatMap((c: { cards: unknown[] }) => c.cards)
+      .at(0) as { latestJob: unknown };
+    expect(card.latestJob).toBeNull();
+  });
+
+  it('refuses the project pipeline rather than showing a half-read one', async () => {
+    silence();
+    seedWorkspace();
+
+    failing.add('workspaces');
+    const noWorkspace = await pipelineDetailHandler(post({}), ctx());
+    expect(noWorkspace.status).toBe(500);
+    expect((await noWorkspace.json()).error).toMatch(/load the workspace/);
+
+    failing.clear();
+    failing.add('flowstarter_agent_jobs');
+    const noJobs = await pipelineDetailHandler(post({}), ctx());
+    expect(noJobs.status).toBe(500);
+    expect((await noJobs.json()).error).toMatch(/project pipeline/);
+  });
+
+  it('refuses to re-dispatch a build it could not read or could not re-queue', async () => {
+    silence();
+    seedWorkspace();
+    seedJob();
+
+    failing.add('flowstarter_agent_jobs:select');
+    const unread = await redispatchBuildHandler(post({}), ctx());
+    expect(unread.status).toBe(500);
+    expect((await unread.json()).error).toMatch(/load the job/);
+
+    failing.clear();
+    failing.add('flowstarter_agent_jobs:update');
+    const unqueued = await redispatchBuildHandler(post({}), ctx());
+    expect(unqueued.status).toBe(500);
+    expect((await unqueued.json()).error).toMatch(/re-queue the job/);
+    // The attempt counter was not spent on a write that did not happen.
+    expect(tables.flowstarter_agent_jobs[0]!.attempt_count).toBe(0);
+  });
+
+  it('refuses a state override it could not write', async () => {
+    silence();
+    seedWorkspace({ project_state: ProjectState.PREVIEW_READY });
+    failing.add('workspaces:update');
+
+    const res = await overrideStateHandler(
+      post({ toState: ProjectState.DEPOSIT_PAID, reason: 'Paid by transfer' }),
+      ctx()
+    );
+
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toMatch(/update the project state/);
+    expect(tables.project_events).toHaveLength(0);
+  });
+
+  it('refuses a cancellation it could not read or could not write', async () => {
+    silence();
+    seedWorkspace();
+    seedJob({ status: 'running' });
+
+    failing.add('flowstarter_agent_jobs:select');
+    const unread = await cancelJobHandler(
+      post({ jobId: JOB_ID, reason: 'Stuck for two hours' }),
+      ctx()
+    );
+    expect(unread.status).toBe(500);
+    expect((await unread.json()).error).toMatch(/load the job/);
+
+    failing.clear();
+    failing.add('flowstarter_agent_jobs:update');
+    const unwritten = await cancelJobHandler(
+      post({ jobId: JOB_ID, reason: 'Stuck for two hours' }),
+      ctx()
+    );
+    expect(unwritten.status).toBe(500);
+    expect((await unwritten.json()).error).toMatch(/cancel the job/);
+    expect(tables.flowstarter_agent_jobs[0]!.status).toBe('running');
+  });
+
+  it('refuses a note it could not read a job for, or could not store', async () => {
+    silence();
+    seedWorkspace();
+    seedJob({ status: 'running' });
+
+    failing.add('flowstarter_agent_jobs:select');
+    const unread = await jobNoteHandler(
+      post({ message: 'Use the second logo' }),
+      jobCtx()
+    );
+    expect(unread.status).toBe(500);
+    expect((await unread.json()).error).toMatch(/load the job/);
+
+    failing.clear();
+    failing.add('flowstarter_agent_job_events:insert');
+    const unstored = await jobNoteHandler(
+      post({ message: 'Use the second logo' }),
+      jobCtx()
+    );
+    expect(unstored.status).toBe(500);
+    expect((await unstored.json()).error).toMatch(/record the note/);
+  });
+
+  it('still delivers the note when only the audit row fails', async () => {
+    // The audit trail is best effort by design: the agents get the note.
+    silence();
+    seedWorkspace();
+    seedJob({ status: 'running' });
+    failing.add('project_events:insert');
+
+    const res = await jobNoteHandler(
+      post({ message: 'Use the second logo' }),
+      jobCtx()
+    );
+
+    expect(res.status).toBe(201);
+    expect(tables.flowstarter_agent_job_events).toHaveLength(1);
+    expect(tables.project_events).toHaveLength(0);
+  });
+
+  it('refuses the build conversation rather than showing an empty one', async () => {
+    silence();
+    seedWorkspace();
+    seedJob();
+    failing.add('flowstarter_agent_job_events:select');
+
+    const res = await jobEventsHandler(get(), jobCtx());
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toMatch(/build conversation/);
+  });
+
+  it('refuses the build log at every step it could fail', async () => {
+    silence();
+    seedWorkspace();
+    seedJob();
+
+    failing.add('workspaces');
+    const noWorkspace = await jobLogHandler(get(), jobCtx());
+    expect(noWorkspace.status).toBe(500);
+    expect((await noWorkspace.json()).error).toMatch(/load the workspace/);
+
+    failing.clear();
+    failing.add('flowstarter_agent_jobs');
+    const noJob = await jobLogHandler(get(), jobCtx());
+    expect(noJob.status).toBe(500);
+    expect((await noJob.json()).error).toMatch(/load the job/);
+
+    failing.clear();
+    failing.add('flowstarter_agent_job_events');
+    const noLog = await jobLogHandler(get(), jobCtx());
+    expect(noLog.status).toBe(500);
+    expect((await noLog.json()).error).toMatch(/load the build log/);
+  });
+});
+
+describe('the build log, before any query runs', () => {
+  it('rejects ids that are not uuids', async () => {
+    const badWorkspace = await jobLogHandler(get(), jobCtx(JOB_ID, 'nope'));
+    expect(badWorkspace.status).toBe(400);
+    expect((await badWorkspace.json()).error).toBe('Invalid workspace id');
+
+    const badJob = await jobLogHandler(get(), jobCtx('nope'));
+    expect(badJob.status).toBe(400);
+    expect((await badJob.json()).error).toBe('Invalid job id');
+  });
+
+  it('404s a workspace that does not exist', async () => {
+    const res = await jobLogHandler(get(), jobCtx());
+    expect(res.status).toBe(404);
+    expect((await res.json()).code).toBe('NOT_FOUND');
+  });
+
+  it('stops flattening at the cap rather than streaming a whole build to a browser', async () => {
+    seedWorkspace();
+    seedJob();
+    seedJobEvent({
+      kind: 'log',
+      payload: { source: 'machine', stream: true },
+      body: Array.from({ length: 20_050 }, (_, i) => `line ${i}`).join('\n'),
+    });
+
+    const res = await jobLogHandler(get(), jobCtx());
+    const body = await res.json();
+    expect(body.lines).toHaveLength(20_000);
+  });
+});
+
+describe('a request body that is not JSON at all', () => {
+  it('is refused as an invalid body, not as a crash', async () => {
+    seedWorkspace();
+    const broken = {
+      json: async () => {
+        throw new SyntaxError('Unexpected end of JSON input');
+      },
+    } as unknown as NextRequest;
+
+    const res = await overrideStateHandler(broken, ctx());
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('INVALID_BODY');
   });
 });

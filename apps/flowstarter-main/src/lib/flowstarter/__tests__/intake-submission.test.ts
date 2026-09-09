@@ -25,6 +25,8 @@ const script: {
   insertResult?: { data: unknown; error: unknown };
   selectResult?: { data: unknown; error: unknown };
   updateResult?: { data: unknown; error: unknown };
+  /** The `project_events` audit insert, which resolves through `then` too. */
+  eventResult?: { data: unknown; error: unknown };
 } = {};
 
 function builderFor(table: string) {
@@ -76,9 +78,12 @@ function builderFor(table: string) {
       );
     },
     then(resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) {
-      return Promise.resolve(
-        script.updateResult ?? { data: null, error: null }
-      ).then(resolve, reject);
+      const scripted =
+        table === 'project_events' ? script.eventResult : script.updateResult;
+      return Promise.resolve(scripted ?? { data: null, error: null }).then(
+        resolve,
+        reject
+      );
     },
   };
   return builder;
@@ -102,6 +107,7 @@ beforeEach(() => {
   delete script.insertResult;
   delete script.selectResult;
   delete script.updateResult;
+  delete script.eventResult;
 });
 
 describe('recordIntakeSubmission', () => {
@@ -211,6 +217,63 @@ describe('applyRoutingOverride', () => {
         actor: 'user_admin1',
       })
     ).rejects.toThrow('reason');
+  });
+
+  it('rejects a workspace id that is not a uuid', async () => {
+    await expect(
+      applyRoutingOverride({
+        workspaceId: 'not-a-uuid',
+        decision: 'custom',
+        reason: 'valid reason',
+        actor: 'user_admin1',
+      })
+    ).rejects.toThrow('valid workspaceId');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('surfaces a failed lookup rather than silently overriding nothing', async () => {
+    script.selectResult = { data: null, error: new Error('select failed') };
+    await expect(
+      applyRoutingOverride({
+        workspaceId: WORKSPACE_ID,
+        decision: 'custom',
+        reason: 'valid reason',
+        actor: 'user_admin1',
+      })
+    ).rejects.toThrow('select failed');
+  });
+
+  it('surfaces a failed write rather than reporting an override that did not land', async () => {
+    script.selectResult = { data: { id: 'intake-1' }, error: null };
+    script.updateResult = { data: null, error: new Error('update failed') };
+    await expect(
+      applyRoutingOverride({
+        workspaceId: WORKSPACE_ID,
+        decision: 'custom',
+        reason: 'valid reason',
+        actor: 'user_admin1',
+      })
+    ).rejects.toThrow('update failed');
+    // The audit row is never written for an override that did not happen.
+    expect(
+      calls.find((c) => c.table === 'project_events' && c.op === 'insert')
+    ).toBeUndefined();
+  });
+
+  it('fails when the override cannot be written to the audit trail', async () => {
+    // An override nobody can see afterwards is worse than no override: the
+    // routing decision would silently disagree with the record of why.
+    script.selectResult = { data: { id: 'intake-1' }, error: null };
+    script.eventResult = { data: null, error: new Error('event write failed') };
+
+    await expect(
+      applyRoutingOverride({
+        workspaceId: WORKSPACE_ID,
+        decision: 'custom',
+        reason: 'valid reason',
+        actor: 'user_admin1',
+      })
+    ).rejects.toThrow('event write failed');
   });
 
   it('rejects a blank actor', async () => {

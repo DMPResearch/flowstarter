@@ -23,7 +23,12 @@ export interface FakeStorageObject {
 export interface FakeHostingDb {
   tables: Record<string, Row[]>;
   objects: Map<string, FakeStorageObject>;
-  /** Tables whose next query resolves as a Postgrest error. */
+  /**
+   * Tables whose queries resolve as a Postgrest error. Either the whole table
+   * (`'workspaces'`) or one operation on it (`'funnel_previews:update'`), which
+   * is what the read-then-write helpers need: they load a row and only the
+   * write is supposed to fail.
+   */
   failing: Set<string>;
   /** True to make every storage call fail. */
   storageBroken: boolean;
@@ -66,6 +71,7 @@ export function createFakeHostingSupabase(): FakeHostingDb {
     let orderColumn: string | undefined;
     let ascending = true;
     let take: number | undefined;
+    let counting = false;
 
     function matches(row: Row): boolean {
       return filters.every(({ column, value, op }) => {
@@ -95,11 +101,16 @@ export function createFakeHostingSupabase(): FakeHostingDb {
       return out;
     }
 
-    function settle(): { data: Row[] | null; error: unknown } {
-      if (state.failing.has(table)) {
+    function settle(): {
+      data: Row[] | null;
+      error: unknown;
+      count?: number | null;
+    } {
+      if (state.failing.has(table) || state.failing.has(`${table}:${mode}`)) {
         return {
           data: null,
           error: { message: `fake: ${table} unavailable` },
+          ...(counting ? { count: null } : {}),
         };
       }
       if (mode === 'insert') {
@@ -131,11 +142,23 @@ export function createFakeHostingSupabase(): FakeHostingDb {
         for (const row of target) Object.assign(row, payload[0]);
         return { data: target, error: null };
       }
-      return { data: selected(), error: null };
+      const out = selected();
+      return {
+        data: out,
+        error: null,
+        ...(counting ? { count: out.length } : {}),
+      };
     }
 
     const self = {
-      select() {
+      select(
+        _columns?: string,
+        options?: { count?: 'exact' | 'planned' | 'estimated'; head?: boolean }
+      ) {
+        // `select('id', { count: 'exact', head: true })` is how the allocator
+        // re-derives a server's site count, and it reads `count` off the
+        // result rather than `data` — so the fake has to answer with one.
+        if (options?.count) counting = true;
         return self;
       },
       insert(values: Row | Row[]) {
@@ -180,14 +203,22 @@ export function createFakeHostingSupabase(): FakeHostingDb {
         return self;
       },
       maybeSingle() {
-        const { data, error } = settle();
-        return Promise.resolve({ data: data?.[0] ?? null, error });
+        const { data, error, count } = settle();
+        return Promise.resolve({
+          data: data?.[0] ?? null,
+          error,
+          ...(counting ? { count } : {}),
+        });
       },
       single() {
         return self.maybeSingle();
       },
       then<T>(
-        onFulfilled: (value: { data: Row[] | null; error: unknown }) => T,
+        onFulfilled: (value: {
+          data: Row[] | null;
+          error: unknown;
+          count?: number | null;
+        }) => T,
         onRejected?: (reason: unknown) => T
       ) {
         return Promise.resolve(settle()).then(onFulfilled, onRejected);

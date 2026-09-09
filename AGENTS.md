@@ -69,6 +69,31 @@ Tests are vitest per package:
 - `pnpm --dir packages/agentic-codegen test`
 - `pnpm --dir apps/build-worker test`
 
+Each package also has `test:coverage`, which is the same suite with
+`--coverage`. Coverage is enforced, in two tiers:
+
+- A global floor per package, set at the level that package has already
+  reached, in the `thresholds` block of its vitest config and mirrored in
+  `coverage-floors.json` at the root. `node scripts/coverage-ratchet.mjs`
+  fails when a metric drops below its floor; `--update` raises the floors to
+  a new measurement and never lowers them. The quality gate runs the check.
+- A 90% bar (80% on branches, where a v8 branch is often an optional-chain
+  arm) on every glob that handles money or another tenant's data:
+  `src/lib/{flowstarter,billing,hosting}/**`, `src/lib/webhook-verification.ts`
+  and `src/app/api/{webhooks,client,admin/projects,team/projects}/**` in
+  flowstarter-main; `workflows.ts`, `worktree.ts` and `job-log.ts` in
+  agentic-codegen; `job-store.ts`, `validator.ts` and `index.ts` in the
+  worker. Below the bar the gate is red. Write the test; the bar does not
+  move.
+
+One thing to know about the flowstarter-main coverage numbers: that package
+runs `vitest --root src`, so everything in `coverage.include` and
+`coverage.exclude` is relative to `src`, not to the package. Written with a
+`src/` prefix they resolve to `src/src/` and match nothing, which is what they
+did until 2026-09-09 -- v8 then only reported the files a test happened to
+import, and 414 source files were invisible. The measured global was 77.6% of
+the loaded half and 41.6% of the tree.
+
 Typecheck: `pnpm nx run flowstarter-main:typecheck`, and `typecheck` in
 `apps/build-worker` and `packages/agentic-codegen`. `pnpm run ci:quality-gate`
 at the root chains lint, typecheck and the flowstarter-main tests.
@@ -91,17 +116,25 @@ Depot secrets and variables are separate from GitHub repository secrets:
 Depot does not read GitHub's secret store, so anything a workflow needs has
 to be imported into Depot directly (`depot ci secrets add` / `depot ci vars
 add`), scoped to this repo. The names in use:
-  - secrets: `OLLAMA_API_KEY`, `NETLIFY_AUTH_TOKEN`, `NETLIFY_SITE_ID`, and
-    optionally `GH_REVIEW_TOKEN`
-  - vars: `AI_REVIEW_SMALL_MODEL`, `AI_REVIEW_BIG_MODEL`
+
+- secrets: `OLLAMA_API_KEY`, `NETLIFY_AUTH_TOKEN`, `NETLIFY_SITE_ID`, and
+  optionally `GH_REVIEW_TOKEN`
+- vars: `AI_REVIEW_SMALL_MODEL`, `AI_REVIEW_BIG_MODEL`
 
 - Quality Gate (`.depot/workflows/quality-gate.yml`): lint, typecheck, unit
-  tests, and tenant isolation proved against a throwaway local Supabase stack
-  with all migrations applied. This is the blocking lane. Lint is currently
-  advisory inside it (`continue-on-error`).
+  tests with coverage for all three suites, the coverage ratchet, and tenant
+  isolation proved against a throwaway local Supabase stack with all
+  migrations applied. This is the blocking lane. Lint is currently advisory
+  inside it (`continue-on-error`); coverage is not. The job's step summary
+  carries the coverage table and the MVP readiness scorecard.
 - E2E smoke (`.depot/workflows/e2e-smoke.yml`): waits for this commit's
   Netlify Deploy Preview, then runs the Playwright platform smoke against it.
-  Skips with a warning when the Netlify secrets are absent.
+  Skips with a warning when the Netlify secrets are absent. Afterwards
+  `scripts/e2e-route-coverage.mjs` reports how many of the routes under
+  `src/app` the run reached, from the records
+  `e2e/support/coverage-fixture.ts` writes. Every spec imports `test` from
+  that fixture rather than from `@playwright/test`; a spec that imports the
+  bare one records nothing. There is no minimum on the number yet.
 - OpenCode review (`.depot/workflows/opencode-review.yml`): the default
   reviewer, advisory only, never a required check and never in another job's
   `needs`. It runs in two tiers, decided from the diff size: small and medium
@@ -119,6 +152,20 @@ add`), scoped to this repo. The names in use:
   request. That is a human decision, never a workflow step.
 - UI visual check (`.depot/workflows/visual-check.yml`): Playwright
   screenshots compared against committed Linux baselines.
+
+## Readiness
+
+`readiness/journeys.json` lists the MVP journeys -- intake through to
+cancellation -- with the routes and the spec behind each. The daily QA lane
+(`e2e/qa/journeys.qa.spec.ts`) walks several of them against a live
+deployment; it records route coverage like every other spec, because it
+imports `test` from `e2e/support/coverage-fixture.ts`. `node
+scripts/mvp-readiness.mjs` scores every one on unit coverage of its API
+handlers, whether a Playwright spec walks it, and whether the production
+synthetic checks it, and writes the generated `readiness/README.md`.
+Money-path journeys count double. Renaming a route makes the script name the
+pattern that no longer resolves and exit non-zero, so the file cannot go
+stale quietly.
 
 ## Review focus
 

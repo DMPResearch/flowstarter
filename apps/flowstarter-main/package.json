@@ -11,6 +11,7 @@
     "build": "next build",
     "test:e2e": "playwright test",
     "test": "vitest --root src --run",
+    "test:coverage": "vitest --root src --run --coverage",
     "test:watch": "vitest --root src",
     "lint": "ESLINT_USE_FLAT_CONFIG=false pnpm eslint --fix src",
     "lint:prettier": "prettier --write src",

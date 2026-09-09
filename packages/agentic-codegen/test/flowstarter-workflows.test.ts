@@ -8,6 +8,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deepTempDir } from './helpers';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   FullSiteBuildWorker,
@@ -574,9 +575,7 @@ describe('Flowstarter preview-to-build orchestration', () => {
   it('moves a deposit-paid project through the full-build agents into human QA', async () => {
     const calls: string[] = [];
     const projectId = '0f4e1088-8d8f-4f18-83b1-406cc292b23c';
-    const worktreeRoot = await mkdtemp(
-      join(tmpdir(), 'flowstarter-worker-test-'),
-    );
+    const worktreeRoot = await deepTempDir('flowstarter-worker-test');
     temporaryDirectories.push(worktreeRoot);
 
     const store: FullSiteBuildJobStore = {
@@ -727,9 +726,7 @@ describe('Flowstarter preview-to-build orchestration', () => {
 
   it("keeps the operator board informed and folds the team's notes into the next pass", async () => {
     const projectId = validIntake().projectId;
-    const worktreeRoot = await mkdtemp(
-      join(tmpdir(), 'flowstarter-worker-notes-'),
-    );
+    const worktreeRoot = await deepTempDir('flowstarter-worker-notes');
     temporaryDirectories.push(worktreeRoot);
 
     const events: Array<{ kind: string; body: string }> = [];
@@ -912,9 +909,7 @@ describe('Flowstarter preview-to-build orchestration', () => {
     const calls: string[] = [];
     const events: Array<{ kind: string; body: string }> = [];
     const projectId = validIntake().projectId;
-    const worktreeRoot = await mkdtemp(
-      join(tmpdir(), 'flowstarter-rebuild-test-'),
-    );
+    const worktreeRoot = await deepTempDir('flowstarter-rebuild-test');
     temporaryDirectories.push(worktreeRoot);
 
     const store: FullSiteBuildJobStore = {
@@ -1050,9 +1045,7 @@ describe('Flowstarter preview-to-build orchestration', () => {
     const calls: string[] = [];
     const events: Array<{ kind: string; body: string }> = [];
     const projectId = validIntake().projectId;
-    const worktreeRoot = await mkdtemp(
-      join(tmpdir(), 'flowstarter-rebuild-fail-'),
-    );
+    const worktreeRoot = await deepTempDir('flowstarter-rebuild-fail');
     temporaryDirectories.push(worktreeRoot);
 
     const store: FullSiteBuildJobStore = {
@@ -2366,8 +2359,8 @@ describe('a retried build starts clean', () => {
       '../src/flowstarter/worktree'
     );
     const { execFileSync } = await import('node:child_process');
-    const repositoryRoot = await mkdtemp(join(tmpdir(), 'fs-repo-'));
-    const worktreesRoot = await mkdtemp(join(tmpdir(), 'fs-worktrees-'));
+    const repositoryRoot = await deepTempDir('fs-repo');
+    const worktreesRoot = await deepTempDir('fs-worktrees');
     temporaryDirectories.push(repositoryRoot, worktreesRoot);
     execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repositoryRoot });
     execFileSync(

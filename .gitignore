@@ -124,3 +124,14 @@ artifacts/showcase/
 
 # Design-bundle phone screenshots: reference material, 27 MB, nothing in the repo reads them.
 flowstarter/project/uploads/
+
+# Route coverage records when a job runs Playwright more than once and needs
+# them to survive Playwright emptying test-results (see e2e/support/coverage-fixture.ts).
+/route-coverage
+
+# Playwright JSON reports the release lane writes and uploads as artifacts.
+/release-results
+
+# The machine-readable half of the readiness scorecard, regenerated on every
+# run and carrying a timestamp. readiness/README.md is the committed half.
+/readiness/summary.json

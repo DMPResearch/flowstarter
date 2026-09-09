@@ -13,7 +13,7 @@
  * name starts with "E2E". Otherwise it skips with instructions.
  */
 
-import { expect, test } from '@playwright/test';
+import { expect, test } from './support/coverage-fixture';
 import { clerkConfigured, clerkSkipReason } from './support/clerk-env';
 
 const WORKSPACE_ID = process.env.E2E_WORKSPACE_ID?.trim();

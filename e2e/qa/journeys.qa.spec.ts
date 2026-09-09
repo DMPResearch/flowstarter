@@ -31,7 +31,12 @@
  *     are present; absent, the journey skips with a warning
  *   - it never opens another tenant's workspace
  */
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+// `test` comes from the fixture, not from @playwright/test: it records the
+// routes each journey reaches so scripts/e2e-route-coverage.mjs can merge
+// them. Every spec in e2e/ imports it this way; a bare import records
+// nothing. See AGENTS.md.
+import { expect, test } from '../support/coverage-fixture';
 import { CANARY, answerScriptedIntake, openConversation } from './intake-canary';
 
 /**

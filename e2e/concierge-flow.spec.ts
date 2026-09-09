@@ -10,7 +10,7 @@
  * These do NOT require auth and do NOT hit real AI/Daytona.
  */
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './support/coverage-fixture';
 
 test.describe('Concierge Flow — Platform Smoke', () => {
   test.describe('Main Platform', () => {

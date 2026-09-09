@@ -315,3 +315,87 @@ describe('placing a job on the board', () => {
     );
   });
 });
+
+describe('an event summary a payload cannot support', () => {
+  it('says nothing rather than printing undefined', () => {
+    // The caller falls back to the kind label; a half-read payload must never
+    // reach an operator as "From undefined to undefined".
+    expect(eventSummary('state_changed', { to: 'DEPOSIT_PAID' })).toBeNull();
+    expect(eventSummary('state_changed', { from: 'INTAKE' })).toBeNull();
+    expect(eventSummary('build_note_sent', {})).toBeNull();
+    expect(
+      eventSummary('build_redispatched', { dispatched: 'yes' })
+    ).toBeNull();
+    expect(eventSummary('job_canceled', {})).toBeNull();
+    expect(eventSummary('build_dispatch_failed', {})).toBeNull();
+    expect(eventSummary('site_publish_requested', {})).toBeNull();
+    expect(eventSummary('change_request_quoted', {})).toBeNull();
+    expect(eventSummary('change_request_paid', {})).toBeNull();
+  });
+
+  it('says nothing for a kind that has no rule, or a payload that is not one', () => {
+    expect(eventSummary('something_new', { anything: true })).toBeNull();
+    expect(eventSummary('state_changed', null)).toBeNull();
+    expect(eventSummary('state_changed', 'INTAKE -> DEPOSIT_PAID')).toBeNull();
+  });
+});
+
+describe('the rest of the event summaries', () => {
+  it('tells an operator whether a re-dispatch actually reached the worker', () => {
+    expect(eventSummary('build_redispatched', { dispatched: true })).toBe(
+      'Re-queued and handed to the worker'
+    );
+    expect(eventSummary('build_redispatched', { dispatched: false })).toBe(
+      'Re-queued, but the worker could not be reached'
+    );
+  });
+
+  it('names the job that was cancelled', () => {
+    expect(eventSummary('job_canceled', { jobKind: 'FULL_SITE_BUILD' })).toBe(
+      'Full site build cancelled'
+    );
+  });
+
+  it('repeats the dispatch failure verbatim, which is what an operator acts on', () => {
+    expect(
+      eventSummary('build_dispatch_failed', {
+        detail: 'Flowstarter build worker is not configured',
+      })
+    ).toBe('Flowstarter build worker is not configured');
+  });
+
+  it('formats a paid change request in its own currency', () => {
+    expect(
+      eventSummary('change_request_paid', {
+        amountMinor: 19_000,
+        currency: 'eur',
+      })
+    ).toBe('Paid €190.00');
+    expect(
+      eventSummary('change_request_quoted', {
+        amountMinor: 24_000,
+        currency: 'ron',
+      })
+    ).toContain('240.00');
+    // A quote stored without a currency is euros, like every other amount.
+    expect(eventSummary('change_request_quoted', { amountMinor: 9_000 })).toBe(
+      'Quoted €90.00'
+    );
+  });
+
+  it('still shows the amount when the currency code is not one Intl knows', () => {
+    expect(
+      eventSummary('change_request_paid', {
+        amountMinor: 12_345,
+        currency: 'not-a-currency',
+      })
+    ).toBe('Paid 123.45 NOT-A-CURRENCY');
+  });
+});
+
+describe('a label for a word with no letters in it', () => {
+  it('falls back rather than rendering an empty string', () => {
+    expect(jobKindLabel('   ')).toBe('Unknown job');
+    expect(errorCodeLabel('__')).toBe('Unknown');
+  });
+});
