@@ -77,9 +77,23 @@ export const CANARY = {
   commerceMode: 'No products',
 } as const;
 
-/** The wizard renders one dialog; every locator below is scoped to it. */
+/**
+ * The wizard renders one dialog; every locator below is scoped to it.
+ *
+ * Not `getByRole('dialog').first()`: the landing page also mounts
+ * `SupportBot.tsx`'s chat panel under `role="dialog"` once a visitor opens
+ * it, so `.first()` on the bare role picked whichever dialog happened to
+ * mount first rather than reliably this one. `[aria-modal="true"]`
+ * disambiguates cheaply, without a per-candidate content filter re-querying
+ * the composer on every action: `PreQualModal.tsx`'s dialog carries
+ * `aria-modal="true"`, `SupportBot.tsx`'s carries `aria-modal="false"`. The
+ * `data-testid` (`discovery-dialog`, set on the same element) is the
+ * primary, forward-looking selector once it reaches production.
+ */
 export function conversation(page: Page): Locator {
-  return page.getByRole('dialog').first();
+  return page
+    .getByTestId('discovery-dialog')
+    .or(page.locator('[role="dialog"][aria-modal="true"]'));
 }
 
 /** The question ids the wizard has recorded as answered so far. */

@@ -348,7 +348,13 @@ jobs:
         env:
           SELECTED_PROVIDER: ${{ steps.pick.outputs.provider }}
           SELECTED_MODEL: ${{ steps.pick.outputs.model }}
-          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          # Gated on the provider match, same as opencode-review.yml's
+          # analogous step: a bare `secrets.OLLAMA_API_KEY` mapping here
+          # left this job reporting "OLLAMA_API_KEY is not set" and skipping
+          # the agent layer even though the secret exists in Depot's store
+          # (confirmed working in the review lane's identical credential
+          # check). Mirroring the exact expression review.yml uses is the fix.
+          OLLAMA_API_KEY: ${{ steps.pick.outputs.provider == 'ollama-cloud' && secrets.OLLAMA_API_KEY || '' }}
         run: |
           set -u
           if [ "$SELECTED_PROVIDER" != "ollama-cloud" ]; then
@@ -406,7 +412,9 @@ jobs:
         # kill that takes the issue-filing steps with it.
         timeout-minutes: 32
         env:
-          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          # Same provider-gated mapping as the credential check above and as
+          # opencode-review.yml's `Review` step.
+          OLLAMA_API_KEY: ${{ steps.pick.outputs.provider == 'ollama-cloud' && secrets.OLLAMA_API_KEY || '' }}
           QA_MODEL: ${{ steps.pick.outputs.model }}
           BASE_URL: ${{ needs.journeys.outputs.base_url }}
           BROWSER_OUTCOME: ${{ steps.browser.outcome }}
