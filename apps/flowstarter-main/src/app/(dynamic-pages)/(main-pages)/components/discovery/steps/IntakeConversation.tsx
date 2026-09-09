@@ -314,9 +314,10 @@ export function IntakeConversation({
       <ConversationLog
         label={t('landing.discovery.chat.logLabel')}
         scrollSignal={answered.length + (editing ? 1 : 0) + (thinking ? 1 : 0)}
+        heightClassName="max-h-[42vh] min-h-[160px]"
       >
         <AgentMessageRow position={positionAt(0)} agentName={agentName}>
-          <ChatBubble tone="agent" position={positionAt(0)} animate>
+          <ChatBubble tone="agent" position={positionAt(0)} animate fitWidth>
             {t('landing.discovery.chat.intro')}
           </ChatBubble>
         </AgentMessageRow>
@@ -357,6 +358,7 @@ export function IntakeConversation({
               tone="agent"
               position={positionAt(currentSlotIndex)}
               animate
+              fitWidth
             >
               <div className="space-y-2.5">
                 {lastReflection && <p>{lastReflection}</p>}
@@ -383,6 +385,7 @@ export function IntakeConversation({
               tone="agent"
               position={positionAt(errorSlotIndex)}
               animate
+              fitWidth
             >
               {t(errorKey)}
             </ChatBubble>
@@ -459,7 +462,7 @@ function AnsweredTurn({
   return (
     <div className="space-y-2">
       <AgentMessageRow position={position} agentName={agentName}>
-        <ChatBubble tone="agent" position={position} animate>
+        <ChatBubble tone="agent" position={position} animate fitWidth>
           <div className="space-y-2.5">
             {reflection && <p>{reflection}</p>}
             <p>{prompt}</p>
@@ -511,7 +514,12 @@ function AnsweredTurn({
               </ChatBubble>
             ) : (
               <div className="flex justify-end">
-                <ChatBubble tone="earlier" position={answerPosition} animate>
+                <ChatBubble
+                  tone="earlier"
+                  position={answerPosition}
+                  animate
+                  fitWidth
+                >
                   {t('landing.discovery.chat.skipped')}
                 </ChatBubble>
               </div>

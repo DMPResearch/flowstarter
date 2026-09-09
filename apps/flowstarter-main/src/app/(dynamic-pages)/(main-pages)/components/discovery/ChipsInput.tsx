@@ -1,10 +1,16 @@
 import { useState } from 'react';
+import { SuggestionChips } from './steps/ConciergePanes';
 
 /**
  * Multi-select chips with freetext. Value is a comma-joined string so it
  * drops straight into the existing string fields (goal, brandTone) and the
  * API spec / LLM prompt with no model changes. Selected = presets toggled on
  * + any freetext the user adds.
+ *
+ * The preset grid renders through the shared `SuggestionChips` (capped
+ * height with scroll on a wide pane, a single scrollable row on a narrow
+ * one) so a question with many presets can't push the composer off screen
+ * the way an unbounded `flex-wrap` grid did.
  */
 export function ChipsInput({
   value,
@@ -47,7 +53,7 @@ export function ChipsInput({
 
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap gap-2">
+      <SuggestionChips>
         {presets.map((p) => {
           const active = has(p);
           return (
@@ -77,7 +83,7 @@ export function ChipsInput({
             {e} ✕
           </button>
         ))}
-      </div>
+      </SuggestionChips>
       <div className="flex gap-2">
         <input
           value={draft}

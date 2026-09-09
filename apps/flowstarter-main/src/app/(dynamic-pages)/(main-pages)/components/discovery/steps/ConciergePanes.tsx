@@ -368,6 +368,7 @@ export function ChatBubble({
   state,
   position = 'solo',
   animate = false,
+  fitWidth = false,
   children,
 }: {
   tone: BubbleTone;
@@ -382,6 +383,12 @@ export function ChatBubble({
    *  callers that redraw the same bubble every render (`InfoAgentStep`,
    *  `PreviewStep`) are unaffected. */
   animate?: boolean;
+  /** Hugs its own content, capped at 78% of the log, instead of stretching
+   *  to the full width of its row. Off by default: `PreviewStep`'s phase
+   *  and offer bubbles lay out buttons and lists that want the full row.
+   *  The two intake conversations turn this on for every bubble, since
+   *  theirs only ever hold a sentence or two. */
+  fitWidth?: boolean;
   children: ReactNode;
 }) {
   const enterClass = animate
@@ -390,11 +397,13 @@ export function ChatBubble({
   if (tone === 'you') {
     return (
       <div
-        className={['flex justify-end', enterClass].filter(Boolean).join(' ')}
+        className={['flex w-full justify-end', enterClass]
+          .filter(Boolean)
+          .join(' ')}
       >
         <span
           className={[
-            'max-w-[78%] px-3 py-1.5 text-[13px] leading-snug text-white bg-[var(--purple-primary)]',
+            'w-fit max-w-[78%] px-3 py-1.5 text-[13px] leading-snug text-white bg-[var(--purple-primary)]',
             bubbleCornerClass('right', position),
           ].join(' ')}
         >
@@ -414,7 +423,8 @@ export function ChatBubble({
           ? 'border-[var(--purple-primary)]/30 bg-[var(--purple-primary)]/[0.06] text-[var(--fs-ink)]'
           : tone === 'alert'
           ? 'border-amber-500/40 bg-amber-500/[0.08] text-[var(--fs-ink)]'
-          : 'border-[var(--purple-primary)]/15 bg-[var(--fs-bg-elevated)] text-[var(--fs-ink)]',
+          : 'border-[color-mix(in_oklab,var(--purple-primary)_22%,var(--fs-bg-elevated))] bg-[color-mix(in_oklab,var(--purple-primary)_7%,var(--fs-bg-elevated))] text-[var(--fs-ink)]',
+        fitWidth ? 'w-fit max-w-[78%]' : '',
         enterClass,
       ].join(' ')}
     >
@@ -472,9 +482,9 @@ export function AgentAvatar() {
     <span
       data-testid="agent-avatar"
       aria-hidden
-      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--purple-primary)]/20 bg-[var(--purple-primary)]/10"
+      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--purple-primary)]/25 bg-[var(--purple-primary)]/15"
     >
-      <Bot className="h-3.5 w-3.5 text-[var(--purple-primary)]" />
+      <Bot className="h-[18px] w-[18px] text-[var(--purple-primary)]" />
     </span>
   );
 }
@@ -499,7 +509,7 @@ export function AgentMessageRow({
   const headOfRun = position === 'solo' || position === 'first';
   return (
     <div className="flex items-start gap-2">
-      <div className="flex w-7 shrink-0 justify-center pt-0.5">
+      <div className="flex w-8 shrink-0 justify-center pt-0.5">
         {headOfRun && <AgentAvatar />}
       </div>
       <div className="min-w-0 flex-1 space-y-1">
@@ -530,7 +540,7 @@ export function TypingIndicator({
 }) {
   return (
     <div role="status" aria-label={label}>
-      <ChatBubble tone="agent" position={position} animate>
+      <ChatBubble tone="agent" position={position} animate fitWidth>
         <span className="inline-flex items-center gap-1 py-0.5" aria-hidden>
           {[0, 1, 2].map((index) => (
             <span
@@ -549,9 +559,26 @@ export function TypingIndicator({
  * A row of quick-reply chips (or a chip-shaped skip link), sitting above the
  * composer rather than inside a message bubble — the reply options are
  * controls the visitor operates, not something the agent said.
+ *
+ * Capped so a long option list never pushes the composer off screen: on a
+ * narrow pane it is one horizontally-scrolling row (`flex-nowrap`); from
+ * `sm:` up it wraps into rows inside a fixed-height (~88px) scroll region
+ * instead of growing without bound. `[&>*]:shrink-0` keeps each pill at its
+ * natural width in the scrolling row — without it a nowrap flex row squeezes
+ * its children the same way the visitor bubble used to (see `ChatBubble`).
  */
 export function SuggestionChips({ children }: { children: ReactNode }) {
-  return <div className="flex flex-wrap gap-2">{children}</div>;
+  return (
+    <div
+      className={[
+        'flex flex-nowrap items-start gap-2 overflow-x-auto overflow-y-hidden pb-1',
+        '[&>*]:shrink-0',
+        'sm:flex-wrap sm:max-h-[88px] sm:overflow-x-visible sm:overflow-y-auto sm:pb-0',
+      ].join(' ')}
+    >
+      {children}
+    </div>
+  );
 }
 
 /**
@@ -566,11 +593,21 @@ export function SuggestionChips({ children }: { children: ReactNode }) {
 export function ConversationLog({
   label,
   scrollSignal,
+  heightClassName = 'max-h-[46vh] min-h-[180px] min-[900px]:max-h-[calc(68vh-1.5rem)]',
   children,
 }: {
   label: string;
   /** Bump to scroll to the newest message (message count is the usual value). */
   scrollSignal?: number;
+  /** Overrides the log's own height. Defaults to the tall desktop allowance
+   *  tuned for `ConciergePanes`' two-column site-building layout (`InfoAgentStep`,
+   *  `PreviewStep`). The intake conversations pass a shorter, viewport-only
+   *  cap here: their modal is a single column with a composer and (on some
+   *  questions) a row of suggestion chips below the log, and the 68vh
+   *  desktop allowance left too little of the modal for either — the chips
+   *  and composer could end up below the fold even after the chips themselves
+   *  were capped (see `SuggestionChips`). */
+  heightClassName?: string;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -595,7 +632,7 @@ export function ConversationLog({
       role="log"
       aria-label={label}
       onScroll={onScroll}
-      className="max-h-[46vh] min-h-[180px] space-y-2 overflow-y-auto rounded-xl border border-[var(--fs-rule)] bg-[var(--fs-bg-elevated)]/40 p-3 min-[900px]:max-h-[calc(68vh-1.5rem)]"
+      className={`${heightClassName} space-y-2 overflow-y-auto rounded-xl border border-[var(--fs-rule)] bg-[var(--fs-bg-elevated)]/40 p-3`}
     >
       {children}
     </div>

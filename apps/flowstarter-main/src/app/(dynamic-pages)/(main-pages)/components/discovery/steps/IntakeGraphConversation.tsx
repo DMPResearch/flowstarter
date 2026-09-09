@@ -273,9 +273,10 @@ export function IntakeGraphConversation({
       <ConversationLog
         label={t('landing.discovery.chat.logLabel')}
         scrollSignal={answered.length + (busy ? 1 : 0)}
+        heightClassName="max-h-[42vh] min-h-[160px]"
       >
         <AgentMessageRow position={positionAt(0)} agentName={agentName}>
-          <ChatBubble tone="agent" position={positionAt(0)} animate>
+          <ChatBubble tone="agent" position={positionAt(0)} animate fitWidth>
             {t('landing.discovery.chat.intro')}
           </ChatBubble>
         </AgentMessageRow>
@@ -287,7 +288,7 @@ export function IntakeGraphConversation({
           return (
             <div key={question.id} className="space-y-2">
               <AgentMessageRow position={position} agentName={agentName}>
-                <ChatBubble tone="agent" position={position} animate>
+                <ChatBubble tone="agent" position={position} animate fitWidth>
                   {promptText(question, data, t)}
                 </ChatBubble>
               </AgentMessageRow>
@@ -309,6 +310,7 @@ export function IntakeGraphConversation({
               tone="agent"
               position={positionAt(combinedSlotIndex)}
               animate
+              fitWidth
             >
               <div className="space-y-2.5">
                 {showsNote && <p>{ask?.note}</p>}
@@ -339,6 +341,7 @@ export function IntakeGraphConversation({
               tone="alert"
               position={positionAt(errorSlotIndex)}
               animate
+              fitWidth
             >
               {t(errorKey)}
             </ChatBubble>
