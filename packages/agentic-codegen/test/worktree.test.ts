@@ -55,6 +55,14 @@ async function initRepo(): Promise<string> {
   const repositoryRoot = await deepTempDir('fs-repo');
   temporaryDirectories.push(repositoryRoot);
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repositoryRoot });
+  // Write the identity into the repository, not just onto the setup commit.
+  // `SafeGitWorktreeManager.commit` runs a plain `git commit` in the worktree
+  // and inherits whatever config it finds, and a CI runner has no global
+  // gitconfig: on Depot these tests failed with "Author identity unknown"
+  // while passing on any developer machine, which has one. A worktree shares
+  // its parent repository's config, so setting it here covers both.
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: repositoryRoot });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: repositoryRoot });
   execFileSync(
     'git',
     [
