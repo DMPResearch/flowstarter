@@ -160,24 +160,36 @@ Depot's store is separate from GitHub's. Import with
 `depot ci secrets add NAME --repo DMPResearch/flowstarter` and
 `depot ci vars add NAME --repo DMPResearch/flowstarter`.
 
-| Name                                | Kind   | Required for                                                                             | Absent means                                                                                     |
-| ----------------------------------- | ------ | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `OLLAMA_API_KEY`                    | secret | the agent layer                                                                          | the agent steps skip with a warning; the issue is filed from the journeys alone                  |
-| `E2E_CLERK_CLIENT_EMAIL`            | secret | `qa-02`                                                                                  | `qa-02` skips, so the verdict floor is `degraded`                                                |
-| `E2E_CLERK_CLIENT_PASSWORD`         | secret | `qa-02`                                                                                  | same                                                                                             |
-| `E2E_CLERK_OPERATOR_EMAIL`          | secret | `qa-03`                                                                                  | `qa-03` skips, so the verdict floor is `degraded`                                                |
-| `E2E_CLERK_OPERATOR_PASSWORD`       | secret | `qa-03`                                                                                  | same                                                                                             |
-| `CLERK_SECRET_KEY`                  | secret | the Testing Token bypass `qa-02`/`qa-03` use to get past Clerk's Client Trust protection | those journeys still sign in through the plain form, and may fail on device verification instead |
-| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | var    | same, alongside `CLERK_SECRET_KEY`                                                       | same. Not a secret: it already ships to every browser that loads the site                        |
-| `GH_REVIEW_TOKEN`                   | secret | a stable identity on the issue                                                           | the workflow token files it instead                                                              |
-| `QA_AGENT_MODEL`                    | var    | choosing the model                                                                       | defaults to `ollama-cloud/kimi-k3`                                                               |
-| `QA_UNLOCK_WORKSPACE_ID`            | var    | the unlock-page leg of `qa-05`                                                           | that leg is skipped and says so                                                                  |
-| `QA_STRIPE_CHECKOUT_URL`            | var    | the hosted-Checkout leg of `qa-05`                                                       | that leg is skipped and says so                                                                  |
+| Name                                | Kind   | Required for                                                                     | Absent means                                                                                |
+| ----------------------------------- | ------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `OLLAMA_API_KEY`                    | secret | the agent layer                                                                  | the agent steps skip with a warning; the issue is filed from the journeys alone             |
+| `E2E_CLERK_CLIENT_EMAIL`            | secret | `qa-02`                                                                          | `qa-02` skips, so the verdict floor is `degraded`                                           |
+| `E2E_CLERK_CLIENT_PASSWORD`         | secret | `qa-02`                                                                          | same                                                                                        |
+| `E2E_CLERK_OPERATOR_EMAIL`          | secret | `qa-03`                                                                          | `qa-03` skips, so the verdict floor is `degraded`                                           |
+| `E2E_CLERK_OPERATOR_PASSWORD`       | secret | `qa-03`                                                                          | same                                                                                        |
+| `CLERK_SECRET_KEY`                  | secret | the Testing Token `qa-02`/`qa-03` use to get past Clerk's bot/CAPTCHA protection | those journeys still sign in through the plain form, and may fail on bot protection instead |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | var    | same, alongside `CLERK_SECRET_KEY`                                               | same. Not a secret: it already ships to every browser that loads the site                   |
+| `GH_REVIEW_TOKEN`                   | secret | a stable identity on the issue                                                   | the workflow token files it instead                                                         |
+| `QA_AGENT_MODEL`                    | var    | choosing the model                                                               | defaults to `ollama-cloud/kimi-k3`                                                          |
+| `QA_UNLOCK_WORKSPACE_ID`            | var    | the unlock-page leg of `qa-05`                                                   | that leg is skipped and says so                                                             |
+| `QA_STRIPE_CHECKOUT_URL`            | var    | the hosted-Checkout leg of `qa-05`                                               | that leg is skipped and says so                                                             |
 
 The two QA users must be ordinary accounts on the deployment being walked: the
 client one an ordinary client with no team role, the operator one a team member.
 `qa-02` fails deliberately if the client user turns out to carry a team role,
 because that means it is checking the wrong surface.
+
+**Why their emails carry `+clerk_test`.** Both addresses
+(`qa-client+clerk_test@example.com`, `qa-operator+clerk_test@flowstarter.net`)
+use Clerk's fixed-test-address subaddress
+(https://clerk.com/docs/testing/test-emails-and-phones). A password sign-in
+from a browser Clerk has never seen answers with `needs_client_trust`
+(Client Trust, its device-verification protection), which `LoginForm.tsx`
+now handles as the first-factor step-up it is, and which `e2e/support/clerk-sign-in.ts`
+answers with Clerk's fixed development-instance code (`424242`), valid only
+for a `+clerk_test` identity. A Testing Token does not reach this: verified
+against production with one active, `client.captcha_bypass` was `true` on
+the wire and `needs_client_trust` still came back.
 
 **On the two optional `qa-05` vars.** Reaching Stripe's hosted Checkout means
 creating a Checkout Session, which is a write to Stripe and needs a signed-in

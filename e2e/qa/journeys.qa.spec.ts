@@ -32,7 +32,7 @@
  *   - it never opens another tenant's workspace
  */
 import type { Page } from '@playwright/test';
-import { bypassClerkBotProtection } from '../support/clerk-testing-token';
+import { signInThroughForm } from '../support/clerk-sign-in';
 // `test` comes from the fixture, not from @playwright/test: it records the
 // routes each journey reaches so scripts/e2e-route-coverage.mjs can merge
 // them. Every spec in e2e/ imports it this way; a bare import records
@@ -104,22 +104,14 @@ function note(description: string, type = 'journey'): void {
 /**
  * Sign in through the form a person uses.
  *
- * Not `@clerk/testing`'s `clerk.signIn()`, which the preview suite uses:
- * that signs in programmatically and never touches the form. This lane
- * fills `#email` and `#password` and clicks "Sign in" itself, because the
- * form is the thing under test here.
- *
- * It does, however, install `@clerk/testing`'s Testing Token bypass first
- * (`bypassClerkBotProtection`, `e2e/support/clerk-testing-token.ts`), when
- * `CLERK_SECRET_KEY` is present: on a fresh CI browser, Clerk's Client Trust
- * protection treats every sign-in as a device it has never seen and gates
- * it behind a step-up the QA credentials cannot answer (no inbox to read a
- * code from). A Testing Token is Clerk's own, sanctioned way through that
- * gate for automated testing, without weakening it for a real visitor. When
- * the token cannot be minted (`CLERK_SECRET_KEY` absent), sign-in still
- * attempts the plain form and is noted as running without the bypass,
- * consistent with the credentials-missing skip below: this warns rather
- * than silently changing what a red result means.
+ * Not `@clerk/testing`'s `clerk.signIn()`, which never touches the form:
+ * this lane fills `#email` and `#password` and clicks "Sign in" itself,
+ * because the form is the thing under test here. `signInThroughForm`
+ * (`e2e/support/clerk-sign-in.ts`, shared with `global.setup.ts`) installs
+ * the Testing Token bypass for bot/CAPTCHA protection first, then answers
+ * Client Trust's "Verify this device" step with Clerk's fixed
+ * development-instance code if it appears, which it will on a fresh CI
+ * browser signing in as one of the two `+clerk_test` QA identities.
  */
 async function signIn(
   page: Page,
@@ -127,25 +119,13 @@ async function signIn(
   email: string,
   password: string,
 ): Promise<void> {
-  const bypassed = await bypassClerkBotProtection(page);
-  if (!bypassed) {
+  const result = await signInThroughForm(page, path, email, password);
+  if (!result.botProtectionBypassed) {
     note(
-      'CLERK_SECRET_KEY not set, so this sign-in ran without the Client Trust bypass; a device-verification step-up would fail it the way a wrong password would.',
+      'CLERK_SECRET_KEY not set, so this sign-in ran without the Testing Token bypass; a bot-protection or Client Trust check may have failed it the way a wrong password would.',
       'warning',
     );
   }
-  await page.goto(path, { waitUntil: 'domcontentloaded' });
-  const emailField = page.locator('#email');
-  await expect(
-    emailField,
-    `${path} did not render its sign-in form`,
-  ).toBeVisible({ timeout: 30_000 });
-  await emailField.fill(email);
-  await page.locator('#password').fill(password);
-  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await page.waitForURL((url) => !url.pathname.endsWith('/login'), {
-    timeout: 45_000,
-  });
 }
 
 test.describe('Daily QA journeys', () => {

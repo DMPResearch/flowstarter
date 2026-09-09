@@ -1,13 +1,18 @@
 /**
  * Clerk Testing Tokens for specs that sign in through the real form.
  *
- * A Testing Token is Clerk's own, backend-API-issued bypass for bot
- * detection and Client Trust (device verification) on a development
- * instance: https://clerk.com/docs/testing/overview. It is the sanctioned
- * way to test *through* those protections without weakening them for real
- * traffic, which is why the daily QA lane and the release lane's
- * authenticated journey use it rather than asking Clerk to turn Client
- * Trust off.
+ * A Testing Token is Clerk's own, backend-API-issued bypass for bot and
+ * CAPTCHA protection on a development instance:
+ * https://clerk.com/docs/testing/overview. It is the sanctioned way to test
+ * *through* that layer without weakening it for real traffic.
+ *
+ * It does NOT bypass Client Trust (device verification, the
+ * `needs_client_trust` status `LoginForm.tsx` now handles): verified
+ * against production with the token active, `client.captcha_bypass` was
+ * `true` on the wire and `needs_client_trust` still came back. Client Trust
+ * is answered separately, with Clerk's fixed development-instance
+ * verification code, in `./clerk-sign-in.ts`. That is why the two QA
+ * identities carry a `+clerk_test` subaddress (see docs/daily-qa.md).
  *
  * `clerkSetup()` (from `@clerk/testing`, already a dependency, see
  * `global.setup.ts`) is what mints the token: `POST
@@ -22,13 +27,6 @@
  * flag set server-side. It has to run before the page's first navigation to
  * a Clerk-backed route: after that, the page has already asked Clerk
  * without the token attached.
- *
- * Unlike `global.setup.ts`'s one-time operator sign-in, this does not call
- * `clerk.signIn()`: the specs that use this still fill in `#email` and
- * `#password` and click "Sign in" themselves, because the sign-in form
- * being exercised is the point of those specs. Testing Tokens only remove
- * the device-trust and bot-detection gate in front of that form, not the
- * form itself.
  */
 import { clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
 import type { Page } from '@playwright/test';

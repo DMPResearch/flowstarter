@@ -22,6 +22,7 @@ import {
   operatorPassword,
   STORAGE_STATE,
 } from './support/clerk-env';
+import { signInThroughForm } from './support/clerk-sign-in';
 
 setup.describe.configure({ mode: 'serial' });
 
@@ -36,33 +37,26 @@ setup('authenticate as operator', async ({ page }) => {
 
   await mkdir(dirname(STORAGE_STATE), { recursive: true });
 
-  // Must precede navigation — it injects the token that bypasses Clerk's bot
-  // detection for this page.
-  await setupClerkTestingToken({ page });
-
-  // Land on /login rather than /. ClerkProvider wraps the root layout, but
-  // Clerk v7 boots its JS lazily, so `window.Clerk.loaded` never flips on a
-  // page with no Clerk component and clerk.signIn() times out waiting for it.
-  // The sign-in route mounts <SignIn/>, which forces the load.
-  await page.goto('/login');
-  await clerk.loaded({ page });
-
-  // With CLERK_SECRET_KEY set, the `emailAddress` form signs the user in
-  // through Clerk's backend API and skips verification entirely — no password
-  // and no inbox needed. The password strategy stays available for instances
-  // that require it.
-  await clerk.signIn({
-    page,
-    ...(operatorPassword
-      ? {
-          signInParams: {
-            strategy: 'password',
-            identifier: operatorEmail,
-            password: operatorPassword,
-          },
-        }
-      : { emailAddress: operatorEmail }),
-  });
+  if (operatorPassword) {
+    // The same path a person and the QA journeys use
+    // (e2e/support/clerk-sign-in.ts): fills the real form, and answers
+    // Client Trust's "Verify this device" step with Clerk's fixed
+    // development-instance code if it appears, which it will on a fresh CI
+    // browser signing in as `operatorEmail`'s `+clerk_test` identity.
+    await signInThroughForm(page, '/login', operatorEmail, operatorPassword);
+  } else {
+    // No password on hand: fall back to a pre-authenticated ticket, minted
+    // from CLERK_SECRET_KEY, which never asks a first factor at all and so
+    // never meets Client Trust either.
+    await setupClerkTestingToken({ page });
+    // Land on /login rather than /. ClerkProvider wraps the root layout, but
+    // Clerk v7 boots its JS lazily, so `window.Clerk.loaded` never flips on
+    // a page with no Clerk component and clerk.signIn() times out waiting
+    // for it. The sign-in form mounts on this route, which forces the load.
+    await page.goto('/login');
+    await clerk.loaded({ page });
+    await clerk.signIn({ page, emailAddress: operatorEmail });
+  }
 
   // Prove the session is real *and* carries a team/admin role before saving it:
   // a signed-in user without that role still bounces off /admin/dashboard, and
