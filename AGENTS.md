@@ -156,7 +156,10 @@ add`), scoped to this repo. The names in use:
 ## Readiness
 
 `readiness/journeys.json` lists the MVP journeys -- intake through to
-cancellation -- with the routes and the spec behind each. `node
+cancellation -- with the routes and the spec behind each. The daily QA lane
+(`e2e/qa/journeys.qa.spec.ts`) walks several of them against a live
+deployment; it records route coverage like every other spec, because it
+imports `test` from `e2e/support/coverage-fixture.ts`. `node
 scripts/mvp-readiness.mjs` scores every one on unit coverage of its API
 handlers, whether a Playwright spec walks it, and whether the production
 synthetic checks it, and writes the generated `readiness/README.md`.

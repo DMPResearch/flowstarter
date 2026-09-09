@@ -50,6 +50,7 @@ const WORKSPACE_B = '7c2a91b4-3d5e-4a17-9f88-1b2c3d4e5f60';
 const WORKSPACE_BURST = '5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d';
 const ASSET_CONFIRMED = '11111111-1111-4111-8111-111111111111';
 const ASSET_UNCONFIRMED = '22222222-2222-4222-8222-222222222222';
+const CHANGE_REQUEST = '44444444-4444-4444-8444-444444444444';
 
 // ── Clerk ──────────────────────────────────────────────────────────────────
 // Mirrors src/lib/__tests__/workspace-access.test.ts.
@@ -336,6 +337,11 @@ function params(workspaceId: string, path?: string[]) {
   };
 }
 
+/** The change-request routes carry a second segment in their params. */
+function changeParams(workspaceId: string, changeId: string) {
+  return { params: Promise.resolve({ workspaceId, changeId }) };
+}
+
 /** Everything the handlers read that is not the membership check itself. */
 function dataQueries() {
   return db.queries.filter((query) => query.table !== 'workspace_memberships');
@@ -422,6 +428,15 @@ describe('a workspace that is not yours', () => {
         'preview',
         () => PREVIEW(get('/x'), params(WORKSPACE_B, ['index.html'])),
       ],
+      ['changes:list', () => LIST_CHANGES(get('/x'), params(WORKSPACE_B))],
+      [
+        'changes:respond',
+        () =>
+          RESPOND(
+            post('/x', { decision: 'accept' }),
+            changeParams(WORKSPACE_B, CHANGE_REQUEST)
+          ),
+      ],
     ];
 
     for (const [name, call] of cases) {
@@ -433,6 +448,9 @@ describe('a workspace that is not yours', () => {
     expect(inlineEdit.calls).toHaveLength(0);
     expect(db.downloads).toEqual([]);
     expect(db.rows('site_versions')).toEqual([]);
+    // The other tenant's change requests were neither read nor answered.
+    expect(db.rows('change_requests')).toEqual([]);
+    expect(db.rows('project_events')).toEqual([]);
   });
 
   it('asks a signed-out caller to sign in rather than pretending it is missing', async () => {
@@ -1709,10 +1727,6 @@ function respond(
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-}
-
-function changeParams(workspaceId: string, changeId: string) {
-  return { params: Promise.resolve({ workspaceId, changeId }) };
 }
 
 function changeRow(id: string): Row | undefined {

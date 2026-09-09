@@ -31,27 +31,55 @@ import { join, relative } from 'node:path';
 const SRC_DIR = join(__dirname, '..', 'src');
 
 /**
- * Tables that carry a `workspace_id` column. `workspaces` is included even
- * though its tenant column is its own `id` (see the allow-list below) --
- * listing it here keeps this test honest about which tables it is
- * deliberately relaxing, rather than skipping them silently.
+ * Every table that carries a `workspace_id` column, as of the tenant
+ * isolation audit in `supabase/migrations/20260909143500_tenant_isolation_hardening.sql`.
+ * `workspaces` is included even though its tenant column is its own `id` (see
+ * the allow-list below) -- listing it here keeps this test honest about which
+ * tables it is deliberately relaxing, rather than skipping them silently.
+ *
+ * The worker queries five of these today. The rest are listed because the
+ * guard has to be standing before the query arrives, not after: a worker that
+ * grows an unfiltered read of `site_versions` next month fails here, at the
+ * moment it is written.
+ *
+ * Deliberately NOT in this set, because their tenant key is not
+ * `workspace_id` and the filter this guard looks for could not express it:
+ *   discovery_leads      project_id, referencing workspaces(id)
+ *   funnel_previews      claimed_workspace_id, and null until a claim
+ *   selfserve_builds     project_id, into selfserve_projects
+ *   selfserve_payments   project_id, into selfserve_projects
+ * The self-serve pair have no workspace behind them at all. All four are
+ * server-only in the database and proved so by
+ * `apps/flowstarter-main/scripts/verify-rls-local.mjs`; this worker has no
+ * query on any of them.
  */
 const TENANT_TABLES = new Set([
   'workspaces',
+  // Queried by this worker today.
   'flowstarter_agent_jobs',
   'flowstarter_agent_job_events',
   'flowstarter_project_artifacts',
+  // Not queried yet. The guard stands anyway.
+  'ai_audit_logs',
+  'asset_rights_confirmations',
   'assets',
+  'brand_signals',
+  'client_constraint_profiles',
+  'commerce_products',
+  'deployments',
+  'editor_sessions',
+  'flowstarter_change_requests',
+  'intake_submissions',
+  'leads',
+  'llm_usage',
   'project_events',
   'project_messages',
-  'llm_usage',
-  'intake_submissions',
-  'brand_signals',
-  'asset_rights_confirmations',
-  // The worker has no query on these two yet. They are listed so the guard is
-  // already standing when it grows one, rather than after.
-  'flowstarter_change_requests',
+  'setup_payment_milestones',
   'site_versions',
+  'vault_encrypted_secrets',
+  'workspace_billing_profiles',
+  'workspace_hosts',
+  'workspace_memberships',
 ]);
 
 interface AllowListEntry {

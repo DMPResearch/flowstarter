@@ -1,0 +1,613 @@
+##############################################################################
+# daily-qa.yml
+#
+# Once a day, something walks the live product the way a customer would and
+# writes down what it found.
+#
+# Two layers, in one workflow, in this order on purpose:
+#
+#   1. `journeys` runs a small set of deterministic Playwright journeys
+#      (e2e/qa/journeys.qa.spec.ts) against the live site. They are the facts:
+#      the same five checks every night, pass or fail, no model involved.
+#   2. `agent` hands those facts to OpenCode, which then explores the same
+#      site in a real browser for up to twenty minutes and writes the verdict.
+#      It runs `if: always()`, so a red journey is something the agent reads
+#      and explains rather than something that silences it.
+#
+# The verdict is posted as a GitHub issue titled `Daily QA <date>: <verdict>`.
+# `broken` fails this workflow so it shows red on the Actions page. `degraded`
+# and `healthy` stay green: a degraded day is a thing to read, not an alarm to
+# wake up to, and a lane that goes red for both teaches people to ignore red.
+#
+# WHY THIS IS NOT THE PRODUCTION SYNTHETIC. `.depot/workflows/prod-synthetic.yml`
+# runs every six hours and writes nothing at all, which is what lets it block.
+# This lane is read-MOSTLY: journey qa-01 answers the intake conversation as a
+# canary business, which writes a `funnel_previews` row and spends real model
+# budget. That is why it runs once a day and not on a six-hour timer, and why
+# the canary is loudly named. See docs/daily-qa.md.
+#
+# The verdict floor is computed here, in shell, from the journey results, and
+# the agent can only make it worse. A model that reports `healthy` over a
+# failed journey does not get to. Rules decide, models phrase.
+#
+# Secrets and variables an operator sets (Depot's store, not GitHub's):
+#   OLLAMA_API_KEY              required for the agent layer. Absent, the
+#                               agent steps skip with a warning and the issue
+#                               is filed from the deterministic layer alone.
+#   E2E_CLERK_CLIENT_EMAIL      required for journey qa-02. Absent, it skips.
+#   E2E_CLERK_CLIENT_PASSWORD   same.
+#   E2E_CLERK_OPERATOR_EMAIL    required for journey qa-03. Absent, it skips.
+#   E2E_CLERK_OPERATOR_PASSWORD same.
+#   GH_REVIEW_TOKEN             optional. The issue is filed under it when
+#                               present, so it carries a stable identity;
+#                               absent, the workflow token files it.
+#   vars.QA_AGENT_MODEL         optional. Default `ollama-cloud/kimi-k3`.
+#   vars.QA_UNLOCK_WORKSPACE_ID optional. A disposable workspace whose deposit
+#                               button journey qa-05 may look at. Never
+#                               clicked.
+#   vars.QA_STRIPE_CHECKOUT_URL optional. A disposable Stripe hosted Checkout
+#                               URL journey qa-05 may open to confirm the
+#                               test-mode banner. Never completed.
+##############################################################################
+
+name: Daily QA
+on:
+  schedule:
+    # 05:00 UTC, before the working day in Bucharest.
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: 'Origin to walk (no trailing slash)'
+        required: false
+        default: 'https://flowstarter.net'
+      journeys:
+        description: 'Journey filter: `all`, or a regex matched against the test titles (for example `qa-04`)'
+        required: false
+        default: 'all'
+# Never cancel a run in progress. A cancelled journey qa-01 leaves a canary
+# intake half-answered and a generation running with nobody watching it.
+concurrency:
+  group: daily-qa-depot
+  cancel-in-progress: false
+permissions:
+  contents: read
+  # The verdict is filed as an issue.
+  issues: write
+env:
+  NODE_VERSION: '22'
+  # Tracks @playwright/test in this repository. A mismatch between the
+  # container's browsers and the installed client is the usual reason a spec
+  # dies on startup.
+  PLAYWRIGHT_IMAGE: 'mcr.microsoft.com/playwright:v1.58.2-noble'
+
+jobs:
+  journeys:
+    name: Deterministic journeys
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      base_url: ${{ steps.target.outputs.url }}
+      summary: ${{ steps.report.outputs.summary }}
+      table: ${{ steps.report.outputs.table }}
+      passed: ${{ steps.report.outputs.passed }}
+      failed: ${{ steps.report.outputs.failed }}
+      skipped: ${{ steps.report.outputs.skipped }}
+      floor: ${{ steps.report.outputs.floor }}
+    steps:
+      - name: Resolve the target origin
+        id: target
+        env:
+          DISPATCH_URL: ${{ github.event.inputs.base_url }}
+          VAR_URL: ${{ vars.PROD_URL }}
+        run: |
+          url="${DISPATCH_URL:-}"
+          [ -n "$url" ] || url="${VAR_URL:-}"
+          [ -n "$url" ] || url="https://flowstarter.net"
+          url="${url%/}"
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
+          echo "Walking ${url}" >> "$GITHUB_STEP_SUMMARY"
+      # The `secrets` context is not readable from a step-level `if`, so
+      # presence is turned into an output here. A missing credential is not an
+      # error: the journeys that need it skip and say so in the report, which
+      # is more useful than a red lane that only means "no key here".
+      - name: Check the QA sign-in credentials
+        id: creds
+        env:
+          E2E_CLERK_CLIENT_EMAIL: ${{ secrets.E2E_CLERK_CLIENT_EMAIL }}
+          E2E_CLERK_CLIENT_PASSWORD: ${{ secrets.E2E_CLERK_CLIENT_PASSWORD }}
+          E2E_CLERK_OPERATOR_EMAIL: ${{ secrets.E2E_CLERK_OPERATOR_EMAIL }}
+          E2E_CLERK_OPERATOR_PASSWORD: ${{ secrets.E2E_CLERK_OPERATOR_PASSWORD }}
+        run: |
+          set -u
+          missing=
+          for name in E2E_CLERK_CLIENT_EMAIL E2E_CLERK_CLIENT_PASSWORD \
+                      E2E_CLERK_OPERATOR_EMAIL E2E_CLERK_OPERATOR_PASSWORD; do
+            # Presence only. The value is never echoed, here or anywhere else.
+            if [ -z "${!name:-}" ]; then
+              missing="${missing:+$missing, }$name"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::warning::Missing QA credentials (${missing}); the signed-in journeys will skip."
+            echo "Missing QA credentials: ${missing}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "missing=${missing}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install chromium --with-deps
+      # `continue-on-error` because a failed journey is the input to the
+      # verdict, not a reason to stop before the verdict exists. The floor
+      # computed below is what turns a failure red.
+      - name: Walk the journeys
+        id: walk
+        continue-on-error: true
+        env:
+          CI: 'true'
+          QA_JOURNEYS: '1'
+          PLAYWRIGHT_BASE_URL: ${{ steps.target.outputs.url }}
+          PLAYWRIGHT_JSON_OUTPUT_NAME: qa-journeys-report.json
+          JOURNEY_FILTER: ${{ github.event.inputs.journeys || 'all' }}
+          E2E_CLERK_CLIENT_EMAIL: ${{ secrets.E2E_CLERK_CLIENT_EMAIL }}
+          E2E_CLERK_CLIENT_PASSWORD: ${{ secrets.E2E_CLERK_CLIENT_PASSWORD }}
+          E2E_CLERK_OPERATOR_EMAIL: ${{ secrets.E2E_CLERK_OPERATOR_EMAIL }}
+          E2E_CLERK_OPERATOR_PASSWORD: ${{ secrets.E2E_CLERK_OPERATOR_PASSWORD }}
+          QA_UNLOCK_WORKSPACE_ID: ${{ vars.QA_UNLOCK_WORKSPACE_ID }}
+          QA_STRIPE_CHECKOUT_URL: ${{ vars.QA_STRIPE_CHECKOUT_URL }}
+        run: |
+          set -u
+          # `--retries=0` overrides the config's CI default of 2. Retrying is
+          # right for a lane that reads; here it would answer the canary
+          # intake three times in one night, spend three generations, and
+          # leave three preview rows behind. One walk a day is the whole
+          # premise, and a flake is a finding like any other.
+          if [ "$JOURNEY_FILTER" = "all" ] || [ -z "$JOURNEY_FILTER" ]; then
+            pnpm exec playwright test --project qa-journeys \
+              --retries=0 --reporter=list,html,json
+          else
+            pnpm exec playwright test --project qa-journeys \
+              --grep "$JOURNEY_FILTER" --retries=0 --reporter=list,html,json
+          fi
+      # One row per journey, straight out of the JSON report, so the issue and
+      # the agent's prompt both read the same numbers.
+      - name: Read the journey report
+        id: report
+        run: |
+          set -u
+          report=qa-journeys-report.json
+          if [ ! -f "$report" ]; then
+            echo "::error::The journeys produced no JSON report."
+            {
+              echo "table<<QA_TABLE_EOF"
+              echo "| Journey | Result | Evidence |"
+              echo "| --- | --- | --- |"
+              echo "| (none) | fail | Playwright wrote no JSON report; the run died before the first journey. |"
+              echo "QA_TABLE_EOF"
+              echo "summary<<QA_SUMMARY_EOF"
+              echo "The journeys produced no JSON report at all."
+              echo "QA_SUMMARY_EOF"
+              echo "passed=0"
+              echo "failed=1"
+              echo "skipped=0"
+              echo "floor=broken"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # `.. | .specs?` walks however deep the suite nesting happens to be.
+          # `tests[0].status` is Playwright's own verdict for the spec across
+          # retries: expected / unexpected / skipped / flaky. The evidence
+          # column is the annotations this spec pushes plus, when it failed,
+          # the assertion message, flattened onto one line so the markdown
+          # table survives.
+          jq -r '
+            [ .. | .specs? // empty | .[] ]
+            | .[]
+            | . as $spec
+            | ($spec.tests[0].status // "unknown") as $status
+            | ($spec.tests[0].annotations // []) as $notes
+            | [
+                $spec.title,
+                $status,
+                (
+                  [ $notes[]
+                    | select(.type == "evidence" or .type == "generation"
+                             or .type == "phases" or .type == "canary-row"
+                             or .type == "skipped-leg" or .type == "skip")
+                    | .description ]
+                  + [ $spec.tests[0].results[0].error.message // empty ]
+                  | map(gsub("\u001b\\[[0-9;]*m"; "")
+                        | gsub("\\s+"; " ")
+                        | gsub("\\|"; "/"))
+                  | .[0:3]
+                  | join(" // ")
+                )
+              ]
+            | @tsv
+          ' "$report" > /tmp/qa-rows.tsv
+
+          passed=0
+          failed=0
+          skipped=0
+          {
+            echo "table<<QA_TABLE_EOF"
+            echo "| Journey | Result | Evidence |"
+            echo "| --- | --- | --- |"
+            while IFS=$'\t' read -r title status evidence; do
+              [ -n "$title" ] || continue
+              case "$status" in
+                expected|flaky) result=pass; passed=$((passed + 1)) ;;
+                skipped) result=skipped; skipped=$((skipped + 1)) ;;
+                *) result=fail; failed=$((failed + 1)) ;;
+              esac
+              printf '| %s | %s | %s |\n' "$title" "$result" "${evidence:-(no evidence recorded)}"
+            done < /tmp/qa-rows.tsv
+            echo "QA_TABLE_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          # The floor the agent cannot argue its way under.
+          if [ "$failed" -gt 0 ]; then
+            floor=broken
+          elif [ "$skipped" -gt 0 ]; then
+            floor=degraded
+          else
+            floor=healthy
+          fi
+
+          {
+            echo "summary<<QA_SUMMARY_EOF"
+            echo "${passed} passed, ${failed} failed, ${skipped} skipped. Deterministic floor: ${floor}."
+            echo "QA_SUMMARY_EOF"
+            echo "passed=${passed}"
+            echo "failed=${failed}"
+            echo "skipped=${skipped}"
+            echo "floor=${floor}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "${passed} passed, ${failed} failed, ${skipped} skipped (floor ${floor})." \
+            >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the journey report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-qa-journeys
+          path: |
+            playwright-report/
+            qa-journeys-report.json
+            e2e/screenshots/
+            test-results/
+          retention-days: 30
+          if-no-files-found: warn
+
+  agent:
+    name: QA agent
+    needs: journeys
+    # A red journey is the agent's most interesting input, not a reason to
+    # skip it.
+    if: always()
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Pick the agent model
+        id: pick
+        env:
+          QA_AGENT_MODEL: ${{ vars.QA_AGENT_MODEL || 'ollama-cloud/kimi-k3' }}
+        run: |
+          set -u
+          model=$QA_AGENT_MODEL
+          case "$model" in
+            '' | *[!A-Za-z0-9._:/-]*)
+              model=unsupported
+              provider=unsupported
+              ;;
+            ollama-cloud/*) provider=ollama-cloud ;;
+            *)
+              model=unsupported
+              provider=unsupported
+              ;;
+          esac
+          echo "model=$model" >> "$GITHUB_OUTPUT"
+          echo "provider=$provider" >> "$GITHUB_OUTPUT"
+          echo "QA agent model: $model" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check the model credential
+        id: creds
+        env:
+          SELECTED_PROVIDER: ${{ steps.pick.outputs.provider }}
+          SELECTED_MODEL: ${{ steps.pick.outputs.model }}
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+        run: |
+          set -u
+          if [ "$SELECTED_PROVIDER" != "ollama-cloud" ]; then
+            echo "::warning::Unsupported QA agent model ${SELECTED_MODEL}; the agent layer is skipped and the issue is filed from the deterministic layer alone."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$OLLAMA_API_KEY" ]; then
+            echo "::warning::OLLAMA_API_KEY is not set; the agent layer is skipped and the issue is filed from the deterministic layer alone."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check out the repository
+        if: steps.creds.outputs.present == 'true'
+        uses: actions/checkout@v4
+      - name: Fetch the journey report
+        if: steps.creds.outputs.present == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: daily-qa-journeys
+          path: journeys-artifact
+      # A URL alone only gives the agent curl. Pull a pinned, isolated
+      # Chromium environment so it can walk the site like a visitor. Best
+      # effort: a registry outage must not suppress the verdict, and no
+      # repository or model credential is mounted into the browser container.
+      - name: Prepare a real browser for the agent
+        id: browser
+        if: steps.creds.outputs.present == 'true'
+        continue-on-error: true
+        run: docker pull "$PLAYWRIGHT_IMAGE"
+      - name: Install OpenCode
+        if: steps.creds.outputs.present == 'true'
+        run: |
+          curl -fsSL https://opencode.ai/install | bash
+          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+      # An agent explores with real git, and some of what it reaches for
+      # refuses to run without an identity. The address is deliberately
+      # unroutable (.invalid is reserved by RFC 2606), so a commit that
+      # somehow appears from this job cannot be mistaken for a person's.
+      - name: Give the agent a git identity
+        if: steps.creds.outputs.present == 'true'
+        run: |
+          git config --global user.email "qa@flowstarter.invalid"
+          git config --global user.name "Flowstarter QA runner"
+      - name: Explore the live site
+        id: explore
+        if: steps.creds.outputs.present == 'true'
+        # A model provider error is an ordinary outcome here. The issue still
+        # gets filed, from the deterministic layer, by the steps after this.
+        continue-on-error: true
+        # A ceiling below the job's 45, so a hung model is an ordinary step
+        # failure with the run still alive around it rather than a job-level
+        # kill that takes the issue-filing steps with it.
+        timeout-minutes: 32
+        env:
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          QA_MODEL: ${{ steps.pick.outputs.model }}
+          BASE_URL: ${{ needs.journeys.outputs.base_url }}
+          BROWSER_OUTCOME: ${{ steps.browser.outcome }}
+          JOURNEY_TABLE: ${{ needs.journeys.outputs.table }}
+          JOURNEY_SUMMARY: ${{ needs.journeys.outputs.summary }}
+        run: |
+          set -u
+          report=journeys-artifact/qa-journeys-report.json
+          if [ -f "$report" ]; then
+            report_note="The full JSON report is at ${report} in this working directory. Read it."
+          else
+            report_note="The JSON report did not survive the artifact hand-off; work from the table above alone and say so."
+          fi
+
+          prompt=$(cat <<PROMPT_EOF
+          You are the daily QA agent for Flowstarter. The live site is ${BASE_URL}.
+
+          The deterministic journeys have already run. Their results:
+
+          ${JOURNEY_TABLE}
+
+          ${JOURNEY_SUMMARY}
+
+          ${report_note}
+
+          Read AGENTS.md in this repository first. It is the source of truth for
+          the conventions here, including the copy rules you are checking
+          against.
+
+          Now go and look at the site yourself, in a real browser, for at most
+          twenty minutes. Use the pinned Playwright container; write throwaway
+          specs under /tmp/flowstarter-daily-qa and run them there. Pass no host
+          credential into the container.
+
+            docker run --rm -e FLOWSTARTER_BASE_URL='${BASE_URL}' \\
+              -v /tmp/flowstarter-daily-qa:/work -w /work \\
+              ${PLAYWRIGHT_IMAGE} bash -lc \\
+              'npm init -y >/dev/null && npm install --no-save @playwright/test@1.58.2 >/dev/null && npx playwright test --reporter=line'
+
+          Browser preparation result: ${BROWSER_OUTCOME}. If it did not succeed,
+          work from HTTP requests alone and say so in your verdict.
+
+          RULES. These are not advice.
+          - Read-mostly. The only business you may ever describe is the canary,
+            "QA Canary Bakery", with the address qa-canary@flowstarter.invalid.
+            Never invent a plausible-looking customer.
+          - Never submit a payment, never type card details, never complete a
+            Stripe Checkout. Stopping at the hosted Checkout page is as far as
+            you go.
+          - Never open, read or change another tenant's workspace or data.
+          - Sign in only as the QA users, and only if their credentials reached
+            the journeys job. If they did not, the signed-in surfaces are out of
+            reach, and that is a fact to report rather than a thing to work
+            around.
+          - Do not re-file a defect the journeys already covered unless you saw
+            something they did not.
+
+          What to look for, as a first-time visitor would meet it:
+          - broken flows: a button that does nothing, a form that cannot be
+            completed, a redirect loop, a page that renders an error boundary
+          - dead links, including in the header and the footer
+          - console errors and failed network requests on the public pages
+          - layout breakage at a phone viewport (390x844), especially
+            horizontal overflow and text colliding with its container
+          - copy problems: em dashes, emojis, placeholder text, lorem ipsum, a
+            Romanian string on an English page or the reverse, a price that
+            disagrees with another page
+          - anything a first-time visitor would trip on
+
+          END YOUR REPLY IN EXACTLY THIS SHAPE, and write nothing after it:
+
+          1. A markdown table of the journeys, one row each, columns Journey,
+             Result, Evidence. Copy the deterministic rows above verbatim and
+             add a row for anything you exercised yourself.
+          2. A "Findings" section, ranked worst first. Each finding gets a
+             severity (blocker, major, minor), one sentence of what is wrong,
+             and the exact steps to reproduce it, numbered, starting from a URL.
+             No finding without steps.
+          3. A single final line, exactly one of:
+          Verdict: healthy
+          Verdict: degraded
+          Verdict: broken
+
+          Use "broken" when a visitor cannot complete a flow the business sells.
+          Use "degraded" when something is wrong but every flow still completes.
+          Use "healthy" when you found nothing worth waking anyone for.
+
+          Write prose. Never emit tool-call syntax into the reply. Use no em
+          dashes and no emojis anywhere: this repository forbids both, and a
+          verdict containing one is reporting a defect it committed itself.
+          PROMPT_EOF
+          )
+
+          opencode run --model "$QA_MODEL" "$prompt" 2>&1 | tee /tmp/qa-verdict.md
+      # Everything below runs whatever happened above, including when the
+      # agent layer was skipped for want of a key. The issue is the product of
+      # this workflow, and a silent green run is indistinguishable from a
+      # healthy one.
+      - name: Decide the verdict
+        id: verdict
+        if: always()
+        env:
+          FLOOR: ${{ needs.journeys.outputs.floor }}
+          AGENT_PRESENT: ${{ steps.creds.outputs.present }}
+          AGENT_OUTCOME: ${{ steps.explore.outcome }}
+        run: |
+          set -u
+          floor="${FLOOR:-broken}"
+          case "$floor" in
+            healthy | degraded | broken) ;;
+            *) floor=broken ;;
+          esac
+
+          agent_verdict=
+          if [ -f /tmp/qa-verdict.md ]; then
+            agent_verdict=$(grep -Eio '^Verdict:[[:space:]]*(healthy|degraded|broken)[[:space:]]*$' \
+              /tmp/qa-verdict.md | tail -1 | awk '{print tolower($2)}')
+          fi
+
+          # Rank them, then take the worse of the two. The agent can report a
+          # problem the journeys did not see; it cannot report away one they
+          # did.
+          rank() {
+            case "$1" in
+              healthy) echo 0 ;;
+              degraded) echo 1 ;;
+              broken) echo 2 ;;
+              *) echo -1 ;;
+            esac
+          }
+          verdict=$floor
+          if [ -n "$agent_verdict" ] && [ "$(rank "$agent_verdict")" -gt "$(rank "$floor")" ]; then
+            verdict=$agent_verdict
+          fi
+
+          if [ "$AGENT_PRESENT" != "true" ]; then
+            source_note="The agent layer was skipped (no usable model credential), so this verdict is the deterministic journeys alone."
+          elif [ -z "$agent_verdict" ]; then
+            source_note="The agent produced no \`Verdict:\` line (step outcome: ${AGENT_OUTCOME}), so this verdict is the deterministic journeys alone."
+          elif [ "$agent_verdict" != "$verdict" ]; then
+            source_note="The agent said \`${agent_verdict}\`; the deterministic floor is \`${floor}\`, and the worse of the two stands."
+          else
+            source_note="The agent and the deterministic journeys agree."
+          fi
+
+          {
+            echo "verdict=${verdict}"
+            echo "agent_verdict=${agent_verdict}"
+            echo "source_note=${source_note}"
+            echo "date=$(date -u +%Y-%m-%d)"
+          } >> "$GITHUB_OUTPUT"
+          echo "Verdict: ${verdict}. ${source_note}" >> "$GITHUB_STEP_SUMMARY"
+      - name: File the verdict as an issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_REVIEW_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
+          VERDICT: ${{ steps.verdict.outputs.verdict }}
+          SOURCE_NOTE: ${{ steps.verdict.outputs.source_note }}
+          QA_DATE: ${{ steps.verdict.outputs.date }}
+          QA_MODEL: ${{ steps.pick.outputs.model }}
+          BASE_URL: ${{ needs.journeys.outputs.base_url }}
+          JOURNEY_TABLE: ${{ needs.journeys.outputs.table }}
+          JOURNEY_SUMMARY: ${{ needs.journeys.outputs.summary }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -u
+          title="Daily QA ${QA_DATE}: ${VERDICT}"
+          body_file=$(mktemp)
+
+          # The attribution header the review lane uses. This issue is written
+          # by a machine and must never read as though a person filed it.
+          # shellcheck disable=SC2016  # The backticks below are markdown code
+          # spans in the issue body, not command substitution.
+          {
+            printf '<!-- ai-agent-comment -->\n'
+            printf '**AI agent** - OpenCode (`%s`) - on behalf of @dmihai91 - not a human reply\n\n' "$QA_MODEL"
+            printf '<!-- daily-qa-report -->\n'
+            printf 'Walked `%s` on %s. **Verdict: %s.**\n\n' "$BASE_URL" "$QA_DATE" "$VERDICT"
+            printf '%s\n\n' "$SOURCE_NOTE"
+            printf '## Deterministic journeys\n\n'
+            printf '%s\n\n' "$JOURNEY_TABLE"
+            printf '%s\n\n' "$JOURNEY_SUMMARY"
+            if [ -s /tmp/qa-verdict.md ]; then
+              printf '## What the agent found\n\n'
+              cat /tmp/qa-verdict.md
+              printf '\n\n'
+            fi
+            printf '## Artifacts\n\n'
+            printf -- '- [This run, with the Playwright HTML report, screenshots and traces](%s)\n' "$RUN_URL"
+            printf -- '- Artifact `daily-qa-journeys`: `playwright-report/`, `qa-journeys-report.json`, `e2e/screenshots/`, `test-results/` (traces and video are written on retry)\n\n'
+            printf -- '---\n\n'
+            printf 'Filed by `.depot/workflows/daily-qa.yml`. How to read this, and how to run it by hand, is in `docs/daily-qa.md`.\n'
+          } > "$body_file"
+
+          # The labels have to exist before an issue can carry them.
+          gh label create daily-qa --repo "$REPO" --color 0e8a16 \
+            --description "The daily QA agent's verdict" >/dev/null 2>&1 || true
+          gh label create qa-broken --repo "$REPO" --color b60205 \
+            --description "A daily QA run found a flow a visitor cannot complete" >/dev/null 2>&1 || true
+
+          labels=daily-qa
+          if [ "$VERDICT" = "broken" ]; then
+            labels="daily-qa,qa-broken"
+          fi
+
+          # One issue per day. A rerun replaces the day's report rather than
+          # filing a second one beside it.
+          existing=$(gh issue list --repo "$REPO" --state all \
+            --search "Daily QA ${QA_DATE} in:title label:daily-qa" --json number,title \
+            --jq "[.[] | select(.title | startswith(\"Daily QA ${QA_DATE}:\"))][0].number" \
+            2>/dev/null || true)
+
+          if [ -n "${existing:-}" ] && [ "$existing" != "null" ]; then
+            gh issue edit "$existing" --repo "$REPO" \
+              --title "$title" --body-file "$body_file" --add-label "$labels" >/dev/null
+            echo "Updated issue #${existing}: ${title}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            gh issue create --repo "$REPO" \
+              --title "$title" --body-file "$body_file" --label "$labels" >/dev/null
+            echo "Filed a new issue: ${title}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # Last, so the issue is always filed before this can end the run.
+      # `broken` is the only verdict that turns this lane red.
+      - name: Fail the run when the verdict is broken
+        if: always() && steps.verdict.outputs.verdict == 'broken'
+        env:
+          BASE_URL: ${{ needs.journeys.outputs.base_url }}
+        run: |
+          echo "::error title=Daily QA is broken::A visitor cannot complete a flow ${BASE_URL} sells. Read today's daily-qa issue."
+          exit 1

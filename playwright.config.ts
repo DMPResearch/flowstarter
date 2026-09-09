@@ -22,6 +22,13 @@ const VISUAL_CHECK = process.env.VISUAL_CHECK === '1';
 // runs against a Deploy Preview by accident.
 const PROD_SYNTHETIC = process.env.PROD_SYNTHETIC === '1';
 
+// The daily QA journeys (e2e/qa/*.qa.spec.ts) walk a live deployment, sign in
+// as the two QA users, and answer the intake conversation as a canary
+// business. Opt-in via QA_JOURNEYS=1 for the same reason as the two flags
+// above, and for one more: unlike every other project here, this one WRITES.
+// Only .depot/workflows/daily-qa.yml sets the variable.
+const QA_JOURNEYS = process.env.QA_JOURNEYS === '1';
+
 const projects: NonNullable<PlaywrightTestConfig['projects']> = [
   {
     name: 'chromium',
@@ -36,6 +43,9 @@ const projects: NonNullable<PlaywrightTestConfig['projects']> = [
       // Belongs to the opt-in `prod-synthetic` project below; it targets
       // production, not this project's Deploy Preview base URL.
       /prod-synthetic\.spec\.ts$/,
+      // Belongs to the opt-in `qa-journeys` project below; it targets a live
+      // deployment and it writes.
+      /\.qa\.spec\.ts$/,
     ],
   },
   {
@@ -59,6 +69,14 @@ if (PROD_SYNTHETIC) {
   projects.push({
     name: 'prod-synthetic',
     testMatch: /prod-synthetic\.spec\.ts$/,
+    use: { ...devices['Desktop Chrome'] },
+  });
+}
+
+if (QA_JOURNEYS) {
+  projects.push({
+    name: 'qa-journeys',
+    testMatch: /\.qa\.spec\.ts$/,
     use: { ...devices['Desktop Chrome'] },
   });
 }

@@ -209,21 +209,24 @@ jobs:
         with:
           version: 2.95.4
       - name: Start local Supabase stack (applies all migrations)
-        # verify-rls-local.mjs only ever talks to Kong (the API gateway on
-        # 54321, proxying to PostgREST) and Postgres directly. It mints its
-        # own HS256 JWTs rather than signing in through GoTrue, and never
-        # touches storage, realtime, imgproxy, studio, or the log stack —
-        # excluding them here is a real time saving, not a correctness risk.
+        # verify-rls-local.mjs talks to Kong (the API gateway on 54321,
+        # proxying to PostgREST and to storage-api) and to Postgres. It mints
+        # its own HS256 JWTs rather than signing in through GoTrue, and never
+        # touches realtime, imgproxy, studio, or the log stack - excluding
+        # them here is a real time saving, not a correctness risk.
         # Flag name and the exact exclude list confirmed against
         # `supabase start --help` (CLI 2.95.4):
         #   -x, --exclude strings   [gotrue,realtime,storage-api,imgproxy,
         #     kong,mailpit,postgrest,postgres-meta,studio,edge-runtime,
         #     logflare,vector,supavisor]
         # kong and postgrest are deliberately kept: the script's API_URL is
-        # the Kong-fronted REST endpoint.
+        # the Kong-fronted REST endpoint. storage-api is kept too, since the
+        # proof now covers the private tenant-assets bucket: a member of one
+        # workspace must not be able to read or list another workspace's
+        # objects, and that policy lives on storage.objects.
         run: |
           supabase start \
-            --exclude gotrue,realtime,storage-api,imgproxy,mailpit,postgres-meta,studio,edge-runtime,logflare,vector,supavisor
+            --exclude gotrue,realtime,imgproxy,mailpit,postgres-meta,studio,edge-runtime,logflare,vector,supavisor
       # `supabase status` reports nothing on this runner: the stack is started
       # with most services excluded, and the CLI answers both `-o json` and
       # `-o env` with a "Stopped services" line and no keys. So the script is
@@ -234,6 +237,17 @@ jobs:
       # credential, and it only ever reaches a throwaway stack on 127.0.0.1.
       - name: Verify RLS — tenant B cannot read tenant A's rows
         run: node apps/flowstarter-main/scripts/verify-rls-local.mjs
+        env:
+          SUPABASE_URL: http://127.0.0.1:54321
+          SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_LOCAL_JWT_SECRET || 'super-secret-jwt-token-with-at-least-32-characters-long' }}
+      # The verifier proves the tables it knows about. This asks the database
+      # which tables carry a tenant key and fails when one of them is not in
+      # the verifier's list, so a table added later cannot be unproven and
+      # green at the same time. It runs after the verifier deliberately: a
+      # failure here is about coverage, and coverage is only interesting once
+      # the proof itself has passed.
+      - name: Guard - every table with a tenant key is proved
+        run: node apps/flowstarter-main/scripts/tenant-table-guard.mjs
         env:
           SUPABASE_URL: http://127.0.0.1:54321
           SUPABASE_JWT_SECRET: ${{ secrets.SUPABASE_LOCAL_JWT_SECRET || 'super-secret-jwt-token-with-at-least-32-characters-long' }}
