@@ -130,6 +130,7 @@ export function PreQualModal({
       {/* Modal */}
       <div
         role="dialog"
+        data-testid="discovery-dialog"
         aria-modal="true"
         aria-labelledby="prequal-title"
         className="flex items-start sm:items-center justify-center p-4 pt-[max(1rem,env(safe-area-inset-top))]"
