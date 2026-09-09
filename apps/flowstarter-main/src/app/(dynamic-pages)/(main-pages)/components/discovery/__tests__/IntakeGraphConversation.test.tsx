@@ -92,6 +92,62 @@ describe('booting the conversation', () => {
     // The progress bar reflects the graph's own count, not a client guess.
     const bar = screen.getByRole('progressbar');
     expect(bar).toHaveAttribute('aria-valuemax', '16');
+
+    // The intro and the first ask are two agent messages with nothing
+    // between them — one run, so the agent's name and mark show once.
+    const log = screen.getByRole('log');
+    expect(
+      within(log).getAllByText(t('landing.discovery.chat.agentName'))
+    ).toHaveLength(1);
+    expect(within(log).getAllByTestId('agent-avatar')).toHaveLength(1);
+  });
+
+  it('shows the typing beat while the first turn is in flight, not the static loading line', async () => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (!url.includes('/api/discovery/intake-graph')) {
+        return { ok: false, json: async () => ({}) } as Response;
+      }
+      return {
+        ok: true,
+        json: async () =>
+          ({
+            threadId: 't-typing',
+            status: 'ask',
+            ask: {
+              type: 'ask',
+              questionId: 'fullName',
+              kind: 'text',
+              prompt: 'What should I call you?',
+              required: true,
+            },
+            data: EMPTY_DISCOVERY,
+            answered: [],
+            progress: { done: 0, total: 16 },
+          } satisfies IntakeGraphTurnResult),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    renderConversation();
+
+    // The turn is still in flight: the animated dots show, not the old
+    // static "loading" copy.
+    expect(
+      screen.getByRole('status', {
+        name: t('landing.discovery.chat.thinking'),
+      })
+    ).toBeInTheDocument();
+    expect(screen.queryByText(t('app.loadingExperience'))).toBeNull();
+
+    expect(
+      await screen.findByText('What should I call you?')
+    ).toBeInTheDocument();
+    // The ask has landed — the typing beat is gone.
+    expect(
+      screen.queryByRole('status', {
+        name: t('landing.discovery.chat.thinking'),
+      })
+    ).toBeNull();
   });
 
   it('fails open with an error line when the start call itself throws', async () => {

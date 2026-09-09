@@ -72,7 +72,15 @@ import {
   reflectionText,
   shortcutLetter,
 } from '../intake-script';
-import { ChatBubble, ConversationLog } from './ConciergePanes';
+import {
+  AgentMessageRow,
+  ChatBubble,
+  ConversationLog,
+  SuggestionChips,
+  TypingIndicator,
+  chatGroupPositions,
+  type BubblePosition,
+} from './ConciergePanes';
 import { RecommendationStep } from './RecommendationStep';
 import { SubscriptionStep } from './SubscriptionStep';
 
@@ -242,6 +250,59 @@ export function IntakeConversation({
   const agentName = t('landing.discovery.chat.agentName');
   const editLabel = t('landing.discovery.chat.edit');
   const showsComposer = current && !thinking && current.kind !== 'panel';
+  // The chip/panel controls for the question on screen render below the log,
+  // whether or not the composer itself also shows (a panel has no composer).
+  const showsReplies = current && !thinking;
+
+  // A picked answer (a chip, not typed words) stays inside the agent's own
+  // bubble as a ticked chip — no separate visitor bubble interrupts the
+  // group. Only a typed/skipped answer gets its own bubble on the right.
+  const historyPicked = useMemo(
+    () =>
+      history.map((question) => {
+        const said = answerText(question, data, t);
+        return Boolean(
+          said &&
+            (question.kind === 'choice' ||
+              question.kind === 'multi' ||
+              question.kind === 'panel')
+        );
+      }),
+    [history, data, t]
+  );
+
+  // Every agent-side bubble in on-screen order, so consecutive ones group
+  // (rounded outer corners, squared seams, one avatar/name per run) exactly
+  // the way `IntakeGraphConversation` groups its own. Visitor bubbles are
+  // tracked too, purely for consistency — in this transcript two of them
+  // never end up adjacent, so they always resolve to `solo`.
+  const showsCurrentSlot = thinking || Boolean(current);
+  const showsErrorBubble = Boolean(errorKey) && !thinking;
+  const sides: Array<'agent' | 'you'> = ['agent'];
+  const historyAgentIndex: number[] = [];
+  const historyAnswerIndex: Array<number | null> = [];
+  history.forEach((_question, index) => {
+    historyAgentIndex.push(sides.push('agent') - 1);
+    historyAnswerIndex.push(
+      historyPicked[index] ? null : sides.push('you') - 1
+    );
+  });
+  const currentSlotIndex = showsCurrentSlot ? sides.push('agent') - 1 : -1;
+  const errorSlotIndex = showsErrorBubble ? sides.push('agent') - 1 : -1;
+  const positions = chatGroupPositions(sides);
+  const positionAt = (index: number): BubblePosition =>
+    index >= 0 ? positions[index] ?? 'solo' : 'solo';
+
+  // The agent's reaction to what was just said trails one turn behind: it
+  // shows together with the NEXT agent bubble rather than its own, so the
+  // transcript reads "<reaction>, <next question>" in one message — the
+  // shape `IntakeGraphConversation` already gets from the graph directly.
+  const reflectionBefore = (index: number): string =>
+    index > 0 ? reflectionText(history[index - 1], data, t) : '';
+  const lastReflection =
+    history.length > 0
+      ? reflectionText(history[history.length - 1], data, t)
+      : '';
 
   return (
     <div
@@ -254,58 +315,92 @@ export function IntakeConversation({
         label={t('landing.discovery.chat.logLabel')}
         scrollSignal={answered.length + (editing ? 1 : 0) + (thinking ? 1 : 0)}
       >
-        <ChatBubble tone="agent" author={agentName}>
-          {t('landing.discovery.chat.intro')}
-        </ChatBubble>
+        <AgentMessageRow position={positionAt(0)} agentName={agentName}>
+          <ChatBubble tone="agent" position={positionAt(0)} animate>
+            {t('landing.discovery.chat.intro')}
+          </ChatBubble>
+        </AgentMessageRow>
 
-        {history.map((question) => (
+        {history.map((question, index) => (
           <AnsweredTurn
             key={question.id}
             question={question}
             data={data}
             editLabel={editLabel}
             onEdit={() => setEditing(question.id)}
+            reflection={reflectionBefore(index)}
+            position={positionAt(historyAgentIndex[index])}
+            answerPosition={positionAt(historyAnswerIndex[index] ?? -1)}
+            agentName={agentName}
             t={t}
           />
         ))}
 
         {thinking && (
-          <div role="status" aria-label={t('landing.discovery.chat.thinking')}>
-            <ChatBubble tone="agent">
-              <ThinkingDots />
-            </ChatBubble>
-          </div>
+          <AgentMessageRow
+            position={positionAt(currentSlotIndex)}
+            agentName={agentName}
+          >
+            <TypingIndicator
+              label={t('landing.discovery.chat.thinking')}
+              position={positionAt(currentSlotIndex)}
+            />
+          </AgentMessageRow>
         )}
 
         {current && !thinking && (
-          <ChatBubble tone="agent" author={editing ? agentName : undefined}>
-            <div className="space-y-2.5">
-              <p>
-                {editing
-                  ? `${t('landing.discovery.chat.reask')} ${promptText(
-                      current,
-                      data,
-                      t
-                    )}`
-                  : promptText(current, data, t)}
-              </p>
-              <Replies
-                question={current}
-                data={data}
-                update={update}
-                draft={draft}
-                setDraft={setDraft}
-                onSubmit={submit}
-                t={t}
-              />
-            </div>
-          </ChatBubble>
+          <AgentMessageRow
+            position={positionAt(currentSlotIndex)}
+            agentName={agentName}
+          >
+            <ChatBubble
+              tone="agent"
+              position={positionAt(currentSlotIndex)}
+              animate
+            >
+              <div className="space-y-2.5">
+                {lastReflection && <p>{lastReflection}</p>}
+                <p>
+                  {editing
+                    ? `${t('landing.discovery.chat.reask')} ${promptText(
+                        current,
+                        data,
+                        t
+                      )}`
+                    : promptText(current, data, t)}
+                </p>
+              </div>
+            </ChatBubble>
+          </AgentMessageRow>
         )}
 
         {errorKey && !thinking && (
-          <ChatBubble tone="agent">{t(errorKey)}</ChatBubble>
+          <AgentMessageRow
+            position={positionAt(errorSlotIndex)}
+            agentName={agentName}
+          >
+            <ChatBubble
+              tone="agent"
+              position={positionAt(errorSlotIndex)}
+              animate
+            >
+              {t(errorKey)}
+            </ChatBubble>
+          </AgentMessageRow>
         )}
       </ConversationLog>
+
+      {showsReplies && (
+        <Replies
+          question={current}
+          data={data}
+          update={update}
+          draft={draft}
+          setDraft={setDraft}
+          onSubmit={submit}
+          t={t}
+        />
+      )}
 
       {showsComposer && (
         <Composer
@@ -334,17 +429,26 @@ function AnsweredTurn({
   data,
   editLabel,
   onEdit,
+  reflection,
+  position,
+  answerPosition,
+  agentName,
   t,
 }: {
   question: IntakeQuestion;
   data: DiscoveryData;
   editLabel: string;
   onEdit: () => void;
+  /** The PREVIOUS turn's reaction — shown ahead of this question's prompt,
+   *  in the same bubble, not trailing this turn's own answer. */
+  reflection: string;
+  position: BubblePosition;
+  answerPosition: BubblePosition;
+  agentName: string;
   t: (key: string) => string;
 }) {
   const prompt = promptText(question, data, t);
   const said = answerText(question, data, t);
-  const reflection = reflectionText(question, data, t);
   const editName = `${editLabel}: ${prompt}`;
   const picked =
     said &&
@@ -354,36 +458,39 @@ function AnsweredTurn({
 
   return (
     <div className="space-y-2">
-      <ChatBubble tone="agent">
-        <div className="space-y-2.5">
-          <p>{prompt}</p>
-          {picked && (
-            <div className="flex flex-wrap gap-1.5">
-              {said
-                .split(',')
-                .map((label) => label.trim())
-                .filter(Boolean)
-                .map((label) => (
-                  <button
-                    key={label}
-                    type="button"
-                    onClick={onEdit}
-                    aria-label={editName}
-                    title={editLabel}
-                    className={
-                      question.kind === 'multi'
-                        ? chipPickedClass
-                        : rowPickedClass
-                    }
-                  >
-                    <span>{label}</span>
-                    <Tick />
-                  </button>
-                ))}
-            </div>
-          )}
-        </div>
-      </ChatBubble>
+      <AgentMessageRow position={position} agentName={agentName}>
+        <ChatBubble tone="agent" position={position} animate>
+          <div className="space-y-2.5">
+            {reflection && <p>{reflection}</p>}
+            <p>{prompt}</p>
+            {picked && (
+              <div className="flex flex-wrap gap-1.5">
+                {said
+                  .split(',')
+                  .map((label) => label.trim())
+                  .filter(Boolean)
+                  .map((label) => (
+                    <button
+                      key={label}
+                      type="button"
+                      onClick={onEdit}
+                      aria-label={editName}
+                      title={editLabel}
+                      className={
+                        question.kind === 'multi'
+                          ? chipPickedClass
+                          : rowPickedClass
+                      }
+                    >
+                      <span>{label}</span>
+                      <Tick />
+                    </button>
+                  ))}
+              </div>
+            )}
+          </div>
+        </ChatBubble>
+      </AgentMessageRow>
 
       {!picked && (
         <div className="group flex items-center justify-end gap-1.5">
@@ -399,10 +506,12 @@ function AnsweredTurn({
               column and a short answer never wraps mid-name. */}
           <div className="min-w-0 flex-1">
             {said ? (
-              <ChatBubble tone="you">{said}</ChatBubble>
+              <ChatBubble tone="you" position={answerPosition} animate>
+                {said}
+              </ChatBubble>
             ) : (
               <div className="flex justify-end">
-                <ChatBubble tone="earlier">
+                <ChatBubble tone="earlier" position={answerPosition} animate>
                   {t('landing.discovery.chat.skipped')}
                 </ChatBubble>
               </div>
@@ -410,8 +519,6 @@ function AnsweredTurn({
           </div>
         </div>
       )}
-
-      {reflection && <ChatBubble tone="agent">{reflection}</ChatBubble>}
     </div>
   );
 }
@@ -495,7 +602,7 @@ function Replies({
     );
     return (
       <div className="space-y-2.5">
-        <div className="flex flex-wrap gap-1.5">
+        <SuggestionChips>
           {options.map((option) => {
             const active = has(option.value);
             return (
@@ -523,7 +630,7 @@ function Replies({
               <Tick />
             </button>
           ))}
-        </div>
+        </SuggestionChips>
         <div className="flex flex-wrap items-center gap-3">
           <Button
             variant="primary"
@@ -560,7 +667,7 @@ function Replies({
     }
     return (
       <div className="space-y-2">
-        <div className="flex flex-wrap gap-1.5">
+        <SuggestionChips>
           {options.map((option: IntakeOption) => (
             <button
               key={option.value}
@@ -571,7 +678,7 @@ function Replies({
               {optionLabel(option, t)}
             </button>
           ))}
-        </div>
+        </SuggestionChips>
         {skip}
       </div>
     );
@@ -680,19 +787,5 @@ function Tick(): ReactNode {
     >
       <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
     </svg>
-  );
-}
-
-function ThinkingDots() {
-  return (
-    <span className="inline-flex items-center gap-1 py-0.5" aria-hidden>
-      {[0, 1, 2].map((index) => (
-        <span
-          key={index}
-          className="h-1.5 w-1.5 animate-bounce rounded-full bg-[var(--fs-ink-faint)]"
-          style={{ animationDelay: `${index * 140}ms` }}
-        />
-      ))}
-    </span>
   );
 }

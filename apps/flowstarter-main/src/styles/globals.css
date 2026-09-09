@@ -9,7 +9,8 @@
 
 /* Font family CSS variables */
 :root {
-  --font-onest: 'Onest Variable', 'Onest', 'Plus Jakarta Sans Variable', 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-onest: 'Onest Variable', 'Onest', 'Plus Jakarta Sans Variable',
+    'Plus Jakarta Sans', system-ui, sans-serif;
   --font-jakarta: 'Plus Jakarta Sans Variable', 'Plus Jakarta Sans', sans-serif;
   --font-poppins: 'Poppins', sans-serif;
   --font-roboto-mono: 'Roboto Mono', monospace;
@@ -194,7 +195,7 @@ body {
   --border-strong: rgba(163, 163, 163, 0.5);
 
   /* Dashboard components — unified dark stack */
-  --dashboard-card-bg:    var(--fs-primitive-dark-elevated);
+  --dashboard-card-bg: var(--fs-primitive-dark-elevated);
   --dashboard-card-hover: var(--fs-primitive-dark-overlay);
   --dashboard-sidebar-bg: var(--fs-primitive-dark-raised);
 
@@ -506,9 +507,21 @@ body {
  * hydration serialize identical markup; multi-line template literals in JS differ by env.
  */
 .dashboard-atmosphere-light {
-  background: radial-gradient(ellipse 70% 55% at 8% 0%, rgba(78, 94, 218, 0.10) 0%, transparent 62%),
-    radial-gradient(ellipse 56% 50% at 96% 108%, rgba(180, 83, 9, 0.07) 0%, transparent 64%),
-    linear-gradient(180deg, rgba(251, 247, 239, 0) 0%, rgba(243, 236, 219, 0.32) 100%);
+  background: radial-gradient(
+      ellipse 70% 55% at 8% 0%,
+      rgba(78, 94, 218, 0.1) 0%,
+      transparent 62%
+    ),
+    radial-gradient(
+      ellipse 56% 50% at 96% 108%,
+      rgba(180, 83, 9, 0.07) 0%,
+      transparent 64%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(251, 247, 239, 0) 0%,
+      rgba(243, 236, 219, 0.32) 100%
+    );
 }
 
 .dashboard-atmosphere-dark {
@@ -539,19 +552,48 @@ html.theme-ready body {
   transition: background-color 0.2s ease;
 }
 
-
 @keyframes badgeShimmer {
-  0%   { background-position: 200% center; opacity: 0; }
-  20%  { opacity: 1; }
-  60%  { opacity: 1; }
-  80%  { opacity: 0; }
-  100% { background-position: -200% center; opacity: 0; }
+  0% {
+    background-position: 200% center;
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  60% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 0;
+  }
+  100% {
+    background-position: -200% center;
+    opacity: 0;
+  }
+}
+
+/* A message arriving in the intake conversations (`ConciergePanes.tsx`'s
+   `ChatBubble` with `animate`) — a small rise-and-fade-in, not a slide, so it
+   reads as "just said" rather than as a page transition. Referenced as an
+   arbitrary Tailwind value (`motion-safe:animate-[fs-message-in_0.22s_ease-out]`),
+   which is why this stays a bare top-level `@keyframes` rather than an
+   `--animate-*` theme variable. */
+@keyframes fs-message-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .hero-badge {
   background: rgba(255, 255, 255, 0.75);
   border: 1px solid rgba(124, 58, 237, 0.18);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 4px 16px rgba(124,58,237,0.08), inset 0 1px 0 rgba(255,255,255,0.9);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 4px 16px rgba(124, 58, 237, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
   backdrop-filter: blur(12px);
   color: rgba(60, 20, 120, 0.85);
 }
@@ -559,6 +601,7 @@ html.theme-ready body {
 .dark .hero-badge {
   background: rgba(30, 15, 60, 0.6);
   border: 1px solid rgba(167, 139, 250, 0.22);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.3), 0 4px 16px rgba(124,58,237,0.15), inset 0 1px 0 rgba(255,255,255,0.05);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(124, 58, 237, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
   color: rgba(220, 200, 255, 0.9);
 }

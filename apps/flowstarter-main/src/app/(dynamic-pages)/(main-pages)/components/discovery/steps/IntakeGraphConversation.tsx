@@ -33,7 +33,15 @@ import {
   questionById,
 } from '../intake-script';
 import { ChipsInput } from '../ChipsInput';
-import { ChatBubble, ConversationLog } from './ConciergePanes';
+import {
+  AgentMessageRow,
+  ChatBubble,
+  ConversationLog,
+  SuggestionChips,
+  TypingIndicator,
+  chatGroupPositions,
+  type BubblePosition,
+} from './ConciergePanes';
 import { RecommendationStep } from './RecommendationStep';
 import { SubscriptionStep } from './SubscriptionStep';
 import type {
@@ -205,6 +213,33 @@ export function IntakeGraphConversation({
 
   const agentName = t('landing.discovery.chat.agentName');
 
+  // The model's reaction to the visitor's last turn (an answer to a question
+  // they asked back, or a natural nudge in place of the raw validation
+  // message) and the question itself are one graph turn, so they read as one
+  // message: reaction first, then the question, in the same bubble.
+  const showsNote = booted && Boolean(ask?.note);
+  const showsPrompt = booted && Boolean(agentPrompt) && Boolean(current);
+  const showsCombined = showsNote || showsPrompt;
+  const showsTyping = busy && !agentPrompt;
+  const showsErrorBubble = Boolean(errorKey) && !ask?.note;
+
+  // Every agent-side bubble in on-screen order, so consecutive ones group
+  // (rounded outer corners, squared seams) and the avatar/name show once per
+  // run — the same rule `IntakeConversation` groups its own transcript with.
+  const sides: Array<'agent' | 'you'> = ['agent'];
+  const historyAgentIndex: number[] = [];
+  const historyAnswerIndex: number[] = [];
+  history.forEach(() => {
+    historyAgentIndex.push(sides.push('agent') - 1);
+    historyAnswerIndex.push(sides.push('you') - 1);
+  });
+  const combinedSlotIndex = showsCombined ? sides.push('agent') - 1 : -1;
+  const typingSlotIndex = showsTyping ? sides.push('agent') - 1 : -1;
+  const errorSlotIndex = showsErrorBubble ? sides.push('agent') - 1 : -1;
+  const positions = chatGroupPositions(sides);
+  const positionAt = (index: number): BubblePosition =>
+    index >= 0 ? positions[index] ?? 'solo' : 'solo';
+
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3">
@@ -239,19 +274,25 @@ export function IntakeGraphConversation({
         label={t('landing.discovery.chat.logLabel')}
         scrollSignal={answered.length + (busy ? 1 : 0)}
       >
-        <ChatBubble tone="agent" author={agentName}>
-          {t('landing.discovery.chat.intro')}
-        </ChatBubble>
+        <AgentMessageRow position={positionAt(0)} agentName={agentName}>
+          <ChatBubble tone="agent" position={positionAt(0)} animate>
+            {t('landing.discovery.chat.intro')}
+          </ChatBubble>
+        </AgentMessageRow>
 
-        {history.map((question) => {
+        {history.map((question, index) => {
           const said = answerText(question, data, t);
+          const position = positionAt(historyAgentIndex[index]);
+          const answerPosition = positionAt(historyAnswerIndex[index]);
           return (
             <div key={question.id} className="space-y-2">
-              <ChatBubble tone="agent">
-                {promptText(question, data, t)}
-              </ChatBubble>
+              <AgentMessageRow position={position} agentName={agentName}>
+                <ChatBubble tone="agent" position={position} animate>
+                  {promptText(question, data, t)}
+                </ChatBubble>
+              </AgentMessageRow>
               <div className="flex items-center justify-end gap-1.5">
-                <ChatBubble tone="you">
+                <ChatBubble tone="you" position={answerPosition} animate>
                   {said || t('landing.discovery.chat.skipped')}
                 </ChatBubble>
               </div>
@@ -259,28 +300,49 @@ export function IntakeGraphConversation({
           );
         })}
 
-        {/* The model's reaction to the visitor's last turn: an answer to a
-            question they asked back, or a natural nudge in place of the raw
-            validation message. Shown once, ahead of the (possibly repeated)
-            question below. */}
-        {booted && ask?.note && (
-          <ChatBubble tone="agent" author={agentName}>
-            {ask.note}
-          </ChatBubble>
+        {showsCombined && (
+          <AgentMessageRow
+            position={positionAt(combinedSlotIndex)}
+            agentName={agentName}
+          >
+            <ChatBubble
+              tone="agent"
+              position={positionAt(combinedSlotIndex)}
+              animate
+            >
+              <div className="space-y-2.5">
+                {showsNote && <p>{ask?.note}</p>}
+                {showsPrompt && <p>{agentPrompt}</p>}
+              </div>
+            </ChatBubble>
+          </AgentMessageRow>
         )}
 
-        {booted && agentPrompt && current && (
-          <ChatBubble tone="agent" author={agentName}>
-            {agentPrompt}
-          </ChatBubble>
-        )}
-
-        {busy && !agentPrompt && (
-          <ChatBubble tone="agent">{t('app.loadingExperience')}</ChatBubble>
+        {showsTyping && (
+          <AgentMessageRow
+            position={positionAt(typingSlotIndex)}
+            agentName={agentName}
+          >
+            <TypingIndicator
+              label={t('landing.discovery.chat.thinking')}
+              position={positionAt(typingSlotIndex)}
+            />
+          </AgentMessageRow>
         )}
 
         {errorKey && !ask?.note && (
-          <ChatBubble tone="alert">{t(errorKey)}</ChatBubble>
+          <AgentMessageRow
+            position={positionAt(errorSlotIndex)}
+            agentName={agentName}
+          >
+            <ChatBubble
+              tone="alert"
+              position={positionAt(errorSlotIndex)}
+              animate
+            >
+              {t(errorKey)}
+            </ChatBubble>
+          </AgentMessageRow>
         )}
       </ConversationLog>
 
@@ -366,12 +428,12 @@ function Composer({
             question.placeholderKey ? t(question.placeholderKey) : undefined
           }
         />
-        <div className="flex flex-wrap items-center gap-2">
+        <SuggestionChips>
           <Button variant="primary" size="sm" onClick={() => onSubmit(draft)}>
             {t('landing.discovery.chat.done')}
           </Button>
           {skipChip}
-        </div>
+        </SuggestionChips>
       </div>
     );
   }
@@ -379,7 +441,7 @@ function Composer({
   if (question.kind === 'choice') {
     return (
       <div className="space-y-2.5">
-        <div className="flex flex-wrap gap-2">
+        <SuggestionChips>
           {(question.options ?? []).map((option: IntakeOption) => (
             <button
               key={option.value}
@@ -391,7 +453,7 @@ function Composer({
             </button>
           ))}
           {skipChip}
-        </div>
+        </SuggestionChips>
         {/* Chips are a shortcut, not the only door: typed words are mapped
             onto the same choice server-side (`extractAnswers`), the way a
             free-text answer to any other question is. */}
