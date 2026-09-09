@@ -199,6 +199,8 @@ jobs:
           CI: true
           PLAYWRIGHT_BASE_URL: ${{ steps.prod.outputs.url }}
           PLAYWRIGHT_JSON_OUTPUT_NAME: release-results/contract.json
+          # Survives Playwright emptying test-results between the three runs.
+          ROUTE_COVERAGE_DIR: route-coverage
         run: |
           pnpm exec playwright test e2e/contract.spec.ts \
             --project chromium --reporter=list,json
@@ -208,6 +210,8 @@ jobs:
           PROD_SYNTHETIC: '1'
           PLAYWRIGHT_BASE_URL: ${{ steps.prod.outputs.url }}
           PLAYWRIGHT_JSON_OUTPUT_NAME: release-results/prod-synthetic.json
+          # Survives Playwright emptying test-results between the three runs.
+          ROUTE_COVERAGE_DIR: route-coverage
         run: |
           pnpm exec playwright test --project prod-synthetic --reporter=list,json
       # ── The authenticated tier ──────────────────────────────────────────
@@ -277,9 +281,50 @@ jobs:
           E2E_CLERK_OPERATOR_EMAIL: ${{ secrets.E2E_CLERK_OPERATOR_EMAIL }}
           E2E_CLERK_OPERATOR_PASSWORD: ${{ secrets.E2E_CLERK_OPERATOR_PASSWORD }}
           PLAYWRIGHT_JSON_OUTPUT_NAME: release-results/authenticated.json
+          # Survives Playwright emptying test-results between the three runs.
+          ROUTE_COVERAGE_DIR: route-coverage
         run: |
           pnpm exec playwright test \
             --project setup --project chromium-auth --reporter=list,json
+      # The full-signal readiness score. Unlike the quality gate, this run has
+      # Playwright JSON reports, so a journey that names a spec is only green
+      # when that spec actually passed.
+      - name: E2E route coverage and MVP readiness
+        if: always()
+        env:
+          ROUTE_COVERAGE_DIR: route-coverage
+        run: |
+          node scripts/e2e-route-coverage.mjs --list-missing || true
+          node scripts/mvp-readiness.mjs \
+            --playwright-report release-results/contract.json \
+            --playwright-report release-results/prod-synthetic.json \
+            --playwright-report release-results/authenticated.json \
+            --write || true
+          {
+            if [ -f route-coverage/summary.md ]; then
+              cat route-coverage/summary.md
+            fi
+            echo
+            echo "## MVP readiness"
+            echo
+            echo '```'
+            node scripts/mvp-readiness.mjs \
+              --playwright-report release-results/contract.json \
+              --playwright-report release-results/prod-synthetic.json \
+              --playwright-report release-results/authenticated.json || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the readiness scorecard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-readiness
+          path: |
+            readiness/README.md
+            readiness/summary.json
+            route-coverage/
+          retention-days: 30
+          if-no-files-found: warn
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v4
@@ -388,6 +433,12 @@ jobs:
         with:
           name: release-results-staging-journey
           path: results/staging-journey
+      - name: Download the readiness scorecard
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: release-readiness
+          path: results/readiness
       - name: Decide and write the notes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -445,7 +496,11 @@ jobs:
             echo "Job results: full-e2e ${FULL_E2E_RESULT}, staging-journey ${STAGING_RESULT}."
             echo "Run: ${RUN_URL}"
             echo
-            echo "MVP readiness: pending: readiness scorecard"
+            if [ -f results/readiness/readiness/summary.json ]; then
+              jq -r '"MVP readiness: \(.score)%, \(.ready) of \(.journeys) journeys proved, \(.money_path.ready) of \(.money_path.total) on the money path."' results/readiness/readiness/summary.json
+            else
+              echo "MVP readiness: not scored (the scorecard artifact is missing)."
+            fi
           } > verification.md
 
           if [ "$blocked" = "true" ]; then

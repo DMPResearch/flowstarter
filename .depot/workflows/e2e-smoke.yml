@@ -128,6 +128,27 @@ jobs:
         env:
           CI: true
           PLAYWRIGHT_BASE_URL: ${{ steps.netlify.outputs.url }}
+      # How much of the application the run actually reached.
+      #
+      # `e2e/support/coverage-fixture.ts` writes one record per test; this
+      # merges them against every route under `apps/flowstarter-main/src/app`.
+      # No `--min` yet: the number has to be watched for a few weeks before a
+      # floor under it means anything, and a lane that goes red on a number
+      # nobody has calibrated teaches people to ignore the lane. Add `--min`
+      # here once the figure is stable.
+      - name: E2E route coverage
+        if: always()
+        run: |
+          node scripts/e2e-route-coverage.mjs --list-missing
+          {
+            if [ -f test-results/route-coverage/summary.md ]; then
+              cat test-results/route-coverage/summary.md
+            else
+              echo "## E2E route coverage"
+              echo
+              echo "No per-test records were written, so the Playwright run did not happen."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v4
@@ -135,3 +156,11 @@ jobs:
           name: playwright-report-platform-smoke
           path: playwright-report/
           retention-days: 14
+      - name: Upload the route coverage records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: route-coverage-platform-smoke
+          path: test-results/route-coverage/
+          retention-days: 14
+          if-no-files-found: warn

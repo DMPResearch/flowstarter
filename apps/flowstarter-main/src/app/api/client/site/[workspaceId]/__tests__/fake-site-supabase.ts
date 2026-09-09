@@ -21,6 +21,25 @@ export interface QueryRecord {
   mode: 'select' | 'insert' | 'update' | 'delete';
 }
 
+/**
+ * One query that will not go the way the happy path assumes.
+ *
+ * Postgrest reports a failure two ways and the handlers have to survive both:
+ * a resolved `{ data: null, error }`, and a rejected promise when the
+ * connection itself goes. `throws` picks the second. Each plan fires once, so
+ * a test can fail one write and still watch the read after it succeed.
+ */
+export interface QueryFailure {
+  table: string;
+  mode?: QueryRecord['mode'];
+  /** Returned as the query's `error`. */
+  error?: unknown;
+  /** Returned as the query's `data`. Defaults to null. */
+  data?: Row[] | null;
+  /** Rejected with, instead of returned. */
+  throws?: unknown;
+}
+
 export interface FakeSiteDb {
   tables: Record<string, Row[]>;
   /** Every query that was resolved, in order. Asserted to be short a lot. */
@@ -30,6 +49,8 @@ export interface FakeSiteDb {
   objects: Map<string, Buffer>;
   rows(table: string): Row[];
   seed(table: string, rows: Row[]): void;
+  /** Arms one failing query. See `QueryFailure`. */
+  failQuery(failure: QueryFailure): void;
   reset(): void;
   client: never;
 }
@@ -52,7 +73,21 @@ export function createFakeSiteSupabase(): FakeSiteDb {
   const queries: QueryRecord[] = [];
   const downloads: string[] = [];
   const objects = new Map<string, Buffer>();
+  const failures: QueryFailure[] = [];
   let sequence = 0;
+
+  /** The armed failure for this query, consumed if there is one. */
+  function takeFailure(
+    table: string,
+    mode: QueryRecord['mode']
+  ): QueryFailure | undefined {
+    const index = failures.findIndex(
+      (failure) =>
+        failure.table === table && (!failure.mode || failure.mode === mode)
+    );
+    if (index < 0) return undefined;
+    return failures.splice(index, 1)[0];
+  }
 
   const rows = (table: string): Row[] => (tables[table] ??= []);
 
@@ -103,6 +138,11 @@ export function createFakeSiteSupabase(): FakeSiteDb {
 
     function resolve(): { data: Row[] | null; error: unknown; count?: number } {
       queries.push({ table, mode });
+      const failure = takeFailure(table, mode);
+      if (failure) {
+        if ('throws' in failure) throw failure.throws;
+        return { data: failure.data ?? null, error: failure.error ?? null };
+      }
       if (mode === 'insert') {
         for (const values of payload) {
           if (uniqueViolation(table, values)) {
@@ -247,10 +287,14 @@ export function createFakeSiteSupabase(): FakeSiteDb {
     seed(table: string, seeded: Row[]) {
       rows(table).push(...seeded.map((row) => ({ ...row })));
     },
+    failQuery(failure: QueryFailure) {
+      failures.push(failure);
+    },
     reset() {
       for (const key of Object.keys(tables)) delete tables[key];
       queries.length = 0;
       downloads.length = 0;
+      failures.length = 0;
       objects.clear();
       sequence = 0;
     },

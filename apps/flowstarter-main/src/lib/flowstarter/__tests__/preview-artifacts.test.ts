@@ -19,6 +19,9 @@ const rows: {
 const captured: { update?: Record<string, unknown>; stateFilter?: unknown } =
   {};
 
+/** Tables whose next query comes back as a Postgrest error. */
+const failing = new Set<string>();
+
 function builderFor(table: string) {
   const store = table === 'workspaces' ? rows.workspaces : rows.artifacts;
   let mode: 'select' | 'upsert' | 'update' = 'select';
@@ -29,6 +32,12 @@ function builderFor(table: string) {
     },
     upsert(values: Record<string, unknown>) {
       mode = 'upsert';
+      if (failing.has(table)) {
+        return Promise.resolve({
+          data: null,
+          error: { message: `fake: ${table} is down` },
+        });
+      }
       const index = store.findIndex(
         (row) => row.workspace_id === values.workspace_id
       );
@@ -50,6 +59,12 @@ function builderFor(table: string) {
       return builder;
     },
     maybeSingle() {
+      if (failing.has(`${table}:${mode}`)) {
+        return Promise.resolve({
+          data: null,
+          error: { message: `fake: ${table} is down` },
+        });
+      }
       if (mode === 'update') {
         const workspace = rows.workspaces[0];
         // The `.in(...)` guard decides whether the update matched a row.
@@ -93,6 +108,7 @@ beforeEach(() => {
   rows.artifacts = [];
   captured.update = undefined;
   captured.stateFilter = undefined;
+  failing.clear();
 });
 
 describe('savePreviewArtifacts', () => {
@@ -184,5 +200,113 @@ describe('savePreviewArtifacts', () => {
     await expect(savePreviewArtifacts(validInput())).rejects.toThrow(
       /Workspace does not exist/
     );
+  });
+});
+
+describe('what savePreviewArtifacts refuses to write', () => {
+  it('rejects a workspace id that is not a uuid before anything else', async () => {
+    await expect(
+      savePreviewArtifacts(
+        validInput({ workspaceId: 'nope', intake: { projectId: 'nope' } })
+      )
+    ).rejects.toThrow(/Invalid workspace id/);
+    expect(rows.artifacts).toHaveLength(0);
+  });
+
+  it('refuses a preview with no template chosen', async () => {
+    await expect(
+      savePreviewArtifacts(validInput({ template: { reason: 'none' } }))
+    ).rejects.toThrow(/no template selection/);
+    await expect(
+      savePreviewArtifacts(validInput({ template: undefined }))
+    ).rejects.toThrow(/no template selection/);
+  });
+
+  it('refuses a manifest with a file that has no path', async () => {
+    await expect(
+      savePreviewArtifacts(
+        validInput({ files: [{ path: '', content: 'x', type: 'file' }] })
+      )
+    ).rejects.toThrow(/no path/);
+  });
+
+  it('refuses a manifest bigger than the worker will accept', async () => {
+    await expect(
+      savePreviewArtifacts(
+        validInput({
+          files: Array.from({ length: 2_001 }, (_, i) => ({
+            path: `src/${i}.md`,
+            content: 'x',
+            type: 'file',
+          })),
+        })
+      )
+    ).rejects.toThrow(/too many files/);
+
+    await expect(
+      savePreviewArtifacts(
+        validInput({
+          files: [
+            {
+              path: 'src/huge.md',
+              content: 'x'.repeat(24 * 1024 * 1024 + 1),
+              type: 'file',
+            },
+          ],
+        })
+      )
+    ).rejects.toThrow(/exceeds the size limit/);
+  });
+
+  it('keeps a binary file’s encoding so the worker decodes it the same way', async () => {
+    await savePreviewArtifacts(
+      validInput({
+        files: [
+          { path: 'public/logo.png', content: 'AAAA', encoding: 'base64' },
+          { path: 'src/content/site.md', content: 'plain' },
+        ],
+      })
+    );
+
+    expect(rows.artifacts[0]!.preview_manifest).toEqual({
+      files: [
+        { path: 'public/logo.png', content: 'AAAA', encoding: 'base64' },
+        { path: 'src/content/site.md', content: 'plain' },
+      ],
+    });
+  });
+
+  it('stores nothing rather than half of a preview when a query fails', async () => {
+    failing.add('workspaces:select');
+    await expect(savePreviewArtifacts(validInput())).rejects.toMatchObject({
+      message: expect.stringContaining('is down'),
+    });
+    expect(rows.artifacts).toHaveLength(0);
+
+    failing.clear();
+    failing.add('flowstarter_project_artifacts');
+    await expect(savePreviewArtifacts(validInput())).rejects.toMatchObject({
+      message: expect.stringContaining('is down'),
+    });
+
+    failing.clear();
+    failing.add('workspaces:update');
+    await expect(
+      savePreviewArtifacts(validInput({ advanceToPreviewReady: true }))
+    ).rejects.toMatchObject({ message: expect.stringContaining('is down') });
+  });
+
+  it('records the absent optional fields as null, not as undefined', async () => {
+    await savePreviewArtifacts(
+      validInput({
+        template: { slug: 'wellness-therapy' },
+        previewArtifactUrl: undefined,
+      })
+    );
+
+    const row = rows.artifacts[0]!;
+    expect(row.template_selection_reason).toBeNull();
+    expect(row.preview_artifact_url).toBeNull();
+    expect(row.scrape_manifest).toEqual({});
   });
 });

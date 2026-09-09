@@ -1,0 +1,215 @@
+{
+  "_comment": "The MVP journeys, one entry per complete client or operator path. scripts/mvp-readiness.mjs reads this and scores each journey on three signals: unit coverage of its route files, an E2E spec that walks it, and a production check. `routes` are page patterns and `api` are API route patterns, both in the Next.js syntax that e2e/support/route-manifest.mjs produces from src/app; a pattern that no longer exists is a failure, not a warning, so renaming a route brings you here. `spec` is null when no E2E spec walks the journey yet -- that is the honest state, not a gap to paper over. `tier` is what the journey needs before it can run: 1 keyless, 2 a session, 3 money in Stripe test mode, 4 real infrastructure.",
+  "updated": "2026-09-09",
+  "journeys": [
+    {
+      "id": "intake-conversation",
+      "title": "A visitor talks to the intake agent and gets a brief",
+      "money_path": false,
+      "routes": ["/"],
+      "api": [
+        "/api/discovery/intake-chat",
+        "/api/discovery/lead",
+        "/api/discovery/business-names"
+      ],
+      "spec": "e2e/contract.spec.ts",
+      "tier": 1,
+      "status_note": "The contract spec posts a minimal valid payload, a payload that fails the schema, and a cross-origin payload the CSRF check refuses. It proves the endpoint's contract, not that a whole conversation reaches a usable brief."
+    },
+    {
+      "id": "info-agent-followup",
+      "title": "The info agent asks the follow-up questions the brief is missing",
+      "money_path": false,
+      "routes": ["/"],
+      "api": ["/api/discovery/intake-graph", "/api/discovery/recommend"],
+      "spec": null,
+      "tier": 1,
+      "status_note": "No E2E spec walks the graph. The sufficiency rules and the graph transitions are unit-tested in src/lib/flowstarter/intake-graph and src/lib/flowstarter/sufficiency.ts; nothing checks them through HTTP."
+    },
+    {
+      "id": "preview-generation",
+      "title": "The pipeline generates a preview site from the brief",
+      "money_path": false,
+      "routes": ["/"],
+      "api": [
+        "/api/discovery/preview",
+        "/api/discovery/preview/live",
+        "/api/discovery/preview/live/stream"
+      ],
+      "spec": null,
+      "tier": 2,
+      "status_note": "Generation calls a model through OpenRouter and takes minutes, so it cannot run in a per-pull-request lane. It belongs in the staging full-journey tier, which has no spec yet."
+    },
+    {
+      "id": "two-free-edits",
+      "title": "The visitor gets two free edits on the preview",
+      "money_path": false,
+      "routes": ["/"],
+      "api": [
+        "/api/discovery/preview/edit",
+        "/api/discovery/preview/live/edit"
+      ],
+      "spec": null,
+      "tier": 2,
+      "status_note": "The two-edit allowance is a rule in deterministic code, not a prompt. Unit-tested; no E2E spec spends the allowance and checks the third edit is refused."
+    },
+    {
+      "id": "deposit-checkout",
+      "title": "The visitor pays the deposit and Stripe confirms it",
+      "money_path": true,
+      "routes": ["/welcome/[previewId]", "/unlock/[workspaceId]"],
+      "api": [
+        "/api/discovery/preview/[demoId]/guest-deposit-checkout",
+        "/api/discovery/deposit",
+        "/api/webhooks/stripe"
+      ],
+      "spec": "e2e/contract.spec.ts",
+      "tier": 3,
+      "status_note": "The contract spec proves the Stripe webhook refuses an unsigned POST and never 500s, and the production synthetic repeats that against flowstarter.net. Nothing drives a real test-mode checkout end to end."
+    },
+    {
+      "id": "account-by-email",
+      "title": "The payer gets an account against the email they paid with",
+      "money_path": true,
+      "routes": ["/account/password", "/login/[[...index]]"],
+      "api": ["/api/webhooks/clerk", "/api/account/password-changed"],
+      "spec": null,
+      "tier": 2,
+      "status_note": "Guest provisioning happens inside the Stripe webhook handler (src/lib/flowstarter/guest-credentials.ts) and forces a password change on first sign-in. Unit-tested; no E2E spec signs in as a freshly provisioned client."
+    },
+    {
+      "id": "workspace-claim",
+      "title": "The client claims the workspace their preview became",
+      "money_path": false,
+      "routes": ["/unlock/[workspaceId]"],
+      "api": ["/api/flowstarter/projects/claim"],
+      "spec": null,
+      "tier": 2,
+      "status_note": "src/lib/flowstarter/claim.ts is the widest-tested module in the journey set. The gap is HTTP: no spec claims a workspace, and none proves a second claim on the same workspace is refused."
+    },
+    {
+      "id": "build-board-team-note",
+      "title": "The operator watches the build on the board and leaves a note for the agent",
+      "money_path": false,
+      "routes": ["/admin/dashboard/pipeline", "/admin/dashboard/projects/[id]"],
+      "api": [
+        "/api/admin/projects/pipeline",
+        "/api/admin/projects/[id]/pipeline",
+        "/api/admin/projects/[id]/pipeline/jobs/[jobId]/notes",
+        "/api/admin/projects/[id]/pipeline/jobs/[jobId]/log",
+        "/api/admin/projects/[id]/pipeline/jobs/[jobId]/events"
+      ],
+      "spec": "e2e/dashboards.spec.ts",
+      "tier": 2,
+      "status_note": "dashboards.spec.ts opens the board unauthenticated and proves it does not crash. The authenticated half -- a note reaching the agent and coming back in the job log -- has no spec."
+    },
+    {
+      "id": "site-published",
+      "title": "The full site is built and published on a real host",
+      "money_path": false,
+      "routes": ["/admin/dashboard/hosting"],
+      "api": [
+        "/api/admin/projects/[id]/site",
+        "/api/admin/projects/[id]/site/deploy",
+        "/api/internal/build/deploy"
+      ],
+      "spec": "e2e/prod-synthetic.spec.ts",
+      "tier": 4,
+      "status_note": "The production synthetic checks a generated static bundle is reachable on flowstarter.net. A real deploy needs an allocated Hetzner host and the per-host deploy agent, so the full path cannot run in CI today."
+    },
+    {
+      "id": "balance-payment",
+      "title": "The client pays the balance on the final invoice",
+      "money_path": true,
+      "routes": ["/account/billing", "/dashboard/projects/[workspaceId]"],
+      "api": [
+        "/api/admin/projects/[id]/billing/final-invoice",
+        "/api/admin/projects/[id]/billing/portal-link",
+        "/api/webhooks/stripe"
+      ],
+      "spec": null,
+      "tier": 3,
+      "status_note": "Invoice creation and the portal link are unit-tested against a mocked Stripe. No spec sends an invoice and sees it paid."
+    },
+    {
+      "id": "client-dashboard",
+      "title": "The client signs in and finds their project",
+      "money_path": false,
+      "routes": [
+        "/dashboard",
+        "/dashboard/projects",
+        "/dashboard/projects/[workspaceId]"
+      ],
+      "api": ["/api/projects/[workspaceId]/messages", "/api/auth/session"],
+      "spec": "e2e/dashboards.spec.ts",
+      "tier": 2,
+      "status_note": "Covered unauthenticated: the client surfaces render and the guard sends a signed-out visitor to login (concierge-flow.spec.ts and contract.spec.ts both check the redirect). Signed in, nothing is checked."
+    },
+    {
+      "id": "editor-small-change-rebuild",
+      "title": "The client makes a small change in the editor and the site rebuilds",
+      "money_path": false,
+      "routes": ["/dashboard/projects/[workspaceId]/editor"],
+      "api": [
+        "/api/client/site/[workspaceId]",
+        "/api/client/site/[workspaceId]/edit",
+        "/api/client/site/[workspaceId]/apply",
+        "/api/client/site/[workspaceId]/publish",
+        "/api/client/site/[workspaceId]/revert",
+        "/api/client/site/[workspaceId]/preview/[[...path]]"
+      ],
+      "spec": null,
+      "tier": 2,
+      "status_note": "The size rule that decides rebuild-now versus quote-it lives in src/lib/flowstarter/site-editor.ts and is unit-tested. No spec edits, applies and publishes."
+    },
+    {
+      "id": "change-request-quoted-paid",
+      "title": "A bigger change is quoted and the client pays for it",
+      "money_path": true,
+      "routes": ["/dashboard/projects/[workspaceId]"],
+      "api": [
+        "/api/client/site/[workspaceId]/escalate",
+        "/api/client/site/[workspaceId]/changes",
+        "/api/client/site/[workspaceId]/changes/[changeId]/respond",
+        "/api/admin/projects/[id]/changes/[changeId]/quote",
+        "/api/admin/projects/[id]/changes/[changeId]/status"
+      ],
+      "spec": null,
+      "tier": 3,
+      "status_note": "Quoting and the checkout for a quoted change (src/lib/flowstarter/change-request-checkout.ts) are the newest money path and the least covered. No E2E spec."
+    },
+    {
+      "id": "custom-domain",
+      "title": "The client's own domain serves the site",
+      "money_path": false,
+      "routes": ["/admin/dashboard/domains"],
+      "api": ["/api/admin/projects/[id]/site/domains"],
+      "spec": "e2e/dashboards.spec.ts",
+      "tier": 4,
+      "status_note": "The domains page is checked for not crashing. Verification writes real Cloudflare DNS, so the journey cannot complete in CI; src/lib/hosting/cloudflare.ts carries the unit tests instead."
+    },
+    {
+      "id": "operator-invite-roles",
+      "title": "An operator is invited and lands in the right role",
+      "money_path": false,
+      "routes": ["/admin/dashboard/invite", "/admin/join", "/admin/login"],
+      "api": ["/api/admin/invite", "/api/team/invite"],
+      "spec": "e2e/dashboards.spec.ts",
+      "tier": 2,
+      "status_note": "The invite page is checked for not crashing. Roles are resolved by resolveUserRole in src/lib/api-auth.ts and proved in unit tests; no spec accepts an invitation."
+    },
+    {
+      "id": "cancellation-and-refunds",
+      "title": "A client cancels, and money already taken comes back",
+      "money_path": true,
+      "routes": ["/account/billing"],
+      "api": [
+        "/api/admin/projects/[id]/billing/cancel-subscription",
+        "/api/admin/projects/[id]/billing/activate-subscription"
+      ],
+      "spec": null,
+      "tier": 3,
+      "status_note": "Half built. Cancelling a subscription is a real endpoint. Refunds are NOT built: src/lib/billing/stripe.ts says refunds are handled separately, and src/lib/flowstarter/guest-deposit.ts leaves a failed provisioning loud enough to be refunded by hand. There is no refund endpoint and no refund path in the product."
+    }
+  ]
+}

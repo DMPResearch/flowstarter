@@ -1,12 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   ArtifactUrlError,
   assertUsableArtifactUrl,
   authorizeBuildWorker,
   buildWorkerSecret,
   deployAgentClientFromEnv,
+  deployBuildArtifact,
   resolveDeployAgentSecret,
 } from '../build-worker-deploy';
+import { createFakeHostingSupabase } from './fake-hosting-supabase';
 import { DryRunDeployAgentClient, HttpDeployAgentClient } from '../deploy';
 import { deployedSiteUrl, localSiteBaseUrl } from '../site-urls';
 
@@ -147,5 +149,160 @@ describe('deployedSiteUrl', () => {
     };
     expect(localSiteBaseUrl(env)).toBeNull();
     expect(deployedSiteUrl({ slug: 'calm-path', env })).toMatch(/^https:\/\//);
+  });
+});
+
+// ─── deployBuildArtifact ───────────────────────────────────────────────────
+
+describe('deployBuildArtifact', () => {
+  const WS = '0f4e1088-8d8f-4f18-83b1-000000000001';
+
+  function seeded() {
+    const db = createFakeHostingSupabase();
+    db.seed('workspaces', [
+      {
+        id: WS,
+        slug: 'acme',
+        hosting_server_id: 'srv-1',
+        deploy_status: 'pending',
+        cloudflare_zone_id: null,
+      },
+    ]);
+    db.seed('hosting_servers', [
+      {
+        id: 'srv-1',
+        name: 'caddy-fsn-01',
+        status: 'active',
+        ipv4: '203.0.113.10',
+        deploy_agent_url: 'https://203.0.113.10:8443',
+        deploy_agent_secret_ref: 'deploy_agent_secret_srv_1',
+        site_capacity: 50,
+        sites_count: 1,
+      },
+    ]);
+    return db;
+  }
+
+  it('deploys through the shared path and answers with the preview URL', async () => {
+    const db = seeded();
+    const { deployment, siteUrl } = await deployBuildArtifact({
+      supabase: db.client as never,
+      workspaceId: WS,
+      artifactUrl: 'https://artifacts.test/site.tar.gz',
+      artifactSha256: 'abc123',
+      deployedBy: 'build-worker',
+      env: {
+        DEPLOY_AGENT_DRY_RUN: 'true',
+        DEPLOY_AGENT_SHARED_SECRET: 'dev-shared-secret',
+      },
+    });
+
+    expect(deployment.status).toBe('live');
+    expect(deployment.version).toBe(1);
+    expect(db.rows('deployments')[0]!.artifact_url).toBe(
+      'https://artifacts.test/site.tar.gz'
+    );
+    expect(siteUrl).toMatch(/^https:\/\/acme\.preview\./);
+  });
+
+  it('prefers the workspace primary domain over the preview subdomain', async () => {
+    const db = seeded();
+    db.seed('workspace_hosts', [
+      { workspace_id: WS, hostname: 'www.acme.com', is_primary: false },
+      { workspace_id: WS, hostname: 'acme.com', is_primary: true },
+    ]);
+    const { siteUrl } = await deployBuildArtifact({
+      supabase: db.client as never,
+      workspaceId: WS,
+      artifactUrl: 'https://artifacts.test/site.tar.gz',
+      deployedBy: 'build-worker',
+      env: {
+        DEPLOY_AGENT_DRY_RUN: 'true',
+        DEPLOY_AGENT_SHARED_SECRET: 'dev-shared-secret',
+      },
+    });
+    expect(siteUrl).toBe('https://acme.com');
+  });
+
+  it('uses the local deploy-agent URL when one is configured', async () => {
+    const db = seeded();
+    const { siteUrl } = await deployBuildArtifact({
+      supabase: db.client as never,
+      workspaceId: WS,
+      artifactUrl: 'http://127.0.0.1:8788/site.tar.gz',
+      deployedBy: 'build-worker',
+      env: {
+        DEPLOY_AGENT_DRY_RUN: 'true',
+        DEPLOY_AGENT_SHARED_SECRET: 'dev-shared-secret',
+        FLOWSTARTER_LOCAL_SITE_BASE_URL: 'http://localhost:8788/',
+      },
+    });
+    expect(siteUrl).toBe('http://localhost:8788/acme/');
+  });
+
+  it('has no URL to offer when the workspace vanished after the deploy', async () => {
+    const db = seeded();
+    const deleteAfterDeploy = {
+      from(table: string) {
+        // The deploy runs first and needs a real workspace; the post-deploy
+        // lookup is the one that must survive finding nothing.
+        if (table === 'workspaces' && db.rows('deployments').length > 0) {
+          db.seed('workspaces', []);
+        }
+        return (db.client as { from: (t: string) => unknown }).from(table);
+      },
+      get storage() {
+        return undefined;
+      },
+    } as never;
+    const { siteUrl } = await deployBuildArtifact({
+      supabase: deleteAfterDeploy,
+      workspaceId: WS,
+      artifactUrl: 'https://artifacts.test/site.tar.gz',
+      deployedBy: 'build-worker',
+      env: {
+        DEPLOY_AGENT_DRY_RUN: 'true',
+        DEPLOY_AGENT_SHARED_SECRET: 'dev-shared-secret',
+      },
+    });
+    expect(siteUrl).toBeNull();
+  });
+
+  it('builds a Cloudflare client only when a token is configured', async () => {
+    const db = seeded();
+    const fetchSpy = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response(
+          JSON.stringify({
+            success: true,
+            errors: [],
+            messages: [],
+            result: [],
+          }),
+          { status: 200 }
+        )
+    );
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchSpy as unknown as typeof globalThis.fetch;
+    try {
+      const { deployment } = await deployBuildArtifact({
+        supabase: db.client as never,
+        workspaceId: WS,
+        artifactUrl: 'https://artifacts.test/site.tar.gz',
+        deployedBy: 'build-worker',
+        env: {
+          DEPLOY_AGENT_DRY_RUN: 'true',
+          DEPLOY_AGENT_SHARED_SECRET: 'dev-shared-secret',
+          CLOUDFLARE_API_TOKEN: 'cf-token',
+          CLOUDFLARE_DEFAULT_ZONE_ID: 'zone-1',
+        },
+      });
+      expect(deployment.status).toBe('live');
+      expect(String(fetchSpy.mock.calls[0]?.[0])).toContain(
+        '/zones/zone-1/dns_records'
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

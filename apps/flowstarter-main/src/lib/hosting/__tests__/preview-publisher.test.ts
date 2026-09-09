@@ -471,3 +471,37 @@ describe('re-publishing preserves the stashed manifest', () => {
     );
   });
 });
+
+describe('a dry run with no Storage at all', () => {
+  it('hands the tarball bytes to the client instead of a storage URL', async () => {
+    // Storage is what turns a preview into something the agent can fetch. With
+    // none, the dry run still has to record what would have gone out — the
+    // size of the tarball is the whole point of exercising it.
+    db.storageAvailable = false;
+    const agent = recordingAgent();
+    const result = await publishFunnelPreview({
+      previewId: PREVIEW_ID,
+      files: FILES,
+      agent: {
+        deployAgentUrl: '',
+        sharedSecret: '',
+        client: agent.client,
+        configured: false,
+      },
+      supabase: db.client as never,
+    });
+
+    expect(result.status).toBe('pending');
+    expect(result.published).toBe(false);
+    expect(result.artifactPath).toBeNull();
+
+    const artifact = agent.calls[0]!.args.artifact as {
+      kind: string;
+      bytes: ArrayBuffer;
+    };
+    expect(artifact.kind).toBe('bytes');
+    expect(artifact.bytes).toBeInstanceOf(ArrayBuffer);
+    expect(artifact.bytes.byteLength).toBeGreaterThan(0);
+    expect(agent.calls[0]!.args.deployAgentUrl).toBe('dry-run://previews');
+  });
+});

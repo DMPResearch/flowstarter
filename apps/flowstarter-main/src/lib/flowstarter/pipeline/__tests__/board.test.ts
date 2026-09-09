@@ -10,9 +10,12 @@ import {
   RUNNING_JOB_STALL_MS,
   STATE_STALL_MS,
   buildPipelineBoard,
+  formatDuration,
   latestJobByWorkspace,
   stallReasonsFor,
   stateChangedAtByWorkspace,
+  summarizeJob,
+  toPipelineCard,
   type PipelineEventRow,
   type PipelineJobRow,
   type PipelineWorkspaceRow,
@@ -315,5 +318,171 @@ describe('row reducers', () => {
       now: NOW,
     });
     expect(board.columns[0].cards[0].timeInStateMs).toBe(90 * 60_000);
+  });
+});
+
+describe('the card an operator actually reads', () => {
+  it('names a project whose fields were never filled in', () => {
+    const card = toPipelineCard({
+      workspace: workspace({
+        id: 'ws-blank',
+        name: null,
+        client_business_name: null,
+        client_name: null,
+      }),
+      job: null,
+      stateSince: ago(60_000),
+      now: NOW,
+    });
+
+    expect(card.name).toBe('Untitled project');
+    expect(card.businessName).toBe('Unassigned');
+  });
+
+  it('prefers the client name over the project name when there is no business', () => {
+    const card = toPipelineCard({
+      workspace: workspace({
+        id: 'ws-1',
+        client_business_name: null,
+        client_name: 'Maria Ionescu',
+      }),
+      job: null,
+      stateSince: ago(60_000),
+      now: NOW,
+    });
+    expect(card.businessName).toBe('Maria Ionescu');
+
+    expect(
+      toPipelineCard({
+        workspace: workspace({
+          id: 'ws-1',
+          client_business_name: null,
+          client_name: null,
+          name: 'Acme rebuild',
+        }),
+        job: null,
+        stateSince: ago(60_000),
+        now: NOW,
+      }).businessName
+    ).toBe('Acme rebuild');
+  });
+
+  it('shows a row whose project_state the enum does not know as intake', () => {
+    // buildPipelineBoard drops the row loudly; a card built directly still
+    // has to render rather than throw at the operator.
+    const card = toPipelineCard({
+      workspace: workspace({ id: 'ws-1', project_state: 'ARCHIVED' }),
+      job: null,
+      stateSince: ago(60_000),
+      now: NOW,
+    });
+    expect(card.projectState).toBe(ProjectState.INTAKE);
+  });
+
+  it('ages a job from whenever it last changed hands', () => {
+    const created = summarizeJob(
+      job({ id: 'j', workspace_id: 'ws-1', created_at: ago(5 * 60_000) }),
+      NOW
+    );
+    expect(created.ageMs).toBe(5 * 60_000);
+
+    const started = summarizeJob(
+      job({
+        id: 'j',
+        workspace_id: 'ws-1',
+        created_at: ago(5 * 60_000),
+        started_at: ago(2 * 60_000),
+      }),
+      NOW
+    );
+    expect(started.ageMs).toBe(2 * 60_000);
+
+    const finished = summarizeJob(
+      job({
+        id: 'j',
+        workspace_id: 'ws-1',
+        created_at: ago(5 * 60_000),
+        started_at: ago(2 * 60_000),
+        finished_at: ago(60_000),
+      }),
+      NOW
+    );
+    expect(finished.ageMs).toBe(60_000);
+  });
+});
+
+describe('reading the freshest row out of a batch', () => {
+  it('keeps the newest state change and ignores an older one', () => {
+    const events: PipelineEventRow[] = [
+      {
+        id: 'e2',
+        workspace_id: 'ws-1',
+        kind: 'state_changed',
+        actor: 'system',
+        payload: null,
+        created_at: ago(60_000),
+      },
+      {
+        id: 'e1',
+        workspace_id: 'ws-1',
+        kind: 'state_changed',
+        actor: 'system',
+        payload: null,
+        created_at: ago(10 * 60_000),
+      },
+      // Not a state change: it must not move the clock on the column.
+      {
+        id: 'e0',
+        workspace_id: 'ws-1',
+        kind: 'build_note_sent',
+        actor: 'system',
+        payload: null,
+        created_at: ago(1_000),
+      },
+    ];
+
+    expect(stateChangedAtByWorkspace(events).get('ws-1')).toBe(ago(60_000));
+  });
+
+  it('keeps the newest job and ignores an older one', () => {
+    const latest = latestJobByWorkspace([
+      job({ id: 'new', workspace_id: 'ws-1', created_at: ago(60_000) }),
+      job({ id: 'old', workspace_id: 'ws-1', created_at: ago(10 * 60_000) }),
+    ]);
+    expect(latest.get('ws-1')?.id).toBe('new');
+  });
+});
+
+describe('how long a duration reads', () => {
+  it('rounds down to the unit an operator would use', () => {
+    expect(formatDuration(30_000)).toBe('less than a minute');
+    expect(formatDuration(90_000)).toBe('1m');
+    expect(formatDuration(3 * 60 * 60_000)).toBe('3h');
+    expect(formatDuration(5 * 24 * 60 * 60_000)).toBe('5d');
+  });
+});
+
+describe('when nothing recorded a state change', () => {
+  it('measures from the row own last touch', () => {
+    const board = buildPipelineBoard({
+      workspaces: [
+        workspace({
+          id: 'ws-1',
+          project_state: ProjectState.DEPOSIT_PAID,
+          updated_at: ago(6 * 60 * 60_000),
+          created_at: ago(48 * 60 * 60_000),
+        }),
+      ],
+      jobs: [],
+      events: [],
+      now: NOW,
+    });
+
+    const card = board.columns.find(
+      (c) => c.state === ProjectState.DEPOSIT_PAID
+    )!.cards[0]!;
+    expect(card.stateSince).toBe(ago(6 * 60 * 60_000));
+    // Six hours in DEPOSIT_PAID is past the four-hour budget.
+    expect(card.stalled).toBe(true);
   });
 });

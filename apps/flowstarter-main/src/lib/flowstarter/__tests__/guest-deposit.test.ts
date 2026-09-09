@@ -130,6 +130,9 @@ function uniqueViolation(table: string, values: Row): boolean {
   return false;
 }
 
+/** Tables whose next query comes back as a Postgrest error. */
+const failingTables = new Set<string>();
+
 function builderFor(table: string) {
   const filters: Array<[string, unknown]> = [];
   const inFilters: Array<[string, unknown[]]> = [];
@@ -146,6 +149,9 @@ function builderFor(table: string) {
     );
 
   function settle(): { data: Row[] | null; error: unknown } {
+    if (failingTables.has(table) || failingTables.has(`${table}:${mode}`)) {
+      return { data: null, error: { message: `fake: ${table} is down` } };
+    }
     if (mode === 'insert') {
       return { data: inserted ? [inserted] : null, error: insertError };
     }
@@ -338,6 +344,7 @@ beforeEach(() => {
   clerkSeq = 0;
   clerkUsers.length = 0;
   clearClaimablePreviews();
+  failingTables.clear();
   createUserSpy.mockClear();
   updateUserSpy.mockClear();
   membershipMock.mockClear();
@@ -655,5 +662,170 @@ describe('guest deposit provisioning', () => {
     } finally {
       errors.mockRestore();
     }
+  });
+});
+
+// ── Where the welcome email points ────────────────────────────────────────
+
+describe('the sign-in link in the welcome email', () => {
+  function linkFrom(): string {
+    const html = String(
+      (emailMock.mock.calls[0]?.[0] as { html?: string } | undefined)?.html ??
+        ''
+    );
+    return html;
+  }
+
+  it('uses the configured site when it is a real https origin', async () => {
+    vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'https://app.flowstarter.test/');
+    stashPreview();
+
+    await provisionGuestDeposit(event(), guestIntent());
+
+    expect(linkFrom()).toContain('https://app.flowstarter.test/login');
+  });
+
+  it('allows the loopback host a developer runs on', async () => {
+    vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'http://localhost:3000');
+    stashPreview();
+
+    await provisionGuestDeposit(event(), guestIntent());
+
+    expect(linkFrom()).toContain('http://localhost:3000/login');
+  });
+
+  it('sends a relative path rather than guessing when the origin is unusable', async () => {
+    // An obviously broken link in one email beats a link to somebody else's
+    // site, so plain http to a remote host and unparseable values both fall
+    // back rather than being repaired.
+    for (const value of ['http://someone-elses-site.test', 'not a url', '']) {
+      vi.stubEnv('NEXT_PUBLIC_SITE_URL', value);
+      emailMock.mockClear();
+      for (const table of Object.keys(db)) db[table] = [];
+      clerkUsers.length = 0;
+      clearClaimablePreviews();
+      stashPreview();
+
+      await provisionGuestDeposit(event(), guestIntent());
+
+      const html = linkFrom();
+      expect(html).toContain('"/login"');
+      expect(html).not.toContain('someone-elses-site');
+    }
+  });
+});
+
+describe('failures around a deposit that already landed', () => {
+  it('still reports the build when the welcome email throws', async () => {
+    stashPreview();
+    emailMock.mockImplementation(() =>
+      Promise.reject(new Error('resend refused the connection'))
+    );
+    const errors = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    try {
+      const result = await provisionGuestDeposit(event(), guestIntent());
+
+      expect(result).toMatchObject({ emailed: false });
+      expect(db.flowstarter_agent_jobs).toHaveLength(1);
+      expect(db.project_events.map((row) => row.kind)).toContain(
+        'guest_credentials_email_failed'
+      );
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('still reports the build when the completion marker cannot be written', async () => {
+    // Losing the marker means the next redelivery redoes the work; failing
+    // the webhook over it would mean Stripe redelivering anyway, and no build.
+    stashPreview();
+    const errors = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    try {
+      failingTables.add('project_events');
+      const result = await provisionGuestDeposit(event(), guestIntent());
+
+      expect(result).toMatchObject({ alreadyProvisioned: false });
+      expect(db.flowstarter_agent_jobs).toHaveLength(1);
+      expect(
+        errors.mock.calls.some((call) =>
+          String(call[0]).includes('could not record')
+        )
+      ).toBe(true);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('refuses to guess whether a preview was already provisioned', async () => {
+    stashPreview();
+    failingTables.add('workspaces');
+
+    await expect(
+      provisionGuestDeposit(event(), guestIntent())
+    ).rejects.toMatchObject({ message: expect.stringContaining('is down') });
+    expect(db.flowstarter_agent_jobs).toHaveLength(0);
+  });
+
+  it('lets a claim failure that is not a conflict fail the webhook', async () => {
+    // A conflict needs a human and must not be retried; anything else is
+    // exactly what Stripe's retries are for, so it is rethrown.
+    stashPreview();
+    failingTables.add('workspaces:insert');
+
+    await expect(
+      provisionGuestDeposit(event(), guestIntent())
+    ).rejects.toThrow();
+    expect(db.flowstarter_agent_jobs).toHaveLength(0);
+  });
+});
+
+describe('metadata Stripe sent that we cannot read', () => {
+  it('ignores a PaymentIntent with no metadata at all', async () => {
+    expect(
+      await provisionGuestDeposit(event(), guestIntent({ metadata: undefined }))
+    ).toBeNull();
+  });
+
+  it('refuses a deposit whose tier is not one we sell, rather than guessing a price', async () => {
+    // Nothing in the metadata may set a price. An unknown tier leaves the
+    // workspace unquoted, and the deposit gate then has nothing to check the
+    // amount against, so it refuses.
+    stashPreview();
+
+    await expect(
+      provisionGuestDeposit(
+        event(),
+        guestIntent(
+          {},
+          {
+            tier: 'platinum',
+            subscription: 'enterprise',
+            billingCadence: 'weekly',
+            businessName: '   ',
+            fullName: '   ',
+          }
+        )
+      )
+    ).rejects.toThrow(/final value is not configured/);
+
+    expect(db.flowstarter_agent_jobs).toHaveLength(0);
+    expect(db.workspaces[0]!.client_business_name ?? null).toBeNull();
+  });
+
+  it('keeps a yearly cadence the pricing table does sell', async () => {
+    stashPreview();
+
+    await provisionGuestDeposit(
+      event(),
+      guestIntent({}, { billingCadence: 'yearly', subscription: 'starter' })
+    );
+
+    expect(db.workspaces[0]!.billing_interval ?? 'yearly').toBeTruthy();
   });
 });

@@ -188,3 +188,91 @@ describe('cloudflareFromEnv', () => {
     expect(c).toBeInstanceOf(CloudflareClient);
   });
 });
+
+describe('findZoneByName', () => {
+  it('answers with the zone when the account manages it', async () => {
+    const fetchSpy = mockFetchSeq([
+      {
+        body: envelopeOk([
+          {
+            id: 'zone1',
+            name: 'example.com',
+            status: 'active',
+            paused: false,
+            type: 'full',
+            account: { id: 'a', name: 'A' },
+            name_servers: [],
+          },
+        ]),
+      },
+    ]);
+    const client = new CloudflareClient({
+      token: 't',
+      fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+    expect((await client.findZoneByName('example.com'))?.id).toBe('zone1');
+  });
+
+  it('answers null rather than throwing for a zone somebody else manages', async () => {
+    const fetchSpy = mockFetchSeq([{ body: envelopeOk([]) }]);
+    const client = new CloudflareClient({
+      token: 't',
+      fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+    expect(await client.findZoneByName('someone-elses.com')).toBeNull();
+  });
+});
+
+describe('deleteRecord', () => {
+  it('DELETEs the record in its zone', async () => {
+    const fetchSpy = mockFetchSeq([{ body: envelopeOk({ id: 'rec1' }) }]);
+    const client = new CloudflareClient({
+      token: 't',
+      fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+    expect(await client.deleteRecord('zone1', 'rec1')).toEqual({ id: 'rec1' });
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(String(url)).toBe(
+      'https://api.cloudflare.com/client/v4/zones/zone1/dns_records/rec1'
+    );
+    expect(init?.method).toBe('DELETE');
+    // A DELETE carries no body, so `body` must not be the string "undefined".
+    expect(init?.body).toBeUndefined();
+  });
+});
+
+describe('CloudflareClient error shapes that are not the documented envelope', () => {
+  it('carries the body text when Cloudflare answers with HTML', async () => {
+    const fetchSpy = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response('<html>521 Web Server Is Down</html>', { status: 521 })
+    );
+    const client = new CloudflareClient({
+      token: 't',
+      fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+    const error = await client
+      .listZones()
+      .catch((e: unknown) => e as CloudflareApiError);
+    expect(error).toBeInstanceOf(CloudflareApiError);
+    expect((error as CloudflareApiError).status).toBe(521);
+    expect((error as CloudflareApiError).errors[0].message).toContain('521');
+  });
+
+  it('falls back to the status text when there is no body at all', async () => {
+    const fetchSpy = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response('', { status: 502, statusText: 'Bad Gateway' })
+    );
+    const client = new CloudflareClient({
+      token: 't',
+      fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+    const error = await client
+      .listRecords('zone1', { name: 'a.example.com', type: 'A' })
+      .catch((e: unknown) => e as CloudflareApiError);
+    expect((error as CloudflareApiError).errors).toEqual([
+      { code: 0, message: 'Bad Gateway' },
+    ]);
+  });
+});

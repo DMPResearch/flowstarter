@@ -12,6 +12,7 @@ import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types
 import {
   enqueueFullBuildFromDeposit,
   enqueueFullBuildFromDepositInvoice,
+  productionActivationAllowed,
 } from '../deposit-workflow';
 
 interface ClientScript {
@@ -19,6 +20,8 @@ interface ClientScript {
   insertResult?: { data: unknown; error: unknown };
   existingJob?: { data: unknown; error: unknown };
   stateUpdate?: { data: unknown; error: unknown };
+  /** How the best-effort `project_events` insert resolves, or throws. */
+  eventInsert?: { error: unknown } | 'throw';
 }
 
 const script: ClientScript = {};
@@ -62,6 +65,19 @@ function builderFor(table: string) {
     },
     maybeSingle() {
       return Promise.resolve(script.workspace ?? { data: null, error: null });
+    },
+    then(resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) {
+      if (table === 'project_events' && script.eventInsert === 'throw') {
+        return Promise.reject(new Error('project_events is unreachable')).then(
+          resolve,
+          reject
+        );
+      }
+      return Promise.resolve(
+        table === 'project_events'
+          ? script.eventInsert ?? { error: null }
+          : { data: null, error: null }
+      ).then(resolve, reject);
     },
     single() {
       if (table === 'workspaces') {
@@ -121,6 +137,7 @@ beforeEach(() => {
   delete script.insertResult;
   delete script.existingJob;
   delete script.stateUpdate;
+  delete script.eventInsert;
   captured.insert = undefined;
   captured.update = undefined;
   captured.events = [];
@@ -377,5 +394,278 @@ describe('deposit paid by Checkout PaymentIntent', () => {
       depositIntent({ metadata: { kind: 'something_else' } })
     );
     expect(result).toBeNull();
+  });
+});
+
+// ── The gate, from the outside ────────────────────────────────────────────
+//
+// Every refusal below happens before a job row exists. A deposit that reaches
+// the build queue is one whose amount, currency, workspace and lifecycle state
+// all agreed with what the server had already decided.
+
+describe('deposits the gate turns away', () => {
+  function depositIntent(
+    overrides: Record<string, unknown> = {}
+  ): Stripe.PaymentIntent {
+    return {
+      id: 'pi_1',
+      status: 'succeeded',
+      currency: 'eur',
+      amount_received: 15_980,
+      metadata: { kind: 'flowstarter_deposit', workspaceId: WORKSPACE_ID },
+      ...overrides,
+    } as unknown as Stripe.PaymentIntent;
+  }
+
+  it('refuses a deposit whose metadata names no workspace we could verify', async () => {
+    for (const workspaceId of [undefined, '', 'ws-1']) {
+      await expect(
+        enqueueFullBuildFromDeposit(
+          event(),
+          depositIntent({
+            metadata: { kind: 'flowstarter_deposit', workspaceId },
+          })
+        )
+      ).rejects.toThrow(/valid workspaceId/);
+    }
+    expect(captured.tables).toEqual([]);
+  });
+
+  it('refuses a PaymentIntent Stripe has not marked succeeded', async () => {
+    await expect(
+      enqueueFullBuildFromDeposit(
+        event(),
+        depositIntent({ status: 'requires_payment_method' })
+      )
+    ).rejects.toThrow(/not succeeded/);
+    expect(captured.tables).toEqual([]);
+  });
+
+  it('refuses to build for a workspace that does not exist or cannot be read', async () => {
+    script.workspace = { data: null, error: null };
+    await expect(
+      enqueueFullBuildFromDeposit(event(), depositIntent())
+    ).rejects.toThrow(/workspace does not exist/);
+
+    script.workspace = { data: null, error: new Error('workspaces is down') };
+    await expect(
+      enqueueFullBuildFromDeposit(event(), depositIntent())
+    ).rejects.toThrow('workspaces is down');
+    expect(captured.insert).toBeUndefined();
+  });
+
+  it('refuses to start a build from a state a deposit cannot leave', async () => {
+    script.workspace = workspaceRow({ project_state: ProjectState.HUMAN_QA });
+    await expect(
+      enqueueFullBuildFromDeposit(event(), depositIntent())
+    ).rejects.toThrow(/cannot start a build from state HUMAN_QA/);
+  });
+
+  it('refuses a workspace that was never quoted', async () => {
+    script.workspace = workspaceRow({ final_value_minor: null });
+    await expect(
+      enqueueFullBuildFromDeposit(event(), depositIntent())
+    ).rejects.toThrow(/final value is not configured/);
+  });
+
+  it('refuses a second, different payment for a workspace already deposited on', async () => {
+    script.workspace = workspaceRow({
+      deposit_payment_intent_id: 'pi_somebody_else',
+    });
+    await expect(
+      enqueueFullBuildFromDeposit(event(), depositIntent())
+    ).rejects.toThrow(/already associated with a different deposit/);
+    expect(captured.insert).toBeUndefined();
+  });
+
+  it('accepts the same PaymentIntent redelivered against its own workspace', async () => {
+    script.workspace = workspaceRow({ deposit_payment_intent_id: 'pi_1' });
+    await expect(
+      enqueueFullBuildFromDeposit(event(), depositIntent())
+    ).resolves.toMatchObject({ jobId: 'job-1' });
+  });
+});
+
+describe('deposit invoices the gate ignores', () => {
+  it('ignores an invoice with no id, and one naming no workspace', async () => {
+    expect(
+      await enqueueFullBuildFromDepositInvoice(
+        event(),
+        depositInvoice({ id: null })
+      )
+    ).toBeNull();
+    expect(
+      await enqueueFullBuildFromDepositInvoice(
+        event(),
+        depositInvoice({ metadata: { invoiceType: 'deposit' } })
+      )
+    ).toBeNull();
+    expect(
+      await enqueueFullBuildFromDepositInvoice(
+        event(),
+        depositInvoice({
+          metadata: { invoiceType: 'deposit', workspaceId: 'not-a-uuid' },
+        })
+      )
+    ).toBeNull();
+    expect(captured.tables).toEqual([]);
+  });
+
+  it('accepts the older projectId spelling of the same field', async () => {
+    script.workspace = workspaceRow();
+    await expect(
+      enqueueFullBuildFromDepositInvoice(
+        event(),
+        depositInvoice({
+          metadata: { invoiceType: 'deposit', projectId: WORKSPACE_ID },
+        })
+      )
+    ).resolves.toMatchObject({ workspaceId: WORKSPACE_ID });
+  });
+
+  it('ignores an invoice for a workspace that is gone, and surfaces a failed read', async () => {
+    script.workspace = { data: null, error: null };
+    expect(
+      await enqueueFullBuildFromDepositInvoice(event(), depositInvoice())
+    ).toBeNull();
+
+    script.workspace = { data: null, error: new Error('workspaces is down') };
+    await expect(
+      enqueueFullBuildFromDepositInvoice(event(), depositInvoice())
+    ).rejects.toThrow('workspaces is down');
+  });
+});
+
+describe('when the ledger write itself fails', () => {
+  it('does not report a build that was never queued', async () => {
+    script.workspace = workspaceRow();
+
+    script.insertResult = { data: null, error: new Error('jobs is down') };
+    await expect(
+      enqueueFullBuildFromDepositInvoice(event(), depositInvoice())
+    ).rejects.toThrow('jobs is down');
+
+    script.insertResult = { data: null, error: null };
+    await expect(
+      enqueueFullBuildFromDepositInvoice(event(), depositInvoice())
+    ).rejects.toThrow(/Could not enqueue full site build/);
+  });
+
+  it('does not invent a job id when the duplicate cannot be read back', async () => {
+    script.workspace = workspaceRow();
+    script.insertResult = { data: null, error: { code: '23505' } };
+
+    script.existingJob = { data: null, error: null };
+    await expect(
+      enqueueFullBuildFromDepositInvoice(event(), depositInvoice())
+    ).rejects.toThrow(/Existing build job was not found/);
+
+    script.existingJob = { data: null, error: new Error('jobs is down') };
+    await expect(
+      enqueueFullBuildFromDepositInvoice(event(), depositInvoice())
+    ).rejects.toThrow('jobs is down');
+  });
+
+  it('fails the webhook when the deposit could not be recorded on the workspace', async () => {
+    // Stripe retrying is right here: the money moved and the row did not.
+    script.workspace = workspaceRow();
+    script.stateUpdate = { data: null, error: new Error('workspaces is down') };
+
+    await expect(
+      enqueueFullBuildFromDepositInvoice(event(), depositInvoice())
+    ).rejects.toThrow('workspaces is down');
+  });
+});
+
+describe('losing the dispatch-failure note', () => {
+  function withoutWorker() {
+    vi.stubEnv('FLOWSTARTER_BUILD_WORKER_URL', '');
+    vi.stubEnv('FLOWSTARTER_BUILD_WORKER_SECRET', '');
+  }
+
+  it('still lets the deposit land when the timeline row cannot be written', async () => {
+    script.workspace = workspaceRow();
+    script.eventInsert = { error: { message: 'project_events is down' } };
+    withoutWorker();
+    const errors = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      await expect(
+        enqueueFullBuildFromDepositInvoice(event(), depositInvoice())
+      ).resolves.toMatchObject({ jobId: 'job-1' });
+      expect(
+        errors.mock.calls.some((call) =>
+          String(call[0]).includes('could not record build_dispatch_failed')
+        )
+      ).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('still lets the deposit land when writing it throws', async () => {
+    script.workspace = workspaceRow();
+    script.eventInsert = 'throw';
+    withoutWorker();
+    const errors = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      await expect(
+        enqueueFullBuildFromDepositInvoice(event(), depositInvoice())
+      ).resolves.toMatchObject({ jobId: 'job-1' });
+      expect(
+        errors.mock.calls.some((call) =>
+          String(call[0]).includes('could not record build_dispatch_failed')
+        )
+      ).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+});
+
+describe('when a site may be switched on for real', () => {
+  const ready = {
+    projectState: ProjectState.HUMAN_QA,
+    finalStatus: 'paid',
+    stripeSubscriptionId: 'sub_1',
+    subscriptionStatus: 'active',
+  };
+
+  it('needs human QA, the balance paid, and a live subscription', () => {
+    expect(productionActivationAllowed(ready)).toBe(true);
+    expect(
+      productionActivationAllowed({ ...ready, subscriptionStatus: 'trialing' })
+    ).toBe(true);
+    expect(
+      productionActivationAllowed({ ...ready, subscriptionStatus: 'trial' })
+    ).toBe(true);
+  });
+
+  it('refuses each missing piece on its own', () => {
+    expect(
+      productionActivationAllowed({
+        ...ready,
+        projectState: ProjectState.AGENTS_WORKING,
+      })
+    ).toBe(false);
+    expect(
+      productionActivationAllowed({ ...ready, finalStatus: 'pending' })
+    ).toBe(false);
+    expect(
+      productionActivationAllowed({ ...ready, stripeSubscriptionId: null })
+    ).toBe(false);
+    expect(
+      productionActivationAllowed({ ...ready, subscriptionStatus: 'past_due' })
+    ).toBe(false);
+    expect(
+      productionActivationAllowed({ ...ready, subscriptionStatus: null })
+    ).toBe(false);
   });
 });

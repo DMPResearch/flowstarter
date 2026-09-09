@@ -115,3 +115,62 @@ describe('hetznerFromEnv', () => {
     expect(c).toBeInstanceOf(HetznerClient);
   });
 });
+
+describe('HetznerClient.deleteServer', () => {
+  it('DELETEs the server and returns the action', async () => {
+    const fetchSpy = mockFetch({
+      action: { id: 42, status: 'running', command: 'delete_server' },
+    });
+    const client = new HetznerClient({
+      token: 't',
+      fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+    const out = await client.deleteServer(12345);
+    expect(out.action.command).toBe('delete_server');
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(String(url)).toBe('https://api.hetzner.cloud/v1/servers/12345');
+    expect(init?.method).toBe('DELETE');
+    expect(init?.body).toBeUndefined();
+  });
+});
+
+describe('HetznerClient error shapes that are not the documented envelope', () => {
+  it('reports unknown_error with a synthesised message when the body is not the API envelope', async () => {
+    const fetchSpy = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response('<html>503 Service Unavailable</html>', { status: 503 })
+    );
+    const client = new HetznerClient({
+      token: 't',
+      fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+    const error = await client
+      .getServer(1)
+      .catch((e: unknown) => e as HetznerApiError);
+    expect(error).toBeInstanceOf(HetznerApiError);
+    expect((error as HetznerApiError).status).toBe(503);
+    expect((error as HetznerApiError).code).toBe('unknown_error');
+    expect((error as HetznerApiError).message).toBe(
+      'Hetzner API 503 on GET /servers/1'
+    );
+    expect((error as HetznerApiError).details).toBeUndefined();
+  });
+
+  it('uses the default message when the error payload carries no message', async () => {
+    const fetchSpy = mockFetch(
+      { error: { code: 'rate_limit_exceeded' } },
+      { status: 429 }
+    );
+    const client = new HetznerClient({
+      token: 't',
+      fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+    const error = await client
+      .listServers()
+      .catch((e: unknown) => e as HetznerApiError);
+    expect((error as HetznerApiError).code).toBe('rate_limit_exceeded');
+    expect((error as HetznerApiError).message).toBe(
+      'Hetzner API 429 on GET /servers'
+    );
+  });
+});

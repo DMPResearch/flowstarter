@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './support/coverage-fixture';
 
 test.describe('Flowstarter workflow showcase', () => {
   test('presents every recorded scenario and loads each clip', async ({ page }) => {

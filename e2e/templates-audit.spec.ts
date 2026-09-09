@@ -18,7 +18,8 @@
  * truth for which slugs ship a static preview).
  */
 
-import { test, expect, Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { test, expect } from './support/coverage-fixture';
 import fs from 'fs';
 import path from 'path';
 import { isNetlifyPreviewDrawerNoise } from './support/console-noise';

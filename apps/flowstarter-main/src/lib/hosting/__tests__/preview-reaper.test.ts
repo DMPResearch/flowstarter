@@ -239,3 +239,16 @@ describe('reapExpiredPreviews', () => {
     expect(agent.calls).toHaveLength(2);
   });
 });
+
+describe('the sweep with nothing configured at all', () => {
+  it('reads the service-role client and the env agent, and reports a dry run', async () => {
+    // No agent, no client, no `now`: the shape a cron invocation actually uses.
+    db.seed('funnel_previews', [expiredRow(1)]);
+    const result = await reapExpiredPreviews();
+    expect(result.dryRun).toBe(true);
+    expect(result.considered).toBe(1);
+    expect(result.reaped).toBe(1);
+    expect(result.previews[0]!.detail).toMatch(/dry run/);
+    expect(db.rows('funnel_previews')[0]!.deploy_status).toBe('removed');
+  });
+});

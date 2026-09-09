@@ -23,7 +23,8 @@
  * baseline-refresh procedure via workflow_dispatch).
  */
 
-import { test, expect, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { test, expect } from '../support/coverage-fixture';
 
 const PAGES = [
   { name: 'landing', path: '/' },

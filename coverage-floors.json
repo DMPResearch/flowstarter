@@ -1,0 +1,33 @@
+{
+  "_comment": "Coverage floors, enforced by scripts/coverage-ratchet.mjs in the quality gate. A floor is the level a suite has already reached; it rises with `node scripts/coverage-ratchet.mjs --update` and nothing lowers it. Editing a number down by hand is the thing this file exists to make visible. The flowstarter-main numbers look low next to the other two, and they are: that package's coverage.include glob had a `src/` prefix it resolves without (package.json runs `vitest --root src`), so until 2026-09-09 v8 only reported the files a test happened to import and 414 source files were invisible. 47.5% is the whole tree. The number it replaces, 77.6%, was the covered half measuring itself.",
+  "updated": "2026-09-09",
+  "packages": {
+    "flowstarter-main": {
+      "summary": "apps/flowstarter-main/coverage/coverage-summary.json",
+      "floors": {
+        "lines": 47.51,
+        "statements": 47.25,
+        "functions": 39.92,
+        "branches": 43.72
+      }
+    },
+    "agentic-codegen": {
+      "summary": "packages/agentic-codegen/coverage/coverage-summary.json",
+      "floors": {
+        "lines": 71.47,
+        "statements": 69.85,
+        "functions": 67.58,
+        "branches": 62.29
+      }
+    },
+    "build-worker": {
+      "summary": "apps/build-worker/coverage/coverage-summary.json",
+      "floors": {
+        "lines": 90.29,
+        "statements": 89.82,
+        "functions": 90.82,
+        "branches": 85.61
+      }
+    }
+  }
+}

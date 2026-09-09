@@ -18,7 +18,7 @@
  * intake-chat request below, and it is shaped so the route returns before it
  * reaches a model, a mailbox or Supabase.
  */
-import { expect, test } from '@playwright/test';
+import { expect, test } from './support/coverage-fixture';
 
 const BASE_URL = (
   process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:3000'

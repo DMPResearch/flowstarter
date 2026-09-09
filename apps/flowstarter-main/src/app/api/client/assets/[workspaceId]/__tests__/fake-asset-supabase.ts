@@ -23,6 +23,35 @@ export interface StorageCall {
   contentType?: string;
 }
 
+/**
+ * One query that will not go the way the happy path assumes.
+ *
+ * Postgrest reports a failure two ways and the routes have to survive both: a
+ * resolved `{ data: null, error }`, and a rejected promise when the connection
+ * itself goes. `throws` picks the second. Each plan fires once, so a test can
+ * fail the insert and still watch the read that follows it succeed.
+ */
+export interface QueryFailure {
+  table: string;
+  mode?: 'select' | 'insert' | 'update';
+  /** Returned as the query's `error`. */
+  error?: unknown;
+  /** Returned as the query's `data`. Defaults to null. */
+  data?: Row[] | null;
+  /** Rejected with, instead of returned. */
+  throws?: unknown;
+  /** Let this many matching queries through first. */
+  skip?: number;
+}
+
+/** Storage failures, which stay set until `reset()`. */
+export interface StorageFailures {
+  upload?: unknown;
+  sign?: unknown;
+  /** `createSignedUrl` rejecting rather than reporting an error. */
+  signThrows?: unknown;
+}
+
 export interface FakeAssetDb {
   tables: Record<string, Row[]>;
   /** Every upload that reached storage, in order. Asserted to be empty a lot. */
@@ -31,6 +60,10 @@ export interface FakeAssetDb {
   signed: Array<{ bucket: string; path: string; ttl: number }>;
   rows(table: string): Row[];
   seed(table: string, rows: Row[]): void;
+  /** Arms one failing query. See `QueryFailure`. */
+  failQuery(failure: QueryFailure): void;
+  /** Arms the storage surface to fail until the next `reset()`. */
+  failStorage(failures: StorageFailures): void;
   reset(): void;
   client: unknown;
 }
@@ -44,7 +77,28 @@ export function createFakeAssetSupabase(): FakeAssetDb {
   const tables: Record<string, Row[]> = {};
   const uploads: StorageCall[] = [];
   const signed: Array<{ bucket: string; path: string; ttl: number }> = [];
+  const failures: QueryFailure[] = [];
+  let storageFailures: StorageFailures = {};
   let sequence = 0;
+
+  /** The armed failure for this query, consumed if there is one. */
+  function takeFailure(
+    table: string,
+    mode: 'select' | 'insert' | 'update'
+  ): QueryFailure | undefined {
+    const index = failures.findIndex(
+      (failure) =>
+        failure.table === table && (!failure.mode || failure.mode === mode)
+    );
+    if (index < 0) return undefined;
+    const failure = failures[index] as QueryFailure;
+    if (failure.skip && failure.skip > 0) {
+      failure.skip -= 1;
+      return undefined;
+    }
+    failures.splice(index, 1);
+    return failure;
+  }
 
   const rows = (table: string): Row[] => (tables[table] ??= []);
 
@@ -92,6 +146,11 @@ export function createFakeAssetSupabase(): FakeAssetDb {
     }
 
     function resolve(): { data: Row[] | null; error: unknown } {
+      const failure = takeFailure(table, mode);
+      if (failure) {
+        if ('throws' in failure) throw failure.throws;
+        return { data: failure.data ?? null, error: failure.error ?? null };
+      }
       if (mode === 'insert') {
         for (const values of payload) {
           if (uniqueViolation(table, values)) {
@@ -184,6 +243,9 @@ export function createFakeAssetSupabase(): FakeAssetDb {
           bytes: Buffer | Uint8Array,
           options?: { contentType?: string }
         ) {
+          if (storageFailures.upload) {
+            return { data: null, error: storageFailures.upload };
+          }
           uploads.push({
             bucket,
             path,
@@ -196,6 +258,10 @@ export function createFakeAssetSupabase(): FakeAssetDb {
         },
         async createSignedUrl(path: string, ttl: number) {
           signed.push({ bucket, path, ttl });
+          if (storageFailures.signThrows) throw storageFailures.signThrows;
+          if (storageFailures.sign) {
+            return { data: null, error: storageFailures.sign };
+          }
           return {
             data: {
               signedUrl: `https://storage.test/${bucket}/${path}?token=signed&expires=${ttl}`,
@@ -215,10 +281,18 @@ export function createFakeAssetSupabase(): FakeAssetDb {
     seed(table, seedRows) {
       rows(table).push(...seedRows);
     },
+    failQuery(failure) {
+      failures.push(failure);
+    },
+    failStorage(next) {
+      storageFailures = { ...storageFailures, ...next };
+    },
     reset() {
       for (const key of Object.keys(tables)) delete tables[key];
       uploads.length = 0;
       signed.length = 0;
+      failures.length = 0;
+      storageFailures = {};
       sequence = 0;
     },
     client: { from: builder, storage },

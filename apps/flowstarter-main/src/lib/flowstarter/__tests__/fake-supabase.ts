@@ -57,6 +57,13 @@ export function createFakeSupabase(): FakeDb {
       return out;
     }
 
+    /**
+     * Postgrest hands back fresh JSON on every read, so a row a caller is
+     * holding never changes under it when somebody else writes. Copying here
+     * keeps that true, which is what makes a stale-row test mean anything.
+     */
+    const detach = (out: Row[]): Row[] => out.map((row) => ({ ...row }));
+
     function resolve(): { data: Row[] | null; error: unknown } {
       if (failing.has(table)) {
         return { data: null, error: { message: `fake: ${table} unavailable` } };
@@ -72,14 +79,14 @@ export function createFakeSupabase(): FakeDb {
           ...values,
         }));
         rows(table).push(...inserted);
-        return { data: inserted, error: null };
+        return { data: detach(inserted), error: null };
       }
       if (mode === 'update') {
         const target = selected();
         for (const row of target) Object.assign(row, payload[0]);
-        return { data: target, error: null };
+        return { data: detach(target), error: null };
       }
-      return { data: selected(), error: null };
+      return { data: detach(selected()), error: null };
     }
 
     const self = {

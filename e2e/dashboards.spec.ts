@@ -10,7 +10,8 @@
  *   - hard React error boundary text.
  */
 
-import { test, expect, type Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
+import { test, expect } from "./support/coverage-fixture";
 import { isNetlifyPreviewDrawerNoise } from "./support/console-noise";
 
 const BASE = process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000";
