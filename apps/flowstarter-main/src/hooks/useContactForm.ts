@@ -5,6 +5,7 @@ import { useMutation } from '@tanstack/react-query';
 export interface ContactFormData {
   name: string;
   email: string;
+  subject: string;
   company?: string;
   message: string;
 }

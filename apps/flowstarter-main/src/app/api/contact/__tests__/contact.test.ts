@@ -3,7 +3,12 @@
  * Covers: Zod validation, Supabase insert, error handling
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { NextRequest } from 'next/server';
 import { z } from 'zod';
+// Static imports: vi.mock below is hoisted above them, and this app's
+// tsconfig does not allow top-level await in tests.
+import { POST } from '../route';
+import { buildContactPayload } from '@/lib/contact-payload';
 
 vi.mock('server-only', () => ({}));
 
@@ -233,6 +238,60 @@ describe('POST /api/contact — Supabase integration', () => {
 
   it('does not call Supabase when validation fails', async () => {
     await simulateContact({ name: '', email: 'bad', subject: '', message: '' });
+    expect(mockSupabase.from).not.toHaveBeenCalled();
+  });
+});
+
+// ── Real route handler, exercised with the contact page's own payload ──────
+// Regression coverage for the bug where the contact page folded the subject
+// into the message body instead of sending it as its own field, so every
+// submission hit `subject` missing from `ContactSchema` and got a 400. This
+// imports the real `POST` handler (not a reimplementation) and the same
+// `buildContactPayload` the page component calls, so a future regression in
+// either side is caught here.
+function postRequest(body: unknown) {
+  return new NextRequest('http://localhost/api/contact', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+describe('POST /api/contact — real route handler with the form payload', () => {
+  beforeEach(() => {
+    supabaseInsertError = null;
+    vi.clearAllMocks();
+  });
+
+  it('accepts the exact payload the contact form builds', async () => {
+    const payload = buildContactPayload({
+      name: 'Elena Popescu',
+      email: 'elena@example.ro',
+      subject: 'Project',
+      message: 'Aș dori o programare pentru vineri.',
+    });
+
+    const res = await POST(postRequest(payload));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.success).toBe(true);
+    expect(mockSupabase.from).toHaveBeenCalledWith('contact_submissions');
+  });
+
+  it('rejects the form payload when subject is missing, with 400', async () => {
+    const payload = buildContactPayload({
+      name: 'Elena Popescu',
+      email: 'elena@example.ro',
+      subject: '',
+      message: 'Aș dori o programare pentru vineri.',
+    });
+
+    const res = await POST(postRequest(payload));
+    const json = await res.json();
+
+    expect(res.status).toBe(400);
+    expect(json.error).toContain('Subject is required');
     expect(mockSupabase.from).not.toHaveBeenCalled();
   });
 });
