@@ -80,6 +80,9 @@ m4-dev.sh
 e2e/screenshots/
 playwright-report/
 test-results/
+# The daily QA lane's JSON report (.depot/workflows/daily-qa.yml uploads it as
+# a run artifact; it is never committed).
+qa-journeys-report.json
 
 # Visual check — only the linux/ baselines are committed (CI runs on
 # ubuntu-latest). macOS baselines render fonts/AA differently and would
