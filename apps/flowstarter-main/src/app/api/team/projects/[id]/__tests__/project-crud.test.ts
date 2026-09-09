@@ -607,20 +607,33 @@ describe('PATCH /api/{team,admin}/projects/[id] — persistence', () => {
   );
 
   it.each(PATCHES)(
-    '%s answers a body that is not JSON with a 500 (see report)',
+    '%s answers a body that is not JSON with a 400, not a 500',
     async (_tree, handler) => {
-      // Documented divergence, not an endorsement: PATCH calls `request.json()`
-      // without the `.catch(() => ({}))` its sibling handlers use, so a
-      // malformed body lands in the catch-all and reads as a server fault
-      // rather than the 400 it is. Pinned so the behaviour cannot drift
-      // unnoticed; the fix belongs in the handler.
+      // The parse used to be bare, so an unparseable body fell into the
+      // catch-all and read as a server fault. It is the caller's mistake and
+      // it says so now. Nothing is written either way.
       seedWorkspaces();
 
       const res = await handler(req(), ctx());
-      expect(res.status).toBe(500);
+      expect(res.status).toBe(400);
       await expect(res.json()).resolves.toEqual({
-        error: 'Failed to update project',
+        error: 'Request body must be a JSON object',
       });
+      expect(workspace()?.name).toBe('Acme Coaching');
+    }
+  );
+
+  it.each(PATCHES)(
+    '%s refuses a JSON body that is not an object with a 400',
+    async (_tree, handler) => {
+      // `[]` and `"hi"` parse but destructure to a row of undefineds, which
+      // would have been a silent no-op 200 claiming the update happened.
+      seedWorkspaces();
+
+      for (const body of [[], 'hi', 42, null]) {
+        const res = await handler(req(body), ctx());
+        expect(res.status).toBe(400);
+      }
       expect(workspace()?.name).toBe('Acme Coaching');
     }
   );

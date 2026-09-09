@@ -99,7 +99,10 @@ describe('sanitizeDaysUntilDue', () => {
 
 describe('mapBillingError', () => {
   const cases: Array<[string, number]> = [
-    ['project_not_found', 404],
+    // The code `ensureBillingCustomer` actually throws. The table used to say
+    // `project_not_found`, which nothing throws, so an unknown workspace was
+    // a 500 on four billing endpoints.
+    ['workspace_not_found', 404],
     ['missing_client_email', 400],
     ['subscription_exists', 409],
     ['no_subscription', 404],
@@ -119,15 +122,24 @@ describe('mapBillingError', () => {
     expect(body).toEqual({ error: `boom: ${code}`, code });
   });
 
-  it('falls back to 500 for an unmapped StripeBillingError code', async () => {
-    // `workspace_not_found` is thrown by ensureBillingCustomer but has no
-    // entry in the table, so it lands here rather than on 404.
+  it('falls back to 500 for a code the table does not carry', async () => {
+    // The fallback still exists and still answers 500; it just no longer
+    // catches the one code the product throws most.
     const res = mapBillingError(
-      new StripeBillingError('workspace_not_found', 'Workspace ws_1 not found')
+      new StripeBillingError('teapot', 'Nobody throws this')
     );
     expect(res.status).toBe(500);
     const body = await res.json();
-    expect(body.code).toBe('workspace_not_found');
+    expect(body.code).toBe('teapot');
+  });
+
+  it('no longer maps the dead `project_not_found` code', async () => {
+    // Named so a future re-add has to argue with this test: renaming the code
+    // back would silently restore the 500.
+    const res = mapBillingError(
+      new StripeBillingError('project_not_found', 'stale code')
+    );
+    expect(res.status).toBe(500);
   });
 
   it('maps a plain Error to 500 and keeps its message', async () => {

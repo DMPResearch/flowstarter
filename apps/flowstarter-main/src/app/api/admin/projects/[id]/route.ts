@@ -144,7 +144,17 @@ export async function PATCH(
 
   try {
     const { id } = await params;
-    const body = await request.json();
+    // A body that is not JSON is the caller's mistake, so say 400. Read
+    // straight, it threw into the catch-all below and answered 500 "Failed to
+    // update project", which reads as our fault and tells the caller nothing.
+    // Every sibling handler in this group already guards the parse.
+    const body = await request.json().catch(() => null);
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      return NextResponse.json(
+        { error: 'Request body must be a JSON object' },
+        { status: 400 }
+      );
+    }
     const {
       name,
       site_kind,

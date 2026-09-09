@@ -318,20 +318,43 @@ function sanitizeDomain(raw: unknown): string | null {
   return trimmed;
 }
 
+/**
+ * The Cloudflare zone that manages `domain`, or null when this account manages
+ * none of its suffixes.
+ *
+ * "No zone" and "we could not ask" are different answers and used to look the
+ * same: every per-attempt failure was swallowed, so an invalid or expired
+ * `CLOUDFLARE_API_TOKEN` reached the operator as "acme.example.com is not in a
+ * Cloudflare zone this account manages" and sent them looking at the client's
+ * registrar. A `CloudflareApiError` now propagates, and the caller's existing
+ * handler at the top of this module turns it into an explicit error naming the
+ * status. Only a transport-level failure on one candidate is still tolerated,
+ * because a longer suffix may still answer.
+ */
 async function findManagedZone(
   cf: CloudflareClient,
   domain: string
 ): Promise<{ id: string; name: string } | null> {
   const labels = domain.split('.');
+  let transportFailure: unknown = null;
+
   for (let i = 0; i + 1 < labels.length; i++) {
     const candidate = labels.slice(i).join('.');
     try {
       const zone = await cf.findZoneByName(candidate);
       if (zone) return { id: zone.id, name: zone.name };
-    } catch {
-      // ignore per-attempt failures
+    } catch (e) {
+      // Cloudflare answered and refused: a bad token, a revoked scope, a rate
+      // limit. Asking about a longer suffix will be refused the same way.
+      if (e instanceof CloudflareApiError) throw e;
+      transportFailure = e;
     }
   }
+
+  // Never reached Cloudflare at all for any candidate. Saying "not managed"
+  // here would be a guess.
+  if (transportFailure !== null) throw transportFailure;
+
   return null;
 }
 

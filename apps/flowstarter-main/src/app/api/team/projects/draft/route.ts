@@ -1,6 +1,6 @@
-import { auth } from '@clerk/nextjs/server';
 import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
+import { requireTeamAuth } from '@/lib/api-auth';
 import {
   inferCommercePlanFromText,
   normalizeCommercePlan,
@@ -49,11 +49,16 @@ function uniqueSlug(base: string): string {
  */
 export async function POST(req: Request) {
   try {
-    const { userId } = await auth();
-
-    if (!userId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    // `requireTeamAuth`, not a bare `auth()` check. This route creates a
+    // workspace and writes the caller into `workspace_memberships` as its
+    // admin, so a signed-in check alone let any client of any workspace mint
+    // one for themselves. Its twin at /api/admin/projects/draft always did
+    // this; the two are the same surface under two names and must not drift.
+    const authResult = await requireTeamAuth();
+    if (!authResult.authorized) {
+      return authResult.response;
     }
+    const { userId } = authResult;
 
     const body: DraftBody = await req.json().catch(() => ({}));
     const clientInfo = body?.projectConfig?.clientInfo;

@@ -499,8 +499,50 @@ describe('addWorkspaceDomainHandler, the refusals and the write failures', () =>
       ctx
     );
     const body = await res.json();
-    // findManagedZone swallows per-attempt failures, so every candidate label
-    // fails and the answer is "not a zone we manage", not a stack trace.
+    // We never reached Cloudflare for any candidate label, so "not a zone we
+    // manage" would be a guess. Say what happened instead.
+    expect(body.dns.automated).toBe(false);
+    expect(body.dns.error).toBe('ECONNRESET');
+    expect(body.dns.error).not.toMatch(/manage/);
+    // The domain is still attached with manual instructions either way.
+    expect(captured.hostInsert).toMatchObject({ hostname: 'acme.example.com' });
+  });
+
+  it('surfaces a rejected Cloudflare token instead of calling the zone unmanaged', async () => {
+    process.env.CLOUDFLARE_API_TOKEN = 'cf-token';
+    // An expired or under-scoped token refuses the zone lookup itself. This
+    // used to be swallowed per attempt, so the operator was told
+    // "acme.example.com is not in a Cloudflare zone this account manages" and
+    // went looking at the client's registrar for a problem on our side.
+    cloudflare.findZoneByName.mockRejectedValue(
+      new MockCloudflareApiError(403, [
+        { code: 1003, message: 'invalid token' },
+      ])
+    );
+    const { addWorkspaceDomainHandler } = await import('../site-domains-api');
+    const res = await addWorkspaceDomainHandler(
+      makeReq({ domain: 'acme.example.com' }),
+      ctx
+    );
+    const body = await res.json();
+    expect(body.dns.automated).toBe(false);
+    expect(body.dns.error).toBe('Cloudflare error: invalid token');
+    expect(body.dns.error).not.toMatch(/manage/);
+    // Asking about a longer suffix would be refused the same way, so it stops
+    // at the first refusal rather than walking the whole chain.
+    expect(cloudflare.findZoneByName).toHaveBeenCalledTimes(1);
+    expect(captured.hostInsert).toMatchObject({ hostname: 'acme.example.com' });
+  });
+
+  it('still answers "not managed" when Cloudflare replies and knows no zone', async () => {
+    process.env.CLOUDFLARE_API_TOKEN = 'cf-token';
+    cloudflare.findZoneByName.mockResolvedValue(null);
+    const { addWorkspaceDomainHandler } = await import('../site-domains-api');
+    const res = await addWorkspaceDomainHandler(
+      makeReq({ domain: 'acme.example.com' }),
+      ctx
+    );
+    const body = await res.json();
     expect(body.dns.automated).toBe(false);
     expect(body.dns.error).toMatch(/not.*manage/);
   });

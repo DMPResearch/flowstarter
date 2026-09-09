@@ -30,6 +30,28 @@ describe('applyResumeTurn', () => {
     expect(result.answered).toEqual(['fullName']);
   });
 
+  it('fails open on a missing resume instead of throwing', () => {
+    // `resumeIntakeGraph` reaches this function through
+    // `recoverFromClientMirror`, which runs from a catch block and outside any
+    // try of its own, so dereferencing `input.resume.kind` on null threw past
+    // every handler. That is the one thing a recovery path must not do. The
+    // type says it cannot happen and the route parses with zod first; the
+    // guard is here because neither of those is what actually runs when the
+    // checkpoint is already gone.
+    for (const resume of [null, undefined]) {
+      const result = applyResumeTurn({
+        data: EMPTY_DISCOVERY,
+        answered: [],
+        pendingId: 'fullName',
+        resume: resume as never,
+      });
+      expect(result.errorKey).toBe('landing.discovery.chat.errors.required');
+      expect(result.applied).toEqual([]);
+      expect(result.answered).toEqual([]);
+      expect(result.data).toEqual(EMPTY_DISCOVERY);
+    }
+  });
+
   it('rejects an invalid email on the primary question', () => {
     const result = applyResumeTurn({
       data: { ...EMPTY_DISCOVERY, fullName: 'Maria' },

@@ -712,6 +712,72 @@ describe('deploySite', () => {
   });
 });
 
+describe('the slug is validated on every path, not only when allocating', () => {
+  // The guard used to live inside allocateHostingServer, which only runs when
+  // hosting_server_id is null. A workspace that already had a server assigned
+  // went straight to agentClient.push({ siteSlug: workspace.slug }) unchecked,
+  // so a null or non-slug-safe value reached the deploy-agent as-is and
+  // previewDomainForSlug derived hostnames like `null.preview.flowstarter.net`.
+  for (const [label, slug] of [
+    ['null', null],
+    ['empty', ''],
+    ['punctuation only', '!!!'],
+    ['a bare path traversal', '../../'],
+  ] as const) {
+    it(`refuses an already-allocated workspace whose slug is ${label}`, async () => {
+      const db = createFakeHostingSupabase();
+      db.seed('workspaces', [
+        workspaceRow({ slug, hosting_server_id: 'srv-1' }),
+      ]);
+      db.seed('hosting_servers', [activeServer()]);
+      const agent = recordingAgent();
+      const cf = fakeCloudflare();
+
+      await expect(
+        deploySite(
+          deployOpts(db, { agentClient: agent.client, cloudflare: cf.client })
+        )
+      ).rejects.toMatchObject({ code: 'workspace_unallocated' });
+
+      // Nothing reached the host, no DNS was written, and no deployment row
+      // was opened for a site that could never have a directory.
+      expect(agent.pushes).toEqual([]);
+      expect(cf.upsertRecord).not.toHaveBeenCalled();
+      expect(db.rows('deployments')).toEqual([]);
+    });
+  }
+
+  it('sends the sanitised slug to the agent, not the raw column', async () => {
+    const db = createFakeHostingSupabase();
+    db.seed('workspaces', [
+      workspaceRow({ slug: 'ACME-Coaching', hosting_server_id: 'srv-1' }),
+    ]);
+    db.seed('hosting_servers', [activeServer()]);
+    const agent = recordingAgent();
+
+    await deploySite(deployOpts(db, { agentClient: agent.client }));
+
+    expect(agent.pushes[0]!.siteSlug).toBe('acme-coaching');
+  });
+
+  it('neutralises a traversal rather than passing it to the agent', async () => {
+    // The agent extracts to /var/www/sites/{slug}/, so a slug carrying `..`
+    // and separators is the shape that matters. They are stripped, not
+    // escaped: `../../etc` reaches the host as `etc`, inside the sites root.
+    const db = createFakeHostingSupabase();
+    db.seed('workspaces', [
+      workspaceRow({ slug: '../../etc', hosting_server_id: 'srv-1' }),
+    ]);
+    db.seed('hosting_servers', [activeServer()]);
+    const agent = recordingAgent();
+
+    await deploySite(deployOpts(db, { agentClient: agent.client }));
+
+    expect(agent.pushes[0]!.siteSlug).toBe('etc');
+    expect(agent.pushes[0]!.siteSlug).not.toMatch(/[./]/);
+  });
+});
+
 describe('allocateHostingServer, the failure half', () => {
   it('surfaces a candidate query failure as db_error', async () => {
     const db = createFakeHostingSupabase();

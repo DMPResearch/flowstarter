@@ -308,16 +308,28 @@ describe('POST /api/{team,admin}/projects/draft — who may create', () => {
     expect(rowsOf('workspaces')).toHaveLength(0);
   });
 
-  it('team lets any signed-in caller create a draft — no role check (see report)', async () => {
-    // Documented divergence, not an endorsement: /api/team/projects/draft only
-    // checks that somebody is signed in, while the identical
-    // /api/admin/projects/draft requires team or admin. This test pins the
-    // behaviour that ships today so the gap cannot change silently.
+  it('team refuses a signed-in caller with no operator role with 403', async () => {
+    // The twin of the admin case above, and the reason this file exists.
+    // /api/team/projects/draft used to check only that somebody was signed in,
+    // so any client of any workspace could mint a workspace here and be
+    // written into workspace_memberships as its admin. Both trees are the same
+    // surface under two names; they now refuse the same caller the same way,
+    // and nothing is written.
     authState.userId = 'user_plain_client';
 
     const res = await teamDraft(post({}));
-    expect(res.status).toBe(200);
-    expect(rowsOf('workspaces')).toHaveLength(1);
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({ code: 'FORBIDDEN' });
+    expect(rowsOf('workspaces')).toHaveLength(0);
+    expect(rowsOf('workspace_memberships')).toHaveLength(0);
+  });
+
+  it('team refuses an anonymous caller with 401 and writes nothing', async () => {
+    authState.userId = null;
+
+    const res = await teamDraft(post({}));
+    expect(res.status).toBe(401);
+    expect(rowsOf('workspaces')).toHaveLength(0);
   });
 });
 

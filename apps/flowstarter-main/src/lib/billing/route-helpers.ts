@@ -43,7 +43,12 @@ export function sanitizeDaysUntilDue(raw: unknown): number {
 export function mapBillingError(e: unknown): NextResponse {
   if (e instanceof StripeBillingError) {
     const statusByCode: Record<string, number> = {
-      project_not_found: 404,
+      // `workspace_not_found`, not `project_not_found`: that is the code
+      // `ensureBillingCustomer` throws, and nothing throws the old one. While
+      // the key was stale every request for a workspace that does not exist
+      // fell through to `?? 500` and answered 500 instead of 404, on
+      // deposit-invoice, final-invoice, activate-subscription and portal-link.
+      workspace_not_found: 404,
       missing_client_email: 400,
       subscription_exists: 409,
       no_subscription: 404,

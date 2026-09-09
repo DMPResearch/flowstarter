@@ -156,6 +156,31 @@ export class DryRunDeployAgentClient implements DeployAgentClient {
  * row, bumps last_deploy_id on the workspace, returns the deploy.
  */
 /**
+ * The slug, sanitised, or a refusal.
+ *
+ * This used to live inside `allocateHostingServer`, which only runs when a
+ * workspace has no `hosting_server_id` yet. A workspace that already had a
+ * server assigned went straight to `agentClient.push({ siteSlug:
+ * workspace.slug })` with nothing checked, so a null or non-slug-safe value
+ * reached the deploy-agent as-is and `previewDomainForSlug` derived hostnames
+ * like `null.preview.flowstarter.net`. The guard belongs on every path that
+ * uses the slug, not on the one that happens to allocate.
+ */
+export function requireSiteSlug(raw: string | null | undefined): string {
+  const slug = String(raw ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '')
+    .slice(0, 63);
+  if (!slug) {
+    throw new DeployError(
+      'workspace_unallocated',
+      'Workspace slug is invalid; cannot derive a site directory.'
+    );
+  }
+  return slug;
+}
+
+/**
  * Gives an unallocated workspace a hosting server by the same rule the
  * operator route applies by hand: the least-loaded active server with room.
  * A paid build used to stop here with "allocate first", which made the
@@ -183,16 +208,7 @@ export async function allocateHostingServer(
       'Workspace has no hosting server and no active server has capacity. Provision one via /api/admin/hosting/servers.'
     );
   }
-  const slug = String(workspace.slug ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '')
-    .slice(0, 63);
-  if (!slug) {
-    throw new DeployError(
-      'workspace_unallocated',
-      'Workspace slug is invalid; cannot derive a site directory.'
-    );
-  }
+  const slug = requireSiteSlug(workspace.slug);
   const now = new Date().toISOString();
   const { error: updateError } = await supabase
     .from('workspaces')
@@ -265,6 +281,11 @@ export async function deploySite(opts: {
       `Workspace ${opts.workspaceId} not found`
     );
   }
+  // Before anything is pushed or any DNS is written, and whether or not this
+  // workspace needs allocating. Everything downstream uses this value rather
+  // than `workspace.slug`.
+  const siteSlug = requireSiteSlug(workspace.slug);
+
   const hostingServerId =
     workspace.hosting_server_id ??
     (await allocateHostingServer(opts.supabase, workspace));
@@ -365,7 +386,7 @@ export async function deploySite(opts: {
     agentResult = await opts.agentClient.push({
       deployAgentUrl: server.deploy_agent_url,
       sharedSecret,
-      siteSlug: workspace.slug,
+      siteSlug,
       artifact: opts.artifact,
       primaryDomain,
       additionalDomains,
@@ -393,7 +414,7 @@ export async function deploySite(opts: {
   }
 
   // DNS: upsert preview subdomain → server IPv4 (Cloudflare optional).
-  const previewDomain = previewDomainForSlug(workspace.slug);
+  const previewDomain = previewDomainForSlug(siteSlug);
   if (
     opts.cloudflare &&
     opts.cloudflareDefaultZoneId &&
@@ -408,7 +429,7 @@ export async function deploySite(opts: {
         content: String(server.ipv4),
         ttl: 60,
         proxied: false,
-        comment: `flowstarter site ${workspace.slug}`,
+        comment: `flowstarter site ${siteSlug}`,
       });
     } catch (e) {
       // DNS errors don't fail the deploy; the artifact is on the server,

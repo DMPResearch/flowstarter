@@ -488,10 +488,10 @@ describe('POST /api/admin/projects/[id]/billing/deposit-invoice', () => {
       params: Promise.resolve({ id: 'no-such-workspace' }),
     });
     const body = await res.json();
-    // ensureBillingCustomer throws `workspace_not_found`, which mapBillingError
-    // has no entry for (its table still says `project_not_found`), so this is
-    // a 500 today rather than the 404 the code intends.
-    expect(res.status).toBe(500);
+    // 404, not 500: `ensureBillingCustomer` throws `workspace_not_found` and
+    // `mapBillingError` carries that code. It used to map the dead
+    // `project_not_found` instead, so this answered 500 and read as our fault.
+    expect(res.status).toBe(404);
     expect(body.code).toBe('workspace_not_found');
     expect(stripeMock.customers.create).not.toHaveBeenCalled();
   });
