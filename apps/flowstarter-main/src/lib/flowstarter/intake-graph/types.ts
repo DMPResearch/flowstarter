@@ -25,6 +25,12 @@ export interface IntakeGraphAsk {
   placeholder?: string;
   required: boolean;
   options?: Array<{ value: string; label: string }>;
+  /**
+   * An extra reactive line shown once, ahead of `prompt`: a short grounded
+   * answer to a question the visitor asked back, or a natural nudge in place
+   * of a raw validation message. Absent on an ordinary turn.
+   */
+  note?: string;
 }
 
 /** Visitor reply when the graph resumes. */
@@ -55,7 +61,6 @@ export interface IntakeGraphTurnResult {
 export interface IntakeGraphStartInput {
   data?: DiscoveryData;
   answered?: readonly string[];
-  essentialsOnly?: boolean;
   locale?: IntakeGraphLocale;
 }
 
@@ -65,7 +70,6 @@ export interface IntakeGraphResumeInput {
   /** Client mirror — used if the in-memory checkpoint is gone. */
   data?: DiscoveryData;
   answered?: readonly string[];
-  essentialsOnly?: boolean;
   locale?: IntakeGraphLocale;
 }
 

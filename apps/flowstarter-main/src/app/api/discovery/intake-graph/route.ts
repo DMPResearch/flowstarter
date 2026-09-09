@@ -6,8 +6,8 @@
  * doors as `/api/discovery/intake-chat`.
  *
  * Body:
- *   { action: 'start', data?, answered?, essentialsOnly?, locale? }
- *   { action: 'resume', threadId, resume, data?, answered?, essentialsOnly?, locale? }
+ *   { action: 'start', data?, answered?, locale? }
+ *   { action: 'resume', threadId, resume, data?, answered?, locale? }
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -39,7 +39,6 @@ const Schema = z.discriminatedUnion('action', [
     action: z.literal('start'),
     data: DiscoveryPartialSchema,
     answered: z.array(z.string().max(40)).max(40).optional().default([]),
-    essentialsOnly: z.boolean().optional().default(false),
     locale: z.enum(['en', 'ro']).optional().default('en'),
   }),
   z.object({
@@ -48,7 +47,6 @@ const Schema = z.discriminatedUnion('action', [
     resume: ResumeSchema,
     data: DiscoveryPartialSchema,
     answered: z.array(z.string().max(40)).max(40).optional().default([]),
-    essentialsOnly: z.boolean().optional().default(false),
     locale: z.enum(['en', 'ro']).optional().default('en'),
   }),
 ]);
@@ -80,6 +78,14 @@ async function withScriptedOnly<T>(run: () => Promise<T>): Promise<T> {
   setIntakeGraphDeps({
     phraseAsk: async ({ scriptedPrompt }) => scriptedPrompt,
     extractAnswers: async () => [],
+    // No model budget left: a question goes unanswered rather than guessed,
+    // and a failed answer shows the scripted error instead of a rephrase.
+    answerVisitorQuestion: async () => {
+      throw new Error('scripted-only: no model budget');
+    },
+    phraseClarification: async () => {
+      throw new Error('scripted-only: no model budget');
+    },
   });
   try {
     return await run();
@@ -114,7 +120,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       ...((parsed.data.data as object) ?? {}),
     },
     answered: parsed.data.answered,
-    essentialsOnly: parsed.data.essentialsOnly,
     locale: parsed.data.locale,
   };
 

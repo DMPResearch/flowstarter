@@ -27,7 +27,6 @@ import {
   answeredQuestions,
   applicableQuestions,
   conversationProgress,
-  essentialRemaining,
   firstSentence,
   humanList,
   interpolate,
@@ -198,50 +197,34 @@ describe('the required-answer gate', () => {
     ).toBeNull();
   });
 
-  it('treats the two commercial panels as skippable, and the five form answers as not', () => {
-    expect(essentialRemaining(EMPTY_DISCOVERY, []).map((q) => q.id)).toEqual([
+  it('never marks the intake complete while a required question — either commercial panel included — is unanswered', () => {
+    // There is no `essentialsOnly` narrowed pool any more: this walk, in the
+    // script's own order, is the only path to "done".
+    const required = INTAKE_SCRIPT.filter((question) => question.required).map(
+      (q) => q.id
+    );
+    expect(required).toEqual([
       'fullName',
       'email',
       'description',
       'goal',
       'commerceMode',
+      'selectedTier',
+      'subscription',
     ]);
+
+    const { data, asked } = walk(FULL_ANSWERS);
+    expect(nextQuestion(data, asked)).toBeNull();
+
+    // Drop the very last required answer the walk gave — a commercial
+    // panel, not a form field — and the script still refuses to call
+    // itself done.
+    const withoutLastPanel = asked.filter((id) => id !== 'subscription');
+    expect(nextQuestion(data, withoutLastPanel)?.id).toBe('subscription');
   });
 
-  it('asks a visitor who skipped ahead nothing but the essentials, in the same order', () => {
-    let data = EMPTY_DISCOVERY;
-    let answered: string[] = [];
-    const asked: string[] = [];
-    for (let guard = 0; guard < INTAKE_SCRIPT.length + 2; guard += 1) {
-      const question = nextQuestion(data, answered, true);
-      if (!question) break;
-      asked.push(question.id);
-      const applied = answer(
-        data,
-        answered,
-        question.id,
-        FULL_ANSWERS[question.id] ?? ''
-      );
-      data = applied.data;
-      answered = applied.answered;
-    }
-    expect(asked).toEqual([
-      'fullName',
-      'email',
-      'description',
-      'goal',
-      'commerceMode',
-    ]);
-    // Never re-opens: a question that only became relevant along the way (a
-    // catalog size, after they said they sell physical products) stays shut.
-    const selling = questionById('commerceMode')!.apply(data, 'physical');
-    expect(nextQuestion(selling, answered, true)).toBeNull();
-    expect(nextQuestion(selling, answered, false)?.id).toBe('businessName');
-  });
-
-  it('counts progress against the essentials once the visitor has skipped ahead', () => {
-    expect(conversationProgress(EMPTY_DISCOVERY, [], true).total).toBe(5);
-    expect(conversationProgress(EMPTY_DISCOVERY, [], false).total).toBe(
+  it('counts progress over every applicable question — there is no narrowed pool', () => {
+    expect(conversationProgress(EMPTY_DISCOVERY, []).total).toBe(
       INTAKE_SCRIPT.length - 1
     );
   });

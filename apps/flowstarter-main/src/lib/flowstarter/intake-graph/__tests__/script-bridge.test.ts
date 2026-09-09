@@ -9,6 +9,7 @@ import {
 } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/discovery.logic';
 import { questionById } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/intake-script';
 import {
+  applyBonusExtracted,
   applyResumeTurn,
   knownSnapshot,
   localeTag,
@@ -114,6 +115,38 @@ describe('applyResumeTurn', () => {
   });
 });
 
+describe('applyBonusExtracted', () => {
+  it('folds every extracted field except the excluded one', () => {
+    const result = applyBonusExtracted(EMPTY_DISCOVERY, ['fullName'], 'email', [
+      { id: 'fullName', value: 'Someone Else' }, // excluded — already answered
+      { id: 'email', value: 'not-an-email' }, // excluded on purpose (pending id)
+      { id: 'businessName', value: 'Ionescu Dental' },
+      { id: 'notAQuestion', value: 'nonsense' }, // not in the script
+      { id: 'selectedTier', value: 'pro' }, // a panel, priced by a human
+    ]);
+    expect(result.data.businessName).toBe('Ionescu Dental');
+    expect(result.data.fullName).toBe('');
+    expect(result.data.email).toBe('');
+    expect(result.data.selectedTier).toBe('');
+    expect(result.answered).toEqual(['fullName', 'businessName']);
+    expect(result.applied).toEqual([
+      { id: 'businessName', raw: 'Ionescu Dental' },
+    ]);
+  });
+
+  it('is a no-op when nothing was extracted', () => {
+    const result = applyBonusExtracted(
+      EMPTY_DISCOVERY,
+      ['fullName'],
+      'email',
+      undefined
+    );
+    expect(result.data).toBe(EMPTY_DISCOVERY);
+    expect(result.answered).toEqual(['fullName']);
+    expect(result.applied).toEqual([]);
+  });
+});
+
 describe('sanitizeAnswered', () => {
   it('drops unknown ids and de-dupes', () => {
     expect(sanitizeAnswered(['fullName', 'nope', 'fullName', 'email'])).toEqual(
@@ -125,7 +158,7 @@ describe('sanitizeAnswered', () => {
 describe('openQuestionsForModel', () => {
   it('lists the next few non-panel questions', () => {
     const t = (key: string) => key;
-    const open = openQuestionsForModel(EMPTY_DISCOVERY, [], false, t);
+    const open = openQuestionsForModel(EMPTY_DISCOVERY, [], t);
     expect(open[0]?.id).toBe('fullName');
     expect(open.some((q) => q.id === 'selectedTier')).toBe(false);
   });
@@ -202,34 +235,53 @@ describe('knownSnapshot', () => {
 
 describe('what the model is never allowed to fill', () => {
   const t = (key: string) => key;
-  const nearlyDone: DiscoveryData = {
+  // Every non-panel question answered — only the two commercial panels are
+  // left, and those are priced by rules, never phrased by a model.
+  const everythingButThePanels: DiscoveryData = {
     ...EMPTY_DISCOVERY,
     fullName: 'Maria',
     email: 'maria@example.com',
     businessName: 'Clinic',
     description: 'A dental clinic in Cluj with evening appointments.',
     industry: 'Therapy & wellness',
+    targetAudience: 'Adults who avoided the dentist for years.',
     goal: 'Take bookings or appointments',
+    brandTone: 'Calm, Trustworthy',
+    pageCount: '5-7',
+    timeline: 'asap',
     commerceMode: 'none',
+    calComUrl: 'https://cal.com/clinic',
+    customIntegrations: 'none',
   };
-  const answeredAll = [
+  const answeredAllButThePanels = [
     'fullName',
     'email',
     'businessName',
     'description',
     'industry',
+    'targetAudience',
+    'links',
     'goal',
+    'brandTone',
+    'pageCount',
+    'timeline',
     'commerceMode',
+    'calComUrl',
+    'customIntegrations',
   ];
 
   it('stops at the pricing panel rather than offering it as a field', () => {
-    const open = openQuestionsForModel(nearlyDone, answeredAll, true, t);
+    const open = openQuestionsForModel(
+      everythingButThePanels,
+      answeredAllButThePanels,
+      t
+    );
     expect(open).toEqual([]);
   });
 
-  it('runs dry when the script has nothing left', () => {
+  it('runs dry when the script has nothing left but the panels', () => {
     expect(
-      openQuestionsForModel(nearlyDone, answeredAll, true, t)
+      openQuestionsForModel(everythingButThePanels, answeredAllButThePanels, t)
     ).toHaveLength(0);
   });
 });

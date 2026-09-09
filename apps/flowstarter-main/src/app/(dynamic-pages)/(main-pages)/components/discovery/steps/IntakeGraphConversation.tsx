@@ -27,7 +27,6 @@ import {
   type IntakeQuestionId,
   answerText,
   answeredQuestions,
-  essentialRemaining,
   interpolate,
   optionLabel,
   promptText,
@@ -67,9 +66,7 @@ export function IntakeGraphConversation({
   data,
   update,
   answered,
-  essentialsOnly,
   onState,
-  onSkipRest,
   locale = 'en',
   t,
 }: {
@@ -79,12 +76,10 @@ export function IntakeGraphConversation({
     value: DiscoveryData[K]
   ) => void;
   answered: readonly IntakeQuestionId[];
-  essentialsOnly: boolean;
   onState: (next: {
     data: DiscoveryData;
     answered: IntakeQuestionId[];
   }) => void;
-  onSkipRest: () => void;
   locale?: 'en' | 'ro';
   t: (key: string) => string;
 }) {
@@ -100,10 +95,6 @@ export function IntakeGraphConversation({
 
   const history = useMemo(
     () => answeredQuestions(data, answered),
-    [data, answered]
-  );
-  const stillRequired = useMemo(
-    () => essentialRemaining(data, answered),
     [data, answered]
   );
 
@@ -136,7 +127,6 @@ export function IntakeGraphConversation({
       action: 'start',
       data,
       answered,
-      essentialsOnly,
       locale,
     })
       .then((result) => {
@@ -180,7 +170,6 @@ export function IntakeGraphConversation({
           resume: payload,
           data,
           answered,
-          essentialsOnly,
           locale,
         });
         applyTurn(result);
@@ -190,7 +179,7 @@ export function IntakeGraphConversation({
         setBusy(false);
       }
     },
-    [threadId, busy, data, answered, essentialsOnly, locale, applyTurn]
+    [threadId, busy, data, answered, locale, applyTurn]
   );
 
   const submit = useCallback(
@@ -270,11 +259,13 @@ export function IntakeGraphConversation({
           );
         })}
 
-        {essentialsOnly && stillRequired.length > 0 && (
-          <ChatBubble tone="alert">
-            {interpolate(t('landing.discovery.chat.stillNeeded'), {
-              count: stillRequired.length,
-            })}
+        {/* The model's reaction to the visitor's last turn: an answer to a
+            question they asked back, or a natural nudge in place of the raw
+            validation message. Shown once, ahead of the (possibly repeated)
+            question below. */}
+        {booted && ask?.note && (
+          <ChatBubble tone="agent" author={agentName}>
+            {ask.note}
           </ChatBubble>
         )}
 
@@ -288,7 +279,9 @@ export function IntakeGraphConversation({
           <ChatBubble tone="agent">{t('app.loadingExperience')}</ChatBubble>
         )}
 
-        {errorKey && <ChatBubble tone="alert">{t(errorKey)}</ChatBubble>}
+        {errorKey && !ask?.note && (
+          <ChatBubble tone="alert">{t(errorKey)}</ChatBubble>
+        )}
       </ConversationLog>
 
       {current && ask && !busy && (
@@ -304,19 +297,6 @@ export function IntakeGraphConversation({
           t={t}
         />
       )}
-
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-[var(--fs-rule)] pt-3">
-        <Button variant="ghost" size="sm" onClick={onSkipRest} disabled={busy}>
-          {t('landing.discovery.chat.skipRest')}
-        </Button>
-        <p className="text-[12px] leading-snug text-[var(--fs-ink-faint)]">
-          {t(
-            essentialsOnly
-              ? 'landing.discovery.chat.skipRestActive'
-              : 'landing.discovery.chat.skipRestHint'
-          )}
-        </p>
-      </div>
     </div>
   );
 }
@@ -412,17 +392,18 @@ function Composer({
           ))}
           {skipChip}
         </div>
-        {question.freeText && (
-          <TypedAnswer
-            question={question}
-            draft={draft}
-            setDraft={setDraft}
-            onSubmit={onSubmit}
-            composerRef={composerRef}
-            rows={1}
-            t={t}
-          />
-        )}
+        {/* Chips are a shortcut, not the only door: typed words are mapped
+            onto the same choice server-side (`extractAnswers`), the way a
+            free-text answer to any other question is. */}
+        <TypedAnswer
+          question={question}
+          draft={draft}
+          setDraft={setDraft}
+          onSubmit={onSubmit}
+          composerRef={composerRef}
+          rows={1}
+          t={t}
+        />
       </div>
     );
   }

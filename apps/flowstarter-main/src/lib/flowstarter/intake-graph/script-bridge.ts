@@ -70,7 +70,6 @@ export function scriptedAsk(
 export function openQuestionsForModel(
   data: DiscoveryData,
   answered: readonly string[],
-  essentialsOnly: boolean,
   t: Translate
 ): Array<{
   id: IntakeQuestionId;
@@ -84,7 +83,7 @@ export function openQuestionsForModel(
   // Walk a few steps ahead without mutating real state: show the model what
   // it is allowed to fill from one generous answer.
   for (let i = 0; i < 6; i += 1) {
-    const next = nextQuestion(data, cursor, essentialsOnly);
+    const next = nextQuestion(data, cursor);
     if (!next || next.kind === 'panel') break;
     open.push(next.id);
     cursor = [...cursor, next.id];
@@ -173,7 +172,7 @@ export function applyResumeTurn(input: {
   }
 
   let data = input.data;
-  const answered = sanitizeAnswered(input.answered);
+  let answered = sanitizeAnswered(input.answered);
   const applied: AppliedTurn['applied'] = [];
 
   if (input.resume.kind === 'skip') {
@@ -225,30 +224,59 @@ export function applyResumeTurn(input: {
 
   // Bonus fields from a multi-answer utterance. Never override the primary
   // question, and never invent ids the script does not know.
-  for (const entry of input.extracted ?? []) {
+  const bonus = applyBonusExtracted(
+    data,
+    answered,
+    pending.id,
+    input.extracted
+  );
+  data = bonus.data;
+  answered = bonus.answered;
+  applied.push(...bonus.applied);
+
+  return { data, answered, errorKey: null, applied };
+}
+
+/**
+ * Folds every extracted field *other than* `excludeId` into `data`, the same
+ * way the bonus half of `applyResumeTurn` does. Exported on its own for the
+ * turn where the visitor asked a question instead of answering the pending
+ * one: the model may still have volunteered other fields in the same
+ * breath, and those should land even though the pending question itself is
+ * left untouched.
+ */
+export function applyBonusExtracted(
+  data: DiscoveryData,
+  answered: readonly IntakeQuestionId[],
+  excludeId: IntakeQuestionId,
+  extracted: Array<{ id: string; value: string }> | undefined
+): {
+  data: DiscoveryData;
+  answered: IntakeQuestionId[];
+  applied: Array<{ id: IntakeQuestionId; raw: string }>;
+} {
+  let next = data;
+  const nextAnswered = [...answered];
+  const applied: Array<{ id: IntakeQuestionId; raw: string }> = [];
+  for (const entry of extracted ?? []) {
     const id = entry.id as IntakeQuestionId;
-    if (id === pending.id) continue;
-    if (answered.includes(id)) continue;
+    if (id === excludeId) continue;
+    if (nextAnswered.includes(id)) continue;
     const question = questionById(id);
     if (!question || question.kind === 'panel') continue;
     const raw = entry.value.trim();
     if (!raw) continue;
     const failed = question.validate?.(raw) ?? null;
     if (failed) continue;
-    data = question.apply(data, raw);
-    answered.push(id);
+    next = question.apply(next, raw);
+    nextAnswered.push(id);
     applied.push({ id, raw });
   }
-
-  return { data, answered, errorKey: null, applied };
+  return { data: next, answered: nextAnswered, applied };
 }
 
-export function progressFor(
-  data: DiscoveryData,
-  answered: readonly string[],
-  essentialsOnly: boolean
-) {
-  return conversationProgress(data, answered, essentialsOnly);
+export function progressFor(data: DiscoveryData, answered: readonly string[]) {
+  return conversationProgress(data, answered);
 }
 
 export function localeTag(

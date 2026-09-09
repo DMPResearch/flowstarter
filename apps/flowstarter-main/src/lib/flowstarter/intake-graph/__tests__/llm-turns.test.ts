@@ -32,7 +32,12 @@ function answered(object: unknown): LlmObjectResult<unknown> {
   };
 }
 
-import { extractAnswers, phraseAsk } from '../llm-turns';
+import {
+  answerVisitorQuestion,
+  extractAnswers,
+  phraseAsk,
+  phraseClarification,
+} from '../llm-turns';
 
 const t = (key: string) => key;
 
@@ -42,7 +47,6 @@ function ask(overrides: Record<string, unknown> = {}) {
     scriptedPrompt: 'What is your name?',
     data: EMPTY_DISCOVERY,
     answered: [] as readonly string[],
-    essentialsOnly: false,
     locale: 'en' as const,
     t,
     ...overrides,
@@ -55,7 +59,6 @@ function extract(overrides: Record<string, unknown> = {}) {
     userText: 'I am Maria Ionescu and you can reach me at maria@example.com',
     data: EMPTY_DISCOVERY,
     answered: [] as readonly string[],
-    essentialsOnly: false,
     locale: 'en' as const,
     t,
     ...overrides,
@@ -144,16 +147,22 @@ describe('extracting the fields one message already answered', () => {
     expect(llm).not.toHaveBeenCalled();
   });
 
-  it('does not call the model when the script has nothing left to fill', async () => {
-    const done = {
+  it('does not call the model when the script has nothing left but the two commercial panels', async () => {
+    const done: DiscoveryData = {
       ...EMPTY_DISCOVERY,
       fullName: 'Maria',
       email: 'maria@example.com',
       businessName: 'Clinic',
       description: 'A dental clinic in Cluj with evening appointments.',
       industry: 'Therapy & wellness',
+      targetAudience: 'Adults who avoided the dentist for years.',
       goal: 'Take bookings or appointments',
+      brandTone: 'Calm, Trustworthy',
+      pageCount: '5-7',
+      timeline: 'asap',
       commerceMode: 'none',
+      calComUrl: 'https://cal.com/clinic',
+      customIntegrations: 'none',
     };
     const answered = [
       'fullName',
@@ -161,15 +170,119 @@ describe('extracting the fields one message already answered', () => {
       'businessName',
       'description',
       'industry',
+      'targetAudience',
+      'links',
       'goal',
+      'brandTone',
+      'pageCount',
+      'timeline',
       'commerceMode',
+      'calComUrl',
+      'customIntegrations',
     ];
 
-    expect(
-      await extractAnswers(
-        extract({ data: done, answered, essentialsOnly: true })
-      )
-    ).toEqual([]);
+    expect(await extractAnswers(extract({ data: done, answered }))).toEqual([]);
     expect(llm).not.toHaveBeenCalled();
+  });
+});
+
+describe('phrasing reacts to what was just said', () => {
+  it('sends the visitor’s last answer to the model, absent for the opening question', async () => {
+    llm.mockResolvedValue(answered({ prompt: 'Good to meet you, Maria.' }));
+
+    await phraseAsk(
+      ask({
+        lastAnswer: { questionId: 'fullName', text: 'Maria Ionescu' },
+      })
+    );
+
+    const sent = JSON.parse(String(llm.mock.calls[0]![0].prompt));
+    expect(sent.lastAnswer).toEqual({
+      questionId: 'fullName',
+      text: 'Maria Ionescu',
+    });
+
+    llm.mockClear();
+    llm.mockResolvedValue(answered({ prompt: 'What should I call you?' }));
+    await phraseAsk(ask());
+    const opening = JSON.parse(String(llm.mock.calls[0]![0].prompt));
+    expect(opening.lastAnswer).toBeNull();
+  });
+});
+
+describe('answering a question the visitor asked back', () => {
+  it('only ever speaks from the given facts, and books it against the intake budget', async () => {
+    llm.mockResolvedValue(
+      answered({ answer: 'We use it to send your preview link.' })
+    );
+
+    const reply = await answerVisitorQuestion({
+      questionText: 'why do you need my email?',
+      pending: questionById('email')!,
+      data: EMPTY_DISCOVERY,
+      locale: 'en',
+      t,
+    });
+
+    expect(reply).toBe('We use it to send your preview link.');
+    const options = llm.mock.calls[0]![0];
+    expect(options.action).toBe('intake_graph');
+    expect(options.workspaceId).toBeNull();
+    const sent = JSON.parse(String(options.prompt));
+    expect(sent.visitorMessage).toContain('why do you need my email');
+    // The ground truth is a fixed table of facts, not the visitor's data.
+    expect(sent.facts.buildDepositPercent).toBe(20);
+    expect(sent.facts.buildBalancePercent).toBe(80);
+    expect(sent.facts.setupFeeFrom.starter).toBeTruthy();
+  });
+
+  it('throws rather than resolving with an empty reply, so the caller can fail open', async () => {
+    llm.mockResolvedValue(answered({ answer: '   ' }));
+    await expect(
+      answerVisitorQuestion({
+        questionText: 'what happens after the deposit?',
+        pending: questionById('email')!,
+        data: EMPTY_DISCOVERY,
+        locale: 'en',
+        t,
+      })
+    ).rejects.toThrow();
+  });
+});
+
+describe('phrasing a natural clarification', () => {
+  it('sends the scripted error as ground truth and returns the model line', async () => {
+    llm.mockResolvedValue(
+      answered({
+        clarification:
+          "That doesn't quite look like an email — mind trying again?",
+      })
+    );
+
+    const clarification = await phraseClarification({
+      pending: questionById('email')!,
+      scriptedError: 'landing.discovery.chat.errors.email',
+      rawText: 'nope',
+      locale: 'en',
+      t,
+    });
+
+    expect(clarification).toContain('mind trying again');
+    const sent = JSON.parse(String(llm.mock.calls[0]![0].prompt));
+    expect(sent.scriptedError).toBe('landing.discovery.chat.errors.email');
+    expect(sent.visitorText).toBe('nope');
+  });
+
+  it('throws rather than resolving with an empty clarification', async () => {
+    llm.mockResolvedValue(answered({ clarification: '' }));
+    await expect(
+      phraseClarification({
+        pending: questionById('email')!,
+        scriptedError: 'landing.discovery.chat.errors.email',
+        rawText: 'nope',
+        locale: 'en',
+        t,
+      })
+    ).rejects.toThrow();
   });
 });

@@ -9,16 +9,17 @@ import { chromium } from '@playwright/test';
 const BASE = process.env.APP_ORIGIN ?? 'http://localhost:3005';
 const SITE_URL = process.env.SITE_URL ?? 'http://127.0.0.1:8931/';
 const OUT = process.env.OUT_PREFIX ?? '/tmp/fs-preview-pane';
-const SIZES = process.env.SIZES ? process.env.SIZES.split(',').map((s) => s.split('x').map(Number)) : [
-  [1440, 900],
-  [1920, 1080],
-  [1280, 800],
-];
+const SIZES = process.env.SIZES
+  ? process.env.SIZES.split(',').map((s) => s.split('x').map(Number))
+  : [
+      [1440, 900],
+      [1920, 1080],
+      [1280, 800],
+    ];
 
 const draft = {
   step: 8,
   answered: [],
-  skippedAhead: false,
   data: {
     fullName: 'Maria Ionescu',
     email: 'maria.ionescu+shot@example.com',
@@ -36,28 +37,52 @@ const draft = {
     selectedTier: 'pro',
     subscription: 'pro',
     billingCadence: 'monthly',
-    instagramUrl: '', linkedinUrl: '', calComUrl: '', customIntegrations: '', phone: '',
-    services: [], intakeAnswers: [], intakeChat: [], intakeChatDocuments: [],
+    instagramUrl: '',
+    linkedinUrl: '',
+    calComUrl: '',
+    customIntegrations: '',
+    phone: '',
+    services: [],
+    intakeAnswers: [],
+    intakeChat: [],
+    intakeChatDocuments: [],
     intakeChatStatus: 'done',
   },
 };
 
-const browser = await chromium.launch({ args: ['--disable-features=site-per-process'] });
+const browser = await chromium.launch({
+  args: ['--disable-features=site-per-process'],
+});
 for (const [width, height] of SIZES) {
   const context = await browser.newContext({ viewport: { width, height } });
   const page = await context.newPage();
   await context.route('**/api/discovery/preview/live', (route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ demoId: 'shot-demo' }) })
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ demoId: 'shot-demo' }),
+    }),
   );
   await context.route('**/api/discovery/preview/live/stream**', (route) =>
     route.fulfill({
       status: 200,
-      headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+      headers: {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache',
+      },
       body: `event: ready\ndata: ${JSON.stringify({ previewUrl: SITE_URL, personalized: true })}\n\n`,
-    })
+    }),
   );
   await context.route('**/api/discovery/preview/live?**', (route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'ready', previewUrl: SITE_URL, personalized: true }) })
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'ready',
+        previewUrl: SITE_URL,
+        personalized: true,
+      }),
+    }),
   );
   await context.addInitScript((d) => {
     sessionStorage.setItem('fs-discovery-draft-v1', JSON.stringify(d));
@@ -75,7 +100,9 @@ for (const [width, height] of SIZES) {
       return r ? { w: Math.round(r.width), h: Math.round(r.height) } : null;
     };
     const dialog = document.querySelector('[role="dialog"] > div');
-    const viewport = document.querySelector('[data-testid="concierge-site-viewport"]');
+    const viewport = document.querySelector(
+      '[data-testid="concierge-site-viewport"]',
+    );
     const iframe = document.querySelector('iframe[title="Live site preview"]');
     const log = document.querySelector('[role="log"]');
     return {

@@ -2212,13 +2212,6 @@ const en = {
   'landing.discovery.chat.reask': "Sure, let's redo that one.",
   'landing.discovery.chat.skip': 'Skip this one',
   'landing.discovery.chat.skipped': 'Skipped for now',
-  'landing.discovery.chat.skipRest': 'Skip ahead to the preview',
-  'landing.discovery.chat.skipRestHint':
-    'You can fill the rest in later. Nothing here is locked in.',
-  'landing.discovery.chat.skipRestActive':
-    'Skipping ahead: only the answers we cannot build without are left.',
-  'landing.discovery.chat.stillNeeded':
-    'Happy to jump ahead. I just need {count} more from you first, then the preview is yours.',
   'landing.discovery.chat.tokens.you': 'there',
   'landing.discovery.chat.tokens.business': 'your business',
 

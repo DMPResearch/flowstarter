@@ -4,7 +4,8 @@ import 'server-only';
  * LangGraph HITL intake.
  *
  *   rules decide  → `intake-script.ts` (next question, validate, apply, done)
- *   models phrase → `phraseAsk` / `extractAnswers`
+ *   models phrase → `phraseAsk` / `extractAnswers` / `answerVisitorQuestion` /
+ *                    `phraseClarification`
  *   interrupt     → pause for the visitor; resume with Command
  *
  * Checkpoints live in a process-local MemorySaver. That matches the single-
@@ -28,12 +29,15 @@ import {
 } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/discovery.logic';
 import {
   type IntakeQuestionId,
+  answerText,
   nextQuestion,
   promptText,
+  questionById,
 } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/intake-script';
 import en from '@/locales/en';
 import ro from '@/locales/ro';
 import {
+  applyBonusExtracted,
   applyResumeTurn,
   localeTag,
   mergeDiscovery,
@@ -41,7 +45,12 @@ import {
   sanitizeAnswered,
   scriptedAsk,
 } from './script-bridge';
-import { extractAnswers, phraseAsk } from './llm-turns';
+import {
+  answerVisitorQuestion,
+  extractAnswers,
+  phraseAsk,
+  phraseClarification,
+} from './llm-turns';
 import type {
   IntakeGraphAsk,
   IntakeGraphLocale,
@@ -56,12 +65,18 @@ type Translate = (key: string) => string;
 const IntakeState = Annotation.Root({
   data: Annotation<DiscoveryData>,
   answered: Annotation<IntakeQuestionId[]>,
-  essentialsOnly: Annotation<boolean>,
   locale: Annotation<IntakeGraphLocale>,
   status: Annotation<'pending' | 'complete'>,
   /** Last ask surfaced to the client (also carried on the interrupt value). */
   lastAsk: Annotation<IntakeGraphAsk | null>,
   errorKey: Annotation<string | null>,
+  /**
+   * A reactive line earned on the visitor's last turn — an answer to a
+   * question they asked back, folded in alongside a valid answer to the
+   * pending question. Shown once, attached to whichever ask comes next
+   * (built fresh in the following node run), then cleared.
+   */
+  pendingNote: Annotation<string | null>,
 });
 
 type GraphState = typeof IntakeState.State;
@@ -69,6 +84,8 @@ type GraphState = typeof IntakeState.State;
 export type IntakeGraphDeps = {
   phraseAsk: typeof phraseAsk;
   extractAnswers: typeof extractAnswers;
+  answerVisitorQuestion: typeof answerVisitorQuestion;
+  phraseClarification: typeof phraseClarification;
   translate: (locale: IntakeGraphLocale) => Translate;
 };
 
@@ -82,6 +99,8 @@ const defaultTranslate = (locale: IntakeGraphLocale): Translate => {
 const defaultDeps: IntakeGraphDeps = {
   phraseAsk,
   extractAnswers,
+  answerVisitorQuestion,
+  phraseClarification,
   translate: defaultTranslate,
 };
 
@@ -115,26 +134,38 @@ function parseResume(value: unknown): IntakeGraphResume {
   return { kind: 'text', text: '' };
 }
 
+/** The last question actually dealt with, and what the visitor's bubble says — context for `phraseAsk` to react to. */
+function lastAnswerContext(
+  state: GraphState,
+  t: Translate
+): { questionId: string; text: string } | null {
+  const lastId = state.answered[state.answered.length - 1];
+  if (!lastId) return null;
+  const question = questionById(lastId);
+  if (!question) return null;
+  const text = answerText(question, state.data, t);
+  return text ? { questionId: question.id, text } : null;
+}
+
 async function buildAsk(
   state: GraphState,
-  questionId: IntakeQuestionId
+  questionId: IntakeQuestionId,
+  note: string | null
 ): Promise<IntakeGraphAsk> {
-  const question = nextQuestion(
-    state.data,
-    state.answered,
-    state.essentialsOnly
-  );
+  const question = nextQuestion(state.data, state.answered);
   // Prefer the id we already decided; fall back to live nextQuestion.
   const pending =
     question && question.id === questionId
       ? question
-      : nextQuestion(state.data, state.answered, state.essentialsOnly);
+      : nextQuestion(state.data, state.answered);
   if (!pending) {
     throw new Error('buildAsk called with no pending question');
   }
   const t = deps.translate(state.locale);
   const scripted = scriptedAsk(pending, state.data, t);
-  if (pending.kind === 'panel') return scripted;
+  if (pending.kind === 'panel') {
+    return note ? { ...scripted, note } : scripted;
+  }
 
   try {
     const prompt = await deps.phraseAsk({
@@ -142,36 +173,48 @@ async function buildAsk(
       scriptedPrompt: scripted.prompt,
       data: state.data,
       answered: state.answered,
-      essentialsOnly: state.essentialsOnly,
       locale: state.locale,
       t,
+      lastAnswer: lastAnswerContext(state, t),
     });
-    return { ...scripted, prompt: prompt.trim() || scripted.prompt };
+    const built = { ...scripted, prompt: prompt.trim() || scripted.prompt };
+    return note ? { ...built, note } : built;
   } catch {
-    return scripted;
+    return note ? { ...scripted, note } : scripted;
   }
 }
 
 async function turnNode(state: GraphState): Promise<Partial<GraphState>> {
-  const pending = nextQuestion(
-    state.data,
-    state.answered,
-    state.essentialsOnly
-  );
+  const pending = nextQuestion(state.data, state.answered);
   if (!pending) {
-    return { status: 'complete', lastAsk: null, errorKey: null };
+    return {
+      status: 'complete',
+      lastAsk: null,
+      errorKey: null,
+      pendingNote: null,
+    };
   }
 
-  const ask = await buildAsk(state, pending.id);
+  const ask = await buildAsk(state, pending.id, state.pendingNote ?? null);
   let errorKey: string | null = null;
+  /** `undefined` = leave `ask.note` (the carried-over reaction) as it is. */
+  let note: string | null | undefined;
+  let data = state.data;
+  let answered = state.answered;
 
-  // Stay in this node until the pending question validates. Each failed
-  // attempt re-interrupts with the same ask plus an errorKey for the UI.
+  // Stay in this node until the pending question validates. Each retry
+  // re-interrupts with the same ask; only `errorKey`/`note` change.
   for (;;) {
-    const resumeRaw = interrupt(errorKey ? { ...ask, errorKey } : ask);
+    const payload =
+      note === undefined
+        ? { ...ask, errorKey }
+        : { ...ask, errorKey, note: note ?? undefined };
+    const resumeRaw = interrupt(payload);
     const resume = parseResume(resumeRaw);
 
     let extracted: Array<{ id: string; value: string }> = [];
+    let visitorReply: string | null = null;
+
     if (
       resume.kind === 'text' &&
       resume.text.trim() &&
@@ -181,20 +224,52 @@ async function turnNode(state: GraphState): Promise<Partial<GraphState>> {
         extracted = await deps.extractAnswers({
           pendingId: pending.id,
           userText: resume.text,
-          data: state.data,
-          answered: state.answered,
-          essentialsOnly: state.essentialsOnly,
+          data,
+          answered,
           locale: state.locale,
           t: deps.translate(state.locale),
         });
       } catch {
         extracted = [];
       }
+
+      // A deterministic gate decides which turns are even worth a second
+      // model call: only one that actually contains a `?` pays for it.
+      if (resume.text.includes('?')) {
+        try {
+          visitorReply = await deps.answerVisitorQuestion({
+            questionText: resume.text,
+            pending,
+            data,
+            locale: state.locale,
+            t: deps.translate(state.locale),
+          });
+        } catch {
+          visitorReply = null;
+        }
+      }
+    }
+
+    const answeredPending = extracted.some((entry) => entry.id === pending.id);
+
+    // A pure question: nothing usable for the pending field itself. Fold in
+    // any *other* fields volunteered in the same breath, answer the
+    // question, and put the same pending question back — never run the raw
+    // text through its own validator, which is how "why do you need my
+    // email?" would otherwise fail as a bad email address instead of getting
+    // an answer.
+    if (visitorReply && !answeredPending) {
+      const bonus = applyBonusExtracted(data, answered, pending.id, extracted);
+      data = bonus.data;
+      answered = bonus.answered;
+      errorKey = null;
+      note = visitorReply;
+      continue;
     }
 
     const applied = applyResumeTurn({
-      data: state.data,
-      answered: state.answered,
+      data,
+      answered,
       pendingId: pending.id,
       resume,
       extracted,
@@ -202,6 +277,19 @@ async function turnNode(state: GraphState): Promise<Partial<GraphState>> {
 
     if (applied.errorKey) {
       errorKey = applied.errorKey;
+      try {
+        note = await deps.phraseClarification({
+          pending,
+          scriptedError: deps.translate(state.locale)(applied.errorKey),
+          rawText: resume.kind === 'text' ? resume.text : '',
+          locale: state.locale,
+          t: deps.translate(state.locale),
+        });
+      } catch {
+        // Fail open: the UI falls back to the raw scripted error text when
+        // `note` is unset, exactly as it always has.
+        note = null;
+      }
       continue;
     }
 
@@ -211,17 +299,16 @@ async function turnNode(state: GraphState): Promise<Partial<GraphState>> {
       status: 'pending',
       lastAsk: ask,
       errorKey: null,
+      // A question asked alongside a valid answer gets its reply attached to
+      // the *next* ask, built fresh by the following node run.
+      pendingNote: visitorReply,
     };
   }
 }
 
 function routeAfterTurn(state: GraphState): typeof END | 'turn' {
   if (state.status === 'complete') return END;
-  const pending = nextQuestion(
-    state.data,
-    state.answered,
-    state.essentialsOnly
-  );
+  const pending = nextQuestion(state.data, state.answered);
   return pending ? 'turn' : END;
 }
 
@@ -287,11 +374,7 @@ function toResult(
     ask: finalAsk,
     data: state.data ?? EMPTY_DISCOVERY,
     answered: sanitizeAnswered(state.answered),
-    progress: progressFor(
-      state.data ?? EMPTY_DISCOVERY,
-      state.answered ?? [],
-      Boolean(state.essentialsOnly)
-    ),
+    progress: progressFor(state.data ?? EMPTY_DISCOVERY, state.answered ?? []),
     errorKey: state.errorKey ?? null,
     ...extras,
   };
@@ -323,17 +406,16 @@ export async function startIntakeGraph(
   const locale = localeTag(input.locale);
   const data = mergeDiscovery(input.data);
   const answered = sanitizeAnswered(input.answered);
-  const essentialsOnly = Boolean(input.essentialsOnly);
 
   // Cheap path: script already spent — no model, no checkpoint work.
-  if (!nextQuestion(data, answered, essentialsOnly)) {
+  if (!nextQuestion(data, answered)) {
     return {
       threadId,
       status: 'complete',
       ask: null,
       data,
       answered,
-      progress: progressFor(data, answered, essentialsOnly),
+      progress: progressFor(data, answered),
     };
   }
 
@@ -342,11 +424,11 @@ export async function startIntakeGraph(
       {
         data,
         answered,
-        essentialsOnly,
         locale,
         status: 'pending',
         lastAsk: null,
         errorKey: null,
+        pendingNote: null,
       },
       { configurable: { thread_id: threadId } }
     );
@@ -358,7 +440,6 @@ export async function startIntakeGraph(
     const values = {
       data,
       answered,
-      essentialsOnly,
       locale,
       status: 'pending' as const,
       lastAsk: ask,
@@ -383,7 +464,6 @@ export async function startIntakeGraph(
       threadId,
       data,
       answered,
-      essentialsOnly,
       locale,
       reason: 'error',
     });
@@ -399,13 +479,10 @@ export async function resumeIntakeGraph(
       threadId: randomUUID(),
       data: mergeDiscovery(input.data),
       answered: sanitizeAnswered(input.answered),
-      essentialsOnly: Boolean(input.essentialsOnly),
       locale: localeTag(input.locale),
       reason: 'error',
     });
   }
-
-  const essentialsOnly = Boolean(input.essentialsOnly);
 
   try {
     const existing = await compiled.getState({
@@ -413,13 +490,6 @@ export async function resumeIntakeGraph(
     });
     if (!existing.values || Object.keys(existing.values).length === 0) {
       return recoverFromClientMirror(input);
-    }
-
-    if (essentialsOnly) {
-      await compiled.updateState(
-        { configurable: { thread_id: threadId } },
-        { essentialsOnly: true }
-      );
     }
 
     const result = await compiled.invoke(
@@ -443,13 +513,7 @@ export async function resumeIntakeGraph(
     }
 
     const finalState = values as GraphState;
-    if (
-      !nextQuestion(
-        finalState.data,
-        finalState.answered,
-        finalState.essentialsOnly || essentialsOnly
-      )
-    ) {
+    if (!nextQuestion(finalState.data, finalState.answered)) {
       return toResult(
         threadId,
         { ...finalState, status: 'complete', lastAsk: null },
@@ -473,9 +537,8 @@ async function recoverFromClientMirror(
 ): Promise<IntakeGraphTurnResult> {
   const data = mergeDiscovery(input.data);
   const answered = sanitizeAnswered(input.answered);
-  const essentialsOnly = Boolean(input.essentialsOnly);
   const locale = localeTag(input.locale);
-  const pending = nextQuestion(data, answered, essentialsOnly);
+  const pending = nextQuestion(data, answered);
 
   if (!pending) {
     return {
@@ -484,7 +547,7 @@ async function recoverFromClientMirror(
       ask: null,
       data,
       answered,
-      progress: progressFor(data, answered, essentialsOnly),
+      progress: progressFor(data, answered),
       skipped: true,
       reason,
     };
@@ -507,7 +570,7 @@ async function recoverFromClientMirror(
       ask: scriptedAsk(pending, data, t),
       data,
       answered,
-      progress: progressFor(data, answered, essentialsOnly),
+      progress: progressFor(data, answered),
       errorKey: applied.errorKey,
       reason: 'validation',
       skipped: true,
@@ -517,7 +580,6 @@ async function recoverFromClientMirror(
   return startIntakeGraph({
     data: applied.data,
     answered: applied.answered,
-    essentialsOnly,
     locale,
   }).then((result) => ({ ...result, skipped: true, reason }));
 }
@@ -526,15 +588,10 @@ function scriptedFallback(input: {
   threadId: string;
   data: DiscoveryData;
   answered: IntakeQuestionId[];
-  essentialsOnly: boolean;
   locale: IntakeGraphLocale;
   reason: IntakeGraphTurnResult['reason'];
 }): IntakeGraphTurnResult {
-  const pending = nextQuestion(
-    input.data,
-    input.answered,
-    input.essentialsOnly
-  );
+  const pending = nextQuestion(input.data, input.answered);
   if (!pending) {
     return {
       threadId: input.threadId,
@@ -542,7 +599,7 @@ function scriptedFallback(input: {
       ask: null,
       data: input.data,
       answered: input.answered,
-      progress: progressFor(input.data, input.answered, input.essentialsOnly),
+      progress: progressFor(input.data, input.answered),
       skipped: true,
       reason: input.reason,
     };
@@ -554,7 +611,7 @@ function scriptedFallback(input: {
     ask: scriptedAsk(pending, input.data, t),
     data: input.data,
     answered: input.answered,
-    progress: progressFor(input.data, input.answered, input.essentialsOnly),
+    progress: progressFor(input.data, input.answered),
     skipped: true,
     reason: input.reason,
   };
@@ -564,10 +621,9 @@ function scriptedFallback(input: {
 export function scriptedPromptFor(
   data: DiscoveryData,
   answered: readonly string[],
-  essentialsOnly: boolean,
   locale: IntakeGraphLocale = 'en'
 ): string | null {
-  const pending = nextQuestion(data, answered, essentialsOnly);
+  const pending = nextQuestion(data, answered);
   if (!pending) return null;
   return promptText(pending, data, deps.translate(locale));
 }
