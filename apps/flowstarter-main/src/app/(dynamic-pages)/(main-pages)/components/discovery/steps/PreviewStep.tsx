@@ -198,6 +198,12 @@ export function PreviewStep({
   // visitor picks what happens next. Nothing falls back behind their back.
   const [buildFailure, setBuildFailure] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  // Set when the environment cannot run generation at all (route responded
+  // `reason: 'not-configured'`, checked before a job ever started). Distinct
+  // from `steppedDown`: there is no simpler preview to fall back to here,
+  // the visitor's build genuinely has to be made by hand, so the intake ends
+  // instead of quietly substituting the JSON demo.
+  const [deferred, setDeferred] = useState(false);
   // Set when the live pipeline was never available (budget, config, skip) and
   // the deterministic preview stood in for it.
   const [steppedDown, setSteppedDown] = useState(false);
@@ -270,6 +276,29 @@ export function PreviewStep({
   const shownBaseRef = useRef(false);
   const resolvedRef = useRef(false);
 
+  // The honest ending when generation cannot run here at all: no build to
+  // retry, no simpler preview to swap in, so the one thing left to do is
+  // make sure the interest is not lost. Same endpoint and payload shape the
+  // non-conversational wizard already uses for `/api/discovery/lead`, best
+  // effort like every lead capture in this app: the visitor sees the ending
+  // message either way.
+  const captureDeferredLead = useCallback(async () => {
+    try {
+      const tier = (data.selectedTier as Tier | '') || recommendTier(data).tier;
+      await fetch('/api/discovery/lead', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...data,
+          selectedTier: tier,
+          source: 'preview-unavailable',
+        }),
+      });
+    } catch {
+      /* best-effort: the visitor still sees the honest ending either way */
+    }
+  }, [data]);
+
   const startLive = useCallback(
     async (isCancelled: () => boolean) => {
       try {
@@ -281,12 +310,21 @@ export function PreviewStep({
         const json = (await res.json().catch(() => ({}))) as {
           demoId?: string;
           skip?: boolean;
+          reason?: string;
         };
         if (isCancelled()) return;
+        if (json.reason === 'not-configured') {
+          // Not a failed build and not a "simpler preview instead" moment:
+          // the pipeline never had a chance to run in this environment, so
+          // the intake ends here, honestly, with the lead captured.
+          setDeferred(true);
+          void captureDeferredLead();
+          return;
+        }
         if (json.skip || !json.demoId) {
-          // The pipeline was never started (budget, configuration, or an
-          // explicit skip). That is not a build that failed, but the visitor
-          // is still told the preview they get is the simpler one.
+          // The pipeline was never started (budget, or an explicit skip).
+          // That is not a build that failed, but the visitor is still told
+          // the preview they get is the simpler one.
           setSteppedDown(true);
           void loadJsonFallback();
           return;
@@ -299,7 +337,7 @@ export function PreviewStep({
         }
       }
     },
-    [data, loadJsonFallback]
+    [data, loadJsonFallback, captureDeferredLead]
   );
 
   useEffect(() => {
@@ -703,14 +741,18 @@ export function PreviewStep({
   // two changes (or asked for it); the JSON fallback has no live editing to
   // show off, so its offer appears as before.
   const offerReady = mode !== 'live' || offerRevealed;
-  const elapsed = useElapsedSeconds(!finished && !buildFailure);
+  const elapsed = useElapsedSeconds(!finished && !buildFailure && !deferred);
 
-  const nowState: NowState = buildFailure
+  const nowState: NowState = deferred
+    ? 'done'
+    : buildFailure
     ? 'failed'
     : finished
     ? 'done'
     : 'working';
-  const nowLabel = buildFailure
+  const nowLabel = deferred
+    ? t('landing.discovery.preview.deferredNow')
+    : buildFailure
     ? 'The build stopped'
     : finished
     ? 'Your preview is ready'
@@ -795,6 +837,14 @@ export function PreviewStep({
           </ChatBubble>
         );
       })}
+
+      {deferred && (
+        <ChatBubble tone="alert" author="Your team of agents">
+          <span className="block">
+            {t('landing.discovery.preview.deferredMessage')}
+          </span>
+        </ChatBubble>
+      )}
 
       {buildFailure && (
         <ChatBubble tone="alert" author="Your team of agents">

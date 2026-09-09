@@ -575,15 +575,30 @@ jobs:
             printf 'Filed by `.depot/workflows/daily-qa.yml`. How to read this, and how to run it by hand, is in `docs/daily-qa.md`.\n'
           } > "$body_file"
 
-          # The labels have to exist before an issue can carry them.
-          gh label create daily-qa --repo "$REPO" --color 0e8a16 \
-            --description "The daily QA agent's verdict" >/dev/null 2>&1 || true
-          gh label create qa-broken --repo "$REPO" --color b60205 \
-            --description "A daily QA run found a flow a visitor cannot complete" >/dev/null 2>&1 || true
+          # The labels have to exist before an issue can carry them. `--force`
+          # makes this create-or-update instead of relying on "already
+          # exists" to look like success; a genuine failure (permissions, a
+          # rate limit) is surfaced with `::warning::` instead of swallowed,
+          # and the verdict is still filed without labels rather than lost
+          # (see `labels_ok` below and the create/edit fallback).
+          labels_ok=true
+          if ! gh label create daily-qa --repo "$REPO" --color 0e8a16 \
+              --description "The daily QA agent's verdict" --force >/dev/null 2>&1; then
+            echo "::warning title=Daily QA labels::could not create or update the 'daily-qa' label; filing today's issue without labels"
+            labels_ok=false
+          fi
+          if ! gh label create qa-broken --repo "$REPO" --color b60205 \
+              --description "A daily QA run found a flow a visitor cannot complete" --force >/dev/null 2>&1; then
+            echo "::warning title=Daily QA labels::could not create or update the 'qa-broken' label; filing today's issue without labels"
+            labels_ok=false
+          fi
 
-          labels=daily-qa
-          if [ "$VERDICT" = "broken" ]; then
-            labels="daily-qa,qa-broken"
+          labels=""
+          if [ "$labels_ok" = true ]; then
+            labels=daily-qa
+            if [ "$VERDICT" = "broken" ]; then
+              labels="daily-qa,qa-broken"
+            fi
           fi
 
           # One issue per day. A rerun replaces the day's report rather than
@@ -593,13 +608,32 @@ jobs:
             --jq "[.[] | select(.title | startswith(\"Daily QA ${QA_DATE}:\"))][0].number" \
             2>/dev/null || true)
 
+          # Labels are cosmetic; the verdict is not. Try with labels when
+          # they are expected to exist, but a label problem must never cost
+          # the issue itself: retry once, without them, before giving up.
           if [ -n "${existing:-}" ] && [ "$existing" != "null" ]; then
-            gh issue edit "$existing" --repo "$REPO" \
-              --title "$title" --body-file "$body_file" --add-label "$labels" >/dev/null
+            edit_args=(gh issue edit "$existing" --repo "$REPO" \
+              --title "$title" --body-file "$body_file")
+            if [ -n "$labels" ]; then
+              edit_args+=(--add-label "$labels")
+            fi
+            if ! "${edit_args[@]}" >/dev/null 2>&1; then
+              echo "::warning title=Daily QA labels::could not add labels to issue #${existing}; updating it without labels"
+              gh issue edit "$existing" --repo "$REPO" \
+                --title "$title" --body-file "$body_file" >/dev/null
+            fi
             echo "Updated issue #${existing}: ${title}" >> "$GITHUB_STEP_SUMMARY"
           else
-            gh issue create --repo "$REPO" \
-              --title "$title" --body-file "$body_file" --label "$labels" >/dev/null
+            create_args=(gh issue create --repo "$REPO" \
+              --title "$title" --body-file "$body_file")
+            if [ -n "$labels" ]; then
+              create_args+=(--label "$labels")
+            fi
+            if ! "${create_args[@]}" >/dev/null 2>&1; then
+              echo "::warning title=Daily QA labels::could not file today's issue with labels; filing it without labels"
+              gh issue create --repo "$REPO" \
+                --title "$title" --body-file "$body_file" >/dev/null
+            fi
             echo "Filed a new issue: ${title}" >> "$GITHUB_STEP_SUMMARY"
           fi
       # Last, so the issue is always filed before this can end the run.

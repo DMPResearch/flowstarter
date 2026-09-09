@@ -2183,6 +2183,9 @@ const en = {
     "You've used all your demo edits. The real editor has no limit.",
   'landing.discovery.preview.editorUnavailable':
     'Live editing is off in this environment: this is a static preview.',
+  'landing.discovery.preview.deferredNow': 'Your preview is on its way',
+  'landing.discovery.preview.deferredMessage':
+    "We couldn't start your live preview just now. Nothing is lost: we will build it by hand and email it to you shortly.",
   'landing.discovery.preview.disclaimer':
     'A working preview built from your answers. The complete site is built by your agent team once the 20% deposit is paid, checked by us before it goes live, and ships with an editor that has no edit limit.',
 
