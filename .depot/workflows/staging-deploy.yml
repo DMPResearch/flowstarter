@@ -100,13 +100,16 @@ jobs:
           USER: ${{ secrets.STAGING_SSH_USER }}
           KEY: ${{ secrets.STAGING_SSH_KEY }}
           IMAGE: ${{ steps.image.outputs.name }}:${{ github.sha }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
         run: |
           set -euo pipefail
           install -m 600 /dev/null "$RUNNER_TEMP/staging_key"
           printf '%s\n' "$KEY" > "$RUNNER_TEMP/staging_key"
           SSH=(ssh -i "$RUNNER_TEMP/staging_key" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
+          # GHCR packages are private; log the host in before docker pull.
           "${SSH[@]}" "${USER}@${HOST}" \
-            "sudo /opt/flowstarter/staging/deploy-slot.sh main $(printf %q "$IMAGE") 3000"
+            "echo $(printf %q "$GHCR_TOKEN") | docker login ghcr.io -u $(printf %q "$GHCR_USERNAME") --password-stdin && sudo /opt/flowstarter/staging/deploy-slot.sh main $(printf %q "$IMAGE") 3000"
 
       - name: Smoke health URL
         if: steps.ssh.outputs.present == 'true'

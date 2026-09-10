@@ -156,14 +156,17 @@ jobs:
           IMAGE: ${{ steps.image.outputs.name }}:pr-${{ steps.pr.outputs.number }}
           SLOT: ${{ steps.pr.outputs.slot }}
           PR: ${{ steps.pr.outputs.number }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
         run: |
           set -euo pipefail
           install -m 600 /dev/null "$RUNNER_TEMP/staging_key"
           printf '%s\n' "$KEY" > "$RUNNER_TEMP/staging_key"
           SSH=(ssh -i "$RUNNER_TEMP/staging_key" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
           port=$((3000 + PR))
+          # GHCR packages are private; log the host in before docker pull.
           "${SSH[@]}" "${USER}@${HOST}" \
-            "sudo /opt/flowstarter/staging/deploy-slot.sh ${SLOT} $(printf %q "$IMAGE") ${port}"
+            "echo $(printf %q "$GHCR_TOKEN") | docker login ghcr.io -u $(printf %q "$GHCR_USERNAME") --password-stdin && sudo /opt/flowstarter/staging/deploy-slot.sh ${SLOT} $(printf %q "$IMAGE") ${port}"
 
       - name: Comment staging URL on the PR
         if: steps.ssh.outputs.present == 'true' && github.event_name == 'pull_request'
