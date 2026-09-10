@@ -75,8 +75,9 @@ export function LandingHero() {
           <div className="ls-hero-content">
             <div
               style={reveal(0)}
-              className="ls-eyebrow flex flex-wrap items-center gap-1"
+              className="ls-eyebrow ls-eyebrow--hero flex flex-wrap items-start gap-x-2.5 gap-y-1"
             >
+              <span className="ls-eyebrow-mark" aria-hidden="true" />
               <span>{t('landing.hero.eyebrowSerial')}</span>
               {t('landing.hero.eyebrowLabel') && (
                 <>
