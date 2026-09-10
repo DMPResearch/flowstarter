@@ -22,6 +22,10 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import {
+  editCreditsLine,
+  type EditCreditPosition,
+} from '@/lib/flowstarter/edit-credits';
 import { PolicyNotice } from './PolicyNotice';
 import { EscalationPanel } from './EscalationPanel';
 import { ImageSlotsPanel } from './ImageSlotsPanel';
@@ -66,6 +70,9 @@ export function SiteEditor({
   const [versions, setVersions] = useState<EditorVersion[]>(initial.versions);
   const [version, setVersion] = useState(initial.site.version);
   const [used, setUsed] = useState(initial.allowance.used);
+  const [credits, setCredits] = useState<EditCreditPosition>(
+    initial.allowance.credits
+  );
   const [selectedId, setSelectedId] = useState<string | null>(
     initial.targets[0]?.id ?? null
   );
@@ -122,6 +129,7 @@ export function SiteEditor({
     setVersions(state.versions);
     setVersion(state.site.version);
     setUsed(state.allowance.used);
+    setCredits(state.allowance.credits);
   }, [base]);
 
   async function propose() {
@@ -131,7 +139,9 @@ export function SiteEditor({
     setNotice(null);
     try {
       const result = await requestEditor<
-        Proposal & { allowance: { used: number } }
+        Proposal & {
+          allowance: { used: number; credits: EditCreditPosition };
+        }
       >(`${base}/edit`, {
         method: 'POST',
         body: JSON.stringify({
@@ -145,6 +155,7 @@ export function SiteEditor({
         replacementContent: result.replacementContent,
       });
       setUsed(result.allowance.used);
+      setCredits(result.allowance.credits);
     } catch (caught) {
       setError(
         caught instanceof EditorRequestError
@@ -336,6 +347,14 @@ export function SiteEditor({
               />
               <p className="mt-1 text-xs text-[var(--fs-ink-faint)]">
                 {used} of {initial.allowance.cap} changes used today.
+              </p>
+              {/* The monthly number is the one the care plan sells; the daily
+                  line above it is only the burst guard. */}
+              <p
+                data-testid="editor-credits"
+                className="mt-0.5 text-xs text-[var(--fs-ink-faint)]"
+              >
+                {editCreditsLine(credits)}
               </p>
             </div>
 

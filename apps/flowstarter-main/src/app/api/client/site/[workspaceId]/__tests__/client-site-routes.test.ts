@@ -48,6 +48,12 @@ const WORKSPACE_B = '7c2a91b4-3d5e-4a17-9f88-1b2c3d4e5f60';
  * case that fills a bucket has to fill one nothing else draws from.
  */
 const WORKSPACE_BURST = '5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d';
+/**
+ * A fourth workspace of the same client, for the monthly-allowance cases. They
+ * need a workspace whose burst bucket nothing else has drawn from, for the
+ * same module-scope reason as the one above.
+ */
+const WORKSPACE_CREDITS = '6b7c8d9e-0f1a-4b2c-8d3e-4f5a6b7c8d9e';
 const ASSET_CONFIRMED = '11111111-1111-4111-8111-111111111111';
 const ASSET_UNCONFIRMED = '22222222-2222-4222-8222-222222222222';
 const CHANGE_REQUEST = '44444444-4444-4444-8444-444444444444';
@@ -252,12 +258,30 @@ function seedWorkspace(subscriptionStatus = 'active'): void {
       hosting_server_id: null,
       deploy_status: 'none',
     },
+    {
+      id: WORKSPACE_CREDITS,
+      name: 'Halden & Roe, third site',
+      slug: 'halden-roe-three',
+      subscription_status: 'active',
+      hosting_server_id: null,
+      deploy_status: 'none',
+      // Left unset on purpose: a null tier is the Starter floor, which is the
+      // case a lapsed or never-billed workspace is actually in.
+      tier_name: null,
+    },
   ]);
   db.seed('workspace_memberships', [
     { workspace_id: WORKSPACE_A, clerk_user_id: 'user_client_a' },
     { workspace_id: WORKSPACE_BURST, clerk_user_id: 'user_client_a' },
+    { workspace_id: WORKSPACE_CREDITS, clerk_user_id: 'user_client_a' },
   ]);
   db.seed('flowstarter_project_artifacts', [
+    {
+      workspace_id: WORKSPACE_CREDITS,
+      preview_manifest: manifest(),
+      template_slug: 'professional-services',
+      template_version: '1.0.0',
+    },
     {
       workspace_id: WORKSPACE_BURST,
       preview_manifest: manifest(),
@@ -587,6 +611,76 @@ describe('proposing a change', () => {
         .rows('project_events')
         .filter((row) => row.kind === 'site_edit_proposed')
     ).toHaveLength(25);
+  });
+
+  it('tells the client what is left of this month’s plan allowance', async () => {
+    db.seed(
+      'project_events',
+      Array.from({ length: 4 }, (_, index) => ({
+        id: `credit-event-${index}`,
+        workspace_id: WORKSPACE_CREDITS,
+        kind: 'site_edit_proposed',
+        actor: 'user_client_a',
+        payload: {},
+        created_at: new Date().toISOString(),
+      }))
+    );
+
+    const response = await EDIT(
+      post('/x', { targetId: LABEL_TARGET, instruction: 'warmer' }),
+      params(WORKSPACE_CREDITS)
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    // Four already spent plus the one this request just wrote.
+    expect(body.allowance.credits).toMatchObject({
+      tier: 'starter',
+      allowance: 50,
+      used: 5,
+      remaining: 45,
+      exhausted: false,
+    });
+  });
+
+  it('refuses the request once the month’s allowance is gone, before the daily cap does', async () => {
+    db.seed(
+      'project_events',
+      Array.from({ length: 50 }, (_, index) => ({
+        id: `spent-${index}`,
+        workspace_id: WORKSPACE_CREDITS,
+        kind: 'site_edit_proposed',
+        actor: 'user_client_a',
+        payload: {},
+        created_at: new Date().toISOString(),
+      }))
+    );
+
+    const response = await EDIT(
+      post('/x', { targetId: LABEL_TARGET, instruction: 'one more' }),
+      params(WORKSPACE_CREDITS)
+    );
+    expect(response.status).toBe(429);
+    const body = await response.json();
+    // Not DAILY_CAP: 50 rows are over that too, and the client needs to be
+    // told the thing that is actually true rather than "come back tomorrow".
+    expect(body.code).toBe('CREDITS_EXHAUSTED');
+    expect(body.error).toMatch(
+      /You have used all 50 edits in your plan this month\./
+    );
+    expect(body.error).toMatch(/Your allowance resets on \d{1,2} \w+\./);
+    expect(body.allowance.credits).toMatchObject({
+      allowance: 50,
+      remaining: 0,
+      exhausted: true,
+    });
+
+    // Nothing was spent on the refusal: no model call and no 51st row.
+    expect(inlineEdit.calls).toHaveLength(0);
+    expect(
+      db
+        .rows('project_events')
+        .filter((row) => row.workspace_id === WORKSPACE_CREDITS)
+    ).toHaveLength(50);
   });
 
   it('refuses an instruction longer than the cap', async () => {

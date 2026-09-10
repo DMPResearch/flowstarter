@@ -8,8 +8,12 @@ import 'server-only';
  *
  * The order below is the whole security and cost story:
  *
- *   access → policy over the *requested* target → burst limit → daily cap →
- *   audit row → model.
+ *   access → policy over the *requested* target → burst limit → monthly
+ *   credits → daily cap → audit row → model.
+ *
+ * Credits come before the daily cap because they are the thing the client
+ * bought: a client with nothing left this month should be told that, not told
+ * to come back tomorrow to a wall that will still be there.
  *
  * The audit row is written before the model runs, not after, because the row
  * is what the daily cap counts. Writing it afterwards would mean a run that
@@ -21,10 +25,16 @@ import { z } from 'zod';
 import { llmActionConfig, recordLlmUsage } from '@/lib/ai/llm';
 import { SlidingWindowRateLimiter } from '@/lib/rate-limit';
 import {
+  creditsExhaustedMessage,
+  editCreditPosition,
+  startOfUtcMonth,
+} from '@/lib/flowstarter/edit-credits';
+import {
   DAILY_EDIT_CAP,
   EDIT_RATE_LIMIT,
   MAX_INSTRUCTION_CHARS,
   classifyTargetCapability,
+  countProposalsSince,
   countProposalsToday,
   findTarget,
   instructionFingerprint,
@@ -102,13 +112,36 @@ export async function POST(
       );
     }
 
-    const used = await countProposalsToday(context.workspaceId);
+    // One clock for the whole request, so the window a proposal is counted in
+    // and the reset date the client is quoted cannot disagree.
+    const now = new Date();
+    const [used, usedThisMonth] = await Promise.all([
+      countProposalsToday(context.workspaceId, now),
+      countProposalsSince(context.workspaceId, startOfUtcMonth(now)),
+    ]);
+
+    const credits = editCreditPosition({
+      tier: context.site.tierName,
+      usedThisMonth,
+      now,
+    });
+    if (credits.exhausted) {
+      return NextResponse.json(
+        {
+          error: creditsExhaustedMessage(credits),
+          code: 'CREDITS_EXHAUSTED',
+          allowance: { used, cap: DAILY_EDIT_CAP, credits },
+        },
+        { status: 429 }
+      );
+    }
+
     if (used >= DAILY_EDIT_CAP) {
       return NextResponse.json(
         {
           error: `You have made ${DAILY_EDIT_CAP} edits today, which is the daily limit. It resets at midnight UTC.`,
           code: 'DAILY_CAP',
-          allowance: { used, cap: DAILY_EDIT_CAP },
+          allowance: { used, cap: DAILY_EDIT_CAP, credits },
         },
         { status: 429 }
       );
@@ -135,7 +168,17 @@ export async function POST(
 
     return NextResponse.json({
       ...proposal,
-      allowance: { used: used + 1, cap: DAILY_EDIT_CAP },
+      allowance: {
+        used: used + 1,
+        cap: DAILY_EDIT_CAP,
+        // The row this request wrote is already spent, so the client is shown
+        // the position they are in now rather than the one they arrived in.
+        credits: editCreditPosition({
+          tier: context.site.tierName,
+          usedThisMonth: usedThisMonth + 1,
+          now,
+        }),
+      },
     });
   } catch (error) {
     if (error instanceof EditorUnavailableError) {
