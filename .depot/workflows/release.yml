@@ -1,69 +1,42 @@
 ##############################################################################
 # release.yml
 #
-# One release per week.
+# One release per week (or on demand).
 #
 # Cadence
 #   Monday 06:00 UTC the lane tags the current main as `release-YYYY-MM-DD`,
-#   opens a DRAFT GitHub Release with generated notes, and then tries to earn
-#   the right to publish it. A release is published only by this workflow and
-#   only after the verification below passes. Between Mondays, `main` still
-#   ships continuously through Netlify; the release is the weekly marker of
-#   what was verified end to end.
+#   opens a DRAFT GitHub Release with generated notes, verifies against
+#   Hetzner staging, publishes that tag to Netlify production
+#   (`netlify deploy --prod`, 15 credits), verifies production, then publishes
+#   the GitHub Release. Between Mondays, `main` updates Hetzner staging only
+#   (see staging-deploy.yml). Git-triggered Netlify production builds are
+#   skipped via netlify.toml `[context.production] ignore`.
 #
 # What blocks a release
 #   The draft stays a draft, and this workflow ends red, when either
 #   verification job fails:
-#     - `full-e2e`         the keyless contract spec and the production
-#                          synthetic against the production URL, plus the
-#                          authenticated operator journey when credentials
-#                          exist.
-#     - `staging-journey`  the full-journey tier on staging.
-#   A job that SKIPS does not block. Missing Clerk credentials, a missing
-#   Netlify deploy and an unconfigured staging URL all warn and skip, because
-#   a release must not be held hostage by absent infrastructure. A job that
-#   RUNS and fails always blocks.
+#     - `staging-journey`  the full-journey tier on staging (when configured).
+#     - `deploy-prod`      Netlify production publish of the release tag.
+#     - `full-e2e`         contract + production synthetic (+ auth journey)
+#                          against flowstarter.net after deploy-prod.
+#   A job that SKIPS does not block. Missing Clerk credentials and an
+#   unconfigured staging URL warn and skip. A job that RUNS and fails always
+#   blocks.
 #
 # Secrets and variables it reads
 #   secrets:
-#     E2E_CLERK_OPERATOR_EMAIL     operator sign-in for the authenticated
-#     E2E_CLERK_OPERATOR_PASSWORD  Playwright projects (`setup`,
-#                                  `chromium-auth`). Absent: skip with a
-#                                  warning.
-#     CLERK_SECRET_KEY             mints the Clerk Testing Token
-#                                  `global.setup.ts` uses to get past bot
-#                                  detection on a fresh CI browser. Also
-#                                  gates `clerkConfigured()`
-#                                  (e2e/support/clerk-env.ts), so this tier
-#                                  has always skipped without it. Absent:
-#                                  skip with a warning, same as the operator
-#                                  credentials above.
-#     NETLIFY_AUTH_TOKEN           read-only Netlify PAT, used to find the
-#     NETLIFY_SITE_ID              Deploy Preview / branch deploy for the
-#                                  tagged commit. Absent: fall back to
-#                                  production with a warning.
+#     E2E_CLERK_OPERATOR_EMAIL / E2E_CLERK_OPERATOR_PASSWORD
+#     CLERK_SECRET_KEY
+#     NETLIFY_AUTH_TOKEN           deploy + read for flowstarter-landing
+#     NETLIFY_SITE_ID
 #   vars:
 #     PROD_URL                     default https://flowstarter.net
-#     STAGING_URL                  unset today; the staging tier skips until
-#                                  it is set.
+#     STAGING_URL                  https://staging.flowstarter.dev
 #     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
-#                                  not a secret (it ships to every browser);
-#                                  read alongside CLERK_SECRET_KEY above.
-#   Depot does not read GitHub's secret store. Import these with
-#   `depot ci secrets add` / `depot ci vars add`, scoped to this repository
-#   (see AGENTS.md).
 #
 # Running it by hand
 #   depot ci dispatch --repo DMPResearch/flowstarter --workflow release.yml --ref main
 #   Pass `tag` to reuse an existing tag instead of cutting a new one.
-#
-# Journey specs
-#   `staging-journey` runs `e2e/**/*.journey.spec.ts`. No such spec exists
-#   yet, so the job passes with no tests. The naming is the contract: a
-#   journey spec walks one complete client path end to end (intake to
-#   preview to deposit to delivered site) and is too slow and too stateful
-#   for the per-pull-request lanes, so it lives here and runs against staging
-#   only.
 ##############################################################################
 
 name: Release
@@ -174,10 +147,121 @@ jobs:
           echo "release_id=${release_id}" >> "$GITHUB_OUTPUT"
           echo "created=${created}" >> "$GITHUB_OUTPUT"
 
-  # ── 2. Verify against production, and the operator journey on the deploy ───
+  # ── 2. Full-journey tier on Hetzner staging (tip should already be on main) ─
+  staging-journey:
+    name: Staging - full journey
+    needs: prepare
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - name: Check the staging URL
+        id: staging
+        env:
+          STAGING_URL: ${{ vars.STAGING_URL }}
+        run: |
+          if [ -n "${STAGING_URL:-}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "url=${STAGING_URL%/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::vars.STAGING_URL is not set (expected https://staging.flowstarter.dev). Skipping the full-journey tier; this does not block the release."
+            echo "Staging is not configured; the full-journey tier was skipped." >> "$GITHUB_STEP_SUMMARY"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: pnpm/action-setup@v4
+        if: steps.staging.outputs.present == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.staging.outputs.present == 'true'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install dependencies
+        if: steps.staging.outputs.present == 'true'
+        run: pnpm install --frozen-lockfile
+      - name: Install Playwright browsers
+        if: steps.staging.outputs.present == 'true'
+        run: pnpm exec playwright install chromium --with-deps
+      - name: E2E - full journey against staging
+        if: steps.staging.outputs.present == 'true'
+        env:
+          CI: true
+          PLAYWRIGHT_BASE_URL: ${{ steps.staging.outputs.url }}
+          PLAYWRIGHT_JSON_OUTPUT_NAME: release-results/staging-journey.json
+        run: |
+          pnpm exec playwright test "e2e/**/*.journey.spec.ts" \
+            --project chromium --reporter=list,json --pass-with-no-tests
+      - name: Upload Playwright report
+        if: always() && steps.staging.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-release-staging-journey
+          path: playwright-report/
+          retention-days: 30
+          if-no-files-found: warn
+      - name: Upload the machine-readable results
+        if: always() && steps.staging.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-results-staging-journey
+          path: release-results/
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ── 3. Publish the release tag to Netlify production (15 credits) ──────────
+  deploy-prod:
+    name: Deploy - Netlify production from release tag
+    needs: [prepare, staging-journey]
+    if: always() && needs.prepare.result == 'success' && needs.staging-journey.result == 'success'
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - name: Check Netlify credentials
+        id: netlify
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        run: |
+          if [ -n "${NETLIFY_AUTH_TOKEN:-}" ] && [ -n "${NETLIFY_SITE_ID:-}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::NETLIFY_AUTH_TOKEN and NETLIFY_SITE_ID are required to publish production from a release tag."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install Netlify CLI
+        run: pnpm dlx netlify-cli@23 --version
+      - name: Deploy production
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # --build runs the netlify.toml build command. context.production
+          # ignore only applies to git webhook builds, not CLI deploys.
+          pnpm dlx netlify-cli@23 deploy --prod --build --message "release ${TAG} (${SHA})"
+          echo "Published ${TAG} (${SHA}) to Netlify production." >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 4. Verify production after the Netlify publish ─────────────────────────
   full-e2e:
     name: Full E2E - production and operator journey
-    needs: prepare
+    needs: [prepare, deploy-prod]
+    if: always() && needs.prepare.result == 'success' && needs.deploy-prod.result == 'success'
     runs-on: depot-ubuntu-latest
     timeout-minutes: 40
     permissions:
@@ -210,7 +294,6 @@ jobs:
           CI: true
           PLAYWRIGHT_BASE_URL: ${{ steps.prod.outputs.url }}
           PLAYWRIGHT_JSON_OUTPUT_NAME: release-results/contract.json
-          # Survives Playwright emptying test-results between the three runs.
           ROUTE_COVERAGE_DIR: route-coverage
         run: |
           pnpm exec playwright test e2e/contract.spec.ts \
@@ -221,15 +304,9 @@ jobs:
           PROD_SYNTHETIC: '1'
           PLAYWRIGHT_BASE_URL: ${{ steps.prod.outputs.url }}
           PLAYWRIGHT_JSON_OUTPUT_NAME: release-results/prod-synthetic.json
-          # Survives Playwright emptying test-results between the three runs.
           ROUTE_COVERAGE_DIR: route-coverage
         run: |
           pnpm exec playwright test --project prod-synthetic --reporter=list,json
-      # ── The authenticated tier ──────────────────────────────────────────
-      # Needs a real Clerk operator, so it is opt-in on the presence of the
-      # credentials. The `secrets` context is not readable from a step-level
-      # `if`, so presence becomes an output first (same pattern as
-      # e2e-smoke.yml).
       - name: Check the operator credentials
         id: clerk
         env:
@@ -238,78 +315,27 @@ jobs:
           CLERK_KEY: ${{ secrets.CLERK_SECRET_KEY }}
           CLERK_PUBLISHABLE: ${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
         run: |
-          # CLERK_SECRET_KEY (+ the publishable key) mints the Testing Token
-          # `global.setup.ts` needs to get past Clerk's bot detection on a
-          # fresh CI browser; without it `clerkConfigured()` is false and the
-          # `setup` project skips every test in it regardless of the operator
-          # credentials below, so it gates this tier exactly like they do.
           if [ -n "${EMAIL:-}" ] && [ -n "${PASSWORD:-}" ] && \
              [ -n "${CLERK_KEY:-}" ] && [ -n "${CLERK_PUBLISHABLE:-}" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::E2E_CLERK_OPERATOR_EMAIL / E2E_CLERK_OPERATOR_PASSWORD / CLERK_SECRET_KEY / NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY are not all set; skipping the authenticated operator journey. This does not block the release."
+            echo "::warning::Clerk operator credentials incomplete; skipping the authenticated operator journey. This does not block the release."
             echo "present=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Check the Netlify credentials
-        id: netlify_creds
-        if: steps.clerk.outputs.present == 'true'
-        env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
-        run: |
-          if [ -n "${NETLIFY_AUTH_TOKEN:-}" ] && [ -n "${NETLIFY_SITE_ID:-}" ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::NETLIFY_AUTH_TOKEN or NETLIFY_SITE_ID is not set; the authenticated journey will run against production instead of a deploy."
-            echo "present=false" >> "$GITHUB_OUTPUT"
-          fi
-      # continue-on-error: no deploy for the tagged commit is an
-      # infrastructure signal. The next step falls back to production.
-      - name: Wait for the Netlify deploy of the tagged commit
-        id: netlify
-        if: steps.clerk.outputs.present == 'true' && steps.netlify_creds.outputs.present == 'true'
-        continue-on-error: true
-        run: bash .github/scripts/wait-for-netlify-deploy.sh
-        env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
-          COMMIT_SHA: ${{ needs.prepare.outputs.sha }}
-          TIMEOUT_SECONDS: '900'
-          POLL_INTERVAL: '15'
-      - name: Resolve the authenticated target
-        id: authtarget
-        if: steps.clerk.outputs.present == 'true'
-        env:
-          DEPLOY_URL: ${{ steps.netlify.outputs.url }}
-          PROD_URL: ${{ steps.prod.outputs.url }}
-          SHA: ${{ needs.prepare.outputs.sha }}
-        run: |
-          set -euo pipefail
-          if [ -n "${DEPLOY_URL:-}" ]; then
-            echo "url=${DEPLOY_URL%/}" >> "$GITHUB_OUTPUT"
-            echo "Authenticated journey target: ${DEPLOY_URL}" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::warning::No Netlify deploy for ${SHA}; running the authenticated journey against production (${PROD_URL}) instead."
-            echo "url=${PROD_URL}" >> "$GITHUB_OUTPUT"
           fi
       - name: E2E - authenticated operator journey
         if: steps.clerk.outputs.present == 'true'
         env:
           CI: true
-          PLAYWRIGHT_BASE_URL: ${{ steps.authtarget.outputs.url }}
+          PLAYWRIGHT_BASE_URL: ${{ steps.prod.outputs.url }}
           E2E_CLERK_OPERATOR_EMAIL: ${{ secrets.E2E_CLERK_OPERATOR_EMAIL }}
           E2E_CLERK_OPERATOR_PASSWORD: ${{ secrets.E2E_CLERK_OPERATOR_PASSWORD }}
           CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
           PLAYWRIGHT_JSON_OUTPUT_NAME: release-results/authenticated.json
-          # Survives Playwright emptying test-results between the three runs.
           ROUTE_COVERAGE_DIR: route-coverage
         run: |
           pnpm exec playwright test \
             --project setup --project chromium-auth --reporter=list,json
-      # The full-signal readiness score. Unlike the quality gate, this run has
-      # Playwright JSON reports, so a journey that names a spec is only green
-      # when that spec actually passed.
       - name: E2E route coverage and MVP readiness
         if: always()
         env:
@@ -362,77 +388,10 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-  # ── 3. The full-journey tier, on staging ──────────────────────────────────
-  staging-journey:
-    name: Staging - full journey
-    needs: prepare
-    runs-on: depot-ubuntu-latest
-    timeout-minutes: 40
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.tag }}
-      - name: Check the staging URL
-        id: staging
-        env:
-          STAGING_URL: ${{ vars.STAGING_URL }}
-        run: |
-          if [ -n "${STAGING_URL:-}" ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-            echo "url=${STAGING_URL%/}" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::vars.STAGING_URL is not set, so there is no staging environment to walk. Skipping the full-journey tier; this does not block the release. Set it with: depot ci vars add STAGING_URL"
-            echo "Staging is not configured; the full-journey tier was skipped." >> "$GITHUB_STEP_SUMMARY"
-            echo "present=false" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: pnpm/action-setup@v4
-        if: steps.staging.outputs.present == 'true'
-      - uses: actions/setup-node@v4
-        if: steps.staging.outputs.present == 'true'
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-      - name: Install dependencies
-        if: steps.staging.outputs.present == 'true'
-        run: pnpm install --frozen-lockfile
-      - name: Install Playwright browsers
-        if: steps.staging.outputs.present == 'true'
-        run: pnpm exec playwright install chromium --with-deps
-      # `--pass-with-no-tests` because no journey spec has been written yet.
-      # The naming convention is documented in the header and in
-      # docs/release-process.md; adding the first one needs no change here.
-      - name: E2E - full journey against staging
-        if: steps.staging.outputs.present == 'true'
-        env:
-          CI: true
-          PLAYWRIGHT_BASE_URL: ${{ steps.staging.outputs.url }}
-          PLAYWRIGHT_JSON_OUTPUT_NAME: release-results/staging-journey.json
-        run: |
-          pnpm exec playwright test "e2e/**/*.journey.spec.ts" \
-            --project chromium --reporter=list,json --pass-with-no-tests
-      - name: Upload Playwright report
-        if: always() && steps.staging.outputs.present == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-report-release-staging-journey
-          path: playwright-report/
-          retention-days: 30
-          if-no-files-found: warn
-      - name: Upload the machine-readable results
-        if: always() && steps.staging.outputs.present == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-results-staging-journey
-          path: release-results/
-          retention-days: 30
-          if-no-files-found: warn
-
-  # ── 4. Publish, or leave the draft where it is ────────────────────────────
+  # ── 5. Publish, or leave the draft where it is ────────────────────────────
   publish:
     name: Publish - or hold the draft
-    needs: [prepare, full-e2e, staging-journey]
+    needs: [prepare, staging-journey, deploy-prod, full-e2e]
     if: always() && needs.prepare.result == 'success'
     runs-on: depot-ubuntu-latest
     timeout-minutes: 10
@@ -468,6 +427,7 @@ jobs:
           SHA: ${{ needs.prepare.outputs.sha }}
           FULL_E2E_RESULT: ${{ needs.full-e2e.result }}
           STAGING_RESULT: ${{ needs.staging-journey.result }}
+          DEPLOY_PROD_RESULT: ${{ needs.deploy-prod.result }}
           PROD_URL: ${{ vars.PROD_URL }}
           STAGING_URL: ${{ vars.STAGING_URL }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -483,6 +443,10 @@ jobs:
             *) blocked=true ;;
           esac
           case "$STAGING_RESULT" in
+            success|skipped) ;;
+            *) blocked=true ;;
+          esac
+          case "$DEPLOY_PROD_RESULT" in
             success|skipped) ;;
             *) blocked=true ;;
           esac
@@ -511,10 +475,10 @@ jobs:
             echo
             suite_line "Keyless contract checks" results/full-e2e/contract.json "${prod_url}"
             suite_line "Production synthetic" results/full-e2e/prod-synthetic.json "${prod_url}"
-            suite_line "Authenticated operator journey" results/full-e2e/authenticated.json "the release deploy"
+            suite_line "Authenticated operator journey" results/full-e2e/authenticated.json "${prod_url}"
             suite_line "Staging full journey" results/staging-journey/staging-journey.json "${STAGING_URL:-staging (not configured)}"
             echo
-            echo "Job results: full-e2e ${FULL_E2E_RESULT}, staging-journey ${STAGING_RESULT}."
+            echo "Job results: deploy-prod ${DEPLOY_PROD_RESULT}, full-e2e ${FULL_E2E_RESULT}, staging-journey ${STAGING_RESULT}."
             echo "Run: ${RUN_URL}"
             echo
             if [ -f results/readiness/readiness/summary.json ]; then
@@ -540,7 +504,7 @@ jobs:
           if [ "$blocked" = "true" ]; then
             gh release edit "$TAG" --repo "$REPO" --draft --notes-file notes.md
             cat verification.md >> "$GITHUB_STEP_SUMMARY"
-            echo "::error title=Release held::${TAG} stays a draft: full-e2e=${FULL_E2E_RESULT}, staging-journey=${STAGING_RESULT}."
+            echo "::error title=Release held::${TAG} stays a draft: deploy-prod=${DEPLOY_PROD_RESULT}, full-e2e=${FULL_E2E_RESULT}, staging-journey=${STAGING_RESULT}."
             exit 1
           fi
 

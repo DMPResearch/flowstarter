@@ -1,0 +1,38 @@
+# Platform staging for flowstarter-main on the Hetzner Caddy host.
+# Client sites stay under /var/www/sites via deploy-agent — do not mix them.
+#
+# Install once on the box:
+#   sudo mkdir -p /opt/flowstarter/staging /etc/flowstarter /etc/caddy/platform
+#   sudo cp deploy/hetzner-staging/docker-compose.yml /opt/flowstarter/staging/
+#   sudo cp deploy/hetzner-staging/scripts/*.sh /opt/flowstarter/staging/
+#   sudo chmod +x /opt/flowstarter/staging/*.sh
+#   # Add `import /etc/caddy/platform/*.caddy` to /etc/caddy/Caddyfile
+#   sudo touch /etc/flowstarter/staging.env   # secrets; mode 600
+#
+# CI calls deploy-slot.sh / destroy-slot.sh over SSH.
+
+services:
+  flowstarter-staging:
+    image: ${FLOWSTARTER_IMAGE:-ghcr.io/dmpresearch/flowstarter-main:main}
+    container_name: ${FLOWSTARTER_CONTAINER:-flowstarter-staging-main}
+    restart: unless-stopped
+    env_file:
+      - ${FLOWSTARTER_ENV_FILE:-/etc/flowstarter/staging.env}
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+    ports:
+      - "127.0.0.1:${FLOWSTARTER_HOST_PORT:-3000}:3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

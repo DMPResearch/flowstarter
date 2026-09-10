@@ -1,0 +1,123 @@
+##############################################################################
+# staging-deploy.yml
+#
+# Push to main → build the Next image → SSH to Hetzner → deploy slot `main`
+# at https://staging.flowstarter.dev
+#
+# Production Netlify is NOT updated here. That happens only from release.yml
+# via `netlify deploy --prod` on a release tag (15 credits per publish).
+#
+# Secrets (Depot):
+#   STAGING_SSH_HOST, STAGING_SSH_USER, STAGING_SSH_KEY
+#   (optional) NEXT_PUBLIC_* build args if not using defaults from secrets below
+# Vars:
+#   STAGING_URL  default https://staging.flowstarter.dev
+##############################################################################
+
+name: Staging deploy (main)
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+concurrency:
+  group: staging-deploy-main
+  cancel-in-progress: true
+env:
+  NODE_VERSION: '22'
+permissions:
+  contents: read
+  packages: write
+jobs:
+  deploy:
+    name: Build and deploy staging.flowstarter.dev
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check SSH secrets
+        id: ssh
+        env:
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          USER: ${{ secrets.STAGING_SSH_USER }}
+          KEY: ${{ secrets.STAGING_SSH_KEY }}
+        run: |
+          if [ -n "${HOST:-}" ] && [ -n "${USER:-}" ] && [ -n "${KEY:-}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::STAGING_SSH_HOST / STAGING_SSH_USER / STAGING_SSH_KEY are not set; skipping Hetzner deploy. Image will still build and push to GHCR."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Lowercase image name
+        id: image
+        run: |
+          owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          echo "name=ghcr.io/${owner}/flowstarter-main" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/hetzner-staging/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+            ${{ steps.image.outputs.name }}:main
+          build-args: |
+            NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+            NEXT_PUBLIC_SITE_URL=https://staging.flowstarter.dev
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Resolve staging URL
+        if: steps.ssh.outputs.present == 'true'
+        id: staging_url
+        env:
+          STAGING_URL: ${{ vars.STAGING_URL }}
+        run: |
+          echo "url=${STAGING_URL:-https://staging.flowstarter.dev}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy slot main over SSH
+        if: steps.ssh.outputs.present == 'true'
+        env:
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          USER: ${{ secrets.STAGING_SSH_USER }}
+          KEY: ${{ secrets.STAGING_SSH_KEY }}
+          IMAGE: ${{ steps.image.outputs.name }}:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          install -m 600 /dev/null "$RUNNER_TEMP/staging_key"
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/staging_key"
+          SSH=(ssh -i "$RUNNER_TEMP/staging_key" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
+          "${SSH[@]}" "${USER}@${HOST}" \
+            "sudo /opt/flowstarter/staging/deploy-slot.sh main $(printf %q "$IMAGE") 3000"
+
+      - name: Smoke health URL
+        if: steps.ssh.outputs.present == 'true'
+        env:
+          STAGING_URL: ${{ steps.staging_url.outputs.url }}
+        run: |
+          set -euo pipefail
+          url="${STAGING_URL%/}"
+          for i in $(seq 1 30); do
+            if curl -fsS "$url/api/health" | grep -q '"ok"'; then
+              echo "Healthy: $url/api/health"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Staging health check failed at $url/api/health"
+          exit 1
