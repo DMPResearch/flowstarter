@@ -1,0 +1,187 @@
+##############################################################################
+# staging-pr-deploy.yml
+#
+# Deploy a pull request to its own Hetzner staging slot before merge:
+#   https://pr-<n>.staging.flowstarter.dev
+#
+# Triggers
+#   pull_request synchronize/opened/reopened → build + deploy
+#   pull_request closed → destroy the slot
+#   workflow_dispatch with pr_number → deploy that PR head on demand
+#
+# Secrets: STAGING_SSH_HOST, STAGING_SSH_USER, STAGING_SSH_KEY
+# Needs packages:write to push to GHCR.
+##############################################################################
+
+name: Staging deploy (PR)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request number to deploy'
+        required: true
+        type: string
+concurrency:
+  group: staging-pr-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+  packages: write
+  pull-requests: write
+jobs:
+  destroy:
+    name: Destroy PR staging slot
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check SSH secrets
+        id: ssh
+        env:
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          USER: ${{ secrets.STAGING_SSH_USER }}
+          KEY: ${{ secrets.STAGING_SSH_KEY }}
+        run: |
+          if [ -n "${HOST:-}" ] && [ -n "${USER:-}" ] && [ -n "${KEY:-}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Destroy slot
+        if: steps.ssh.outputs.present == 'true'
+        env:
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          USER: ${{ secrets.STAGING_SSH_USER }}
+          KEY: ${{ secrets.STAGING_SSH_KEY }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          install -m 600 /dev/null "$RUNNER_TEMP/staging_key"
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/staging_key"
+          SSH=(ssh -i "$RUNNER_TEMP/staging_key" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
+          "${SSH[@]}" "${USER}@${HOST}" \
+            "sudo /opt/flowstarter/staging/destroy-slot.sh pr-${PR}"
+
+  deploy:
+    name: Build and deploy PR staging slot
+    if: |
+      (github.event_name == 'pull_request' && github.event.action != 'closed') ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Resolve PR number
+        id: pr
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_FROM_EVENT: ${{ github.event.pull_request.number }}
+          PR_INPUT: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            pr="$PR_INPUT"
+          else
+            pr="$PR_FROM_EVENT"
+          fi
+          if ! [[ "$pr" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Invalid PR number: $pr" >&2
+            exit 1
+          fi
+          echo "number=${pr}" >> "$GITHUB_OUTPUT"
+          echo "slot=pr-${pr}" >> "$GITHUB_OUTPUT"
+          echo "url=https://pr-${pr}.staging.flowstarter.dev" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Check SSH secrets
+        id: ssh
+        env:
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          USER: ${{ secrets.STAGING_SSH_USER }}
+          KEY: ${{ secrets.STAGING_SSH_KEY }}
+        run: |
+          if [ -n "${HOST:-}" ] && [ -n "${USER:-}" ] && [ -n "${KEY:-}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::STAGING_SSH_* secrets missing; building image only."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Lowercase image name
+        id: image
+        run: |
+          owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          echo "name=ghcr.io/${owner}/flowstarter-main" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          # Must be the account that owns GHCR_TOKEN, not github.actor.
+          username: ${{ vars.GHCR_USERNAME }}
+          # Classic PAT with write:packages. Depot GITHUB_TOKEN cannot create
+          # org packages (installation not allowed to Create organization package).
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/hetzner-staging/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:pr-${{ steps.pr.outputs.number }}
+            ${{ steps.image.outputs.name }}:${{ github.event.pull_request.head.sha || github.sha }}
+          build-args: |
+            NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+            NEXT_PUBLIC_SITE_URL=${{ steps.pr.outputs.url }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy slot over SSH
+        if: steps.ssh.outputs.present == 'true'
+        env:
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          USER: ${{ secrets.STAGING_SSH_USER }}
+          KEY: ${{ secrets.STAGING_SSH_KEY }}
+          IMAGE: ${{ steps.image.outputs.name }}:pr-${{ steps.pr.outputs.number }}
+          SLOT: ${{ steps.pr.outputs.slot }}
+          PR: ${{ steps.pr.outputs.number }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
+        run: |
+          set -euo pipefail
+          install -m 600 /dev/null "$RUNNER_TEMP/staging_key"
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/staging_key"
+          SSH=(ssh -i "$RUNNER_TEMP/staging_key" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
+          port=$((3000 + PR))
+          # GHCR packages are private; log the host in before docker pull.
+          "${SSH[@]}" "${USER}@${HOST}" \
+            "echo $(printf %q "$GHCR_TOKEN") | docker login ghcr.io -u $(printf %q "$GHCR_USERNAME") --password-stdin && sudo /opt/flowstarter/staging/deploy-slot.sh ${SLOT} $(printf %q "$IMAGE") ${port}"
+
+      - name: Comment staging URL on the PR
+        if: steps.ssh.outputs.present == 'true' && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          URL: ${{ steps.pr.outputs.url }}
+          PR: ${{ steps.pr.outputs.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          body="Hetzner staging for this PR: ${URL}"
+          # Update existing bot comment if present; otherwise create one.
+          existing=$(gh api "repos/${REPO}/issues/${PR}/comments" --jq '.[] | select(.user.type=="Bot" and (.body|contains("Hetzner staging for this PR:"))) | .id' | head -n1 || true)
+          if [ -n "${existing:-}" ]; then
+            gh api -X PATCH "repos/${REPO}/issues/comments/${existing}" -f body="$body" >/dev/null
+          else
+            gh pr comment "$PR" --repo "$REPO" --body "$body"
+          fi

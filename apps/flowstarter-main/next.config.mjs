@@ -3,6 +3,10 @@ const CONFIG_FILE = new URL('', import.meta.url).pathname;
 
 export default {
   typescript: { ignoreBuildErrors: true },
+  // Required for the Hetzner staging Docker image
+  // (`deploy/hetzner-staging/Dockerfile`): `next build` emits a minimal
+  // `node server.js` tree under `.next/standalone`.
+  output: 'standalone',
   // Next.js advertises itself with `X-Powered-By: Next.js` on every response
   // otherwise. It tells an attacker which stack to aim at and buys us nothing.
   poweredByHeader: false,
@@ -162,7 +166,7 @@ export default {
   compiler: {
     removeConsole: process.env.NODE_ENV === 'production',
   },
-  allowedDevOrigins: ['192.168.3.119', '127.0.0.1', 'localhost', 'flowstarter.dev', 'www.flowstarter.dev', 'editor.flowstarter.dev', 'library.flowstarter.dev', 'workflows.flowstarter.dev'],
+        allowedDevOrigins: ['192.168.3.119', '127.0.0.1', 'localhost', 'flowstarter.dev', 'www.flowstarter.dev', 'staging.flowstarter.dev', 'editor.flowstarter.dev', 'library.flowstarter.dev', 'workflows.flowstarter.dev'],
   turbopack: {
     resolveExtensions: ['.tsx', '.ts', '.jsx', '.js'],
   },

@@ -1,14 +1,21 @@
 # Named tunnel: flowstarter-dev (9e39eaf5-69f6-437b-ac3c-eab194f1a5b7)
 #
-# Hosting map (do not point apex at the Next demo — leave flowstarter.dev /
-# ereno.flowstarter.dev alone for other stacks):
+# Hosting map:
 #
-#   www.flowstarter.dev        → local Next (pivot filming / staging demo) :3000
-#   workflows.flowstarter.dev  → same Next app (showcase rewrite)          :3000
-#   flowstarter.dev (apex)     → legacy local :5733  (NOT the MVP demo)
-#   admin.flowstarter.dev      → legacy local :5733
-#   *.flowstarter.dev          → legacy catch-all :5733
-#   ereno.flowstarter.dev      → other tunnel (sage-dev) — do not override DNS
+#   LOCAL (this tunnel — DNS must CNAME these hostnames to the tunnel)
+#     www.flowstarter.dev        → local Next (filming / laptop demo) :3000
+#     workflows.flowstarter.dev  → same Next app (showcase rewrite)    :3000
+#     flowstarter.dev (apex)     → legacy local :5733
+#     admin.flowstarter.dev      → legacy local :5733
+#     *.flowstarter.dev          → legacy catch-all :5733
+#     ereno.flowstarter.dev      → OTHER tunnel (sage-dev); never change
+#
+#   HETZNER (DNS must NOT point at this tunnel — A/AAAA or CNAME to the box)
+#     staging.flowstarter.dev       → platform staging (main tip)
+#     *.staging.flowstarter.dev     → per-PR slots (pr-N.staging.flowstarter.dev)
+#
+#   If staging DNS accidentally CNAMEs to this tunnel, the catch-all below
+#   would send those hosts to :5733. Keep staging records on the Hetzner IP.
 #
 # DNS: www CNAME already routed to this tunnel (2026-08-31).
 # Run: cloudflared tunnel --config scripts/cloudflared-flowstarter-workflows.yml run

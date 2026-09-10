@@ -16,6 +16,13 @@
   command = "pnpm install --frozen-lockfile --prefer-offline && node apps/flowstarter-main/scripts/build-library-previews.mjs --skip-install && pnpm --filter flowstarter build"
   publish = "apps/flowstarter-main/.next"
 
+# Production publishes only from the release workflow (`netlify deploy --prod`
+# on a release tag). Automatic git builds for the production context are
+# skipped so every merge to main does not burn 15 credits. Deploy Previews
+# (context deploy-preview) are unchanged and stay free on credit plans.
+[context.production]
+  ignore = "exit 0"
+
 [build.environment]
   # Use pnpm, not npm. NETLIFY_USE_PNPM tells Netlify's build image to install
   # dependencies with pnpm at the configured version.

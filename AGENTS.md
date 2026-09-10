@@ -128,7 +128,8 @@ add`), scoped to this repo. The names in use:
   inside it (`continue-on-error`); coverage is not. The job's step summary
   carries the coverage table and the MVP readiness scorecard.
 - E2E smoke (`.depot/workflows/e2e-smoke.yml`): waits for this commit's
-  Netlify Deploy Preview, then runs the Playwright platform smoke against it.
+  Netlify Deploy Preview (or later a Hetzner PR staging URL), then runs the
+  Playwright platform smoke against it.
   Skips with a warning when the Netlify secrets are absent. Afterwards
   `scripts/e2e-route-coverage.mjs` reports how many of the routes under
   `src/app` the run reached, from the records
