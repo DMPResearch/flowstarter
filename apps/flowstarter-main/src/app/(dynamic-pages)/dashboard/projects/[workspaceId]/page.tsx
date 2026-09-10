@@ -10,9 +10,12 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { requireWorkspaceAccess } from '@/lib/api-auth';
+import { editCreditPosition } from '@/lib/flowstarter/edit-credits';
+import { loadSiteOverviewCounts } from '@/lib/flowstarter/site-overview-data';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import { OpenAsks } from '@/components/flowstarter/OpenAsks';
-import { ProjectStateStepper } from '@/components/flowstarter/ProjectStateStepper';
+import { SiteOverview } from '@/components/flowstarter/SiteOverview';
+import { siteOverviewTiles } from '@/components/flowstarter/site-overview';
 import { ProjectThread } from '@/components/flowstarter/ProjectThread';
 import { messagesFromPayload } from '@/components/flowstarter/project-messages';
 import { projectStateFrom } from '@/components/flowstarter/project-progress';
@@ -49,13 +52,16 @@ export default async function ClientProjectPage({
     .select(
       `id, slug, name, client_business_name, project_state, deploy_status,
        final_value_minor, setup_fee, billing_currency, deposit_status,
-       final_status, final_invoice_url`
+       final_status, final_invoice_url, tier_name, cal_com_url`
     )
     .eq('id', workspaceId)
     .maybeSingle();
   if (!workspace) notFound();
 
-  const [{ data: hosts }, { data: messageRows }] = await Promise.all([
+  // One clock for the page: the month the credits are counted in and the reset
+  // date the client is quoted have to be the same month.
+  const now = new Date();
+  const [{ data: hosts }, { data: messageRows }, counts] = await Promise.all([
     supabase
       .from('workspace_hosts')
       .select('hostname, is_primary')
@@ -65,6 +71,9 @@ export default async function ClientProjectPage({
       .select('*')
       .eq('workspace_id', workspaceId)
       .order('created_at', { ascending: true }),
+    // Every query inside is filtered by this workspace id, which is the one
+    // `requireWorkspaceAccess` authorized above.
+    loadSiteOverviewCounts(supabase, workspaceId, now),
   ]);
 
   // Same normaliser the thread uses on the API's camelCase payload, so a raw
@@ -77,6 +86,27 @@ export default async function ClientProjectPage({
     slug: workspace.slug,
     deployStatus: workspace.deploy_status,
     hosts: hosts ?? [],
+  });
+
+  // Credits are spent on the proposal, not the apply, so the number that ran
+  // the client's allowance down is the proposed count, not the applied one.
+  const tiles = siteOverviewTiles({
+    live: site !== null,
+    siteHref: site?.href,
+    tier: workspace.tier_name,
+    credits: editCreditPosition({
+      tier: workspace.tier_name,
+      usedThisMonth: counts.edits.proposedThisMonth,
+      now,
+    }),
+    enquiries: counts.enquiries,
+    edits: { appliedThisMonth: counts.edits.appliedThisMonth },
+    booking: {
+      connected: Boolean(workspace.cal_com_url?.trim()),
+      href: `/dashboard/projects/${workspaceId}/booking`,
+    },
+    store: counts.store,
+    editorHref: `/dashboard/projects/${workspaceId}/editor`,
   });
 
   return (
@@ -119,9 +149,7 @@ export default async function ClientProjectPage({
         </Link>
       </header>
 
-      <section className="rounded-2xl border border-[var(--fs-glass-edge)] bg-[var(--fs-glass-bg)] px-6 py-6 shadow-[var(--fs-card-shadow)] backdrop-blur-xl">
-        <ProjectStateStepper state={state} />
-      </section>
+      <SiteOverview state={state} tiles={tiles} />
 
       {position.length > 0 ? (
         <section
