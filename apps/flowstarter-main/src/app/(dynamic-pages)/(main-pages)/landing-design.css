@@ -252,6 +252,30 @@
   color: var(--ls-ink-faint);
 }
 
+/* Hero only: readable sentence case, stronger contrast, less mono tracking */
+.ls-eyebrow--hero {
+  font-family: var(--ls-sans);
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-transform: none;
+  color: var(--ls-ink-dim);
+  line-height: 1.45;
+  max-width: 22rem;
+}
+.ls-eyebrow--hero .ls-eyebrow-mark {
+  display: inline-block;
+  width: 1.1rem;
+  height: 2px;
+  flex-shrink: 0;
+  border-radius: 1px;
+  background: var(--ls-accent);
+  margin-top: 0.55em;
+}
+.dark .ls-eyebrow--hero {
+  color: color-mix(in oklab, var(--ls-ink) 78%, transparent);
+}
+
 .ls-display {
   font-family: var(--ls-sans);
   font-weight: 400;

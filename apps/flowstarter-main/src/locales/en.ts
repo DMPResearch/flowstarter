@@ -1910,7 +1910,7 @@ const en = {
   'landing.hero.primaryCta': 'Build my site',
   'landing.hero.secondaryCta': 'See the process',
   'landing.hero.eyebrowSerial':
-    'Your dedicated team of agents, supervised by us',
+    'Agents build your site. Our team keeps it true to you.',
   'landing.hero.eyebrowLabel': '',
   'landing.hero.eyebrowTagline': '',
   'landing.hero.guaranteeShort':
