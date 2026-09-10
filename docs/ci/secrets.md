@@ -43,6 +43,7 @@ client sites under `/var/www/sites`. See `deploy/hetzner-staging/README.md`.
 | `STAGING_SSH_USER` | SSH user with permission to run `sudo /opt/flowstarter/staging/*.sh` |
 | `STAGING_SSH_KEY` | Private key (PEM) for that user |
 | `GHCR_TOKEN` | Classic PAT with `write:packages` (fine-grained PATs cannot push to GHCR) |
+| `GHCR_USERNAME` (var) | GitHub login that owns `GHCR_TOKEN` (e.g. `dmihai91`) |
 | `STAGING_URL` (var) | `https://staging.flowstarter.dev` |
 
 Also needed at image build time (already used by other lanes):
