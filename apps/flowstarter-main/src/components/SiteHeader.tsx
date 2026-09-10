@@ -49,10 +49,10 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
     ].join(' ');
   const mobileNavLinkClass = (isActive: boolean) =>
     [
-      'px-3 py-3 text-base rounded-lg transition-colors cursor-pointer',
+      'ls-mobile-link group flex items-baseline gap-3 px-1 py-3.5 transition-colors cursor-pointer border-b border-[var(--ls-rule)] last:border-b-0',
       isActive
-        ? 'font-semibold text-[var(--fs-ink)] dark:text-white bg-gray-100 dark:bg-white/14'
-        : 'font-medium text-gray-700 dark:text-white/82 hover:bg-gray-100 dark:hover:bg-white/10',
+        ? 'text-[var(--ls-ink)]'
+        : 'text-[var(--ls-ink-dim)] hover:text-[var(--ls-ink)]',
     ].join(' ');
 
   if (mode === 'landing') {
@@ -173,66 +173,92 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
 
             <div
               className={`ls-mobile-menu lg:hidden overflow-hidden transition-all duration-[420ms] ease-[cubic-bezier(0.19,1,0.22,1)] ${
-                mobileMenuOpen ? 'max-h-[36rem] pb-5' : 'max-h-0'
+                mobileMenuOpen ? 'ls-mobile-menu--open max-h-[40rem] pb-6' : 'max-h-0'
               }`}
             >
               <nav
                 id="mobile-menu"
                 aria-label="Mobile navigation"
-                className="ls-mobile-nav flex flex-col gap-0.5 pt-4 mt-3 border-t border-[var(--fs-rule)]/50"
+                className="ls-mobile-nav mt-3 border-t border-[var(--ls-rule)] pt-5"
               >
-                <div className="md:hidden flex items-center justify-between px-3 py-2">
-                  <span className="text-base font-medium text-gray-700 dark:text-white/80">
+                <div className="ls-mobile-theme md:hidden mb-5 flex items-center justify-between gap-3 rounded-2xl px-3.5 py-3">
+                  <span className="ls-mobile-theme-label">
                     {tLanding('nav.theme')}
                   </span>
                   <ThemeToggle />
                 </div>
-                <a
-                  href="#process"
-                  onClick={scrollToSection('process', true)}
-                  className={mobileNavLinkClass(activeSection === 'process')}
-                >
-                  {tLanding('nav.process')}
-                </a>
-                <a
-                  href="#editor-showcase"
-                  onClick={scrollToSection('editor-showcase', true)}
-                  className={mobileNavLinkClass(
-                    activeSection === 'editor-showcase'
-                  )}
-                >
-                  {tLanding('nav.smartEditor')}
-                </a>
-                <a
-                  href="#pricing"
-                  onClick={scrollToSection('pricing', true)}
-                  className={mobileNavLinkClass(activeSection === 'pricing')}
-                >
-                  {tLanding('nav.pricing')}
-                </a>
-                <a
-                  href="#faq"
-                  onClick={scrollToSection('faq', true)}
-                  className={mobileNavLinkClass(activeSection === 'faq')}
-                >
-                  {tLanding('nav.faq')}
-                </a>
-                <Link
-                  href="/login"
-                  onClick={() => setMobileMenuOpen(false)}
-                  className="md:hidden mt-6 flex h-11 w-full items-center justify-center rounded-lg border border-[var(--fs-rule-strong)] text-sm font-medium text-[var(--fs-ink)] hover:bg-[var(--fs-glass-bg)] transition-colors"
-                >
-                  {tLanding('nav.signIn')}
-                </Link>
-                <Button
-                  className="mt-4 h-11 w-full rounded-lg px-6 text-sm md:!hidden"
-                  onClick={() => {
-                    setMobileMenuOpen(false);
-                    openBookingModal();
-                  }}
-                >
-                  {tLanding('landing.finalCta.primaryCta')}
-                </Button>
+
+                <div className="ls-mobile-links flex flex-col">
+                  <a
+                    href="#process"
+                    onClick={scrollToSection('process', true)}
+                    className={mobileNavLinkClass(activeSection === 'process')}
+                  >
+                    <span className="ls-mobile-index" aria-hidden="true">
+                      01
+                    </span>
+                    <span className="ls-mobile-link-text">
+                      {tLanding('nav.process')}
+                    </span>
+                  </a>
+                  <a
+                    href="#editor-showcase"
+                    onClick={scrollToSection('editor-showcase', true)}
+                    className={mobileNavLinkClass(
+                      activeSection === 'editor-showcase'
+                    )}
+                  >
+                    <span className="ls-mobile-index" aria-hidden="true">
+                      02
+                    </span>
+                    <span className="ls-mobile-link-text">
+                      {tLanding('nav.smartEditor')}
+                    </span>
+                  </a>
+                  <a
+                    href="#pricing"
+                    onClick={scrollToSection('pricing', true)}
+                    className={mobileNavLinkClass(activeSection === 'pricing')}
+                  >
+                    <span className="ls-mobile-index" aria-hidden="true">
+                      03
+                    </span>
+                    <span className="ls-mobile-link-text">
+                      {tLanding('nav.pricing')}
+                    </span>
+                  </a>
+                  <a
+                    href="#faq"
+                    onClick={scrollToSection('faq', true)}
+                    className={mobileNavLinkClass(activeSection === 'faq')}
+                  >
+                    <span className="ls-mobile-index" aria-hidden="true">
+                      04
+                    </span>
+                    <span className="ls-mobile-link-text">
+                      {tLanding('nav.faq')}
+                    </span>
+                  </a>
+                </div>
+
+                <div className="ls-mobile-actions mt-7 flex flex-col gap-2.5 md:hidden">
+                  <Button
+                    className="ls-cta-hero h-12 w-full rounded-xl px-6 text-[0.98rem]"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      openBookingModal();
+                    }}
+                  >
+                    {tLanding('landing.finalCta.primaryCta')}
+                  </Button>
+                  <Link
+                    href="/login"
+                    onClick={() => setMobileMenuOpen(false)}
+                    className="ls-mobile-signin flex h-11 w-full items-center justify-center rounded-xl text-sm font-semibold transition-colors"
+                  >
+                    {tLanding('nav.signIn')}
+                  </Link>
+                </div>
               </nav>
             </div>
           </div>
