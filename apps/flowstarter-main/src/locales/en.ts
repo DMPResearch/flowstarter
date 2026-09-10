@@ -1902,9 +1902,9 @@ const en = {
   // Storage promise (shared across hero, included, pricing)
 
   // Landing Hero — editorial redesign
-  'landing.hero.displayPrefix': 'Your business already has a brand.',
-  'landing.hero.displayFlourish': 'We turn it into a website.',
-  'landing.hero.proofLine': 'A tailored preview, before you pay.',
+  'landing.hero.displayPrefix': 'Your business already has a brand',
+  'landing.hero.displayFlourish': 'We turn it into a website',
+  'landing.hero.proofLine': 'A tailored preview, before you pay',
   'landing.hero.subhead':
     'Share your details and public profiles. Our agent picks the right starting design and creates a preview shaped around you.',
   'landing.hero.primaryCta': 'Build my site',
@@ -1963,11 +1963,19 @@ const en = {
   // Templates — editorial redesign
 
   // Editor showcase — editorial redesign
-  'landing.editorShowcase.eyebrow': "After launch, it's yours to change",
-  'landing.editorShowcase.headlinePrefix': 'Change it yourself.',
-  'landing.editorShowcase.headlineFlourish': 'Just ask, in plain words.',
+  'landing.editorShowcase.eyebrow': 'Your place after launch',
+  'landing.editorShowcase.headlinePrefix': 'One dashboard',
+  'landing.editorShowcase.headlineFlourish': 'status and the editor',
   'landing.editorShowcase.sub':
-    'Click the exact text you want to improve and ask for the change in plain words. Bigger visual or structural work goes straight to the team caring for your site.',
+    'Follow where your site stands, then open the smart editor from the same screen. Click the text you want to improve and ask in plain words. Bigger visual or structural work goes to the team caring for your site.',
+  'landing.editorShowcase.dashboard.label': 'Your dashboard',
+  'landing.editorShowcase.dashboard.project': 'Your site',
+  'landing.editorShowcase.dashboard.statusLive': 'Live',
+  'landing.editorShowcase.dashboard.phaseLabel': 'Current phase',
+  'landing.editorShowcase.dashboard.phaseValue': 'Launch',
+  'landing.editorShowcase.dashboard.openEditor': 'Open editor',
+  'landing.editorShowcase.dashboard.viewSite': 'View site',
+  'landing.editorShowcase.dashboard.hint': 'Opens the smart editor below',
 
   // Problem — editorial redesign
   'landing.problem.eyebrow': "What you've tried so far",
@@ -1996,10 +2004,10 @@ const en = {
 
   // Differentiation — editorial redesign
   'landing.differentiation.eyebrow': 'Why us',
-  'landing.differentiation.headlinePrefix': 'Your agent team works 24/7.',
-  'landing.differentiation.headlineFlourish': 'Our human team signs off.',
+  'landing.differentiation.headlinePrefix': 'Your agent team works 24/7',
+  'landing.differentiation.headlineFlourish': 'Our human team signs off',
   'landing.team.headlinePrefix': 'A team of specialists,',
-  'landing.team.headlineFlourish': 'and two people who answer for it.',
+  'landing.team.headlineFlourish': 'and two people who answer for it',
   'landing.team.sub':
     'Each agent does one job and hands on. Nothing reaches you until both of us have looked at it.',
   'landing.team.agentsLabel': 'Your agents',
@@ -2011,8 +2019,8 @@ const en = {
 
   // Pricing — editorial redesign
   'landing.pricing.eyebrow': 'Pricing',
-  'landing.pricing.headlinePrefix': 'Pay for progress.',
-  'landing.pricing.headlineFlourish': 'Stay for the care.',
+  'landing.pricing.headlinePrefix': 'Pay for progress',
+  'landing.pricing.headlineFlourish': 'Stay for the care',
 
   // Testimonials — editorial redesign
   'landing.testimonials.eyebrow': 'In their words',
@@ -2048,19 +2056,19 @@ const en = {
 
   // Process — editorial redesign
   'landing.process.eyebrow': 'How it works',
-  'landing.process.headlinePrefix': 'Preview first.',
-  'landing.process.headlineFlourish': 'Commitment second.',
+  'landing.process.headlinePrefix': 'Preview first',
+  'landing.process.headlineFlourish': 'Commitment second',
   'landing.process.sub':
     'You see the direction before the deposit, and the finished site before the final payment.',
 
   // Solution — editorial redesign
   'landing.solution.eyebrow': 'How we work',
-  'landing.solution.headlinePrefix': 'We build it.',
-  'landing.solution.headlineFlourish': 'You keep editing it.',
+  'landing.solution.headlinePrefix': 'We build it',
+  'landing.solution.headlineFlourish': 'You keep editing it',
   'landing.solution.paragraph1':
     'Our agent chooses the strongest starting design for your business, then applies your voice, colors, content and goals. You get a proven starting point shaped around you, not a generic one-click result.',
   'landing.solution.paragraph2':
-    'Then you get the smart editor for small wording changes. New sections, visual work and connected services go to the team already caring for your site.',
+    'Then your dashboard shows site status and opens the smart editor for small wording changes. New sections, visual work and connected services go to the team already caring for your site.',
 
   // Support bot (floating widget on landing)
   'supportBot.openLabel': 'Open support chat',

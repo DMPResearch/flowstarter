@@ -1511,6 +1511,118 @@
   }
 }
 
+/* Compact client-dashboard mock — entry point above the editor demo */
+.ls-dashboard-mock {
+  position: relative;
+  z-index: 2;
+  max-width: 36rem;
+  margin: 0 auto 1.5rem;
+  padding: 1.15rem 1.25rem 1rem;
+  border-radius: 18px;
+  background: var(--ls-glass-bg);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border: 1px solid var(--ls-glass-edge);
+  box-shadow: var(--ls-card-shadow);
+}
+.ls-dashboard-mock-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.9rem;
+}
+.ls-dashboard-mock-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ls-ink-faint);
+}
+.ls-dashboard-mock-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 650;
+  color: color-mix(in oklab, hsl(152 55% 28%) 80%, var(--ls-ink));
+  background: color-mix(in oklab, hsl(152 55% 38%) 12%, transparent);
+  border: 1px solid color-mix(in oklab, hsl(152 55% 38%) 22%, transparent);
+}
+.dark .ls-dashboard-mock-status {
+  color: color-mix(in oklab, hsl(152 55% 62%) 85%, white);
+}
+.ls-dashboard-mock-status i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: hsl(152 55% 38%);
+  box-shadow: 0 0 0 3px color-mix(in oklab, hsl(152 55% 38%) 18%, transparent);
+}
+.ls-dashboard-mock-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.ls-dashboard-mock-project strong {
+  display: block;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ls-ink);
+}
+.ls-dashboard-mock-phase {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--ls-ink-faint);
+}
+.ls-dashboard-mock-phase b {
+  font-weight: 650;
+  color: var(--ls-ink);
+}
+.ls-dashboard-mock-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+.ls-dashboard-mock-cta {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.55rem 0.95rem;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: white;
+  background: linear-gradient(
+    135deg,
+    var(--landing-btn-from, var(--ls-accent)),
+    var(--landing-btn-via, var(--ls-accent))
+  );
+  box-shadow: 0 8px 20px color-mix(in oklab, var(--ls-accent) 22%, transparent);
+}
+.ls-dashboard-mock-link {
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: var(--ls-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.ls-dashboard-mock-hint {
+  margin: 0.85rem 0 0;
+  font-size: 0.72rem;
+  font-weight: 550;
+  letter-spacing: 0.02em;
+  color: var(--ls-ink-faint);
+}
+
 /* The floating editor surface itself */
 .ls-editor-surface {
   position: relative;
