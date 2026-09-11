@@ -109,6 +109,47 @@ brightest and the darkest point it finds, because the glass is thin enough that
 where a tile sits on the field changes how readable it is. It exits non-zero
 below AA.
 
+**Stage steps.** `--fs-stage-1` to `--fs-stage-4`, each with a `-rim` companion.
+Not a tenth tone: four values of the one accent hue (233), for the kanban
+columns on the pipeline and build boards.
+
+A board is a sequence, and position on it already says where a column sits in
+that sequence. Giving each column a tone of its own therefore says nothing new
+and costs a hue, which is how a six-column board ends up a rainbow. So a
+column that is nothing but progress takes a step instead: step 1 for the
+board's first progress column, the deepest step for its last, the ladder
+running light to dark left to right with saturation climbing alongside the
+darkness. In dark mode the ladder climbs in lightness rather than falling,
+because on a dark panel the brighter ink is the louder one.
+
+| | light | dark |
+| --- | --- | --- |
+| `--fs-stage-1` | `hsl(233, 32%, 48%)` | `hsl(233, 22%, 66%)` |
+| `--fs-stage-2` | `hsl(233, 48%, 42%)` | `hsl(233, 40%, 73%)` |
+| `--fs-stage-3` | `hsl(233, 66%, 35%)` | `hsl(233, 66%, 79%)` |
+| `--fs-stage-4` | `hsl(233, 84%, 28%)` | `hsl(233, 96%, 86%)` |
+
+The ink goes on the column header and its count pill; the `-rim` goes on the
+2px rule along the top of the column panel, and is set brighter than the ink
+it belongs to because a 2px line has to be visible, not readable. The count
+pill keeps one fill and one rim (`--fs-tone-accent-soft` and `-edge`) across
+every stage column, so a row of pills reads as one shape at four weights
+rather than four pills. The column body is left as the panel's own fill: four
+alphas of one hue behind four columns say nothing the rules above them have
+not already said.
+
+Three columns on a board are genuinely a different kind of state, and they are
+the only ones allowed a second hue — `warn` for a column that will not move
+without an operator, `ok` for the finished one, `danger` for a broken one. A
+column takes `--fs-tone-danger-emphasis` across its body when something inside
+it is broken, whatever its own colour, and keeps its own rule and ink
+underneath: a stuck card does not move the column's place in the sequence.
+
+`check-tone-contrast.mjs` checks the four inks alongside the tones, on the
+panel glass — thinner than the tile glass, so the harder backdrop — with and
+without the accent whisper behind them. The rims are not checked; a rule is a
+graphic line, not text.
+
 `node scripts/check-ink-contrast.mjs` is its companion, for the other half of
 the problem: the marketing pages put plain body and heading copy straight onto
 the backdrop with no tile under it. It checks the `--ls-*` inks in landing.css

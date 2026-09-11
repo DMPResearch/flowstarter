@@ -40,8 +40,15 @@ export const STATE_LABEL: Record<ProjectState, string> = {
 /** One chip shape for the whole board; a tone only supplies colour. */
 const NEUTRAL_TONE: Tone = 'neutral';
 
+/**
+ * A queued job reads `neutral` — "not switched on yet" is the tone's own
+ * meaning, and it was the last thing on this board still spending `info` on a
+ * state the four hues the columns use already cover. `running` is `accent`,
+ * the same indigo the progress columns step through, so a card in flight and
+ * the column it is in agree.
+ */
 const JOB_TONE: Record<string, Tone> = {
-  queued: 'info',
+  queued: 'neutral',
   running: 'accent',
   succeeded: 'ok',
   failed: 'danger',
@@ -53,7 +60,14 @@ const DEPOSIT_TONE: Record<string, Tone> = {
   refunded: 'warn',
 };
 
-const STALLED_TONE: Tone = 'warn';
+/**
+ * A stall is a thing that has gone wrong, not a thing on a to-do list, and it
+ * is the one thing on this board allowed to be loud. It reads `danger`
+ * everywhere it appears — the count pill in the header, the card's left rule
+ * and its icon, the reasons under it — so the alarm is one colour rather than
+ * amber in three places and red in a fourth.
+ */
+const STALLED_TONE: Tone = 'danger';
 
 /** The build-board column a job is in, by name. This board has no phase data, so a running job reads as its first stage. */
 function buildStageLabel(status: string): string {
@@ -84,12 +98,20 @@ function money(minor: number, currency: string): string {
   }
 }
 
+/**
+ * One pill shape for the whole board. A tone supplies the three colours, or
+ * the caller hands them in directly — which is what a column header does,
+ * because a stage step's ink comes from the accent ladder rather than from a
+ * tone's own token.
+ */
 function Pill({
   tone,
+  style,
   mono = false,
   children,
 }: {
-  tone: Tone;
+  tone?: Tone;
+  style?: React.CSSProperties;
   /** Counts read better as tabular figures; prose never does. */
   mono?: boolean;
   children: React.ReactNode;
@@ -99,11 +121,13 @@ function Pill({
       className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium leading-5 ${
         mono ? 'font-mono tracking-[0.04em]' : ''
       }`}
-      style={{
-        background: `var(--fs-tone-${tone}-soft)`,
-        color: `var(--fs-tone-${tone})`,
-        boxShadow: `inset 0 0 0 1px var(--fs-tone-${tone}-edge)`,
-      }}
+      style={
+        style ?? {
+          background: `var(--fs-tone-${tone}-soft)`,
+          color: `var(--fs-tone-${tone})`,
+          boxShadow: `inset 0 0 0 1px var(--fs-tone-${tone}-edge)`,
+        }
+      }
     >
       {children}
     </span>
@@ -136,9 +160,14 @@ export function PipelineCard({ card }: { card: PipelineCardData }) {
       href={`/admin/dashboard/projects/${card.workspaceId}`}
       variant="card"
       interactive
-      className={`block p-3 ${
-        card.stalled ? 'border-l-2 border-l-amber-500' : ''
-      }`}
+      className="block p-3"
+      // The left rule, from the tone token rather than a Tailwind palette, so
+      // it is the same red the column wash and the reasons below already use.
+      style={
+        card.stalled
+          ? { borderLeft: `2px solid var(--fs-tone-${STALLED_TONE})` }
+          : undefined
+      }
     >
       <div className="flex items-start justify-between gap-2">
         {/* Two lines, not one truncated to an ellipsis: "Riverside
@@ -150,7 +179,8 @@ export function PipelineCard({ card }: { card: PipelineCardData }) {
         </span>
         {card.stalled && (
           <AlertTriangle
-            className="h-3.5 w-3.5 shrink-0 text-amber-500"
+            className="h-3.5 w-3.5 shrink-0"
+            style={{ color: `var(--fs-tone-${STALLED_TONE})` }}
             aria-label="Needs attention"
           />
         )}
@@ -182,15 +212,15 @@ export function PipelineCard({ card }: { card: PipelineCardData }) {
         <ul
           className="mt-2.5 space-y-1 rounded-lg px-2.5 py-2"
           style={{
-            background: 'var(--fs-tone-warn-soft)',
-            boxShadow: 'inset 0 0 0 1px var(--fs-tone-warn-edge)',
+            background: `var(--fs-tone-${STALLED_TONE}-soft)`,
+            boxShadow: `inset 0 0 0 1px var(--fs-tone-${STALLED_TONE}-edge)`,
           }}
         >
           {card.stallReasons.map((reason) => (
             <li
               key={reason}
               className="fs-tone-text text-[11px] leading-snug"
-              data-tone="warn"
+              data-tone={STALLED_TONE}
             >
               {reason}
             </li>
@@ -202,11 +232,15 @@ export function PipelineCard({ card }: { card: PipelineCardData }) {
 }
 
 /**
- * One column of the pipeline board: a `ProjectState`'s worth of cards, in a
- * panel toned to that state (see `PROJECT_STATE_TONE`). The header label and
- * the count pill carry the tone, a 3px rule tops the panel, and a whisper
- * wash sits behind the cards — stronger, so the eye lands on it, when the
- * column currently holds a stalled card.
+ * One column of the pipeline board: a `ProjectState`'s worth of cards in a
+ * plain glass panel.
+ *
+ * The state's place in the sequence is the only thing colour says here (see
+ * `PROJECT_STATE_TONE`): a 2px rule along the top and the header label, both
+ * stepping through the accent ladder, with the count pill following the
+ * header's ink. The body is left as the panel's own fill, and it fills with
+ * red for one reason only — the column is holding a stalled card, and that is
+ * the one thing on this board worth shouting about.
  */
 export function PipelineBoardColumn({
   state,
@@ -220,7 +254,7 @@ export function PipelineBoardColumn({
   emptyLabel?: string;
 }) {
   const tone = projectStateTone(state);
-  const { rule, wash } = columnToneStyle(tone, stalledCount > 0);
+  const { rule, wash, ink, chip } = columnToneStyle(tone, stalledCount > 0);
 
   return (
     <GlassSurface
@@ -230,22 +264,27 @@ export function PipelineBoardColumn({
     >
       <span
         aria-hidden
-        className="absolute inset-x-0 top-0 h-[3px]"
+        className="absolute inset-x-0 top-0 h-[2px]"
         style={rule}
       />
 
-      <header className="mb-3 flex items-center justify-between gap-2 border-b border-[var(--ls-rule)] pb-2.5">
+      {/* One header shape for all six columns: the same size, weight and
+          tracking whatever the column's colour, and the count pushed to the
+          right edge by `justify-between`. The `min-h` is two lines of the
+          title, so "Agents working" wrapping does not drop that one column's
+          divider below its neighbours' and leave the row of rules ragged. */}
+      <header className="mb-3 flex min-h-[2rem] items-center justify-between gap-2 border-b border-[var(--ls-rule)] pb-2.5">
         <h2
-          className="fs-tone-text text-xs font-semibold uppercase tracking-wide"
-          data-tone={tone}
+          className="text-xs font-semibold uppercase tracking-[0.08em]"
+          style={ink}
         >
           {STATE_LABEL[state]}
         </h2>
-        <span className="flex items-center gap-1.5">
+        <span className="flex shrink-0 items-center gap-1.5">
           {stalledCount > 0 && (
             <Pill tone={STALLED_TONE}>{stalledCount} stalled</Pill>
           )}
-          <Pill mono tone={tone}>
+          <Pill mono style={chip}>
             {cards.length}
           </Pill>
         </span>

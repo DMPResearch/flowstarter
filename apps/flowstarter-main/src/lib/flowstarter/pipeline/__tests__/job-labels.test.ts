@@ -18,6 +18,7 @@ import {
   errorCodeLabel,
   eventKindLabel,
   eventSummary,
+  isStageStep,
   jobKindLabel,
   jobStatusLabel,
   phaseLabel,
@@ -331,12 +332,29 @@ describe('BOARD_COLUMN_TONE', () => {
     }
   });
 
-  it('reserves danger for the column a failed or cancelled job lands in', () => {
-    expect(BOARD_COLUMN_TONE.attention).toBe('danger');
+  it('steps the three progress columns through one hue, in board order', () => {
+    // Waiting, building and publishing are progress and nothing else, so they
+    // take the first three steps of the one accent ladder in that order —
+    // never a hue each, which is what made the board read as a colour chart.
+    expect(BOARD_COLUMN_TONE.waiting).toBe('stage-1');
+    expect(BOARD_COLUMN_TONE.building).toBe('stage-2');
+    expect(BOARD_COLUMN_TONE.publishing).toBe('stage-3');
+    for (const id of ['waiting', 'building', 'publishing'] as const) {
+      expect(isStageStep(BOARD_COLUMN_TONE[id])).toBe(true);
+    }
   });
 
-  it('reads waiting as neutral — nothing has been picked up yet', () => {
-    expect(BOARD_COLUMN_TONE.waiting).toBe('neutral');
+  it('spends a second hue only on the three columns that are not progress', () => {
+    // Checking does not move without an operator, done is finished, attention
+    // is broken. Nothing else on either board is allowed a hue of its own.
+    expect(BOARD_COLUMN_TONE.checking).toBe('warn');
+    expect(BOARD_COLUMN_TONE.done).toBe('ok');
+    expect(BOARD_COLUMN_TONE.attention).toBe('danger');
+
+    const semantic = BOARD_COLUMNS.map((c) => BOARD_COLUMN_TONE[c.id]).filter(
+      (tone) => !isStageStep(tone)
+    );
+    expect(semantic).toEqual(['warn', 'ok', 'danger']);
   });
 
   it('columnTone reads the same table', () => {
@@ -346,24 +364,62 @@ describe('BOARD_COLUMN_TONE', () => {
 });
 
 describe('columnToneStyle', () => {
-  it('rules the panel top in the plain tone', () => {
-    expect(columnToneStyle('accent').rule).toEqual({
-      background: 'var(--fs-tone-accent)',
+  it('rules and inks a stage column from the accent ladder', () => {
+    const { rule, ink } = columnToneStyle('stage-2');
+    expect(rule).toEqual({ background: 'var(--fs-stage-2-rim)' });
+    expect(ink).toEqual({ color: 'var(--fs-stage-2)' });
+  });
+
+  it('steps the rule and the ink together, so the ladder cannot drift', () => {
+    for (const step of ['stage-1', 'stage-2', 'stage-3', 'stage-4'] as const) {
+      const { rule, ink } = columnToneStyle(step);
+      expect(rule.background).toBe(`var(--fs-${step}-rim)`);
+      expect(ink.color).toBe(`var(--fs-${step})`);
+    }
+  });
+
+  it('gives every stage column the same pill fill and rim, only the ink steps', () => {
+    const one = columnToneStyle('stage-1').chip;
+    const four = columnToneStyle('stage-4').chip;
+    expect(one.background).toBe('var(--fs-tone-accent-soft)');
+    expect(four.background).toBe(one.background);
+    expect(four.boxShadow).toBe(one.boxShadow);
+    expect(four.color).not.toBe(one.color);
+  });
+
+  it('rules, inks and pills a semantic column from its own tone', () => {
+    expect(columnToneStyle('warn')).toMatchObject({
+      rule: { background: 'var(--fs-tone-warn)' },
+      ink: { color: 'var(--fs-tone-warn)' },
+      chip: {
+        background: 'var(--fs-tone-warn-soft)',
+        color: 'var(--fs-tone-warn)',
+        boxShadow: 'inset 0 0 0 1px var(--fs-tone-warn-edge)',
+      },
     });
   });
 
-  it('washes the body in the same -soft alpha a quiet stat tile wears', () => {
-    expect(columnToneStyle('accent').wash).toEqual({
-      background:
-        'linear-gradient(to bottom, var(--fs-tone-accent-soft), transparent)',
-    });
+  it('leaves the body as the panel fill, so the rules carry the sequence', () => {
+    for (const tone of ['stage-1', 'stage-4', 'warn', 'ok'] as const) {
+      expect(columnToneStyle(tone).wash).toEqual({ background: 'transparent' });
+    }
   });
 
-  it('swaps in the emphasis wash for a stalled or failed column', () => {
+  it('fills a flagged column with danger, whatever colour the column is', () => {
+    // Emphasis means one thing on both boards — something in here is broken —
+    // so it is the same red under a stage column as under the danger one.
+    const danger =
+      'linear-gradient(to bottom, var(--fs-tone-danger-emphasis), transparent)';
     expect(columnToneStyle('danger', true).wash).toEqual({
-      background:
-        'linear-gradient(to bottom, var(--fs-tone-danger-emphasis), transparent)',
+      background: danger,
     });
+    expect(columnToneStyle('stage-4', true).wash).toEqual({
+      background: danger,
+    });
+    // and the flag does not move the column's place in the sequence.
+    expect(columnToneStyle('stage-4', true).rule).toEqual(
+      columnToneStyle('stage-4').rule
+    );
   });
 });
 

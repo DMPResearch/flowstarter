@@ -6,6 +6,7 @@ import {
   PROJECT_STATE_TONE,
   projectStateTone,
 } from '../dashboard.constants';
+import { isStageStep } from '@/lib/flowstarter/pipeline/job-labels';
 
 describe('stageTone', () => {
   it('reads intake as neutral, before anything has started', () => {
@@ -62,18 +63,38 @@ describe('PROJECT_STATE_TONE', () => {
       ProjectState.LIVE_SUBSCRIPTION,
     ]);
     expect(Object.values(PROJECT_STATE_TONE)).toEqual([
-      'accent',
-      'info',
-      'violet',
-      'teal',
+      'stage-1',
+      'stage-2',
+      'stage-3',
+      'stage-4',
       'warn',
       'ok',
     ]);
   });
 
-  it('reserves ok for live and warn for the state an operator has to act on', () => {
+  it('steps the four progress states through one hue, in order', () => {
+    // The whole point of the table: four columns that are nothing but
+    // progress must not each pick a hue of their own, and the steps must not
+    // be shuffled, or the ramp stops reading as a ramp.
+    const progress = [
+      ProjectState.INTAKE,
+      ProjectState.PREVIEW_READY,
+      ProjectState.DEPOSIT_PAID,
+      ProjectState.AGENTS_WORKING,
+    ].map(projectStateTone);
+
+    expect(progress).toEqual(['stage-1', 'stage-2', 'stage-3', 'stage-4']);
+    for (const tone of progress) expect(isStageStep(tone)).toBe(true);
+  });
+
+  it('spends a second hue only on the two states that are not progress', () => {
     expect(projectStateTone(ProjectState.LIVE_SUBSCRIPTION)).toBe('ok');
     expect(projectStateTone(ProjectState.HUMAN_QA)).toBe('warn');
+
+    const semantic = Object.values(PROJECT_STATE_TONE).filter(
+      (tone) => !isStageStep(tone)
+    );
+    expect(semantic).toEqual(['warn', 'ok']);
   });
 
   it('reads the same table projectStateTone does', () => {
