@@ -61,6 +61,11 @@ import {
   TEASER_IN_PAID_BUILD,
 } from './teaser-rule';
 import { applyIntegrationsToWorkspace } from '../integrations';
+import {
+  isClientEditablePath,
+  phrasesFromFiles,
+  usablePhrases,
+} from './preview-manifest';
 
 export interface SiteValidator {
   /** Trusted, operator-defined formatter/check/build commands run outside Pi. */
@@ -984,7 +989,9 @@ export function findPlaceholderCopyIssue(
   const findings = findPlaceholderCopyInFiles(scanned, {
     hasBookingLink: options.hasBookingLink ?? false,
   });
-  return findings.length > 0 ? describePlaceholderFindings(findings) : undefined;
+  return findings.length > 0
+    ? describePlaceholderFindings(findings)
+    : undefined;
 }
 
 /** Where a template keeps the copy the agent is meant to rewrite. */
@@ -1599,6 +1606,81 @@ export function carriedApprovedEditsSummary(intent: PreviewIntent): string {
   );
 }
 
+/** How many phrases a re-derivation will read out of the approved preview. */
+export const APPROVED_EDITS_PHRASE_LIMIT = 8;
+
+/**
+ * An approved edit with the evidence a build can actually be held to.
+ *
+ * `source` says where the phrases came from, and it is on the type because the
+ * operator's board is told: a build whose evidence was re-derived is a build
+ * seeded from a preview claimed before the phrase rules were fixed, and that
+ * is worth a line in the conversation rather than a silent substitution.
+ */
+export interface ResolvedApprovedEdit {
+  edit: ApprovedPreviewEdit;
+  source: 'stored' | 'rederived' | 'none';
+  note?: string;
+}
+
+/**
+ * The evidence for one approved edit, in three falling steps.
+ *
+ * 1. The phrases the preview's edit runner stored, minus anything that is not
+ *    prose. On a preview captured today that is all of them.
+ * 2. Failing that, the prose in the files the edit is recorded as having
+ *    changed, read out of the approved manifest the build was seeded from,
+ *    content files first. Workspace `c009105e` was claimed on 2026-09-11 with
+ *    eight lines of Astro dev-server state as its evidence; this is what lets
+ *    it build without anybody hand-editing the row it stored.
+ * 3. Failing that, nothing. An edit with nothing checkable behind it is not a
+ *    reason to fail a build somebody paid for. It is a reason to say so.
+ */
+export function resolveApprovedEdit(
+  approvedFiles: readonly TemplateScaffoldFile[],
+  edit: ApprovedPreviewEdit,
+): ResolvedApprovedEdit {
+  const stored = usablePhrases(edit.addedPhrases);
+  if (stored.length > 0) {
+    return { edit: { ...edit, addedPhrases: stored }, source: 'stored' };
+  }
+  const paths = edit.changedPaths.filter((path) => isClientEditablePath(path));
+  const rederived =
+    paths.length > 0
+      ? phrasesFromFiles(approvedFiles, {
+          paths,
+          limit: APPROVED_EDITS_PHRASE_LIMIT,
+        })
+      : [];
+  if (rederived.length > 0) {
+    return {
+      edit: { ...edit, addedPhrases: rederived },
+      source: 'rederived',
+      note:
+        `Change #${edit.index} stored no text this build can be checked ` +
+        `against, so ${rederived.length} phrase` +
+        `${rederived.length === 1 ? ' was' : 's were'} re-read from the ` +
+        `approved preview (${paths.join(', ')}). The check stands.`,
+    };
+  }
+  return {
+    edit: { ...edit, addedPhrases: [] },
+    source: 'none',
+    note:
+      `Change #${edit.index} has no text this build can be checked against, ` +
+      "so the approved-change check passes it. The client's instruction is " +
+      'still in the brief the agents were given.',
+  };
+}
+
+/** Every carried edit, resolved. Order is the order the client made them. */
+export function resolveApprovedEdits(
+  approvedFiles: readonly TemplateScaffoldFile[],
+  edits: readonly ApprovedPreviewEdit[],
+): ResolvedApprovedEdit[] {
+  return edits.map((edit) => resolveApprovedEdit(approvedFiles, edit));
+}
+
 /** One approved change the built site no longer contains. */
 export interface DroppedApprovedEdit {
   index: number;
@@ -1617,9 +1699,12 @@ export interface DroppedApprovedEdit {
  * all, so the repair brief and the operator's error both name the specific
  * words that went missing.
  *
- * An edit with no captured phrases is never reported: there is nothing to
- * check it against, and a check that cannot be evaluated must not fail a build
- * somebody paid for.
+ * An edit with no usable phrases is never reported: there is nothing to check
+ * it against, and a check that cannot be evaluated must not fail a build
+ * somebody paid for. "Usable" is the same rule the preview derives phrases
+ * under, applied again here, because a preview claimed before that rule
+ * existed can still put a dev server's process id on a job payload and no
+ * site will ever contain one.
  */
 export function findDroppedApprovedEdits(
   files: ReadonlyArray<{ path: string; content: string }>,
@@ -1630,12 +1715,13 @@ export function findDroppedApprovedEdits(
     .join('\n');
   const dropped: DroppedApprovedEdit[] = [];
   for (const edit of edits) {
-    if (edit.addedPhrases.length === 0) continue;
-    const missing = edit.addedPhrases.filter((phrase) => {
+    const checkable = usablePhrases(edit.addedPhrases);
+    if (checkable.length === 0) continue;
+    const missing = checkable.filter((phrase) => {
       const needle = normalizeApprovedPhrase(phrase);
       return needle.length > 0 && !haystack.includes(needle);
     });
-    if (missing.length > 0 && missing.length === edit.addedPhrases.length) {
+    if (missing.length > 0 && missing.length === checkable.length) {
       dropped.push({
         index: edit.index,
         instruction: edit.instruction,
@@ -1984,15 +2070,28 @@ export class FullSiteBuildWorker {
       // board: the operator watching this build should be able to read what
       // was promised without opening the preview, and a build that later drops
       // one of them fails against a line that is already in the conversation.
-      const approvedEdits = job.previewIntent?.edits ?? [];
+      const carriedEdits = job.previewIntent?.edits ?? [];
       if (job.previewIntent) {
         await say('log', carriedApprovedEditsSummary(job.previewIntent), {
           previewId: job.previewIntent.previewId,
           manifestRef: job.previewIntent.manifest.ref,
-          carriedEdits: approvedEdits.length,
-          instructions: approvedEdits.map((edit) => edit.instruction),
+          carriedEdits: carriedEdits.length,
+          instructions: carriedEdits.map((edit) => edit.instruction),
         });
       }
+      // What the client approved, and the text this build can honestly be
+      // held to. The two are not the same thing for any preview claimed
+      // before the phrase rules were fixed, and the difference is said out
+      // loud on the board rather than swallowed.
+      const resolved = resolveApprovedEdits(approvedFiles.files, carriedEdits);
+      for (const entry of resolved) {
+        if (!entry.note) continue;
+        await say('log', entry.note, {
+          editIndex: entry.edit.index,
+          phraseSource: entry.source,
+        });
+      }
+      const approvedEdits = resolved.map((entry) => entry.edit);
       // Preview artifacts carry a blurred Cal demo only. Wire the live tenant
       // embed here, before the agent expands the site, so the full build has
       // a real calendar and the agent does not invent one.
@@ -2091,7 +2190,7 @@ export class FullSiteBuildWorker {
       // than for the compiler: the site builds, but does it still say what
       // they were shown before they paid? One bounded repair pass, then the
       // job fails rather than handing QA a site that quietly lost a change.
-      if (approvedEdits.length > 0) {
+      if (approvedEdits.some((edit) => edit.addedPhrases.length > 0)) {
         await phase("Checking the client's approved changes survived");
         let dropped = findDroppedApprovedEdits(
           await collectBuiltSiteText(siteRoot),
@@ -2141,7 +2240,10 @@ export class FullSiteBuildWorker {
       let pageIssue = findPageBudgetIssue(await builtPaths(), pageSet);
       if (pageIssue) {
         await say('log', pageIssue);
-        await pass('Cutting the site back to the brief', withApproved(pageIssue));
+        await pass(
+          'Cutting the site back to the brief',
+          withApproved(pageIssue),
+        );
         await check();
         pageIssue = findPageBudgetIssue(await builtPaths(), pageSet);
       }

@@ -10,6 +10,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   ProjectState,
+  isPreviewToolingPath,
   normalizeCalLink,
   type BrandConfig,
   type BusinessIntakePayload,
@@ -88,7 +89,8 @@ export function parseApprovedPreviewFiles(
       'preview_manifest.files must hold the approved preview file set',
     );
   }
-  return files.map((entry, index) => {
+  const seeded: TemplateScaffoldFile[] = [];
+  files.forEach((entry, index) => {
     const file = asRecord(entry, `preview_manifest.files[${index}]`);
     const path = file['path'];
     const content = file['content'];
@@ -112,13 +114,26 @@ export function parseApprovedPreviewFiles(
         `preview_manifest.files[${index}].encoding must be 'base64' when present`,
       );
     }
-    return {
+    // Tooling and build state is skipped rather than rejected. Manifests
+    // captured before the app stopped writing them still carry `.astro/`,
+    // `node_modules/` and lockfiles, and materializing a dev server's scratch
+    // directory into a build worktree is how a paid build ends up being
+    // checked against a process id. A skipped file is never a reason to fail
+    // a build somebody paid for.
+    if (isPreviewToolingPath(path)) return;
+    seeded.push({
       path,
       content,
       ...(encoding === 'base64' ? { encoding } : {}),
       type: 'file',
-    } satisfies TemplateScaffoldFile;
+    } satisfies TemplateScaffoldFile);
   });
+  if (seeded.length === 0) {
+    throw new JobArtifactError(
+      'preview_manifest.files held no site files once tooling state was skipped',
+    );
+  }
+  return seeded;
 }
 
 /** Longest instruction/phrase the worker will carry out of an untrusted payload. */

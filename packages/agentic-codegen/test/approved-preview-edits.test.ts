@@ -22,6 +22,8 @@ import {
   collectSiteTextFiles,
   droppedApprovedEditsFeedback,
   findDroppedApprovedEdits,
+  resolveApprovedEdit,
+  resolveApprovedEdits,
   FULL_SITE_CODING_SYSTEM_PROMPT,
   FullSiteBuildWorker,
   normalizeApprovedPhrase,
@@ -36,7 +38,26 @@ import {
   type PullRequestPublisher,
   type SafeGitWorktreeManager,
   type SiteValidator,
+  type TemplateScaffoldFile,
 } from '../src/index';
+
+/**
+ * The eight phrases workspace `c009105e-f8ec-42bf-bdcf-cf92bb500f45` stored as
+ * the evidence for its first free change, verbatim from
+ * `funnel_previews.manifest.appliedEdits[0].addedPhrases`. Every one of them
+ * is a line of an Astro dev server's `dev.json`, and on 2026-09-12 they failed
+ * a paid build whose home page carried the client's headline.
+ */
+const DEV_SERVER_PHRASES = [
+  '"pid": 97132,',
+  '"port": 56092,',
+  '"url": "http://localhost:56092",',
+  '"network": [',
+  '"http://192.168.3.188:56092/"',
+  '"networkInterfaceNames": [',
+  '"background": false,',
+  'startedAt": "2026-09-11T21:51:12.985Z',
+];
 
 const temporaryDirectories: string[] = [];
 
@@ -357,6 +378,8 @@ async function harness(options: {
   previewIntent?: PreviewIntent | null;
   /** What the agent leaves behind on each pass, in order. */
   agentWrites: string[];
+  /** The approved manifest the build seeds from. */
+  approvedPreviewFiles?: TemplateScaffoldFile[];
 }): Promise<Harness> {
   const worktreeRoot = await deepTempDir('fs-approved-worker');
   temporaryDirectories.push(worktreeRoot);
@@ -374,7 +397,7 @@ async function harness(options: {
       projectState: ProjectState.DEPOSIT_PAID,
       intake: validIntake(),
       brandConfig: validBrandConfig(),
-      approvedPreviewFiles: [
+      approvedPreviewFiles: options.approvedPreviewFiles ?? [
         {
           path: 'src/content/site-labels.md',
           content: `heroHeadline: "${HEADLINE}"\n`,
@@ -561,6 +584,85 @@ describe('FullSiteBuildWorker and the approved preview', () => {
     expect(built.feedbacks[1]).toContain('APPROVED PREVIEW CHANGES, trusted');
   });
 
+  it('passes a build whose stored evidence is a dev server, and says so', async () => {
+    // `c009105e` as it is on disk today: eight lines of dev-server state, and
+    // a manifest with no `src/content/site-labels.md` to re-read from either.
+    const built = await harness({
+      previewIntent: intent([
+        headlineEdit({
+          addedPhrases: DEV_SERVER_PHRASES,
+          changedPaths: ['.astro/dev.json', '.astro/settings.json'],
+        }),
+      ]),
+      approvedPreviewFiles: [
+        { path: 'package.json', content: '{"name":"site"}', type: 'file' },
+      ],
+      agentWrites: ['<h1>Whatever the agents decided</h1>'],
+    });
+    await built.run();
+
+    expect(built.failures).toEqual([]);
+    expect(built.handedToQa).toBe(true);
+    const note = built.events.find((event) =>
+      event.body.includes('no text this build can be checked against'),
+    );
+    expect(note?.kind).toBe('log');
+    expect(note?.payload?.['phraseSource']).toBe('none');
+    // The gate did not even run: there was nothing to run it on.
+    expect(
+      built.events.some((event) =>
+        event.body.includes("Checking the client's approved changes survived"),
+      ),
+    ).toBe(false);
+    // And the agent was never told to paste a process id onto a website.
+    expect(built.feedbacks[0] ?? '').not.toContain('"pid": 97132,');
+  });
+
+  it('re-reads the evidence out of the approved preview when the stored phrases are junk', async () => {
+    const built = await harness({
+      previewIntent: intent([
+        headlineEdit({
+          addedPhrases: DEV_SERVER_PHRASES,
+          changedPaths: [
+            '.astro/dev.json',
+            '.astro/settings.json',
+            'src/content/site-labels.md',
+          ],
+        }),
+      ]),
+      agentWrites: ['<h1>Websites for service businesses, built by AI.</h1>'],
+    });
+
+    // Re-derived from `src/content/site-labels.md` in the manifest, which is
+    // where the client's sentence actually lives, so the gate is real again.
+    await expect(built.run()).rejects.toThrow(/missing 1 change the client/);
+    expect(built.failures[0]?.code).toBe(APPROVED_EDIT_DROPPED);
+    expect(built.failures[0]?.detail).toContain(HEADLINE);
+    expect(built.failures[0]?.detail).not.toContain('"pid"');
+
+    const note = built.events.find((event) =>
+      event.body.includes('re-read from the approved preview'),
+    );
+    expect(note?.payload?.['phraseSource']).toBe('rederived');
+  });
+
+  it('re-derived evidence lets the same workspace build when the headline survived', async () => {
+    const built = await harness({
+      previewIntent: intent([
+        headlineEdit({
+          addedPhrases: DEV_SERVER_PHRASES,
+          changedPaths: ['.astro/dev.json', 'src/content/site-labels.md'],
+        }),
+      ]),
+      agentWrites: [`<h1>${HEADLINE}</h1>`],
+    });
+    await built.run();
+
+    expect(built.failures).toEqual([]);
+    expect(built.handedToQa).toBe(true);
+    expect(built.feedbacks[0]).toContain(HEADLINE);
+  });
+
   it('seeds the worktree from the approved manifest, which is where the edits live', async () => {
     const built = await harness({
       previewIntent: intent([headlineEdit()]),
@@ -613,3 +715,97 @@ function validBrandConfig(): BrandConfig {
     contrastAudit: [],
   } as unknown as BrandConfig;
 }
+
+describe('resolveApprovedEdit', () => {
+  const manifest: TemplateScaffoldFile[] = [
+    {
+      path: '.astro/dev.json',
+      content: '{\n  "pid": 97132,\n  "port": 56092\n}',
+      type: 'file',
+    },
+    {
+      path: 'src/content/site-labels.md',
+      content: `hero:\n  title: "${HEADLINE}"\n`,
+      type: 'file',
+    },
+  ];
+
+  it('keeps stored phrases when they are prose', () => {
+    const resolved = resolveApprovedEdit(manifest, headlineEdit());
+    expect(resolved.source).toBe('stored');
+    expect(resolved.edit.addedPhrases).toEqual([HEADLINE]);
+    expect(resolved.note).toBeUndefined();
+  });
+
+  it('drops the unusable half of a mixed list rather than the whole edit', () => {
+    const resolved = resolveApprovedEdit(
+      manifest,
+      headlineEdit({ addedPhrases: [...DEV_SERVER_PHRASES, HEADLINE] }),
+    );
+    expect(resolved.source).toBe('stored');
+    expect(resolved.edit.addedPhrases).toEqual([HEADLINE]);
+  });
+
+  it('re-derives from the changed content file when everything stored is junk', () => {
+    const resolved = resolveApprovedEdit(
+      manifest,
+      headlineEdit({
+        addedPhrases: DEV_SERVER_PHRASES,
+        changedPaths: ['.astro/dev.json', 'src/content/site-labels.md'],
+      }),
+    );
+    expect(resolved.source).toBe('rederived');
+    expect(resolved.edit.addedPhrases).toEqual([HEADLINE]);
+    expect(resolved.note).toContain('src/content/site-labels.md');
+  });
+
+  it('gives up rather than inventing evidence, and says why', () => {
+    const resolved = resolveApprovedEdit(
+      manifest,
+      headlineEdit({
+        addedPhrases: DEV_SERVER_PHRASES,
+        changedPaths: ['.astro/dev.json'],
+      }),
+    );
+    expect(resolved.source).toBe('none');
+    expect(resolved.edit.addedPhrases).toEqual([]);
+    expect(resolved.note).toContain(
+      'no text this build can be checked against',
+    );
+  });
+
+  it('resolves the whole carried list in the order the client made them', () => {
+    const resolved = resolveApprovedEdits(manifest, [
+      headlineEdit(),
+      handleEdit(),
+    ]);
+    expect(resolved.map((entry) => entry.edit.index)).toEqual([1, 2]);
+    expect(resolved.map((entry) => entry.source)).toEqual(['stored', 'stored']);
+  });
+});
+
+describe('findDroppedApprovedEdits and unusable evidence', () => {
+  it('never reports an edit whose only phrases are dev server state', () => {
+    expect(
+      findDroppedApprovedEdits(
+        [{ path: 'dist/index.html', content: '<h1>anything</h1>' }],
+        [headlineEdit({ addedPhrases: DEV_SERVER_PHRASES })],
+      ),
+    ).toEqual([]);
+  });
+
+  it('still reports an edit whose prose is genuinely gone', () => {
+    expect(
+      findDroppedApprovedEdits(
+        [{ path: 'dist/index.html', content: '<h1>anything</h1>' }],
+        [headlineEdit({ addedPhrases: [...DEV_SERVER_PHRASES, HEADLINE] })],
+      ),
+    ).toEqual([
+      {
+        index: 1,
+        instruction: `Make the hero headline say ${HEADLINE}`,
+        missingPhrases: [HEADLINE],
+      },
+    ]);
+  });
+});

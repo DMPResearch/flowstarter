@@ -47,6 +47,9 @@ export type ClientNotification =
   | 'deposit_paid'
   | 'balance_invoice'
   | 'site_live'
+  // Keys on the build job's id, so a client hears once per stopped build and
+  // a retry that stops again is a new thing worth saying.
+  | 'build_failed'
   // Keys on the Cal.com booking uid, so a client hears about each booking
   // once and a redelivered webhook is silent.
   | 'booking_created';

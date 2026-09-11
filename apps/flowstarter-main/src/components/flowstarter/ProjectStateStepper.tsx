@@ -17,16 +17,20 @@ import { useEffect, useRef } from 'react';
 import { Check } from 'lucide-react';
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
 import { cn } from '@/lib/utils';
-import { PROJECT_STAGES, currentStage, stageStatus } from './project-progress';
+import type { ClientBuildSignal } from './project-build-signal';
+import { PROJECT_STAGES, stageCopy, stageStatus } from './project-progress';
 
 export function ProjectStateStepper({
   state,
+  buildSignal,
   className,
 }: {
   state: ProjectState;
+  /** Set when the build has stopped or stalled; changes the words, not the row. */
+  buildSignal?: ClientBuildSignal | null;
   className?: string;
 }) {
-  const here = currentStage(state);
+  const here = stageCopy(state, buildSignal);
   const list = useRef<HTMLOListElement>(null);
 
   useEffect(() => {
@@ -52,6 +56,7 @@ export function ProjectStateStepper({
         <h2
           className="text-xl font-bold text-[var(--fs-ink)]"
           data-testid="project-stage-title"
+          data-build-attention={buildSignal?.attention ?? undefined}
         >
           {here.title}
         </h2>

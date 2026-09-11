@@ -14,6 +14,7 @@ import {
 } from '@flowstarter/agentic-codegen/src/flowstarter/state-machine';
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
 import { quoteMinorFrom, type QuoteBearingRow } from '@/lib/flowstarter/quote';
+import type { ClientBuildSignal } from './project-build-signal';
 import { projectStateFrom } from './project-progress';
 
 export interface PaymentBearingRow extends QuoteBearingRow {
@@ -146,11 +147,21 @@ export interface PaymentPositionLine {
  * checks" rather than a page that only mentions money when it wants some.
  * Pure projection of ProjectPayments; the due/not-due decisions above stay
  * the only authority.
+ *
+ * `signal` never changes what is owed or which call to action is offered. The
+ * balance gate is `balanceDue` and nothing else, which is the rule the server
+ * enforces and the only one worth having. What it changes is what the lines
+ * are allowed to promise. On 2026-09-12 a client whose build had failed was
+ * shown "Paid. Your site is cleared to go live." next to a site that was
+ * never going to go live off that build, which is the money half of the same
+ * lie the stepper was telling.
  */
 export function paymentPosition(
-  payments: ProjectPayments
+  payments: ProjectPayments,
+  signal?: ClientBuildSignal | null
 ): PaymentPositionLine[] {
   if (payments.quoteMinor <= 0) return [];
+  const stopped = Boolean(signal);
   return [
     {
       key: 'deposit',
@@ -177,9 +188,15 @@ export function paymentPosition(
         ? 'due'
         : 'upcoming',
       note: payments.balancePaid
-        ? 'Paid. Your site is cleared to go live.'
+        ? stopped
+          ? 'Paid. Your site is not live yet because your build needs a ' +
+            'second look, and a person is on it.'
+          : 'Paid. Your site is cleared to go live.'
         : payments.due?.kind === 'balance'
         ? 'Due now. A person has checked every page of the finished site.'
+        : stopped
+        ? 'Not due yet. Your build needs a second look first, and a person ' +
+          'is on it.'
         : 'Falls due only after we have checked the finished site.',
     },
   ];

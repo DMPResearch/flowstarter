@@ -10,6 +10,7 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { requireWorkspaceAccess } from '@/lib/api-auth';
+import { notifyClientBuildNeedsReview } from '@/lib/flowstarter/build-failure-notice';
 import { editCreditPosition } from '@/lib/flowstarter/edit-credits';
 import { loadSiteOverviewCounts } from '@/lib/flowstarter/site-overview-data';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
@@ -18,6 +19,7 @@ import { SiteOverview } from '@/components/flowstarter/SiteOverview';
 import { siteOverviewTiles } from '@/components/flowstarter/site-overview';
 import { ProjectThread } from '@/components/flowstarter/ProjectThread';
 import { messagesFromPayload } from '@/components/flowstarter/project-messages';
+import { clientBuildSignal } from '@/components/flowstarter/project-build-signal';
 import { projectStateFrom } from '@/components/flowstarter/project-progress';
 import {
   formatMinor,
@@ -61,27 +63,53 @@ export default async function ClientProjectPage({
   // One clock for the page: the month the credits are counted in and the reset
   // date the client is quoted have to be the same month.
   const now = new Date();
-  const [{ data: hosts }, { data: messageRows }, counts] = await Promise.all([
-    supabase
-      .from('workspace_hosts')
-      .select('hostname, is_primary')
-      .eq('workspace_id', workspaceId),
-    supabase
-      .from('project_messages')
-      .select('*')
-      .eq('workspace_id', workspaceId)
-      .order('created_at', { ascending: true }),
-    // Every query inside is filtered by this workspace id, which is the one
-    // `requireWorkspaceAccess` authorized above.
-    loadSiteOverviewCounts(supabase, workspaceId, now),
-  ]);
+  const [{ data: hosts }, { data: messageRows }, { data: buildRows }, counts] =
+    await Promise.all([
+      supabase
+        .from('workspace_hosts')
+        .select('hostname, is_primary')
+        .eq('workspace_id', workspaceId),
+      supabase
+        .from('project_messages')
+        .select('*')
+        .eq('workspace_id', workspaceId)
+        .order('created_at', { ascending: true }),
+      // `project_state` alone cannot tell a client whether their build is
+      // moving: the worker rolls a failed build back to DEPOSIT_PAID so a
+      // retry can claim it, and the page then reads that as "about to start".
+      supabase
+        .from('flowstarter_agent_jobs')
+        .select(
+          'id, kind, status, created_at, run_after, started_at, finished_at'
+        )
+        .eq('workspace_id', workspaceId)
+        .order('created_at', { ascending: false })
+        .limit(10),
+      // Every query inside is filtered by this workspace id, which is the one
+      // `requireWorkspaceAccess` authorized above.
+      loadSiteOverviewCounts(supabase, workspaceId, now),
+    ]);
+  const buildSignal = clientBuildSignal(buildRows ?? [], now);
+
+  // The client is reading the bad news; this is the same news in their inbox,
+  // once per job id. `notifyClientOnce` owns the dedupe and cannot throw, so
+  // awaiting it here cannot stop the page rendering. A stalled build is not
+  // emailed about: it may still be a queue that is merely slow, and the words
+  // on this page already say so.
+  if (buildSignal?.attention === 'failed') {
+    await notifyClientBuildNeedsReview({
+      supabase,
+      workspaceId,
+      jobId: buildSignal.jobId,
+    });
+  }
 
   // Same normaliser the thread uses on the API's camelCase payload, so a raw
   // row and a fetched message render identically.
   const messages = messagesFromPayload(messageRows ?? []);
   const state = projectStateFrom(workspace.project_state);
   const payments = projectPayments(workspace, workspaceId);
-  const position = paymentPosition(payments);
+  const position = paymentPosition(payments, buildSignal);
   const site = resolveSiteLink({
     slug: workspace.slug,
     deployStatus: workspace.deploy_status,
@@ -156,7 +184,7 @@ export default async function ClientProjectPage({
         </Link>
       </header>
 
-      <SiteOverview state={state} tiles={tiles} />
+      <SiteOverview state={state} tiles={tiles} buildSignal={buildSignal} />
 
       {position.length > 0 ? (
         <section
