@@ -41,9 +41,27 @@ const indexCss = readStyles('index.css');
  * app's. Comments are stripped first so a `{` inside one cannot be mistaken for
  * the start of a block, and an at-rule is unwrapped into the rules it contains.
  */
+/** Strips block comments with a single forward scan; no regex backtracking. */
+function stripComments(css) {
+  let out = '';
+  let at = 0;
+  while (at < css.length) {
+    const open = css.indexOf('/*', at);
+    if (open < 0) {
+      out += css.slice(at);
+      break;
+    }
+    out += css.slice(at, open);
+    const close = css.indexOf('*/', open + 2);
+    if (close < 0) break;
+    at = close + 2;
+  }
+  return out;
+}
+
 function rulesOf(css) {
   const rules = [];
-  const source = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const source = stripComments(css);
   let at = 0;
   while (at < source.length) {
     const open = source.indexOf('{', at);
