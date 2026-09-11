@@ -76,76 +76,457 @@
   animation: flow-slide-up 0.3s ease-out;
 }
 
-/* ── Apple Liquid Glass border effect ── */
+/* ══════════════════════════════════════════════════════════════════════════
+   LIQUID GLASS
+   The product's one glass material. Every token it reads lives in brand.css;
+   nothing here invents a colour. Build surfaces with GlassSurface, StatTile
+   and MeshBackdrop rather than reaching for these class names by hand.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── The material ───────────────────────────────────────────────────────────
+   A blurred, saturated backdrop, a specular catch-light at the top-left and a
+   1px refractive edge. Both effects are pseudo-elements at z-index -1 inside
+   an isolated stacking context, so they paint over the surface's own fill and
+   under its content without any child needing a z-index of its own. */
+.fs-glass,
 .glass-liquid {
   position: relative;
-  transform-style: preserve-3d;
+  isolation: isolate;
+  border-radius: var(--fs-radius-glass);
+  background: var(--fs-glass-bg);
+  backdrop-filter: blur(var(--fs-glass-blur)) saturate(var(--fs-glass-saturate));
+  -webkit-backdrop-filter: blur(var(--fs-glass-blur))
+    saturate(var(--fs-glass-saturate));
+  box-shadow: var(--fs-glass-shadow);
+  color: var(--fs-ink);
+  transition:
+    transform var(--fs-dur-micro) var(--fs-ease-spring),
+    box-shadow var(--fs-dur-standard) var(--fs-ease-spring);
 }
 
-/* Specular highlight — bright top-left catch light */
+/* Specular highlight: the light source is top-left, so the sheen is too. */
+.fs-glass::before,
 .glass-liquid::before {
   content: '';
   position: absolute;
   inset: 0;
+  z-index: -1;
   border-radius: inherit;
-  background: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.38) 0%,
-    rgba(255, 255, 255, 0.12) 20%,
-    rgba(255, 255, 255, 0.03) 40%,
-    transparent 60%
-  );
   pointer-events: none;
-  z-index: 1;
-}
-
-[data-theme='dark'] .glass-liquid::before,
-.dark .glass-liquid::before {
   background: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.10) 0%,
-    rgba(255, 255, 255, 0.04) 20%,
-    rgba(255, 255, 255, 0.01) 40%,
-    transparent 60%
+    var(--fs-glass-highlight) 0%,
+    transparent 44%
   );
 }
 
-/* Luminous refractive border with prismatic color shift */
+/* Refractive edge: a gradient border drawn by masking out the middle, so the
+   1px rim can carry a gradient that a plain `border-color` cannot. */
+.fs-glass::after,
 .glass-liquid::after {
   content: '';
   position: absolute;
-  inset: -1px;
+  inset: 0;
+  z-index: -1;
   border-radius: inherit;
   padding: 1px;
-  background: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.95) 0%,
-    rgba(255, 255, 255, 0.55) 15%,
-    rgba(200, 210, 255, 0.30) 30%,
-    rgba(180, 200, 255, 0.15) 50%,
-    rgba(200, 180, 255, 0.10) 70%,
-    rgba(255, 255, 255, 0.05) 85%,
-    transparent 100%
-  );
+  pointer-events: none;
+  background: var(--fs-glass-refraction);
   -webkit-mask:
     linear-gradient(#fff 0 0) content-box,
     linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
   mask-composite: exclude;
-  pointer-events: none;
-  z-index: 2;
-  transition: opacity 0.3s ease;
+  transition: opacity var(--fs-dur-micro) var(--fs-ease-spring);
 }
 
-[data-theme='dark'] .glass-liquid::after,
-.dark .glass-liquid::after {
+/* Variant padding. `chrome` sets none because a header lays out its own rows. */
+.fs-glass--card {
+  padding: var(--fs-space-5);
+}
+
+.fs-glass--panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fs-space-6);
+  padding: var(--fs-space-6);
+}
+
+/* A toned surface picks up the same wash a tile does; see the tone blocks
+   below for where --fs-tile-* comes from. */
+.fs-glass--toned {
+  --fs-tile-wash: transparent;
+  --fs-tile-edge: var(--fs-glass-edge);
+  --fs-tile-glow: transparent;
+  --fs-tile-ink: var(--fs-ink);
+}
+
+/* Denser fill, for content that has to stay legible over a busy mesh. */
+.fs-glass--strong {
+  background: var(--fs-glass-bg-strong);
+}
+
+/* Header and sidebar: square, opaque-leaning, and it casts a rule not a drop. */
+.fs-glass--chrome {
+  border-radius: 0;
+  background: var(--fs-chrome-bg);
+  box-shadow: var(--fs-chrome-shadow);
+}
+
+/* Hover lifts the surface and brightens its edge, on the signature spring. */
+.fs-glass--interactive {
+  cursor: pointer;
+}
+
+.fs-glass--interactive:hover {
+  transform: translateY(-2px);
+  /* The tone glow has a fallback because most interactive surfaces are not
+     toned, and one undefined variable would drop the whole declaration. */
+  box-shadow:
+    var(--fs-glass-shadow),
+    0 16px 38px -14px var(--fs-tile-glow, transparent),
+    0 0 0 1px var(--fs-accent-ring);
+}
+
+.fs-glass--interactive:hover::after {
+  filter: brightness(1.35);
+}
+
+.fs-glass--interactive:active {
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fs-glass--interactive:hover {
+    transform: none;
+  }
+}
+
+/* ── Focus ring ─────────────────────────────────────────────────────────────
+   Outside the surface, so it never fights the refractive edge. */
+.fs-glass-ring:focus-visible {
+  outline: 2px solid var(--fs-accent);
+  outline-offset: 3px;
+}
+
+/* ── Tone-tinted tile ───────────────────────────────────────────────────────
+   Pair with .fs-glass. The tone wash is a gradient, not a flat fill, so the
+   tile reads as tinted glass rather than a coloured box. It fades out towards
+   the bottom-right, which is where the least important text sits. */
+.fs-glass-tile {
+  --fs-tile-wash: transparent;
+  --fs-tile-edge: var(--fs-glass-edge);
+  --fs-tile-glow: transparent;
+  --fs-tile-ink: var(--fs-ink);
+
+  display: flex;
+  flex-direction: column;
+  gap: var(--fs-space-1);
+  border-radius: var(--fs-radius-glass-inner);
+  padding: var(--fs-space-4);
+  text-align: left;
+  box-shadow:
+    var(--fs-glass-shadow),
+    0 12px 32px -14px var(--fs-tile-glow);
+}
+
+.fs-glass-tile::before,
+.fs-glass--toned::before {
+  background:
+    linear-gradient(158deg, var(--fs-tile-wash) 0%, transparent 82%),
+    linear-gradient(135deg, var(--fs-glass-highlight) 0%, transparent 44%);
+}
+
+.fs-glass-tile::after,
+.fs-glass--toned::after {
   background: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.22) 0%,
-    rgba(200, 210, 255, 0.14) 15%,
-    rgba(160, 180, 255, 0.10) 30%,
-    rgba(180, 160, 255, 0.06) 50%,
-    rgba(255, 255, 255, 0.03) 70%,
+    var(--fs-glass-highlight) 0%,
+    var(--fs-tile-edge) 38%,
     transparent 100%
   );
+}
+
+/* The visual tone is written to two attributes. `data-tone` is the default,
+   and `data-palette` is what a caller uses when it needs `data-tone` for a
+   meaning of its own (the client dashboard keeps the rules value there).
+   The palette blocks come second on purpose: same specificity, so when both
+   attributes are present the palette is the one that paints. */
+.fs-glass-tile[data-tone='accent'],
+.fs-glass--toned[data-tone='accent'] {
+  --fs-tile-wash: var(--fs-tone-accent-soft);
+  --fs-tile-edge: var(--fs-tone-accent-edge);
+  --fs-tile-glow: var(--fs-tone-accent-glow);
+  --fs-tile-ink: var(--fs-tone-accent);
+}
+
+.fs-glass-tile[data-tone='ok'],
+.fs-glass--toned[data-tone='ok'] {
+  --fs-tile-wash: var(--fs-tone-ok-soft);
+  --fs-tile-edge: var(--fs-tone-ok-edge);
+  --fs-tile-glow: var(--fs-tone-ok-glow);
+  --fs-tile-ink: var(--fs-tone-ok);
+}
+
+.fs-glass-tile[data-tone='info'],
+.fs-glass--toned[data-tone='info'] {
+  --fs-tile-wash: var(--fs-tone-info-soft);
+  --fs-tile-edge: var(--fs-tone-info-edge);
+  --fs-tile-glow: var(--fs-tone-info-glow);
+  --fs-tile-ink: var(--fs-tone-info);
+}
+
+.fs-glass-tile[data-tone='warn'],
+.fs-glass--toned[data-tone='warn'] {
+  --fs-tile-wash: var(--fs-tone-warn-soft);
+  --fs-tile-edge: var(--fs-tone-warn-edge);
+  --fs-tile-glow: var(--fs-tone-warn-glow);
+  --fs-tile-ink: var(--fs-tone-warn);
+}
+
+.fs-glass-tile[data-tone='danger'],
+.fs-glass--toned[data-tone='danger'] {
+  --fs-tile-wash: var(--fs-tone-danger-soft);
+  --fs-tile-edge: var(--fs-tone-danger-edge);
+  --fs-tile-glow: var(--fs-tone-danger-glow);
+  --fs-tile-ink: var(--fs-tone-danger);
+}
+
+.fs-glass-tile[data-tone='violet'],
+.fs-glass--toned[data-tone='violet'] {
+  --fs-tile-wash: var(--fs-tone-violet-soft);
+  --fs-tile-edge: var(--fs-tone-violet-edge);
+  --fs-tile-glow: var(--fs-tone-violet-glow);
+  --fs-tile-ink: var(--fs-tone-violet);
+}
+
+.fs-glass-tile[data-tone='pink'],
+.fs-glass--toned[data-tone='pink'] {
+  --fs-tile-wash: var(--fs-tone-pink-soft);
+  --fs-tile-edge: var(--fs-tone-pink-edge);
+  --fs-tile-glow: var(--fs-tone-pink-glow);
+  --fs-tile-ink: var(--fs-tone-pink);
+}
+
+.fs-glass-tile[data-tone='teal'],
+.fs-glass--toned[data-tone='teal'] {
+  --fs-tile-wash: var(--fs-tone-teal-soft);
+  --fs-tile-edge: var(--fs-tone-teal-edge);
+  --fs-tile-glow: var(--fs-tone-teal-glow);
+  --fs-tile-ink: var(--fs-tone-teal);
+}
+
+.fs-glass-tile[data-tone='neutral'],
+.fs-glass--toned[data-tone='neutral'] {
+  --fs-tile-wash: var(--fs-tone-neutral-soft);
+  --fs-tile-edge: var(--fs-tone-neutral-edge);
+  --fs-tile-glow: var(--fs-tone-neutral-glow);
+  --fs-tile-ink: var(--fs-tone-neutral);
+}
+
+.fs-glass-tile[data-palette='accent'],
+.fs-glass--toned[data-palette='accent'] {
+  --fs-tile-wash: var(--fs-tone-accent-soft);
+  --fs-tile-edge: var(--fs-tone-accent-edge);
+  --fs-tile-glow: var(--fs-tone-accent-glow);
+  --fs-tile-ink: var(--fs-tone-accent);
+}
+
+.fs-glass-tile[data-palette='ok'],
+.fs-glass--toned[data-palette='ok'] {
+  --fs-tile-wash: var(--fs-tone-ok-soft);
+  --fs-tile-edge: var(--fs-tone-ok-edge);
+  --fs-tile-glow: var(--fs-tone-ok-glow);
+  --fs-tile-ink: var(--fs-tone-ok);
+}
+
+.fs-glass-tile[data-palette='info'],
+.fs-glass--toned[data-palette='info'] {
+  --fs-tile-wash: var(--fs-tone-info-soft);
+  --fs-tile-edge: var(--fs-tone-info-edge);
+  --fs-tile-glow: var(--fs-tone-info-glow);
+  --fs-tile-ink: var(--fs-tone-info);
+}
+
+.fs-glass-tile[data-palette='warn'],
+.fs-glass--toned[data-palette='warn'] {
+  --fs-tile-wash: var(--fs-tone-warn-soft);
+  --fs-tile-edge: var(--fs-tone-warn-edge);
+  --fs-tile-glow: var(--fs-tone-warn-glow);
+  --fs-tile-ink: var(--fs-tone-warn);
+}
+
+.fs-glass-tile[data-palette='danger'],
+.fs-glass--toned[data-palette='danger'] {
+  --fs-tile-wash: var(--fs-tone-danger-soft);
+  --fs-tile-edge: var(--fs-tone-danger-edge);
+  --fs-tile-glow: var(--fs-tone-danger-glow);
+  --fs-tile-ink: var(--fs-tone-danger);
+}
+
+.fs-glass-tile[data-palette='violet'],
+.fs-glass--toned[data-palette='violet'] {
+  --fs-tile-wash: var(--fs-tone-violet-soft);
+  --fs-tile-edge: var(--fs-tone-violet-edge);
+  --fs-tile-glow: var(--fs-tone-violet-glow);
+  --fs-tile-ink: var(--fs-tone-violet);
+}
+
+.fs-glass-tile[data-palette='pink'],
+.fs-glass--toned[data-palette='pink'] {
+  --fs-tile-wash: var(--fs-tone-pink-soft);
+  --fs-tile-edge: var(--fs-tone-pink-edge);
+  --fs-tile-glow: var(--fs-tone-pink-glow);
+  --fs-tile-ink: var(--fs-tone-pink);
+}
+
+.fs-glass-tile[data-palette='teal'],
+.fs-glass--toned[data-palette='teal'] {
+  --fs-tile-wash: var(--fs-tone-teal-soft);
+  --fs-tile-edge: var(--fs-tone-teal-edge);
+  --fs-tile-glow: var(--fs-tone-teal-glow);
+  --fs-tile-ink: var(--fs-tone-teal);
+}
+
+.fs-glass-tile[data-palette='neutral'],
+.fs-glass--toned[data-palette='neutral'] {
+  --fs-tile-wash: var(--fs-tone-neutral-soft);
+  --fs-tile-edge: var(--fs-tone-neutral-edge);
+  --fs-tile-glow: var(--fs-tone-neutral-glow);
+  --fs-tile-ink: var(--fs-tone-neutral);
+}
+
+/* Tile typography. The value is the thing a client reads first, so it is the
+   only element in the tone ink; the label and note stay in the page's own ink
+   so nine tiles side by side do not turn into nine competing colours. */
+.fs-glass-tile__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--fs-space-2);
+}
+
+.fs-glass-tile__label {
+  font-size: var(--fs-text-label);
+  font-weight: var(--fs-weight-semibold);
+  letter-spacing: var(--fs-ls-label);
+  text-transform: uppercase;
+  color: var(--fs-ink-dim);
+}
+
+.fs-glass-tile__icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--fs-tile-ink);
+  opacity: 0.85;
+}
+
+.fs-glass-tile__value {
+  font-size: 1.6rem;
+  font-weight: var(--fs-weight-bold);
+  line-height: var(--fs-lh-tight);
+  letter-spacing: var(--fs-ls-heading);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+  color: var(--fs-tile-ink);
+}
+
+.fs-glass-tile__note {
+  font-size: var(--fs-text-caption);
+  line-height: var(--fs-lh-normal);
+  color: var(--fs-ink-dim);
+}
+
+/* A link tile is still a tile: no underline, no colour change, just the lift. */
+a.fs-glass-tile {
+  text-decoration: none;
+}
+
+/* ── Tone text ──────────────────────────────────────────────────────────────
+   For a number or a word that carries a tone outside a tile. */
+.fs-tone-text[data-tone='accent'] {
+  color: var(--fs-tone-accent);
+}
+.fs-tone-text[data-tone='ok'] {
+  color: var(--fs-tone-ok);
+}
+.fs-tone-text[data-tone='info'] {
+  color: var(--fs-tone-info);
+}
+.fs-tone-text[data-tone='warn'] {
+  color: var(--fs-tone-warn);
+}
+.fs-tone-text[data-tone='danger'] {
+  color: var(--fs-tone-danger);
+}
+.fs-tone-text[data-tone='violet'] {
+  color: var(--fs-tone-violet);
+}
+.fs-tone-text[data-tone='pink'] {
+  color: var(--fs-tone-pink);
+}
+.fs-tone-text[data-tone='teal'] {
+  color: var(--fs-tone-teal);
+}
+.fs-tone-text[data-tone='neutral'] {
+  color: var(--fs-tone-neutral);
+}
+
+/* ── Mesh backdrop ──────────────────────────────────────────────────────────
+   The living gradient the glass refracts. Fixed and full-bleed, painted at
+   z-index 0 so a layout can put its content at z-index 10 above it. The drift
+   is slow enough to be felt rather than seen, and it stops entirely for anyone
+   who asked for less motion. */
+.fs-mesh-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background-color: var(--fs-bg-base);
+}
+
+.fs-mesh-backdrop::before {
+  content: '';
+  position: absolute;
+  /* Oversized so the drift never exposes an edge. */
+  inset: -20%;
+  background-image: var(--fs-mesh);
+  opacity: var(--fs-mesh-opacity);
+  will-change: transform;
+  animation: fs-mesh-drift 42s var(--fs-ease-in-out) infinite alternate;
+}
+
+/* Variants change how loud the atmosphere is, never what colours it uses. */
+.fs-mesh-backdrop[data-variant='app']::before {
+  opacity: calc(var(--fs-mesh-opacity) * 0.6);
+}
+
+.fs-mesh-backdrop[data-variant='landing']::before {
+  opacity: var(--fs-mesh-opacity);
+}
+
+.fs-mesh-backdrop[data-variant='editor']::before {
+  opacity: calc(var(--fs-mesh-opacity) * 0.38);
+}
+
+@keyframes fs-mesh-drift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(-2.5%, 2%, 0) scale(1.06);
+  }
+  100% {
+    transform: translate3d(2%, -2.5%, 0) scale(1.03);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fs-mesh-backdrop::before {
+    animation: none;
+  }
 }

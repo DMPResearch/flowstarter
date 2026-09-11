@@ -3,30 +3,69 @@
  *
  * Server-renderable and hook-free. It takes a project state and a list of
  * tiles that `siteOverviewTiles` already decided, and renders them. Nothing is
- * computed here, so there is no rule in this file that a test would have to
- * mount a component to reach.
+ * computed here beyond which colour a tile wears, so there is no rule in this
+ * file that a test would have to mount a component to reach.
  *
  * The stepper stays at the top because it answers the question a client asks
  * first ("where is my site?"), and the tiles sit under it because they only
  * mean anything once there is a site to talk about.
+ *
+ * The glass is the design system's, not this file's: a GlassSurface panel with
+ * StatTiles inside it. Nothing here sets a blur, a translucent fill or a
+ * border colour of its own.
  */
 import Link from 'next/link';
+import {
+  CalendarCheck,
+  History,
+  Mail,
+  Pencil,
+  ShoppingBag,
+  type LucideIcon,
+} from 'lucide-react';
 import type { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
-import { cn } from '@/lib/utils';
+import {
+  GlassSurface,
+  type Tone,
+} from '@flowstarter/flow-design-system/components/surfaces/GlassSurface';
+import { StatTile } from '@flowstarter/flow-design-system/components/surfaces/StatTile';
 import { ProjectStateStepper } from './ProjectStateStepper';
-import type { SiteOverviewTile } from './site-overview';
+import type { SiteOverviewTile, SiteOverviewTileKey } from './site-overview';
 
 /**
- * Tone is emphasis, never alarm. `attention` borrows the product's primary
- * colour because it means "there is something for you here"; `muted` is the
- * ordinary card, dimmed, because it means "not switched on yet".
+ * What each tile is about, as a colour. A client scanning the row should be
+ * able to tell enquiries from bookings without reading the labels, so the
+ * subject owns the hue: money-and-edits indigo, messages blue, calendar teal,
+ * their own work violet, the shop green.
  */
-const TONE_CLASS: Record<SiteOverviewTile['tone'], string> = {
-  ok: 'border-[var(--fs-rule)] bg-[var(--fs-bg-elevated)]/40',
-  attention:
-    'border-[var(--purple-primary)]/30 bg-[var(--purple-primary)]/[0.07]',
-  muted: 'border-[var(--fs-rule)] bg-[var(--fs-bg-elevated)]/20',
+const SUBJECT_PALETTE: Record<SiteOverviewTileKey, Tone> = {
+  credits: 'accent',
+  enquiries: 'info',
+  bookings: 'teal',
+  changes: 'violet',
+  store: 'ok',
 };
+
+const SUBJECT_ICON: Record<SiteOverviewTileKey, LucideIcon> = {
+  credits: Pencil,
+  enquiries: Mail,
+  bookings: CalendarCheck,
+  changes: History,
+  store: ShoppingBag,
+};
+
+/**
+ * The rules tone outranks the subject, because it is the only one of the two
+ * that is about the client rather than about the category. `attention` means
+ * "there is something for you to do", which is amber; `muted` means "not
+ * switched on yet", which is the colourless tone. Everything else keeps its
+ * subject colour. Nothing here is red: none of these states is a failure.
+ */
+export function tilePalette(tile: SiteOverviewTile): Tone {
+  if (tile.tone === 'attention') return 'warn';
+  if (tile.tone === 'muted') return 'neutral';
+  return SUBJECT_PALETTE[tile.key];
+}
 
 export function SiteOverview({
   state,
@@ -36,9 +75,12 @@ export function SiteOverview({
   tiles: SiteOverviewTile[];
 }) {
   return (
-    <section className="flex flex-col gap-6 rounded-2xl border border-[var(--fs-glass-edge)] bg-[var(--fs-glass-bg)] px-6 py-6 shadow-[var(--fs-card-shadow)] backdrop-blur-xl">
+    <GlassSurface as="section" variant="panel">
       <div className="flex flex-col gap-5">
-        <p className="text-xs font-semibold uppercase tracking-widest text-[var(--purple-primary)]">
+        <p
+          className="fs-tone-text text-xs font-semibold uppercase tracking-widest"
+          data-tone="accent"
+        >
           Your site
         </p>
         <ProjectStateStepper state={state} />
@@ -49,62 +91,32 @@ export function SiteOverview({
           <Tile key={tile.key} tile={tile} />
         ))}
       </div>
-    </section>
+    </GlassSurface>
   );
 }
 
 function Tile({ tile }: { tile: SiteOverviewTile }) {
-  const className = cn(
-    'flex flex-col gap-1 rounded-xl border px-4 py-3.5 text-left transition-colors',
-    TONE_CLASS[tile.tone],
-    tile.href && 'hover:border-[var(--purple-primary)]/40'
-  );
-
-  const body = (
-    <>
-      <p className="text-[11px] font-semibold uppercase tracking-widest text-[var(--fs-ink-faint)]">
-        {tile.label}
-      </p>
-      <p
-        className={cn(
-          'text-2xl font-bold leading-tight',
-          tile.tone === 'muted'
-            ? 'text-[var(--fs-ink-dim)]'
-            : 'text-[var(--fs-ink)]'
-        )}
-      >
-        {tile.value}
-      </p>
-      <p className="text-xs leading-relaxed text-[var(--fs-ink-dim)]">
-        {tile.note}
-      </p>
-    </>
-  );
+  const Icon = SUBJECT_ICON[tile.key];
 
   // The links are shortcuts to pages that authorize themselves; none of them
   // is a gate, so a tile is safe to render for anyone who reached this page.
-  if (tile.href) {
-    return (
-      <Link
-        href={tile.href}
-        data-testid="site-overview-tile"
-        data-key={tile.key}
-        data-tone={tile.tone}
-        className={className}
-      >
-        {body}
-      </Link>
-    );
-  }
-
+  //
+  // `data-tone` stays the rules value the tests and the rules module speak in
+  // (ok | attention | muted). `data-palette`, which StatTile writes from the
+  // `tone` prop, is the colour. Keeping them apart means a palette change can
+  // never quietly rewrite what a test believes the rules decided.
   return (
-    <div
+    <StatTile
+      label={tile.label}
+      value={tile.value}
+      note={tile.note}
+      tone={tilePalette(tile)}
+      icon={<Icon size={15} strokeWidth={2.25} aria-hidden="true" />}
+      href={tile.href}
+      linkComponent={tile.href ? Link : undefined}
       data-testid="site-overview-tile"
       data-key={tile.key}
       data-tone={tile.tone}
-      className={className}
-    >
-      {body}
-    </div>
+    />
   );
 }

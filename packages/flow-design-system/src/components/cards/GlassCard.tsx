@@ -1,6 +1,20 @@
-import React, { forwardRef, type ReactNode, type CSSProperties, type HTMLAttributes } from 'react';
+/**
+ * A card, kept for the call sites that already use it.
+ *
+ * The glass now comes from GlassSurface, so this file holds nothing but the
+ * mapping from the old props to the new ones. Reach for GlassSurface directly
+ * in new code; this stays so the migration does not have to be one commit.
+ */
+import React, {
+  forwardRef,
+  type CSSProperties,
+  type HTMLAttributes,
+  type ReactNode,
+} from 'react';
+import { GlassSurface } from '../surfaces/GlassSurface';
 
-export interface GlassCardProps extends Omit<HTMLAttributes<HTMLDivElement>, 'children'> {
+export interface GlassCardProps
+  extends Omit<HTMLAttributes<HTMLDivElement>, 'children'> {
   children: ReactNode;
   /** Visual weight variant */
   variant?: 'default' | 'elevated' | 'subtle';
@@ -12,11 +26,6 @@ export interface GlassCardProps extends Omit<HTMLAttributes<HTMLDivElement>, 'ch
   as?: 'div' | 'button' | 'link';
   style?: CSSProperties;
 }
-
-// ── Liquid-glass tokens ────────────────────────────────────────────────────────
-// All colors resolved from --fs-* design tokens (brand.css).
-// bg / border / shadow are applied via inline style so they respond to
-// both .dark class and data-theme="dark" without needing Tailwind dark: prefixes.
 
 export const GlassCard = forwardRef<HTMLDivElement, GlassCardProps>(
   (
@@ -33,62 +42,41 @@ export const GlassCard = forwardRef<HTMLDivElement, GlassCardProps>(
     },
     ref,
   ) => {
-    const tokenStyle: CSSProperties = {
-      background: 'var(--fs-glass-bg)',
-      borderColor: 'var(--fs-glass-edge)',
-      boxShadow: 'var(--fs-card-shadow)',
-      borderRadius: 'var(--fs-radius-2xl)',
-      ...style,
-    };
-
-    const classes = [
-      // Structure
-      'group relative overflow-hidden',
-      'px-6 py-5',
-      // Glassmorphism
-      'backdrop-blur-2xl backdrop-saturate-150',
-      'border',
+    // `elevated` is the strong fill; `subtle` drops the drop shadow and keeps
+    // only the refractive edge. Neither needs its own colours any more.
+    const weight =
       variant === 'elevated'
-        ? 'shadow-[var(--fs-shadow-xl)]'
+        ? 'fs-glass--strong'
         : variant === 'subtle'
           ? 'shadow-none'
-          : '',
-      // Transitions
-      'transition-all duration-300 ease-out',
-      // Hover
-      !noHover ? 'hover:-translate-y-[2px] hover:shadow-[var(--fs-shadow-xl)] active:translate-y-0' : '',
-      // Layout
-      'flex flex-col',
-      className,
-    ]
-      .filter(Boolean)
-      .join(' ');
+          : '';
 
-    const content = (
-      <div ref={ref} className={classes} onClick={onClick} style={tokenStyle} {...props}>
-        {/* Subtle gradient overlay on hover */}
-        <div className="absolute inset-0 bg-gradient-to-br from-[var(--fs-accent)]/0 to-[var(--fs-accent)]/0 group-hover:from-[var(--fs-accent)]/[0.02] group-hover:to-transparent transition-all duration-300 rounded-[var(--fs-radius-2xl)]" />
-        <div className="relative z-10 flex flex-col gap-[inherit] h-full">{children}</div>
-      </div>
+    return (
+      <GlassSurface
+        ref={ref as React.Ref<HTMLElement>}
+        variant="card"
+        interactive={!noHover}
+        as={
+          as === 'link' && href
+            ? 'a'
+            : as === 'button' || onClick
+              ? 'button'
+              : 'div'
+        }
+        className={[weight, 'flex flex-col', className]
+          .filter(Boolean)
+          .join(' ')}
+        style={style}
+        onClick={onClick}
+        {...(as === 'link' && href ? { href } : {})}
+        {...(as === 'button' || (onClick && as !== 'link')
+          ? { type: 'button' as const }
+          : {})}
+        {...props}
+      >
+        {children}
+      </GlassSurface>
     );
-
-    if (as === 'link' && href) {
-      return (
-        <a href={href} className="block h-full">
-          {content}
-        </a>
-      );
-    }
-
-    if (as === 'button' || onClick) {
-      return (
-        <button onClick={onClick as unknown as React.MouseEventHandler<HTMLButtonElement>} className="block w-full text-left h-full" type="button">
-          {content}
-        </button>
-      );
-    }
-
-    return content;
   },
 );
 

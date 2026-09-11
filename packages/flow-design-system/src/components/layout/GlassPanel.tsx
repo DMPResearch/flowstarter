@@ -1,4 +1,13 @@
-import { forwardRef, type HTMLAttributes, type ReactNode } from 'react';
+/**
+ * A panel, kept for the call sites that already use it.
+ *
+ * The hand-rolled two-tone border it used to draw is now the refractive edge
+ * on GlassSurface, so the borrowed --glass-* aliases are gone and the panel
+ * reads from the same tokens as everything else. Prefer GlassSurface with
+ * variant="panel" in new code.
+ */
+import React, { forwardRef, type HTMLAttributes, type ReactNode } from 'react';
+import { GlassSurface } from '../surfaces/GlassSurface';
 
 export interface GlassPanelProps extends HTMLAttributes<HTMLDivElement> {
   shadow?: 'none' | 'subtle' | 'elevated' | 'glass';
@@ -6,43 +15,38 @@ export interface GlassPanelProps extends HTMLAttributes<HTMLDivElement> {
   children: ReactNode;
 }
 
-const shadowStyles = {
-  none: '',
-  subtle: 'shadow-[0_1px_3px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02)]',
-  elevated: 'shadow-[0_4px_12px_rgba(0,0,0,0.08),0_1px_3px_rgba(0,0,0,0.06)]',
-  glass: 'shadow-[var(--glass-shadow)]',
+/** The old shadow names, mapped onto the token scale. */
+const shadowStyles: Record<NonNullable<GlassPanelProps['shadow']>, string> = {
+  none: 'shadow-none',
+  subtle: 'shadow-[var(--fs-shadow-sm)]',
+  elevated: 'shadow-[var(--fs-shadow-lg)]',
+  glass: '',
 };
 
-const paddings = {
-  none: '',
+/** The old padding names. `md` is what GlassSurface already gives a panel. */
+const paddings: Record<NonNullable<GlassPanelProps['padding']>, string> = {
+  none: 'p-0',
   sm: 'p-3',
   md: 'p-5',
-  lg: 'p-6',
+  lg: '',
 };
 
 export const GlassPanel = forwardRef<HTMLDivElement, GlassPanelProps>(
-  ({ shadow = 'glass', padding = 'md', children, className = '', style, ...props }, ref) => {
-    return (
-      <div
-        ref={ref}
-        className={`relative rounded-2xl backdrop-blur-2xl backdrop-saturate-150 ${shadowStyles[shadow]} ${paddings[padding]} ${className}`}
-        style={{
-          backgroundColor: 'color-mix(in srgb, var(--glass-surface) 80%, transparent)',
-          border: '1px solid transparent',
-          backgroundClip: 'padding-box',
-          // Liquid glass 3D border: bright top-left → dark bottom-right
-          borderTopColor: 'var(--glass-border-highlight)',
-          borderLeftColor: 'var(--glass-border-highlight)',
-          borderBottomColor: 'var(--glass-border-shadow)',
-          borderRightColor: 'var(--glass-border-shadow)',
-          ...style,
-        }}
-        {...props}
-      >
-        {children}
-      </div>
-    );
-  }
+  (
+    { shadow = 'glass', padding = 'md', children, className = '', ...props },
+    ref,
+  ) => (
+    <GlassSurface
+      ref={ref as React.Ref<HTMLElement>}
+      variant="panel"
+      className={[shadowStyles[shadow], paddings[padding], className]
+        .filter(Boolean)
+        .join(' ')}
+      {...props}
+    >
+      {children}
+    </GlassSurface>
+  ),
 );
 
 GlassPanel.displayName = 'GlassPanel';

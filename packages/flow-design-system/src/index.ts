@@ -1,6 +1,6 @@
 /**
  * @flowstarter/flow - Flowstarter Design System
- * 
+ *
  * Shared UI components and design tokens for all Flowstarter apps.
  */
 
@@ -30,12 +30,12 @@ export {
 } from './components/buttons/Button';
 
 // Components - Cards
-export { 
-  Card, 
-  CardHeader, 
-  CardTitle, 
-  CardDescription, 
-  CardContent, 
+export {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+  CardContent,
   CardFooter,
   type CardProps,
 } from './components/cards/Card';
@@ -45,16 +45,53 @@ export { Input, type InputProps } from './components/inputs/Input';
 
 // Components - Feedback
 export { Spinner } from './components/feedback/Spinner';
-export { StatusDot, type StatusDotProps } from './components/feedback/StatusDot';
+export {
+  StatusDot,
+  type StatusDotProps,
+} from './components/feedback/StatusDot';
 
 // Components - Backgrounds
-export { FlowBackground, type FlowBackgroundProps, type FlowBackgroundVariant } from './components/backgrounds/FlowBackground';
-export { AmbientGlow, type AmbientGlowProps } from './components/backgrounds/AmbientGlow';
+export {
+  FlowBackground,
+  type FlowBackgroundProps,
+  type FlowBackgroundVariant,
+} from './components/backgrounds/FlowBackground';
+export {
+  AmbientGlow,
+  type AmbientGlowProps,
+} from './components/backgrounds/AmbientGlow';
+export {
+  MeshBackdrop,
+  type MeshBackdropProps,
+  type MeshBackdropVariant,
+} from './components/backgrounds/MeshBackdrop';
+
+// Components - Liquid glass surfaces
+// The one glass material. Nothing else in the product should hand-roll a
+// backdrop-filter, a translucent fill or a gradient border.
+export {
+  GlassSurface,
+  TONES,
+  type GlassSurfaceProps,
+  type GlassSurfaceVariant,
+  type Tone,
+} from './components/surfaces/GlassSurface';
+export { StatTile, type StatTileProps } from './components/surfaces/StatTile';
 
 // Components - Layout
-export { GlassPanel, type GlassPanelProps } from './components/layout/GlassPanel';
-export { ScrollAwareHeader, type ScrollAwareHeaderProps } from './components/layout/ScrollAwareHeader';
-export { Footer, type FooterProps, type FooterLink } from './components/layout/Footer';
+export {
+  GlassPanel,
+  type GlassPanelProps,
+} from './components/layout/GlassPanel';
+export {
+  ScrollAwareHeader,
+  type ScrollAwareHeaderProps,
+} from './components/layout/ScrollAwareHeader';
+export {
+  Footer,
+  type FooterProps,
+  type FooterLink,
+} from './components/layout/Footer';
 
 // Components - Cards (extended)
 export { GlassCard, type GlassCardProps } from './components/cards/GlassCard';
@@ -71,11 +108,11 @@ export {
   toSameOriginPath,
   toTrustedHandoffUrl,
 } from './utils/safe-redirect';
-export { 
-  getTheme, 
-  setTheme, 
-  getEffectiveTheme, 
-  applyTheme, 
+export {
+  getTheme,
+  setTheme,
+  getEffectiveTheme,
+  applyTheme,
   initTheme,
   type Theme,
 } from './utils/theme';

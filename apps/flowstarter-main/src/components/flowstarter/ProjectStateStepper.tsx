@@ -45,15 +45,20 @@ export function ProjectStateStepper({
               data-status={status}
               aria-current={status === 'current' ? 'step' : undefined}
               className={cn(
-                'flex-1 rounded-xl border px-3 py-2.5 text-center text-xs font-semibold transition-colors',
-                // The live step carries the product's primary gradient, so the
-                // stepper points at the same colour the primary buttons use.
+                'flex-1 rounded-[var(--fs-radius-glass-inner)] border px-3 py-2.5 text-center text-xs font-semibold transition-colors',
+                // Three tones, one vocabulary with the tiles above: accent is
+                // "you are here", ok is "done", neutral is "not yet". The pill
+                // used to borrow the landing page's button gradient, which tied
+                // a progress indicator to a marketing CTA and put white text on
+                // a light fill in dark mode.
+                // The live step carries a second edge and a glow so it still
+                // wins the row when five done steps are sitting next to it.
                 status === 'current' &&
-                  'border-transparent bg-[linear-gradient(135deg,var(--landing-btn-from),var(--landing-btn-via))] text-white shadow-md shadow-[var(--purple-primary-lightest)]',
+                  'border-[var(--fs-tone-accent-edge)] bg-[var(--fs-tone-accent-soft)] text-[var(--fs-tone-accent)] shadow-[0_0_0_1px_var(--fs-tone-accent-edge),0_14px_32px_-14px_var(--fs-tone-accent-glow)]',
                 status === 'done' &&
-                  'border-[var(--purple-primary)]/25 bg-[var(--purple-primary)]/10 text-[var(--fs-ink-dim)]',
+                  'border-[var(--fs-tone-ok-edge)] bg-[var(--fs-tone-ok-soft)] text-[var(--fs-tone-ok)]',
                 status === 'upcoming' &&
-                  'border-[var(--fs-rule)] bg-[var(--fs-bg-elevated)]/40 text-[var(--fs-ink-faint)]'
+                  'border-[var(--fs-tone-neutral-edge)] bg-[var(--fs-tone-neutral-soft)] text-[var(--fs-tone-neutral)]'
               )}
             >
               {stage.label}
