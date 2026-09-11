@@ -9,7 +9,18 @@
 #   pull_request closed → destroy the slot
 #   workflow_dispatch with pr_number → deploy that PR head on demand
 #
-# Secrets: STAGING_SSH_HOST, STAGING_SSH_USER, STAGING_SSH_KEY
+# The staging database is the Supabase CLI stack running ON THE HETZNER HOST,
+# bound to 127.0.0.1:54321/:54322, shared by every slot (main and pr-N), see
+# deploy/hetzner-staging/README.md, "Database". This lane never reads the
+# production NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY secrets
+# and never falls back to them: build args come only from
+# vars.STAGING_SUPABASE_URL / secrets.STAGING_SUPABASE_ANON_KEY, validated to
+# be a loopback/docker-internal host before anything is built. PR slots do
+# not sync supabase/ or run migrations themselves; they share the schema
+# slot `main` last applied (see deploy-slot.sh).
+#
+# Secrets: STAGING_SSH_HOST, STAGING_SSH_USER, STAGING_SSH_KEY,
+#          STAGING_SUPABASE_ANON_KEY
 # Needs packages:write to push to GHCR.
 ##############################################################################
 
@@ -111,13 +122,49 @@ jobs:
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Staging must never build against a hosted Supabase project. This
+      # gate warns and skips the rest of the job (green, not red) when the
+      # anon key is not configured yet, and fails hard, before anything is
+      # built, if the URL is not the local stack.
+      - name: Check staging Supabase config
+        id: supabase
+        env:
+          STAGING_SUPABASE_URL: ${{ vars.STAGING_SUPABASE_URL }}
+          STAGING_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+          url="${STAGING_SUPABASE_URL:-http://127.0.0.1:54321}"
+          if [ -z "${STAGING_SUPABASE_ANON_KEY:-}" ]; then
+            echo "::warning::STAGING_SUPABASE_ANON_KEY is not set; skipping the rest of this job. See docs/ci/secrets.md."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$url" in
+            *supabase.co*)
+              echo "::error::STAGING_SUPABASE_URL ($url) points at a hosted supabase.co project. Staging must build against the local Supabase CLI stack on the Hetzner host, never production."
+              exit 1
+              ;;
+          esac
+          host="$(printf '%s' "$url" | sed -E 's#^[a-zA-Z]+://##; s#[/:].*$##')"
+          case "$host" in
+            127.0.0.1 | localhost | ::1 | host.docker.internal) ;;
+            *)
+              echo "::error::STAGING_SUPABASE_URL ($url) does not resolve to a loopback or docker-internal host (got '$host')."
+              exit 1
+              ;;
+          esac
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "present=true" >> "$GITHUB_OUTPUT"
+
       - name: Lowercase image name
+        if: steps.supabase.outputs.present == 'true'
         id: image
         run: |
           owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
           echo "name=ghcr.io/${owner}/flowstarter-main" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
+        if: steps.supabase.outputs.present == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -128,9 +175,11 @@ jobs:
           password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Set up Docker Buildx
+        if: steps.supabase.outputs.present == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Build and push image
+        if: steps.supabase.outputs.present == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -140,15 +189,15 @@ jobs:
             ${{ steps.image.outputs.name }}:pr-${{ steps.pr.outputs.number }}
             ${{ steps.image.outputs.name }}:${{ github.event.pull_request.head.sha || github.sha }}
           build-args: |
-            NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_SUPABASE_URL=${{ steps.supabase.outputs.url }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.STAGING_SUPABASE_ANON_KEY }}
             NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
             NEXT_PUBLIC_SITE_URL=${{ steps.pr.outputs.url }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Deploy slot over SSH
-        if: steps.ssh.outputs.present == 'true'
+        if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
         env:
           HOST: ${{ secrets.STAGING_SSH_HOST }}
           USER: ${{ secrets.STAGING_SSH_USER }}
@@ -169,7 +218,7 @@ jobs:
             "echo $(printf %q "$GHCR_TOKEN") | docker login ghcr.io -u $(printf %q "$GHCR_USERNAME") --password-stdin && sudo /opt/flowstarter/staging/deploy-slot.sh ${SLOT} $(printf %q "$IMAGE") ${port}"
 
       - name: Comment staging URL on the PR
-        if: steps.ssh.outputs.present == 'true' && github.event_name == 'pull_request'
+        if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true' && github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           URL: ${{ steps.pr.outputs.url }}

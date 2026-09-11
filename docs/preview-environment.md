@@ -8,11 +8,22 @@ and what the owner has to do once to make that true.
 - **Web.** Netlify builds every pull request into a Deploy Preview (context
   `deploy-preview`) and every other non-production branch into a branch deploy
   (context `branch-deploy`). Production keeps the `production` context and its
-  own variables. Nothing below changes production.
-- **Database.** A second Supabase project, staging, holds the schema and the
-  throwaway data. Preview contexts point at it. The local stack on
-  `127.0.0.1:54321` stays the only database a developer or an agent touches by
-  hand; staging is written by CI and by the seed script, not from a laptop.
+  own variables. Nothing below changes production. Netlify Deploy Previews run
+  as Lambdas with no path back to the Hetzner host's loopback address, so they
+  have no database of their own; do not point their `NEXT_PUBLIC_SUPABASE_*`
+  variables at anything, production least of all. A pull request that needs a
+  real, working database uses its Hetzner staging slot instead (below).
+- **Database.** There is no cloud staging Supabase project. The staging
+  database is the Supabase CLI local stack running ON THE HETZNER HOST,
+  bound to loopback (`http://127.0.0.1:54321`), the same `supabase start`
+  developers and the quality gate use. Every Hetzner staging slot, `main`
+  at `staging.flowstarter.dev` and every `pr-N` at
+  `pr-N.staging.flowstarter.dev`, talks to that one stack; see
+  `deploy/hetzner-staging/README.md`, "Database", for the loopback-only
+  binding and the Hetzner Cloud Firewall that makes it safe. The local stack
+  on a developer's own machine, `127.0.0.1:54321`, stays the only database a
+  developer or an agent touches by hand; the Hetzner stack is written by CI
+  and by the seed script over SSH, not from a laptop directly.
 - **Auth.** Clerk runs its **development** instance for previews, shared with
   production until launch. That sharing is a launch blocker: before the first
   real customer, production must move to a Clerk production instance with its
@@ -22,76 +33,82 @@ and what the owner has to do once to make that true.
 - **Payments.** Stripe test mode, shared with production, which is fine because
   production is not live yet. Live mode never appears in this repository.
 - **Build worker.** The staging build worker runs on the Hetzner host beside
-  the production one, pointed at the staging Supabase project through its own
-  `SUPABASE_URL` and service key. There is no per-pull-request worker.
+  the production one, pointed at the same local Supabase CLI stack
+  (`SUPABASE_URL=http://127.0.0.1:54321` and the stack's own service role
+  key) rather than a separate cloud project. There is no per-pull-request
+  worker.
 
 ## One-time setup, by the owner
 
-1. Create the staging Supabase project (same region as production). From
-   Project settings, collect:
-   - the **project ref** (the subdomain of the project URL),
-   - the **database password** you set at creation,
-   - the **anon** and **service_role** keys from Project settings, API keys.
-2. Create a Supabase **access token** at
-   <https://supabase.com/dashboard/account/tokens>. This is what the CLI
-   authenticates with in CI, and it is account-wide, so treat it accordingly.
-3. Add the three secrets to Depot, which does not read GitHub's secret store:
+There is no Supabase project to create for staging anymore. The database is
+the Supabase CLI stack on the Hetzner host itself.
+
+1. Follow `deploy/hetzner-staging/README.md`, "One-time box setup": install
+   Docker's loopback-only default publish address
+   (`/etc/docker/daemon.json`, `{ "ip": "127.0.0.1" }`), attach a Hetzner
+   Cloud Firewall allowing inbound 22/80/443 only, then run
+   `supabase-stack.sh ensure`, `migrate`, `write-env`, and `check` once by
+   hand to seed the stack and `/etc/flowstarter/staging.env`. After that, CI
+   keeps both current on every deploy.
+2. Add the two Depot secrets `staging-deploy.yml` and `staging-pr-deploy.yml`
+   need to build the image against that stack, which Depot does not read
+   from GitHub's secret store:
 
    ```sh
-   depot ci secrets add SUPABASE_ACCESS_TOKEN --repo DMPResearch/flowstarter
-   depot ci secrets add STAGING_SUPABASE_PROJECT_REF --repo DMPResearch/flowstarter
-   depot ci secrets add STAGING_SUPABASE_DB_PASSWORD --repo DMPResearch/flowstarter
+   depot ci vars add STAGING_SUPABASE_URL --repo DMPResearch/flowstarter    # http://127.0.0.1:54321
+   depot ci secrets add STAGING_SUPABASE_ANON_KEY --repo DMPResearch/flowstarter
    ```
 
-   Until all three exist, the migrations lane warns and ends green.
+   `STAGING_SUPABASE_ANON_KEY` is the Supabase CLI stack's own demo anon key
+   (`supabase status -o env` on the host, or `supabase-stack.sh write-env`'s
+   output), not a production credential. Until it is set, both staging lanes
+   warn and end green rather than build against nothing. See
+   `docs/ci/secrets.md`.
 
-4. Set the Netlify variables, scoped to the two preview contexts so production
-   is untouched:
+3. Set the Netlify variables for Clerk, scoped to the two preview contexts so
+   production is untouched:
 
    ```sh
-   netlify env:set NEXT_PUBLIC_SUPABASE_URL https://<staging-ref>.supabase.co \
-     --context deploy-preview --context branch-deploy
-   netlify env:set NEXT_PUBLIC_SUPABASE_ANON_KEY <staging-anon-key> \
-     --context deploy-preview --context branch-deploy
-   netlify env:set SUPABASE_SERVICE_ROLE_KEY <staging-service-role-key> \
-     --context deploy-preview --context branch-deploy
-   netlify env:set SUPABASE_PROJECT_REF <staging-ref> \
-     --context deploy-preview --context branch-deploy
    netlify env:set E2E_CLERK_OPERATOR_EMAIL operator+clerk_test@flowstarter.dev \
      --context deploy-preview --context branch-deploy
    netlify env:set E2E_CLERK_CLIENT_EMAIL client+clerk_test@example.com \
      --context deploy-preview --context branch-deploy
    ```
 
+   Do **not** set `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   / `SUPABASE_SERVICE_ROLE_KEY` for these two contexts. There is no database
+   a Netlify Deploy Preview can reach, and setting them to production values
+   "to make the preview work" is exactly the mistake this setup exists to
+   rule out. A pull request that needs a database-backed preview gets one
+   automatically at `pr-<n>.staging.flowstarter.dev` (`staging-pr-deploy.yml`).
+
    The two `E2E_CLERK_*` addresses are what the seed script links its tenants
    to, and what the authenticated Playwright projects sign in as. Add
    `E2E_CLERK_OPERATOR_PASSWORD` the same way if the suite signs in with a
    password rather than a ticket.
 
-5. Re-link the Netlify site to `DMPResearch/flowstarter`. As of 2026-09 it
+4. Re-link the Netlify site to `DMPResearch/flowstarter`. As of 2026-09 it
    still points at the old repository address, so no pull request here builds
    a preview at all and the E2E smoke lane skips with a warning.
 
-## The migrations lane
+## Migrations
 
-`.depot/workflows/staging-migrate.yml` keeps the staging schema level with
-`main`.
+There is no separate migrations workflow anymore; `staging-migrate.yml` is
+retired along with the cloud staging project it pushed to.
+`scripts/deploy-slot.sh` (in `deploy/hetzner-staging/`) applies migrations as
+part of every deploy of slot `main`:
 
-- It runs on a push to `main` that touched `supabase/migrations/**` or
-  `supabase/config.toml`, and applies for real.
-- `workflow_dispatch` takes a `dry_run` input, default true, which runs
-  `supabase db push --dry-run` and changes nothing. Use it to read a plan
-  before merging.
-- Either way it prints `supabase migration list` to the step summary.
-- Concurrency group `staging-migrate-depot`, never cancelled: a half-applied
-  migration is worse than a queued one.
-- It reads the three Depot secrets above and passes them as
-  `SUPABASE_ACCESS_TOKEN` and `SUPABASE_DB_PASSWORD` environment variables, so
-  nothing lands on a command line.
-
-A pull request branch does **not** get its schema pushed. Previews share one
-staging schema, which is why a migration that is not backwards compatible with
-`main` will break other open previews until it merges.
+- It runs `supabase-stack.sh migrate` (`supabase migration up`, then prints
+  `supabase migration list`) against the Hetzner host's stack, before
+  starting the new container, and only for slot `main`.
+- `pr-N` slots do **not** migrate. They share the one schema `main` last
+  applied, which is why a migration that is not backwards compatible with
+  `main` will break other open PR slots until it merges.
+- `staging-deploy.yml` syncs the repository's `supabase/` directory to
+  `/opt/flowstarter/staging/repo` on the host before calling `deploy-slot.sh`,
+  so the migration files applied always match the commit being deployed.
+- There is no dry-run mode on the Hetzner host; `supabase migration list` is
+  the plan, read after the fact from the deploy logs.
 
 ## Seeding and cleaning up E2E tenants
 
@@ -99,6 +116,16 @@ Two scripts, no package scripts (the root `package.json` is deliberately left
 alone). Both read `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` from the
 environment, falling back to `apps/flowstarter-main/.env.local` through
 `e2e/support/local-env.mjs`.
+
+Against a developer's own machine, that falls back to the local stack at
+`127.0.0.1:54321` as always. Against the Hetzner staging database, neither
+script can reach `127.0.0.1:54321` from a laptop, since that address is the
+Hetzner host's own loopback, not the caller's. Run the seed either on the
+host itself (`SUPABASE_URL=http://127.0.0.1:54321 SUPABASE_SERVICE_ROLE_KEY=...
+node e2e/support/seed-e2e-tenants.mjs`, service role key from
+`/etc/flowstarter/staging.env`), or from a laptop through an SSH tunnel
+(`ssh -L 54321:127.0.0.1:54321 <user>@<staging-host>`) and the same
+`SUPABASE_URL`.
 
 ```sh
 # Create or refresh the two fixed tenants. Safe to run repeatedly.

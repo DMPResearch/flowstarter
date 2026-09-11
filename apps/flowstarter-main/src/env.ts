@@ -95,6 +95,15 @@ export const env = createEnv({
     NODE_ENV: z
       .enum(['development', 'production', 'test'])
       .default('development'),
+    // Which environment this process is (see src/lib/supabase-target.ts).
+    // Optional: NODE_ENV alone cannot name `staging`, so this is how a
+    // staging deploy (which otherwise runs with NODE_ENV=production) says so.
+    FLOWSTARTER_ENV: z
+      .enum(['development', 'test', 'staging', 'production'])
+      .optional(),
+    // Explicit override to let development or staging point at a hosted
+    // Supabase project. Unset (or anything other than '1') keeps the guard on.
+    FLOWSTARTER_ALLOW_REMOTE_SUPABASE: z.enum(['1', '0']).optional(),
   },
 
   /*
@@ -179,6 +188,9 @@ export const env = createEnv({
     R2_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY,
     INVITE_TOKEN_SECRET: process.env.INVITE_TOKEN_SECRET,
     NODE_ENV: process.env.NODE_ENV,
+    FLOWSTARTER_ENV: process.env.FLOWSTARTER_ENV,
+    FLOWSTARTER_ALLOW_REMOTE_SUPABASE:
+      process.env.FLOWSTARTER_ALLOW_REMOTE_SUPABASE,
 
     // Client
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
