@@ -21,10 +21,25 @@
              - explicit "dark"   → dark
              - explicit "light"  → light
              - "system" / unset  → match OS prefers-color-scheme
-           Mirrors getStored() in useTheme.ts so the boot shell and the
-           hydrated React app agree on the very first paint. */
+           Mirrors getStored() in useTheme.ts: shared cookie first (same
+           `flowstarter_theme` cookie flowstarter-main writes, so a
+           preference set there shows up here on next load), then the
+           shared localStorage key, then the editor's pre-migration key,
+           so the boot shell and the hydrated React app agree on the very
+           first paint. */
         let stored = null;
-        try { stored = window.localStorage.getItem("flowstarter-editor:theme"); } catch {}
+        try {
+          const cookieMatch = document.cookie
+            .split(";")
+            .map(function (entry) { return entry.trim(); })
+            .find(function (entry) { return entry.indexOf("flowstarter_theme=") === 0; });
+          stored = cookieMatch ? decodeURIComponent(cookieMatch.split("=")[1]) : null;
+          if (!stored) {
+            stored =
+              window.localStorage.getItem("flowstarter_theme") ||
+              window.localStorage.getItem("flowstarter-editor:theme");
+          }
+        } catch {}
         const systemDark =
           window.matchMedia &&
           window.matchMedia("(prefers-color-scheme: dark)").matches;
