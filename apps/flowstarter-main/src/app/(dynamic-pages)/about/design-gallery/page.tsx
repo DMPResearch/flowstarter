@@ -72,8 +72,19 @@ export default function DesignGalleryPage() {
           Client dashboard
         </h2>
         {/* Wrapped exactly like `dashboard/layout.tsx` wraps its children:
-            the mesh behind, the content above it. */}
-        <div className="relative min-h-screen overflow-hidden rounded-2xl">
+            the mesh behind, the content above it. `transform: translateZ(0)`
+            is load-bearing here, not decorative: `MeshBackdrop` is
+            `position: fixed` with an opaque fill, meant to be the outermost
+            layer of a whole page. Nested in a gallery with other sections
+            around it, an untransformed ancestor lets it escape this box and
+            paint over this page's own header and h2, which are earlier in
+            the DOM but non-positioned, so they lose to a fixed element in
+            paint order. The transform gives it a containing block sized to
+            this div instead of the viewport. */}
+        <div
+          className="relative min-h-screen overflow-hidden rounded-2xl"
+          style={{ transform: 'translateZ(0)' }}
+        >
           <MeshBackdrop variant="app" />
           <div className="relative z-10 flex flex-col gap-6 p-6">
             <SiteOverview state={starterOverview.state} tiles={starterTiles} />
