@@ -25,7 +25,13 @@ interface TeamDashboardShellProps {
     | '6xl'
     | '7xl'
     /** Same horizontal cap as `DashboardChrome` / main admin dashboard. */
-    | 'dashboard';
+    | 'dashboard'
+    /**
+     * No cap: the page runs the whole content width beside the sidebar.
+     * For the surfaces that are a wide instrument rather than a document —
+     * the pipeline board, whose six columns want every pixel they can get.
+     */
+    | 'full';
   /** Merged onto the outer shell wrapper (e.g. scoped theme classes). */
   className?: string;
   children: React.ReactNode;
@@ -56,6 +62,7 @@ export function TeamDashboardShell({
     '6xl': 'max-w-6xl',
     '7xl': 'max-w-7xl',
     dashboard: 'max-w-[1280px] w-full',
+    full: 'w-full',
   }[maxWidth];
 
   return (

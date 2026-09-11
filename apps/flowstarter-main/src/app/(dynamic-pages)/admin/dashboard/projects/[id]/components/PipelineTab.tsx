@@ -29,7 +29,8 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
-import { Pill } from '@flowstarter/flow-design-system';
+import { Pill, type Tone } from '@flowstarter/flow-design-system';
+import { DANGER_NOTE, RunningDot } from '../../../pipeline/PipelineColumns';
 import { ShellCard } from '../../../components/TeamDashboardShell';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -76,19 +77,30 @@ import { BuildConversation } from './BuildConversation';
 import { BuildLog } from './BuildLog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
-/** Same chip recipe as the pipeline board, the billing and hosting tabs. */
-const NEUTRAL_TONE =
-  'border-[var(--fs-rule)] bg-transparent text-[var(--fs-ink-dim)]';
-
-const JOB_TONE: Record<string, string> = {
-  queued: 'border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300',
-  running:
-    'border-indigo-500/25 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300',
-  succeeded:
-    'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
-  failed: 'border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300',
-  canceled: NEUTRAL_TONE,
+/**
+ * Same rule as the cross-project board: a job card carries at most one
+ * colour, and only when something is wrong.
+ *
+ * Four of the five statuses here used to have a hue of their own — sky,
+ * indigo, emerald, red — so a healthy build board was a row of coloured
+ * chips in which the one red chip had to compete with three others. `failed`
+ * is the only status an operator has to act on, so it is the only one with a
+ * tone; `running` says it is running by moving instead (`RunningDot`).
+ */
+const JOB_TONE: Record<string, Tone> = {
+  failed: 'danger',
 };
+
+const NEUTRAL_TONE: Tone = 'neutral';
+
+/** The three colours a tone supplies, as the chip and box styles want them. */
+function toneFill(tone: Tone): React.CSSProperties {
+  return {
+    background: `var(--fs-tone-${tone}-soft)`,
+    color: `var(--fs-tone-${tone})`,
+    boxShadow: `inset 0 0 0 1px var(--fs-tone-${tone}-edge)`,
+  };
+}
 
 /**
  * Kinds the build worker runs, and so the only ones with a conversation to
@@ -114,10 +126,10 @@ function errorMessage(e: unknown, fallback: string): string {
 function StatusChip({ status }: { status: string }) {
   return (
     <span
-      className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[11px] font-medium leading-5 ${
-        JOB_TONE[status] ?? NEUTRAL_TONE
-      }`}
+      className="inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-medium leading-5"
+      style={toneFill(JOB_TONE[status] ?? NEUTRAL_TONE)}
     >
+      {status === 'running' && <RunningDot />}
       {jobStatusLabel(status)}
     </span>
   );
@@ -145,7 +157,6 @@ function BuildCard({
   const [reason, setReason] = useState('');
 
   const busy = redispatch.isPending || cancel.isPending;
-  const running = job.status === 'running';
   const canTalk = CONVERSATIONAL_KINDS.has(job.kind);
 
   const onRedispatch = async () => {
@@ -206,13 +217,9 @@ function BuildCard({
       </div>
 
       {job.latestPhase && (
-        <p className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-snug text-[var(--fs-ink-dim)]">
-          {running && (
-            <span
-              className="mt-0.5 inline-block h-2.5 w-2.5 shrink-0 animate-spin rounded-full border-2 border-[var(--purple-primary)] border-t-transparent"
-              aria-hidden
-            />
-          )}
+        <p className="mt-1.5 flex items-start gap-1 text-[11px] leading-snug text-[var(--fs-ink-dim)]">
+          {/* The status chip above already carries the running dot; the
+              phase line does not need a second, purple one of its own. */}
           <span className="min-w-0">{phaseLabel(job.latestPhase)}</span>
         </p>
       )}
@@ -230,7 +237,7 @@ function BuildCard({
 
       {job.errorCode && (
         <p
-          className="mt-1.5 line-clamp-2 text-[11px] text-red-500"
+          className={`mt-1.5 line-clamp-2 px-2 py-1 text-[11px] leading-snug text-[var(--fs-ink-dim)] ${DANGER_NOTE}`}
           title={job.errorDetail ?? undefined}
         >
           {errorCodeLabel(job.errorCode)}
@@ -552,18 +559,23 @@ export function PipelineTab({ project }: { project: Project }) {
           </Button>
         </div>
 
+        {/* The same quiet note the board's cards use, for the same reason:
+            an amber-filled box with amber text was a third hue on a panel
+            that already says everything else in ink. The icon carries the
+            colour, the rule carries the edge, the words stay readable. */}
         {card.stallReasons.length > 0 && (
-          <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/[0.08] p-3">
-            <p className="flex items-center gap-1.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
-              <AlertTriangle className="h-3.5 w-3.5" aria-hidden />
+          <div className={`mt-4 p-3 ${DANGER_NOTE}`}>
+            <p className="flex items-center gap-1.5 text-xs font-semibold text-[var(--fs-ink)]">
+              <AlertTriangle
+                className="h-3.5 w-3.5"
+                style={{ color: 'var(--fs-tone-danger)' }}
+                aria-hidden
+              />
               Needs attention
             </p>
             <ul className="mt-1.5 space-y-0.5">
               {card.stallReasons.map((r) => (
-                <li
-                  key={r}
-                  className="text-xs text-amber-600 dark:text-amber-400"
-                >
+                <li key={r} className="text-xs text-[var(--fs-ink-dim)]">
                   {r}
                 </li>
               ))}
@@ -644,11 +656,14 @@ export function PipelineTab({ project }: { project: Project }) {
         ) : (
           <div
             data-testid="build-board"
-            // `minmax(240px,1fr)` is the same floor the pipeline board uses,
-            // so six columns that do not fit scroll horizontally instead of
-            // squeezing narrower than a card can read at, and `items-start`
-            // keeps one column's own content height from stretching the rest.
-            className="-mx-1 grid grid-flow-col auto-cols-[minmax(15rem,1fr)] items-start gap-3 overflow-x-auto px-1 pb-2"
+            // `minmax(11rem,1fr)` is the same floor the cross-project board
+            // uses, and for the same measured reason: six columns of 240px
+            // need 1520px, which no admin screen has beside the sidebar, so
+            // the board scrolled with its first column clipped on every
+            // machine. At 176px six fit, `1fr` shares out the remainder so
+            // there is no dead space at the right, and `items-start` keeps
+            // one column's content height from stretching the rest.
+            className="-mx-1 grid grid-flow-col auto-cols-[minmax(11rem,1fr)] items-start gap-3 overflow-x-auto px-1 pb-2"
           >
             {BOARD_COLUMNS.map((column) => {
               const columnJobs = byColumn.get(column.id) ?? [];

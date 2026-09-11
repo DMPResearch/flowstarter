@@ -61,6 +61,21 @@ export interface GlassSurfaceProps extends HTMLAttributes<HTMLElement> {
   tone?: Tone;
   /** Adds the hover lift and edge brighten. Set it only when the whole surface is clickable. */
   interactive?: boolean;
+  /**
+   * Tightens the surface's own padding (and, for a panel, the gap between
+   * its children) to the 12px step.
+   *
+   * For surfaces that hold a grid of small objects rather than a page
+   * section: a kanban column, and the cards stacked inside it. Three of
+   * those nested at the default step spend 88px of a 179px column on padding
+   * and leave 91px for a business name, which is not enough for one to wrap
+   * without breaking mid-word.
+   *
+   * A prop and not a `p-3` at the call site because the variant padding is
+   * unlayered CSS and Tailwind's utilities are not: a `p-*` written beside
+   * `variant="panel"` loses the cascade and does nothing at all.
+   */
+  dense?: boolean;
   /** The element to render. Use a semantic one: section, header, aside, li. */
   as?: ElementType;
   className?: string;
@@ -81,6 +96,7 @@ export const GlassSurface = forwardRef<HTMLElement, GlassSurfaceProps>(
       variant = 'card',
       tone,
       interactive = false,
+      dense = false,
       as = 'div',
       className = '',
       children,
@@ -93,6 +109,7 @@ export const GlassSurface = forwardRef<HTMLElement, GlassSurfaceProps>(
       VARIANT_CLASS[variant],
       tone ? 'fs-glass--toned' : '',
       interactive ? 'fs-glass--interactive' : '',
+      dense ? 'fs-glass--dense' : '',
       className,
     ]
       .filter(Boolean)
