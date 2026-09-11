@@ -1,13 +1,12 @@
 'use client';
 
-import '../../(main-pages)/landing-design.css';
+import '@flowstarter/flow-design-system/styles/landing.css';
 import { AdminDashboardSidebar } from '../components/AdminDashboardSidebar';
 import { DashboardBaseLayout } from '@/components/ui/dashboard-base-layout';
 
-// Operator dashboard inherits the `landing` FlowBackground variant from
-// DashboardBaseLayout so the brand orbs read at the same intensity as
-// auth + editor. Cards still supply depth on top — the atmosphere
-// overlays self-quiet when the landing variant is in play.
+// Operator dashboard sits on `DashboardBaseLayout`'s MeshBackdrop — the same
+// liquid-glass atmosphere the client dashboard uses — so admin reads as the
+// same product rather than a separate marketing-styled shell.
 
 export default function AdminDashboardLayout({
   children,

@@ -14,7 +14,12 @@ const CARE_PLANS = [
     description: 'Hosting, domain, maintenance, support and guided AI edits.',
   },
   {
+    // The one most clients land on. Picked out by weight and by a heavier
+    // rule under the row, never by a coloured fill: this page's emphasis is
+    // typographic, and a tinted row here is the tile look the flat restore
+    // took out.
     name: 'Pro care',
+    featured: true,
     price: '€99 / month',
     description:
       'More editor capacity, advanced controls and priority support.',
@@ -62,6 +67,9 @@ export function LandingPricing() {
             <strong>Tailored preview</strong>
             <p>Review the creative direction and receive your final quote.</p>
           </div>
+          {/* The emphasised milestone. No tag: this is a step in a sequence,
+              not an option anyone chooses, so "most chosen" would be a lie.
+              The heavier rule under the column is the whole emphasis. */}
           <div className="ls-payment-milestone ls-payment-milestone--accent">
             <span>20%</span>
             <strong>Start the full build</strong>
@@ -96,10 +104,21 @@ export function LandingPricing() {
                 type="button"
                 key={plan.name}
                 onClick={() => handlePlanClick(plan.name.toLowerCase())}
-                className="ls-care-plan-row"
+                className={`ls-care-plan-row${
+                  'featured' in plan && plan.featured
+                    ? ' ls-care-plan-row--hi'
+                    : ''
+                }`}
               >
                 <span>
-                  <strong>{plan.name}</strong>
+                  <strong>
+                    {plan.name}
+                    {'featured' in plan && plan.featured && (
+                      <span className="ls-tag">
+                        {t('landing.pricing.mostChosen')}
+                      </span>
+                    )}
+                  </strong>
                   <small>{plan.description}</small>
                 </span>
                 <b>{plan.price}</b>

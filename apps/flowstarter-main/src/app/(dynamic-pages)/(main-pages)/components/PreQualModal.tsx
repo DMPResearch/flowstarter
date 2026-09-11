@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import { EXTERNAL_URLS } from '@/lib/constants';
 import { useI18n } from '@/lib/i18n';
 import { CalendlyEmbed } from './CalendlyEmbed';
-import { DiscoveryWizard } from './discovery/DiscoveryWizard';
+import { DiscoveryWizard, type WizardStage } from './discovery/DiscoveryWizard';
 import type { DiscoveryData, Tier } from './discovery/discovery.logic';
 
 type Step = 'discovery' | 'calendar' | 'confirmed';
@@ -54,7 +54,7 @@ export function PreQualModal({
   const { t: tStrict } = useI18n();
   const t = tStrict as (key: string) => string;
   const [step, setStep] = useState<Step>('discovery');
-  const [wizardWide, setWizardWide] = useState(false);
+  const [wizardStage, setWizardStage] = useState<WizardStage>('intake');
   const [selectedTier, setSelectedTier] = useState<Tier | null>(null);
   const [discoveryData, setDiscoveryData] = useState<DiscoveryData | null>(
     null
@@ -65,7 +65,7 @@ export function PreQualModal({
     if (open) {
       setSelectedTier(coerceInitialTier(initialPlan));
       setDiscoveryData(null);
-      setWizardWide(false);
+      setWizardStage('intake');
       // After a paid deposit we resume at the calendar; otherwise start fresh.
       setStep(resumeStep === 'calendar' ? 'calendar' : 'discovery');
       document.body.style.overflow = 'hidden';
@@ -111,9 +111,13 @@ export function PreQualModal({
 
   return createPortal(
     <>
-      {/* Backdrop */}
+      {/* Backdrop — a soft blurred scrim, not a flat dim: a low-alpha wash of
+          the ink primitive (theme-invariant, so the scrim stays dark and
+          legible in both light and dark rather than flipping to a pale wash
+          under `.dark`) plus enough blur that the mesh and page keep their
+          shape through it. */}
       <div
-        className="bg-black/60 backdrop-blur-sm"
+        className="bg-[color-mix(in_oklab,var(--fs-primitive-ink-dark)_42%,transparent)] backdrop-blur-[18px]"
         style={{
           position: 'fixed',
           top: 0,
@@ -146,23 +150,34 @@ export function PreQualModal({
       >
         <div
           className={[
-            'relative w-full my-auto rounded-2xl border border-white/10 bg-white dark:bg-[#0f1117] shadow-2xl shadow-black/30 p-6 sm:p-8 transition-all duration-300',
+            // The dialog surface itself: the shared liquid glass material
+            // (`.fs-glass`) on its near-opaque `--overlay` fill, per the design
+            // system's own guidance for content sitting over a busy mesh —
+            // see packages/flow-design-system/README.md's "Liquid glass".
+            // `GlassSurface`'s `panel` variant was the first reach, but it
+            // also forces `flex-col` + a fixed inter-child `gap`, which
+            // fights the header/stepper/nav rhythm already built into this
+            // component's own margins; applying the classes directly (the
+            // README's documented alternative) keeps that rhythm intact
+            // while still using the one material, not a hand-rolled fill.
+            // `.fs-glass` supplies its own background, radius, blur and
+            // refractive edge, so the old flat white/dark fill, border and
+            // shadow are dropped rather than layered underneath it.
+            'fs-glass fs-glass--overlay relative w-full my-auto p-6 sm:p-8 transition-all duration-300',
             step === 'calendar'
               ? 'max-w-3xl'
               : step === 'discovery'
-              ? wizardWide
-                ? // The concierge stage (info agent + preview) is two panes
-                  // wide — unchanged.
+              ? wizardStage === 'concierge'
+                ? // The concierge stage (info agent + real site in a scaled
+                  // iframe) is two panes wide — unchanged.
                   'max-w-[min(96vw,1600px)]'
-                : // The conversation itself: full width minus margins below
-                  // 768px (nothing narrower than that to cap against), the
-                  // existing card width from 768px up to 1024px, and a wider
-                  // ~960px card from 1024px up — the log, the composer and
-                  // the suggestion-chip row all stretch to fill it, so a
-                  // wider pane means agent bubbles wrap at a wider 78% cap
-                  // too instead of the conversation staying pinched inside a
-                  // modal sized for the narrower commercial panels.
-                  'max-w-full md:max-w-2xl lg:max-w-[960px]'
+                : // The intake stage. Also two panes now — the conversation
+                  // and the preview it is building — but the right-hand pane
+                  // holds a skeleton rather than a 1280px site, so it needs
+                  // far less than the concierge. Below 900px the stage
+                  // collapses to one column and the preview to its strip, so
+                  // this is a phone-width card until there is room for both.
+                  'max-w-full min-[900px]:max-w-[min(94vw,1180px)]'
               : 'max-w-2xl',
           ].join(' ')}
         >
@@ -198,7 +213,7 @@ export function PreQualModal({
               initialTier={selectedTier}
               source={source}
               onComplete={handleDiscoveryComplete}
-              onWideChange={setWizardWide}
+              onWideChange={setWizardStage}
               t={t}
             />
           )}

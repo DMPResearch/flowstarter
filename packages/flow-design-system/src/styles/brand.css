@@ -13,6 +13,9 @@
  *   8. Motion tokens
  *   9. Density tokens (comfortable / compact)
  *  10. Backward-compat aliases (old token names → new --fs-* tokens)
+ *  11. Liquid glass — material, elevation ladder, tones, mesh backdrop
+ *  12. Liquid glass — radii
+ *  13. Controls — one height, one ring
  */
 
 /* ─────────────────────────────────────────────
@@ -122,7 +125,7 @@
   --fs-bg-overlay:  var(--fs-primitive-light-overlay);
 
   /* Glass surfaces */
-  --fs-glass-bg:      rgba(255, 255, 255, 0.68);
+  --fs-glass-bg:      rgba(255, 255, 255, 0.52);
   --fs-glass-edge:    rgba(15, 23, 42, 0.11);
 
   /* Chrome surfaces — header & sidebar glass */
@@ -189,7 +192,7 @@
   --fs-bg-overlay:  var(--fs-primitive-dark-overlay);
 
   /* Glass surfaces */
-  --fs-glass-bg:      rgba(22, 28, 45, 0.64);
+  --fs-glass-bg:      rgba(22, 28, 45, 0.42);
   --fs-glass-edge:    rgba(148, 163, 184, 0.30);
 
   /* Chrome surfaces — header & sidebar glass */
@@ -333,23 +336,28 @@
    Apply data-density="comfortable|compact" on
    a wrapper element (body, layout shell, etc.)
    ───────────────────────────────────────────── */
+/* The button and the input used to be 52px and 48px, which is why a send
+   button never lined up with the field beside it. Both now read the one
+   control height from section 13; density changes that height, not the
+   agreement between the two. */
 :root,
 [data-density="comfortable"] {
-  --fs-btn-h:      52px;
+  --fs-btn-h:      var(--fs-control-h);
   --fs-btn-px:     1.65rem;
   --fs-btn-fs:     1.05rem;
-  --fs-btn-radius: var(--fs-radius-md);
-  --fs-input-h:    48px;
+  --fs-btn-radius: var(--fs-radius-control);
+  --fs-input-h:    var(--fs-control-h);
   --fs-input-px:   1rem;
   --fs-card-p:     2rem 1.75rem;
 }
 
 [data-density="compact"] {
-  --fs-btn-h:      40px;
+  --fs-control-h:  var(--fs-control-h-sm);
+  --fs-btn-h:      var(--fs-control-h-sm);
   --fs-btn-px:     1.15rem;
   --fs-btn-fs:     0.9rem;
-  --fs-btn-radius: var(--fs-radius-sm);
-  --fs-input-h:    36px;
+  --fs-btn-radius: var(--fs-radius-control-sm);
+  --fs-input-h:    var(--fs-control-h-sm);
   --fs-input-px:   0.75rem;
   --fs-card-p:     1.25rem 1.25rem;
 }
@@ -423,6 +431,401 @@
 .dark {
   --glass-border-highlight: rgba(255, 255, 255, 0.12);
   --glass-border-shadow:    rgba(0, 0, 0, 0.40);
+}
+
+/* ─────────────────────────────────────────────
+   11. LIQUID GLASS — MATERIAL
+   The translucent layered material: a blurred,
+   saturated backdrop, a refractive inner edge, a
+   specular catch-light and the coloured mesh it
+   all sits on. Every glass surface in the product
+   reads from these, never from hand-rolled rgba().
+   ───────────────────────────────────────────── */
+:root {
+  /* @liquid-glass:light */
+  --fs-glass-bg-strong: rgba(255, 255, 255, 0.72);  /* denser fill for content over a busy mesh */
+  --fs-glass-bg-overlay: rgba(255, 255, 255, 0.92); /* banners and toasts that float over unblurred page content */
+  --fs-glass-highlight: rgba(255, 255, 255, 0.75);  /* diagonal catch-light, fades to transparent */
+  --fs-glass-specular: rgba(255, 255, 255, 0.92);   /* 1px light line along the top inside edge */
+  --fs-glass-ink-dim: rgba(18, 10, 34, 0.74);       /* label and note ink on a tinted tile */
+  --fs-glass-blur: 28px;                            /* the default blur; the ladder below overrides it per level */
+  --fs-glass-saturate: 180%;                        /* backdrop saturation, so the mesh stays vivid through the glass */
+  --fs-glass-brightness: 1.03;                      /* light mode lifts what is behind the pane, the way frosted glass does */
+
+  /* ── The elevation ladder ──
+     One material at five thicknesses. A 44px pill and a 600px modal cannot
+     share a blur radius: at 28px the blur reaches further than the pill is
+     tall, so it averages to flat frosted plastic, while the modal needs more
+     than 28px to actually cut off the page it covers rather than sit on it.
+     Blur, fill and the drop it casts therefore all scale with the surface.
+     A level sets these three on itself and .fs-glass reads them, so there is
+     still exactly one place the material is described. */
+  --fs-glass-blur-control: 12px;                    /* a pill or a button */
+  --fs-glass-blur-chrome: 18px;                     /* a header or sidebar: content has to stay readable through it */
+  --fs-glass-blur-card: 24px;                       /* a single object */
+  --fs-glass-blur-panel: 30px;                      /* a container for cards */
+  --fs-glass-blur-overlay: 44px;                    /* a modal or a banner: it has to separate from the page under it */
+
+  /* The panel is the thinnest fill of the three content levels, so a card
+     laid on a panel is the brighter of the two and the stack reads as depth
+     rather than as two rectangles of the same paint. */
+  --fs-glass-bg-panel: rgba(255, 255, 255, 0.40);   /* recessed: the container a card sits in */
+  --fs-glass-bg-control: rgba(255, 255, 255, 0.66); /* a control has to read as solid enough to press */
+
+  /* The drop per level. A control casts none, because a row of buttons that
+     each float is a row that reads as five cards. */
+  --fs-glass-shadow-card:
+    0 12px 32px -12px hsl(233, 58%, 30%, 0.20),
+    0 3px 10px -5px hsl(233, 48%, 26%, 0.13);
+  --fs-glass-shadow-panel:
+    0 32px 80px -22px hsl(233, 58%, 30%, 0.26),
+    0 10px 28px -12px hsl(233, 48%, 26%, 0.16);
+  --fs-glass-shadow-overlay:
+    0 48px 110px -24px hsl(233, 60%, 22%, 0.40),
+    0 16px 44px -16px hsl(233, 50%, 20%, 0.24);
+
+  /* The drop the material casts. Tinted with the mesh's indigo rather than
+     neutral grey, so a panel looks lit by the gradient behind it. */
+  --fs-glass-shadow:
+    0 24px 64px -16px hsl(233, 58%, 30%, 0.26),
+    0 8px 22px -10px hsl(233, 48%, 26%, 0.16);
+
+  /* The 1px inner border. Bright where the light lands (top-left), dim where
+     it falls away (bottom-right) — that gradient is what reads as a refracting
+     rim rather than a drawn outline. */
+  --fs-glass-refraction:
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.90) 0%,
+      rgba(255, 255, 255, 0.62) 22%,
+      rgba(255, 255, 255, 0.38) 58%,
+      rgba(255, 255, 255, 0.25) 100%
+    );
+
+  /* ── Tones — nine content tints ──
+     Each tone T ships five tokens:
+       --fs-tone-T           ink, for the value and any tone-coloured text
+       --fs-tone-T-soft      the default wash: a whisper, barely a tint
+       --fs-tone-T-emphasis  the loud wash, for the one tile that wants the eye
+       --fs-tone-T-edge      tone-coloured refractive edge
+       --fs-tone-T-glow      soft outer bloom, only used under emphasis
+
+     A grid of tiles is not a colour chart. The default tile is neutral glass
+     and the tone lives in the value, the icon chip and a thin rim, so the one
+     tile that carries an emphasis wash is the one the eye lands on.
+     Ink lightness is set per mode so the ink clears 4.5:1 on its own wash over
+     the glass over the brightest and the darkest part of the mesh. Verified by
+     packages/flow-design-system/scripts/check-tone-contrast.mjs. */
+  /* @tone-tokens:light */
+  --fs-tone-accent: hsl(233, 76%, 44%);             /* indigo, the brand hue: primary emphasis */
+  --fs-tone-accent-soft: hsl(233, 88%, 58%, 0.10);
+  --fs-tone-accent-emphasis: hsl(233, 92%, 72%, 0.28);
+  --fs-tone-accent-edge: hsl(233, 74%, 56%, 0.35);
+  --fs-tone-accent-glow: hsl(233, 86%, 56%, 0.18);
+
+  --fs-tone-ok: hsl(152, 76%, 23%);                 /* green: something is working */
+  --fs-tone-ok-soft: hsl(152, 88%, 58%, 0.10);
+  --fs-tone-ok-emphasis: hsl(152, 92%, 72%, 0.28);
+  --fs-tone-ok-edge: hsl(152, 74%, 56%, 0.35);
+  --fs-tone-ok-glow: hsl(152, 86%, 56%, 0.18);
+
+  --fs-tone-info: hsl(205, 76%, 29%);               /* blue: neutral reporting */
+  --fs-tone-info-soft: hsl(205, 88%, 58%, 0.10);
+  --fs-tone-info-emphasis: hsl(205, 92%, 72%, 0.28);
+  --fs-tone-info-edge: hsl(205, 74%, 56%, 0.35);
+  --fs-tone-info-glow: hsl(205, 86%, 56%, 0.18);
+
+  --fs-tone-warn: hsl(36, 76%, 25%);                /* amber: there is something for you to do */
+  --fs-tone-warn-soft: hsl(36, 88%, 58%, 0.10);
+  --fs-tone-warn-emphasis: hsl(36, 92%, 72%, 0.28);
+  --fs-tone-warn-edge: hsl(36, 74%, 56%, 0.35);
+  --fs-tone-warn-glow: hsl(36, 86%, 56%, 0.18);
+
+  --fs-tone-danger: hsl(356, 76%, 35%);             /* red: reserved for real failure */
+  --fs-tone-danger-soft: hsl(356, 88%, 58%, 0.10);
+  --fs-tone-danger-emphasis: hsl(356, 92%, 72%, 0.28);
+  --fs-tone-danger-edge: hsl(356, 74%, 56%, 0.35);
+  --fs-tone-danger-glow: hsl(356, 86%, 56%, 0.18);
+
+  --fs-tone-violet: hsl(268, 76%, 43%);             /* violet: work the client did themselves */
+  --fs-tone-violet-soft: hsl(268, 88%, 58%, 0.10);
+  --fs-tone-violet-emphasis: hsl(268, 92%, 72%, 0.28);
+  --fs-tone-violet-edge: hsl(268, 74%, 56%, 0.35);
+  --fs-tone-violet-glow: hsl(268, 86%, 56%, 0.18);
+
+  --fs-tone-pink: hsl(330, 76%, 34%);               /* pink: audience and reach */
+  --fs-tone-pink-soft: hsl(330, 88%, 58%, 0.10);
+  --fs-tone-pink-emphasis: hsl(330, 92%, 72%, 0.28);
+  --fs-tone-pink-edge: hsl(330, 74%, 56%, 0.35);
+  --fs-tone-pink-glow: hsl(330, 86%, 56%, 0.18);
+
+  --fs-tone-teal: hsl(182, 76%, 23%);               /* teal: scheduling and time */
+  --fs-tone-teal-soft: hsl(182, 88%, 58%, 0.10);
+  --fs-tone-teal-emphasis: hsl(182, 92%, 72%, 0.28);
+  --fs-tone-teal-edge: hsl(182, 74%, 56%, 0.35);
+  --fs-tone-teal-glow: hsl(182, 86%, 56%, 0.18);
+
+  --fs-tone-neutral: hsl(233, 18%, 32%);            /* off: not switched on yet */
+  --fs-tone-neutral-soft: hsl(233, 16%, 48%, 0.08);
+  --fs-tone-neutral-emphasis: hsl(233, 18%, 72%, 0.26);
+  --fs-tone-neutral-edge: hsl(233, 20%, 58%, 0.30);
+  --fs-tone-neutral-glow: hsl(233, 20%, 60%, 0.10);
+  /* @tone-tokens:end */
+
+  /* ── The field ──
+     What the glass sits on, and the reason the material has anything to
+     refract. It is not a picture hung behind the interface: it is the page's
+     own surface tone, modulated slowly enough that nobody registers a
+     gradient. Four saturated blobs made a coloured rectangle that announced
+     itself against the cream around it; a working surface should read as one
+     continuous material from the page edge to the panel.
+
+     Two layers, and the first one is the whole idea. `--fs-field-tint` is a
+     near neighbour of `--fs-bg-base`: 2.5 points lighter, six degrees of hue
+     toward the accent and eighteen points less saturated in light, and in dark
+     it is literally `--fs-bg-raised`, the next surface up. The wash is wide
+     enough that the visible part of it is a ramp rather than a blob, so the
+     top-left corner is lit and the bottom-right is the bare page, the same
+     direction the glass's own catch-light comes from.
+
+     `--fs-field-bloom` is the one piece of colour left: a single indigo radial
+     sitting high behind the header, 70vw across, whose alpha peaks under 0.05
+     anywhere it is actually painted. At that strength the eye reads it as a
+     temperature, not as a colour.
+
+     The token is still called `--fs-mesh` because the utility class and both
+     contrast scripts key off that name. What changed is what it paints.
+
+     A surface says how loud its field is with `--fs-mesh-opacity` and nothing
+     else. That was always the documented rule, and it is now the only one that
+     can work: a custom property containing `var()` is substituted where it is
+     *declared*, not where it is used, so `--fs-mesh` resolves its colours here
+     on `:root` and a variant that overrode only `--fs-mesh-1` never changed a
+     pixel. Both the app and the landing block had been doing exactly that, so
+     every signed-in surface had been quietly painting the four saturated blobs
+     this token used to hold, dimmed to half, and not the quiet colours either
+     block asked for. A variant that genuinely needs different colours has to
+     restate `--fs-mesh` itself; landing, below, is the one that does. */
+  --fs-field-tint: hsl(34, 42%, 98.6%);             /* --fs-bg-base is hsl(40, 60%, 96.1%) */
+  --fs-field-bloom: hsl(233, 58%, 60%, 0.055);      /* the one bloom, high behind the header */
+  --fs-mesh-opacity: 1;                             /* the one dial: how loud this surface is */
+  --fs-mesh-grain-opacity: 0.012;                   /* dither, not texture: invisible at 1x */
+  --fs-mesh-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+  --fs-mesh:
+    radial-gradient(70vw 40vw at 52% -8%, var(--fs-field-bloom) 0%, transparent 100%),
+    radial-gradient(120vw 100vw at -4% -12%, var(--fs-field-tint) 0%, transparent 100%);
+}
+
+.dark {
+  /* @liquid-glass:dark */
+  --fs-glass-bg-strong: rgba(26, 32, 54, 0.62);     /* denser fill for content over a busy mesh */
+  --fs-glass-bg-overlay: rgba(26, 32, 54, 0.9);     /* banners and toasts that float over unblurred page content */
+  --fs-glass-highlight: rgba(255, 255, 255, 0.17);  /* diagonal catch-light, fades to transparent */
+  --fs-glass-specular: rgba(255, 255, 255, 0.52);   /* 1px light line along the top inside edge */
+  --fs-glass-ink-dim: rgba(244, 238, 228, 0.84);    /* label and note ink on a tinted tile */
+
+  /* Smoked, not grey. Dark glass that only darkens its fill reads as a grey
+     card. Real smoked glass dims what is behind it without draining the colour
+     out of it, so the brightness comes down while the saturation stays up; take
+     the saturation down as well and the pane goes muddy, which is the grey card
+     again by another route. The rim and the catch-light then do the work of
+     saying "there is a pane here", which is why both are brighter below. */
+  --fs-glass-brightness: 0.86;
+  --fs-glass-saturate: 172%;
+
+  --fs-glass-bg-panel: rgba(18, 23, 40, 0.34);      /* recessed: the container a card sits in */
+  --fs-glass-bg-control: rgba(30, 37, 60, 0.58);    /* a control has to read as solid enough to press */
+
+  --fs-glass-shadow:
+    0 26px 70px -18px hsl(233, 76%, 4%, 0.76),
+    0 8px 24px -10px hsl(233, 60%, 3%, 0.56);
+
+  --fs-glass-shadow-card:
+    0 14px 36px -14px hsl(233, 76%, 3%, 0.66),
+    0 3px 10px -5px hsl(233, 60%, 2%, 0.50);
+  --fs-glass-shadow-panel:
+    0 34px 86px -24px hsl(233, 78%, 3%, 0.78),
+    0 10px 30px -14px hsl(233, 62%, 2%, 0.56);
+  --fs-glass-shadow-overlay:
+    0 54px 130px -26px hsl(233, 80%, 2%, 0.86),
+    0 18px 50px -18px hsl(233, 64%, 2%, 0.64);
+
+  /* The rim carries more of the load in dark than it does in light: with the
+     fill this thin, the lit edge is most of what tells you a pane is there. */
+  --fs-glass-refraction:
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.50) 0%,
+      rgba(255, 255, 255, 0.24) 24%,
+      rgba(255, 255, 255, 0.12) 60%,
+      rgba(255, 255, 255, 0.07) 100%
+    );
+
+  /* @tone-tokens:dark */
+  --fs-tone-accent: hsl(233, 94%, 80%);             /* indigo, the brand hue: primary emphasis */
+  --fs-tone-accent-soft: hsl(233, 82%, 62%, 0.12);
+  --fs-tone-accent-emphasis: hsl(233, 70%, 46%, 0.28);
+  --fs-tone-accent-edge: hsl(233, 82%, 74%, 0.32);
+  --fs-tone-accent-glow: hsl(233, 88%, 64%, 0.30);
+
+  --fs-tone-ok: hsl(152, 94%, 80%);                 /* green: something is working */
+  --fs-tone-ok-soft: hsl(152, 82%, 62%, 0.12);
+  --fs-tone-ok-emphasis: hsl(152, 70%, 46%, 0.28);
+  --fs-tone-ok-edge: hsl(152, 82%, 74%, 0.32);
+  --fs-tone-ok-glow: hsl(152, 88%, 64%, 0.30);
+
+  --fs-tone-info: hsl(205, 94%, 80%);               /* blue: neutral reporting */
+  --fs-tone-info-soft: hsl(205, 82%, 62%, 0.12);
+  --fs-tone-info-emphasis: hsl(205, 70%, 46%, 0.28);
+  --fs-tone-info-edge: hsl(205, 82%, 74%, 0.32);
+  --fs-tone-info-glow: hsl(205, 88%, 64%, 0.30);
+
+  --fs-tone-warn: hsl(36, 94%, 80%);                /* amber: there is something for you to do */
+  --fs-tone-warn-soft: hsl(36, 82%, 62%, 0.12);
+  --fs-tone-warn-emphasis: hsl(36, 70%, 46%, 0.28);
+  --fs-tone-warn-edge: hsl(36, 82%, 74%, 0.32);
+  --fs-tone-warn-glow: hsl(36, 88%, 64%, 0.30);
+
+  --fs-tone-danger: hsl(356, 94%, 80%);             /* red: reserved for real failure */
+  --fs-tone-danger-soft: hsl(356, 82%, 62%, 0.12);
+  --fs-tone-danger-emphasis: hsl(356, 70%, 46%, 0.28);
+  --fs-tone-danger-edge: hsl(356, 82%, 74%, 0.32);
+  --fs-tone-danger-glow: hsl(356, 88%, 64%, 0.30);
+
+  --fs-tone-violet: hsl(268, 94%, 80%);             /* violet: work the client did themselves */
+  --fs-tone-violet-soft: hsl(268, 82%, 62%, 0.12);
+  --fs-tone-violet-emphasis: hsl(268, 70%, 46%, 0.28);
+  --fs-tone-violet-edge: hsl(268, 82%, 74%, 0.32);
+  --fs-tone-violet-glow: hsl(268, 88%, 64%, 0.30);
+
+  --fs-tone-pink: hsl(330, 94%, 80%);               /* pink: audience and reach */
+  --fs-tone-pink-soft: hsl(330, 82%, 62%, 0.12);
+  --fs-tone-pink-emphasis: hsl(330, 70%, 46%, 0.28);
+  --fs-tone-pink-edge: hsl(330, 82%, 74%, 0.32);
+  --fs-tone-pink-glow: hsl(330, 88%, 64%, 0.30);
+
+  --fs-tone-teal: hsl(182, 94%, 80%);               /* teal: scheduling and time */
+  --fs-tone-teal-soft: hsl(182, 82%, 62%, 0.12);
+  --fs-tone-teal-emphasis: hsl(182, 70%, 46%, 0.28);
+  --fs-tone-teal-edge: hsl(182, 82%, 74%, 0.32);
+  --fs-tone-teal-glow: hsl(182, 88%, 64%, 0.30);
+
+  --fs-tone-neutral: hsl(233, 22%, 84%);            /* off: not switched on yet */
+  --fs-tone-neutral-soft: hsl(233, 14%, 66%, 0.10);
+  --fs-tone-neutral-emphasis: hsl(233, 16%, 46%, 0.26);
+  --fs-tone-neutral-edge: hsl(233, 22%, 74%, 0.26);
+  --fs-tone-neutral-glow: hsl(233, 22%, 64%, 0.12);
+  /* @tone-tokens:end */
+
+  /* ── The field, in dark ──
+     Same two layers, same restraint, and here the tint does not have to be
+     invented: `--fs-bg-raised` is already the next surface up from the base,
+     3.1 points of lightness away with nothing saturated in it. Deriving the
+     wash from the surface token is the point — the field and the panels are
+     steps on one ladder rather than two unrelated paints. */
+  --fs-field-tint: var(--fs-bg-raised);             /* #040308 base toward #0a0714 raised */
+  --fs-field-bloom: hsl(233, 64%, 56%, 0.06);       /* the one bloom, high behind the header */
+  --fs-mesh-grain-opacity: 0.012;                   /* dither, not texture: invisible at 1x */
+}
+
+/* ─────────────────────────────────────────────
+   11b. LIQUID GLASS — THE FIELD, PER SURFACE
+   One field, at three volumes. A variant says how
+   loud it is with `--fs-mesh-opacity` and nothing
+   else — which is both the rule the system always
+   claimed and, per the note above, the only thing
+   a variant can change without restating the
+   whole gradient.
+   ───────────────────────────────────────────── */
+
+/* The app: the client dashboard and admin. The longest-dwell surface in the
+   product, so it is the quietest of the two working surfaces. Darius, twice:
+   first the peach and teal blobs behind the dashboard read as distracting,
+   then — after a pass that was meant to replace them and silently did not —
+   the field still read as a coloured rectangle laid over a cream page. The
+   tiles and the rims carry the colour now; the field carries the surface. */
+.fs-mesh-backdrop[data-variant='app'] {
+  --fs-mesh-opacity: 0.8;
+}
+
+/* The editor: a canvas. Whatever the client is building has to be the loudest
+   thing on screen, so the field steps back another notch behind it. */
+.fs-mesh-backdrop[data-variant='editor'] {
+  --fs-mesh-opacity: 0.72;
+}
+
+/* Marketing kept the flat cream it was reverted to, so nothing mounts this
+   variant today. It is left whole rather than deleted, and it is the one
+   variant that restates `--fs-mesh`, both because its composition really is
+   different and so that changing the field above cannot quietly repaint a
+   marketing page if this is ever mounted again. Its dimmer moved out of
+   index.css and into `--fs-mesh-opacity` here, so there is one dial rather
+   than a pair to multiply. */
+.fs-mesh-backdrop[data-variant='landing'] {
+  --fs-mesh-1: hsl(233, 60%, 66%, 0.34);            /* whisper behind the headline */
+  --fs-mesh-2: hsl(248, 42%, 70%, 0.22);            /* faint tint, low on the page */
+  --fs-mesh-3: hsl(233, 62%, 64%, 0.58);            /* the one bloom, behind the hero card */
+  --fs-mesh-opacity: 0.45;                          /* marketing is the quietest of them all */
+  --fs-mesh-grain-opacity: 0.02;                    /* barely there, just enough to stop banding */
+  --fs-mesh:
+    radial-gradient(104vw 96vw at 0% -10%, var(--fs-mesh-1) 0%, transparent 100%),
+    radial-gradient(98vw 92vw at 100% 106%, var(--fs-mesh-2) 0%, transparent 100%),
+    radial-gradient(84vw 86vw at 108% 42%, var(--fs-mesh-3) 0%, transparent 100%);
+}
+
+.dark .fs-mesh-backdrop[data-variant='landing'] {
+  --fs-mesh-1: hsl(233, 62%, 44%, 0.57);            /* whisper behind the headline */
+  --fs-mesh-2: hsl(248, 48%, 42%, 0.33);            /* faint tint, low on the page */
+  --fs-mesh-3: hsl(233, 60%, 46%, 0.73);            /* the one bloom, behind the hero card */
+  --fs-mesh-grain-opacity: 0.02;                    /* barely there, just enough to stop banding */
+}
+
+
+/* ─────────────────────────────────────────────
+   12. LIQUID GLASS — RADII
+   Concentric corners: a tile nested 8px inside a
+   panel uses the inner radius, so the two curves
+   stay parallel instead of crossing.
+   ───────────────────────────────────────────── */
+:root {
+  --fs-radius-glass: 22px;                          /* outer radius of any glass surface */
+
+  /* The rule is one subtraction: a child's radius is its parent's radius minus
+     the gap between the two edges. Follow it and the curves stay parallel; break
+     it and the inner corner either cuts across the outer one or floats inside a
+     fat crescent of parent. Each step below is one 8px gap further in. */
+  --fs-radius-glass-inner: calc(var(--fs-radius-glass) - var(--fs-space-2));        /* 14px: a tile 8px inside a panel */
+  --fs-radius-glass-flush: calc(var(--fs-radius-glass-inner) - var(--fs-space-2));  /*  6px: a strip or chip 8px inside a tile */
+
+  /* A free-standing control is not nested in anything, so it does not take a
+     concentric radius; it takes the control radius wherever it appears. */
+  --fs-radius-control: var(--fs-radius-md);         /* 12px */
+  --fs-radius-control-sm: var(--fs-radius-sm);      /*  8px */
+}
+
+/* ─────────────────────────────────────────────
+   13. CONTROLS — ONE HEIGHT, ONE RING
+   A button, a text field and a pill that sit on
+   the same row are the same object at different
+   jobs, so they share a height, a radius and a
+   focus ring. They drifted to five different
+   heights across the product; these are the one
+   set everything now reads from.
+   ───────────────────────────────────────────── */
+:root {
+  --fs-control-h: 44px;                             /* buttons, inputs, selects and pills, on one baseline */
+  --fs-control-h-sm: 36px;                          /* dense rows: table actions, toolbar buttons */
+  --fs-control-h-xs: 28px;                          /* badges and status pills */
+  --fs-control-px: var(--fs-space-4);
+  --fs-control-px-sm: var(--fs-space-3);
+  --fs-control-gap: var(--fs-space-2);              /* icon to label inside a control */
+
+  /* One focus ring, drawn as an outline so it sits outside the surface and
+     never fights the refractive edge. Widths of 1, 2 and 3px with offsets of
+     0, 2 and 3px were all in use at once. */
+  --fs-focus-ring-width: 2px;
+  --fs-focus-ring-offset: 2px;
+  --fs-focus-ring-color: var(--fs-accent);
 }
 
 /* ─────────────────────────────────────────────

@@ -28,13 +28,13 @@ import {
 } from '../intake-chat.shared';
 import { usePreviewProgress } from '../usePreviewProgress';
 import { DemoSiteFrame } from './DemoSiteFrame';
+import { DerivedSiteSkeleton } from './IntakePreviewPane';
 import {
   ChatBubble,
   ConciergePanes,
   ConversationLog,
   NowLine,
   SITE_PANE_HEIGHT_CLASS,
-  SiteSkeleton,
   useElapsedSeconds,
   useSiteViewport,
   type NowState,
@@ -1029,12 +1029,31 @@ export function PreviewStep({
             />
             {!frameLoaded && (
               <div className="pointer-events-none absolute inset-0" aria-hidden>
-                <SiteSkeleton caption="" />
+                <DerivedSiteSkeleton
+                  data={data}
+                  t={t}
+                  testId="concierge-skeleton"
+                />
               </div>
             )}
           </div>
         ) : (
-          <SiteSkeleton caption={t('landing.discovery.preview.paneSkeleton')} />
+          // The same skeleton the visitor watched fill in while they answered,
+          // now standing in for the site until the real one lands in its
+          // place. A generic pulse here would have thrown away the one piece
+          // of continuity between the conversation and the build.
+          <div
+            className={`relative w-full overflow-hidden ${SITE_PANE_HEIGHT_CLASS}`}
+          >
+            <DerivedSiteSkeleton
+              data={data}
+              t={t}
+              testId="concierge-skeleton"
+            />
+            <p className="absolute inset-x-0 bottom-0 bg-[var(--fs-bg-elevated)]/85 px-3 py-2 text-[11px] leading-snug text-[var(--fs-ink-faint)] backdrop-blur-sm">
+              {t('landing.discovery.preview.paneSkeleton')}
+            </p>
+          </div>
         )}
       </div>
 

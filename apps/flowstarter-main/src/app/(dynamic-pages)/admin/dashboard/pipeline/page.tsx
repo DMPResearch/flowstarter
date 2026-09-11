@@ -11,9 +11,19 @@
  * should be trying to drive to zero.
  */
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import {
+  useMemo,
+  useState,
+  type ComponentProps,
+  type ComponentType,
+} from 'react';
 import { AlertTriangle, GitBranch, RefreshCw } from 'lucide-react';
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
+import {
+  GlassSurface,
+  type GlassSurfaceVariant,
+  type Tone,
+} from '@flowstarter/flow-design-system';
 import { TeamDashboardShell } from '../components/TeamDashboardShell';
 import { Button } from '@/components/ui/button';
 import { compactRelative } from '@/lib/format-utils';
@@ -38,27 +48,22 @@ const STATE_LABEL: Record<ProjectState, string> = {
 };
 
 /** One chip shape for the whole board; a tone only supplies colour. */
-const NEUTRAL_TONE =
-  'border-[var(--ls-rule)] bg-transparent text-[var(--ls-ink-dim)]';
+const NEUTRAL_TONE: Tone = 'neutral';
 
-const JOB_TONE: Record<string, string> = {
-  queued: 'border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300',
-  running:
-    'border-indigo-500/25 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300',
-  succeeded:
-    'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
-  failed: 'border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300',
-  canceled: NEUTRAL_TONE,
+const JOB_TONE: Record<string, Tone> = {
+  queued: 'info',
+  running: 'accent',
+  succeeded: 'ok',
+  failed: 'danger',
+  canceled: 'neutral',
 };
 
-const DEPOSIT_TONE: Record<string, string> = {
-  paid: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
-  refunded:
-    'border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300',
+const DEPOSIT_TONE: Record<string, Tone> = {
+  paid: 'ok',
+  refunded: 'warn',
 };
 
-const STALLED_TONE =
-  'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300';
+const STALLED_TONE: Tone = 'warn';
 
 /** The build-board column a job is in, by name. This board has no phase data, so a running job reads as its first stage. */
 function buildStageLabel(status: string): string {
@@ -94,16 +99,21 @@ function Pill({
   mono = false,
   children,
 }: {
-  tone: string;
+  tone: Tone;
   /** Counts read better as tabular figures; prose never does. */
   mono?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <span
-      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium leading-5 ${
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium leading-5 ${
         mono ? 'font-mono tracking-[0.04em]' : ''
-      } ${tone}`}
+      }`}
+      style={{
+        background: `var(--fs-tone-${tone}-soft)`,
+        color: `var(--fs-tone-${tone})`,
+        boxShadow: `inset 0 0 0 1px var(--fs-tone-${tone}-edge)`,
+      }}
     >
       {children}
     </span>
@@ -111,14 +121,28 @@ function Pill({
 }
 
 /**
+ * GlassSurface typed for `as={Link}`. The base props type does not know
+ * which extra props the element passed to `as` accepts, so this narrows it
+ * locally for the one call site that needs `href`.
+ */
+const GlassLinkCard = GlassSurface as unknown as ComponentType<
+  ComponentProps<typeof Link> & {
+    variant?: GlassSurfaceVariant;
+    interactive?: boolean;
+  }
+>;
+
+/**
  * One card recipe. A stalled card keeps it and adds a left accent rule, so a
  * full column of stalls no longer reads as a wall of amber.
  */
 function PipelineCard({ card }: { card: PipelineCardData }) {
   return (
-    <Link
+    <GlassLinkCard
       href={`/admin/dashboard/projects/${card.workspaceId}`}
-      className={`block rounded-xl border border-[var(--ls-rule)] bg-[var(--ls-glass-bg)] p-3 transition-colors hover:border-[var(--ls-accent)] ${
+      variant="card"
+      interactive
+      className={`block p-3 ${
         card.stalled ? 'border-l-2 border-l-amber-500' : ''
       }`}
     >
@@ -157,18 +181,25 @@ function PipelineCard({ card }: { card: PipelineCardData }) {
       </p>
 
       {card.stallReasons.length > 0 && (
-        <ul className="mt-2.5 space-y-1 rounded-lg border border-amber-500/25 bg-amber-500/10 px-2.5 py-2">
+        <ul
+          className="mt-2.5 space-y-1 rounded-lg px-2.5 py-2"
+          style={{
+            background: 'var(--fs-tone-warn-soft)',
+            boxShadow: 'inset 0 0 0 1px var(--fs-tone-warn-edge)',
+          }}
+        >
           {card.stallReasons.map((reason) => (
             <li
               key={reason}
-              className="text-[11px] leading-snug text-amber-800 dark:text-amber-300"
+              className="fs-tone-text text-[11px] leading-snug"
+              data-tone="warn"
             >
               {reason}
             </li>
           ))}
         </ul>
       )}
-    </Link>
+    </GlassLinkCard>
   );
 }
 
@@ -242,9 +273,11 @@ export default function PipelineBoardPage() {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {columns.map((column) => (
-            <section
+            <GlassSurface
               key={column.state}
-              className="flex min-h-[13rem] flex-col rounded-xl border border-[var(--ls-rule)] bg-[var(--ls-glass-bg)]/40 p-3"
+              as="section"
+              variant="panel"
+              className="flex min-h-[13rem] flex-col p-3"
             >
               <header className="mb-3 flex items-center justify-between gap-2 border-b border-[var(--ls-rule)] pb-2.5">
                 <h2 className="text-xs font-semibold uppercase tracking-wide text-[var(--ls-ink-dim)]">
@@ -273,7 +306,7 @@ export default function PipelineBoardPage() {
                   ))}
                 </div>
               )}
-            </section>
+            </GlassSurface>
           ))}
         </div>
       )}

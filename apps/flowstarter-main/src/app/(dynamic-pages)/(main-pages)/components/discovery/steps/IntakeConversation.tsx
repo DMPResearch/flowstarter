@@ -83,6 +83,7 @@ import {
 } from './ConciergePanes';
 import { RecommendationStep } from './RecommendationStep';
 import { SubscriptionStep } from './SubscriptionStep';
+import { useAutosizeTextarea } from '../useAutosizeTextarea';
 
 /** The beat before a new question. Long enough to read as a reply, short enough never to feel like waiting. */
 export const DEFAULT_PACE_MS = 550;
@@ -90,8 +91,18 @@ export const DEFAULT_PACE_MS = 550;
 /** Up to this many quick replies are a lettered list; more become a chip cloud. */
 const MAX_LETTERED = 6;
 
+/**
+ * `min-h-11` (44px) is the composer's one height token: the field rests at
+ * exactly that height (an auto-growing textarea's own `rows={1}` renders a
+ * hair short of it, so the floor is what actually sets the resting height),
+ * and `Composer` below passes the same `h-11` to the Send button so neither
+ * control looks like it wandered in from a different row.
+ */
 const composerClass =
-  'w-full flex-1 resize-none rounded-xl border border-[var(--fs-rule)] bg-white px-3.5 py-2.5 text-sm text-[var(--fs-ink)] outline-none transition-[box-shadow,border-color] duration-150 placeholder:text-[var(--fs-ink-faint)] hover:border-[var(--purple-primary)]/30 focus:border-[var(--purple-primary)]/40 focus:shadow-[0_0_0_4px_var(--purple-primary-lightest)] dark:bg-white/[0.03]';
+  'min-h-11 w-full flex-1 resize-none rounded-xl border border-[var(--fs-rule)] bg-white px-3.5 py-2.5 text-sm text-[var(--fs-ink)] outline-none transition-[box-shadow,border-color] duration-150 placeholder:text-[var(--fs-ink-faint)] hover:border-[var(--purple-primary)]/30 focus:border-[var(--purple-primary)]/40 focus:shadow-[0_0_0_4px_var(--purple-primary-lightest)] dark:bg-white/[0.03]';
+
+/** Send shares the field's height, radius and horizontal padding — see `composerClass`. */
+const composerSendClass = 'h-11 shrink-0 rounded-xl px-3.5';
 
 const rowClass =
   'flex w-full items-center gap-2.5 rounded-lg border px-2.5 py-2 text-left text-[13px] font-medium transition-colors';
@@ -121,6 +132,7 @@ export function IntakeConversation({
   answered,
   onAnswer,
   paceMs = DEFAULT_PACE_MS,
+  editRequest = null,
   t,
 }: {
   data: DiscoveryData;
@@ -134,6 +146,13 @@ export function IntakeConversation({
   onAnswer: (id: IntakeQuestionId, raw: string) => void;
   /** The agent's pause before a question it has not asked yet. 0 = none. */
   paceMs?: number;
+  /**
+   * An edit asked for from outside the log -- the "what we know so far" list
+   * beside the preview has its own pencils. The `nonce` is what makes a
+   * repeat request for the same question land: pressing the same pencil twice
+   * must reopen it, and an id on its own cannot say that.
+   */
+  editRequest?: { id: IntakeQuestionId; nonce: number } | null;
   t: (key: string) => string;
 }) {
   const [editing, setEditing] = useState<IntakeQuestionId | null>(null);
@@ -145,11 +164,29 @@ export function IntakeConversation({
   const frameRef = useRef<HTMLDivElement>(null);
   /** Questions the agent has already put on screen: those come back at once. */
   const revealed = useRef<Set<IntakeQuestionId>>(new Set());
+  /** `answered`, readable from the edit effect without re-firing it. */
+  const answeredRef = useRef(answered);
+  answeredRef.current = answered;
 
   const pending = useMemo(() => nextQuestion(data, answered), [data, answered]);
   const current: IntakeQuestion | null = editing
     ? questionById(editing) ?? null
     : pending;
+
+  // An edit asked for from the preview's fact list. Only a question the
+  // visitor has actually dealt with can be reopened: re-asking one the agent
+  // has not put on screen yet would jump the script.
+  const editNonce = editRequest?.nonce ?? 0;
+  const editId = editRequest?.id ?? null;
+  useEffect(() => {
+    if (!editId || editNonce <= 0) return;
+    if (!answeredRef.current.includes(editId)) return;
+    setEditing(editId);
+    // Keyed on the nonce so the same pencil pressed twice reopens the
+    // question; `answered` is read through a ref for the same reason, since
+    // it changes on every turn and would otherwise re-fire the edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editNonce, editId]);
 
   const history = useMemo(
     () => answeredQuestions(data, answered),
@@ -741,8 +778,13 @@ function Composer({
     ? t(question.placeholderKey)
     : t('landing.discovery.chat.typeInstead');
 
+  // One line at rest, however long the question — `longtext` used to start
+  // at three rows; now every question's composer grows into the room it
+  // needs instead of claiming it up front.
+  useAutosizeTextarea(composerRef, value);
+
   return (
-    <div className="flex flex-col gap-2 sm:flex-row">
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
       <textarea
         ref={composerRef}
         value={value}
@@ -755,7 +797,7 @@ function Composer({
             send();
           }
         }}
-        rows={question.kind === 'longtext' ? 3 : 1}
+        rows={1}
         aria-label={t('landing.discovery.chat.composerLabel')}
         placeholder={placeholder}
         className={composerClass}
@@ -765,6 +807,7 @@ function Composer({
         size="sm"
         onClick={send}
         disabled={question.required && isWords && value.trim().length === 0}
+        className={composerSendClass}
       >
         {t('landing.discovery.chat.send')}
       </Button>

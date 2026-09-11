@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useI18n } from '@/lib/i18n';
 import { useMockEditor } from './useMockEditor';
 import { MockEditorPreview } from './MockEditorPreview';
+import { SectionEyebrow } from './SectionEyebrow';
 
 export function EditorShowcase() {
   const { t: tStrict } = useI18n();
@@ -52,30 +53,10 @@ export function EditorShowcase() {
 
       <div className="ls-container">
         <div className="text-center max-w-3xl mx-auto">
-          <div
-            className="ls-eyebrow inline-flex items-center justify-center gap-3"
-            style={{ justifyContent: 'center' }}
-          >
-            <span
-              aria-hidden
-              style={{
-                display: 'inline-block',
-                width: '28px',
-                height: '1px',
-                background: 'var(--ls-ink-faint)',
-              }}
-            />
-            <span className="num">{t('landing.editorShowcase.eyebrow')}</span>
-            <span
-              aria-hidden
-              style={{
-                display: 'inline-block',
-                width: '28px',
-                height: '1px',
-                background: 'var(--ls-ink-faint)',
-              }}
-            />
-          </div>
+          <SectionEyebrow
+            index="02"
+            label={t('landing.editorShowcase.eyebrow')}
+          />
           <h2 className="ls-display mt-7" style={{ textWrap: 'balance' }}>
             <span className="line">
               {t('landing.editorShowcase.headlinePrefix')}
@@ -115,9 +96,7 @@ export function EditorShowcase() {
             </div>
             <div className="ls-dashboard-mock-body">
               <div className="ls-dashboard-mock-project">
-                <strong>
-                  {t('landing.editorShowcase.dashboard.project')}
-                </strong>
+                <strong>{t('landing.editorShowcase.dashboard.project')}</strong>
                 <div className="ls-dashboard-mock-phase">
                   <span>
                     {t('landing.editorShowcase.dashboard.phaseLabel')}

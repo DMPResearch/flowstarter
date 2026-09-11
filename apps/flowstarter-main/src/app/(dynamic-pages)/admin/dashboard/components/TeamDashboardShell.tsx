@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
-import { glassClass, glassStyle } from '@/lib/glass';
+import { GlassSurface } from '@flowstarter/flow-design-system';
 import { cn } from '@/lib/utils';
 import { AdminDashboardSubheadline } from './AdminDashboardSubheadline';
 
@@ -110,7 +110,9 @@ export function TeamDashboardShell({
   );
 }
 
-// Reusable section card used inside the shell
+// Reusable section card used inside the shell — the shared GlassSurface, not
+// a hand-rolled `bg-white backdrop-blur` box, so every tab and card that
+// reaches for `ShellCard` picks up the material for free.
 export function ShellCard({
   children,
   className = '',
@@ -119,9 +121,9 @@ export function ShellCard({
   className?: string;
 }) {
   return (
-    <div className={`${glassClass} p-5 sm:p-6 ${className}`} style={glassStyle}>
+    <GlassSurface variant="card" className={className}>
       {children}
-    </div>
+    </GlassSurface>
   );
 }
 

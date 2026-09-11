@@ -70,6 +70,10 @@ export function LandingHero() {
 
   return (
     <section className="ls-scope ls-section ls-hero-section ls-fade-bottom">
+      {/* Texture, not colour: a hairline grid at an opacity you have to look
+          for. It is what stops the flat cream reading as blank paper without
+          bringing back the mesh Darius asked us to take out. */}
+      <div className="ls-weave" aria-hidden="true" />
       <div className="ls-container">
         <div className="grid items-center gap-10 lg:grid-cols-[1.15fr_0.85fr] lg:gap-20">
           <div className="ls-hero-content">
@@ -93,12 +97,26 @@ export function LandingHero() {
               )}
             </div>
 
+            {/* The break between each line's halves is set here rather than
+                left to the measure: `.brk` is a block below 640px and an
+                inline run above it, so the hand-set line holds on a desktop
+                and collapses on a phone instead of stranding orphans. The
+                drawn mark sits under the last phrase alone — underlining the
+                whole blue sentence would read as a link, not as emphasis. */}
             <h1 className="ls-display ls-display--hero mt-9">
               <span className="line" style={reveal(1)}>
-                {t('landing.hero.displayPrefix')}
+                {t('landing.hero.displayPrefix')}{' '}
+                <span className="brk">
+                  {t('landing.hero.displayPrefixTail')}
+                </span>
               </span>
               <span className="line flourish mt-2" style={reveal(2)}>
-                {t('landing.hero.displayFlourish')}
+                {t('landing.hero.displayFlourish')}{' '}
+                <span className="brk">
+                  <span className="ls-mark">
+                    {t('landing.hero.displayFlourishTail')}
+                  </span>
+                </span>
               </span>
             </h1>
 

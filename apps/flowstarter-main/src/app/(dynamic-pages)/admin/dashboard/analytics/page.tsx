@@ -2,6 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { quoteMajorFrom } from '@/lib/flowstarter/quote';
+import { StatTile, type Tone } from '@flowstarter/flow-design-system';
 import {
   TeamDashboardShell,
   ShellCard,
@@ -36,35 +37,6 @@ interface Project {
   template_id: string | null;
   user_id: string;
   client_name: string | null;
-}
-
-function StatCard({
-  icon,
-  label,
-  value,
-  sub,
-  iconBg,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string | number;
-  sub?: string;
-  iconBg: string;
-}) {
-  return (
-    <ShellCard className="!p-5">
-      <div
-        className={`w-9 h-9 rounded-xl ${iconBg} flex items-center justify-center mb-3`}
-      >
-        {icon}
-      </div>
-      <p className="text-xs text-[var(--fs-ink-faint)] mb-1">{label}</p>
-      <p className="text-2xl font-bold text-[var(--fs-ink)]">{value}</p>
-      {sub && (
-        <p className="text-xs text-[var(--fs-ink-faint)] mt-0.5">{sub}</p>
-      )}
-    </ShellCard>
-  );
 }
 
 function StatCardSkeleton() {
@@ -147,15 +119,15 @@ export default function AnalyticsPage() {
     return acc;
   }, {});
 
-  const statusColors: Record<string, string> = {
-    live: 'bg-emerald-500',
-    published: 'bg-emerald-500',
-    in_progress: 'bg-blue-500',
-    building: 'bg-blue-400',
-    draft: 'bg-gray-400',
-    new: 'bg-amber-400',
-    error: 'bg-red-500',
-    unknown: 'bg-gray-300',
+  const statusTones: Record<string, Tone> = {
+    live: 'ok',
+    published: 'ok',
+    in_progress: 'info',
+    building: 'info',
+    draft: 'neutral',
+    new: 'warn',
+    error: 'danger',
+    unknown: 'neutral',
   };
 
   return (
@@ -170,66 +142,66 @@ export default function AnalyticsPage() {
           [1, 2, 3, 4, 5, 6, 7, 8].map((i) => <StatCardSkeleton key={i} />)
         ) : (
           <>
-            <StatCard
-              icon={<FileText className="w-4 h-4 text-[var(--purple)]" />}
-              iconBg="bg-[var(--purple)]/10"
+            <StatTile
+              icon={<FileText className="w-4 h-4" />}
+              tone="accent"
               label="Total projects"
               value={total}
             />
-            <StatCard
-              icon={<Globe className="w-4 h-4 text-emerald-500" />}
-              iconBg="bg-emerald-500/10"
+            <StatTile
+              icon={<Globe className="w-4 h-4" />}
+              tone="ok"
               label="Live sites"
               value={live}
-              sub={`${drafts} draft · ${inProgress} in progress`}
+              note={`${drafts} draft · ${inProgress} in progress`}
             />
-            <StatCard
-              icon={<DollarSign className="w-4 h-4 text-blue-500" />}
-              iconBg="bg-blue-500/10"
+            <StatTile
+              icon={<DollarSign className="w-4 h-4" />}
+              tone="ok"
               label="Monthly recurring"
               value={`€${totalMonthly.toFixed(0)}/mo`}
-              sub={`${paidCount} paid clients`}
+              note={`${paidCount} paid clients`}
             />
-            <StatCard
-              icon={<TrendingUp className="w-4 h-4 text-amber-500" />}
-              iconBg="bg-amber-500/10"
+            <StatTile
+              icon={<TrendingUp className="w-4 h-4" />}
+              tone="ok"
               label="Setup revenue"
               value={`€${totalSetupFee.toFixed(0)}`}
-              sub="total collected"
+              note="total collected"
             />
-            <StatCard
-              icon={<Sparkles className="w-4 h-4 text-[var(--purple)]" />}
-              iconBg="bg-[var(--purple)]/10"
+            <StatTile
+              icon={<Sparkles className="w-4 h-4" />}
+              tone="accent"
               label="AI usage units"
               value={totalCredits.toLocaleString()}
-              sub={`${aiGeneratedCount} sites generated`}
+              note={`${aiGeneratedCount} sites generated`}
             />
-            <StatCard
-              icon={<DollarSign className="w-4 h-4 text-rose-500" />}
-              iconBg="bg-rose-500/10"
+            <StatTile
+              icon={<DollarSign className="w-4 h-4" />}
+              tone="warn"
               label="AI cost"
               value={`€${totalCostEur.toFixed(2)}`}
-              sub={`$${totalCostUsd.toFixed(2)} USD`}
+              note={`$${totalCostUsd.toFixed(2)} USD`}
             />
-            <StatCard
-              icon={<Users className="w-4 h-4 text-teal-500" />}
-              iconBg="bg-teal-500/10"
+            <StatTile
+              icon={<Users className="w-4 h-4" />}
+              tone="pink"
               label="Clients"
               value={
                 new Set(projects.map((p) => p.client_name).filter(Boolean)).size
               }
-              sub="unique clients"
+              note="unique clients"
             />
-            <StatCard
-              icon={<Clock className="w-4 h-4 text-gray-500" />}
-              iconBg="bg-[var(--fs-bg-elevated)]"
+            <StatTile
+              icon={<Clock className="w-4 h-4" />}
+              tone="neutral"
               label="This month"
               value={
                 projects.filter(
                   (p) => new Date(p.created_at) > subDays(new Date(), 30)
                 ).length
               }
-              sub="new projects"
+              note="new projects"
             />
           </>
         )}
@@ -238,7 +210,7 @@ export default function AnalyticsPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
         {/* Activity chart */}
         <ShellCard className="lg:col-span-2 !p-5">
-          <p className="text-sm font-semibold text-[var(--fs-ink)] mb-4">
+          <p className="fs-glass-header-row text-sm font-semibold text-[var(--fs-ink)] mb-4">
             Projects created: last 30 days
           </p>
           {isLoading ? (
@@ -280,7 +252,7 @@ export default function AnalyticsPage() {
 
         {/* Status breakdown */}
         <ShellCard className="!p-5">
-          <p className="text-sm font-semibold text-[var(--fs-ink)] mb-4">
+          <p className="fs-glass-header-row text-sm font-semibold text-[var(--fs-ink)] mb-4">
             Status breakdown
           </p>
           {isLoading ? (
@@ -304,9 +276,12 @@ export default function AnalyticsPage() {
                 .map(([status, count]) => (
                   <div key={status} className="flex items-center gap-2">
                     <span
-                      className={`w-2 h-2 rounded-full shrink-0 ${
-                        statusColors[status] ?? 'bg-gray-300'
-                      }`}
+                      className="w-2 h-2 rounded-full shrink-0"
+                      style={{
+                        backgroundColor: `var(--fs-tone-${
+                          statusTones[status] ?? 'neutral'
+                        })`,
+                      }}
                     />
                     <span className="flex-1 text-sm text-[var(--fs-ink-dim)] capitalize">
                       {status.replace('_', ' ')}
@@ -326,7 +301,7 @@ export default function AnalyticsPage() {
 
       {/* Recent projects */}
       <ShellCard className="!p-0 overflow-hidden">
-        <div className="px-5 py-4 border-b border-[var(--fs-rule)]">
+        <div className="fs-glass-header-row px-5 py-4 border-b border-[var(--fs-rule)]">
           <p className="text-sm font-semibold text-[var(--fs-ink)]">
             Recent projects
           </p>
@@ -357,7 +332,7 @@ export default function AnalyticsPage() {
         ) : (
           <div className="divide-y divide-[var(--fs-rule)]">
             {recent.map((p) => {
-              const statusColor = statusColors[p.status] ?? 'bg-gray-300';
+              const statusTone = statusTones[p.status] ?? 'neutral';
               const ago = formatDistanceToNow(new Date(p.created_at), {
                 addSuffix: true,
               });
@@ -379,7 +354,9 @@ export default function AnalyticsPage() {
                     </p>
                   </div>
                   <span
-                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[0.6rem] font-semibold uppercase tracking-wide text-white ${statusColor}`}
+                    className="fs-tone-text inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[0.6rem] font-semibold uppercase tracking-wide"
+                    data-tone={statusTone}
+                    style={{ background: `var(--fs-tone-${statusTone}-soft)` }}
                   >
                     {p.status?.replace('_', ' ') ?? 'unknown'}
                   </span>

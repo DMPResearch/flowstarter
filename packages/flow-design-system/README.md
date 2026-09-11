@@ -1,0 +1,237 @@
+# @flowstarter/flow-design-system
+
+Shared tokens and components for every Flowstarter surface. Apps consume this
+package as raw TypeScript and CSS source; their own bundler compiles it, so
+there is no build step here.
+
+- `src/styles/brand.css` is the single source of truth for `--fs-*` tokens.
+- `src/styles/index.css` holds the utility classes built on those tokens.
+- `src/components/**` holds the components. Import them from the package root,
+  or deep from `@flowstarter/flow-design-system/components/<path>` when a React
+  Server Component needs to avoid the client components in the barrel.
+
+## Liquid glass
+
+One translucent material, used everywhere. It is a blurred and saturated
+backdrop under a specular catch-light and a 1px refractive edge that is
+brightest at the top-left, sitting on a still, very low-chroma field so the
+blur has something to refract. Corners are concentric: a tile nested inside a panel uses
+the inner radius so the two curves stay parallel.
+
+**The rule: no hand-rolled glass.** If a surface needs a translucent fill, a
+`backdrop-filter` or a gradient border, it uses `GlassSurface`, `StatTile` or
+`MeshBackdrop`. A component that writes its own `rgba()` and `blur()` is a
+component that will drift out of the system the next time the brand moves.
+
+To see the client dashboard and admin surfaces rendered on fixture data
+(useful for screenshots without a signed-in session), run `flowstarter-main`
+in development and visit `/about/design-gallery`.
+
+### Tokens
+
+Material, in `:root` and again under `.dark`:
+
+| Token                   | What it is                                        |
+| ----------------------- | ------------------------------------------------- |
+| `--fs-glass-bg`         | the standard translucent fill, 0.52 / 0.42        |
+| `--fs-glass-bg-strong`  | denser fill, for content over a busy mesh         |
+| `--fs-glass-edge`       | the untinted edge colour                          |
+| `--fs-glass-highlight`  | the diagonal specular catch-light                 |
+| `--fs-glass-specular`   | the 1px light line along the top inside edge      |
+| `--fs-glass-ink-dim`    | label and note ink on a tinted tile               |
+| `--fs-glass-shadow`     | the drop the material casts, tinted indigo        |
+| `--fs-glass-blur`       | backdrop blur radius, set per level by the ladder |
+| `--fs-glass-saturate`   | backdrop saturation, 180% light / 172% dark       |
+| `--fs-glass-brightness` | 1.03 light, 0.86 dark: frosted versus smoked      |
+| `--fs-glass-refraction` | the gradient the 1px inner border is drawn from   |
+
+**The elevation ladder.** One material at five thicknesses. A 44px pill and a
+600px modal cannot share a blur radius: at 28px the blur reaches further than
+the pill is tall, so it averages to flat frosted plastic, while the modal needs
+more than 28px to cut the page off rather than sit on it. Blur, fill and drop
+all scale with the surface, and a level is chosen with a variant, never by hand.
+
+| Level     | blur | fill                    | drop    | for                        |
+| --------- | ---- | ----------------------- | ------- | -------------------------- |
+| `control` | 12px | `--fs-glass-bg-control` | none    | a button or a pill         |
+| `chrome`  | 18px | `--fs-chrome-bg`        | a rule  | a header or a sidebar      |
+| `card`    | 24px | `--fs-glass-bg`         | card    | a single object            |
+| `panel`   | 30px | `--fs-glass-bg-panel`   | panel   | a container for cards      |
+| `overlay` | 44px | `--fs-glass-bg-overlay` | overlay | a modal, a banner, a toast |
+
+The panel is the one inversion worth knowing: it is the thickest blur and the
+_thinnest_ fill. That is deliberate. It makes a card laid on a panel the
+brighter of the two, so the stack reads as depth instead of as two rectangles
+in the same paint.
+
+Dark glass is smoked, not grey. A pane that only darkens its fill reads as a
+grey card, so `--fs-glass-brightness` pulls the backdrop down while the
+saturation stays up; drop the saturation as well and the pane goes muddy, which
+is the grey card again by another route. The rim and the catch-light are both
+brighter in dark than in light, because with the fill that thin the lit edge is
+most of what tells you a pane is there.
+
+The fill is deliberately thin. Glass that you cannot see the field through is
+just a white box, so `--fs-glass-bg` lets roughly half of it come back up
+through the panel, and the blur and the saturation are what keep the result
+legible rather than muddy. With the field as quiet as it now is, the rim and
+the catch-light do most of the work of saying a pane is there, in both modes.
+
+`--fs-glass-ink-dim` exists because text on a tinted, half-transparent tile
+needs more weight than the same text on the flat page behind it. Use it for
+labels and notes inside glass; use `--fs-ink-dim` everywhere else.
+
+Nine tones, each with five tokens: `--fs-tone-T` (ink), `--fs-tone-T-soft`
+(the default wash), `--fs-tone-T-emphasis` (the loud wash), `--fs-tone-T-edge`
+and `--fs-tone-T-glow`. The tones are `accent` (233), `ok` (152), `info` (205),
+`warn` (36), `danger` (356), `violet` (268), `pink` (330), `teal` (182) and
+`neutral`.
+
+**A grid of tiles is not a colour chart.** Five tiles each filled with their own
+colour is a picture of the palette, not a dashboard: everything shouts, so
+nothing is heard. The default tile is therefore neutral glass, and the tone
+survives in three quiet places — the value ink, the icon chip and a thin rim at
+0.35 alpha. `--fs-tone-T-soft` is a whisper (0.10 light, 0.12 dark) that fades
+out within the first corner.
+
+One tile at a time may be loud. `<StatTile emphasis>` and the
+`.fs-glass-tile--emphasis` class swap in `--fs-tone-T-emphasis` across the whole
+tile and add the bloom underneath. `data-tone="attention"` gets the same
+treatment without asking. Use it for the thing the reader has to act on; a page
+where every tile asks for emphasis has none.
+
+Ink lightness is set per mode so that the value on a tile clears 4.5:1 against
+its own wash, composited over the glass, the field and the page. Run
+`node scripts/check-tone-contrast.mjs` after changing any tone or touching the
+field. It parses the `--fs-mesh` gradient stack, samples it across a 1440x900
+viewport once per signed-in variant, and checks every tone over both the
+brightest and the darkest point it finds, because the glass is thin enough that
+where a tile sits on the field changes how readable it is. It exits non-zero
+below AA.
+
+`node scripts/check-ink-contrast.mjs` is its companion, for the other half of
+the problem: the marketing pages put plain body and heading copy straight onto
+the backdrop with no tile under it. It checks the `--ls-*` inks in landing.css
+over the landing variant's own two extremes, bare and through the glass. Both
+scripts share the maths in `scripts/lib/mesh-colour.mjs`, so a colour only has
+to move in one place for both to follow, and both measure the variant a surface
+actually renders rather than the default the tokens declare.
+
+**The field.** `--fs-field-tint` and `--fs-field-bloom`, composed into
+`--fs-mesh`, dimmed by `--fs-mesh-opacity`, with `--fs-mesh-grain` at
+`--fs-mesh-grain-opacity` laid over the top.
+
+It is the page's own surface tone with a very slow modulation in it, not a
+picture hung behind the interface. `--fs-field-tint` is a near neighbour of
+`--fs-bg-base` — two and a half points of lightness and six degrees of hue away
+in light, and in dark it is `--fs-bg-raised` itself, the next rung of the same
+surface ladder — washed diagonally across the viewport from a radial so wide
+that the visible part of it is a ramp rather than a blob. `--fs-field-bloom` is
+the only colour left: one indigo radial 70vw across, sitting high behind the
+header, whose alpha peaks under 0.05 anywhere it is painted. At that strength
+the eye reads it as a temperature.
+
+It does not move. A slow drift is charming on a page you scroll past once and
+wrong under a dashboard someone works in, where a surface that is never quite
+the same twice is a surface you keep re-reading. The grain is a tiny SVG noise
+tile, and at 0.012 it is dither rather than texture: a wash this shallow spread
+this wide is exactly what an 8-bit display bands on, and noise is what breaks
+the steps up.
+
+**One dial, and a trap worth knowing.** A variant says how loud it is with
+`--fs-mesh-opacity` and nothing else — app 0.8, editor 0.72, landing 0.45. That
+was always the documented rule and it is now the only rule that can work: a
+custom property whose value contains `var()` is substituted where it is
+_declared_, so `--fs-mesh` resolves its colours on `:root` and a variant that
+overrides only `--fs-field-tint` changes nothing. Both the app and the landing
+blocks had been doing exactly that, and both had been quietly painting the old
+four saturated blobs at half opacity instead of the quiet colours they asked
+for. A variant that genuinely needs different colours has to restate `--fs-mesh`
+itself; the landing block, which marketing no longer mounts, is the one that
+does. `design-system-field.test.ts` in `flowstarter-main` holds that line.
+
+Radii: `--fs-radius-glass` (22px), then one 8px step in per level of nesting.
+The rule is one subtraction: a child's radius is its parent's radius minus the
+gap between the two edges. `--fs-radius-glass-inner` (14px) is a tile 8px inside
+a panel; `--fs-radius-glass-flush` (6px) is a strip or a chip 8px inside that
+tile. A free-standing control is nested in nothing, so it takes
+`--fs-radius-control` (12px) or `--fs-radius-control-sm` (8px) instead.
+
+**Controls: one height, one ring.** A button, a text field and a pill on the
+same row are the same object doing different jobs, so they share a height, a
+radius and a focus ring. They had drifted to five heights (52, 48, 40, 38 and
+32px) with three different focus mechanisms at widths 1, 2 and 3px. Everything
+now reads `--fs-control-h` (44px), `--fs-control-h-sm` (36px) and
+`--fs-control-h-xs` (28px), and the one ring is `--fs-focus-ring-width` /
+`-offset` / `-color`. `--fs-btn-h` and `--fs-input-h` are aliases of
+`--fs-control-h`, which is why a send button now matches the field beside it.
+
+Put `.fs-control` on anything a reader clicks or types into to get that box;
+`.fs-control--sm`, `--xs`, `--square` and `--field` are the variations. The
+material, if the control wants one, is a separate `.fs-glass .fs-glass--control`
+alongside.
+
+`.fs-numeric` is tabular figures, for any number a reader compares against
+another number or watches tick.
+
+### Classes
+
+| Class                                  | What it does                                                                            |
+| -------------------------------------- | --------------------------------------------------------------------------------------- |
+| `.fs-glass`                            | the material: fill, blur, specular, refractive edge                                     |
+| `.fs-glass--strong`                    | swaps in the denser fill                                                                |
+| `.fs-glass--overlay`                   | near-opaque fill for banners and toasts floating over unblurred content                 |
+| `.fs-glass--card` / `.fs-glass--panel` | the two content levels: blur, fill, drop and padding                                    |
+| `.fs-glass--chrome`                    | square, opaque-leaning, for a header or sidebar                                         |
+| `.fs-control`                          | the shared control box: height, padding, radius (`--sm`, `--xs`, `--square`, `--field`) |
+| `.fs-focus-ring`                       | the one focus-visible ring, for anything that is not a glass surface                    |
+| `.fs-numeric`                          | tabular figures                                                                         |
+| `.fs-pill`                             | the tinted status shape, with `__dot` and `__icon`                                      |
+| `.fs-glass--interactive`               | hover lift and edge brighten, on the spring easing                                      |
+| `.fs-glass--toned`                     | lets a surface take a tone wash                                                         |
+| `.fs-glass--plain`                     | keeps the tone in the rim and the ink, drops the wash                                   |
+| `.fs-glass--control`                   | the material at a button's radius, with no drop of its own                              |
+| `.fs-glass-tile`                       | a toned tile, with `__label`, `__value`, `__note`, `__icon`                             |
+| `.fs-tone-text`                        | tone-coloured text outside a tile                                                       |
+| `.fs-glass-ring`                       | the focus-visible ring                                                                  |
+| `.fs-mesh-backdrop`                    | the fixed full-bleed field, `data-variant`, one of app, landing or editor               |
+
+A toned surface reads its tone from `data-tone`, or from `data-palette` when
+the caller needs `data-tone` for a meaning of its own. When both are present,
+`data-palette` is the one that paints.
+
+`.glass-liquid` is a deprecated alias of `.fs-glass`. It exists so the older
+call sites keep working; do not use it in new code.
+
+### Components
+
+- `GlassSurface`: `{ variant: 'control' | 'chrome' | 'card' | 'panel' | 'overlay', tone, interactive, as, className }`.
+  The base for every translucent surface. The variant is the rung of the
+  elevation ladder; the blur, fill and drop that go with it are decided once, in
+  the tokens. There is deliberately no `blur` or `background` prop.
+- `Pill`: `{ tone, size, emphasis, dot, icon, as }`. The small tinted shape that
+  labels a row. Same discipline as the tiles: tone-coloured ink on a whisper of
+  wash inside a thin rim, never a block of solid colour, so a table with a pill
+  on every row stays a table rather than becoming a bar chart. `dot` is off by
+  default, because a coloured dot in front of a coloured word says it twice.
+- `StatTile`: `{ label, value, note, tone, icon, href, linkComponent }`. One
+  number on tinted glass: an eyebrow label, a large tabular-nums value and a
+  line of plain English. `linkComponent` takes the app's own router link, so
+  this package stays framework-free. The link and the static tile render the
+  same body; only the wrapper element changes.
+- `MeshBackdrop`: `{ variant: 'app' | 'landing' | 'editor' }`. The field the
+  glass refracts. Fixed, decorative, painted at z-index 0 so a layout
+  can lift its content to z-index 10 over it. It replaces `FlowBackground`
+  wherever glass is the material — the client dashboard, and every marketing
+  page — because `FlowBackground` paints an opaque base of its own, so
+  whichever of the two ends up on top hides the other. `FlowBackground` still
+  draws the orbs and line work for admin and the auth pages.
+
+`GlassCard`, `GlassPanel` and `StatCard` are thin wrappers kept for existing
+call sites. New code should use `GlassSurface` and `StatTile` directly.
+
+### Motion
+
+Transitions use `--fs-ease-spring` and the `--fs-dur-*` durations. The field
+behind them is still. The hover lift stops under
+`prefers-reduced-motion: reduce`.

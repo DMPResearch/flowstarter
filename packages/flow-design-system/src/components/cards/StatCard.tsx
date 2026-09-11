@@ -1,4 +1,14 @@
-import { forwardRef, type HTMLAttributes, type ReactNode } from 'react';
+/**
+ * A stat card with a breakdown and a footer, kept for the call sites that
+ * already use it.
+ *
+ * The zinc palette and the hand-written shadow stack are gone; the surface is
+ * a GlassSurface card and the text reads --fs-ink tokens, so it now matches
+ * the rest of the product in both modes. For a single number on tinted glass,
+ * use StatTile instead.
+ */
+import React, { forwardRef, type HTMLAttributes, type ReactNode } from 'react';
+import { GlassSurface } from '../surfaces/GlassSurface';
 
 export interface StatCardProps extends HTMLAttributes<HTMLDivElement> {
   title: string;
@@ -8,45 +18,34 @@ export interface StatCardProps extends HTMLAttributes<HTMLDivElement> {
   footer?: ReactNode;
 }
 
-const cardStyles = `
-  rounded-2xl backdrop-blur-sm
-  bg-white/80 dark:bg-[#1a1a1f]/80
-  border border-zinc-200/60 dark:border-white/[0.06]
-  shadow-[0_2px_4px_rgba(0,0,0,0.02),0_8px_16px_rgba(0,0,0,0.04),0_1px_0_rgba(255,255,255,0.8)_inset,0_-1px_0_rgba(0,0,0,0.02)_inset]
-  dark:shadow-[0_2px_4px_rgba(0,0,0,0.1),0_8px_16px_rgba(0,0,0,0.2),0_1px_0_rgba(255,255,255,0.05)_inset,0_-1px_0_rgba(0,0,0,0.2)_inset]
-  p-5
-`;
-
 export const StatCard = forwardRef<HTMLDivElement, StatCardProps>(
-  ({ title, value, breakdown, action, footer, className = '', ...props }, ref) => {
-    return (
-      <div
-        ref={ref}
-        className={`${cardStyles} ${className}`}
-        {...props}
-      >
-        <div className="flex items-start justify-between mb-2">
-          <span className="text-sm text-zinc-500 dark:text-zinc-400">
-            {title}
-          </span>
-          {action}
-        </div>
-        <div className="text-2xl font-bold text-zinc-900 dark:text-white mb-2">
-          {value}
-        </div>
-        {breakdown && (
-          <div className="flex items-center gap-3 flex-wrap">
-            {breakdown}
-          </div>
-        )}
-        {footer && (
-          <div className="mt-4 pt-3 border-t border-zinc-100 dark:border-white/[0.06]">
-            {footer}
-          </div>
-        )}
+  (
+    { title, value, breakdown, action, footer, className = '', ...props },
+    ref,
+  ) => (
+    <GlassSurface
+      ref={ref as React.Ref<HTMLElement>}
+      variant="card"
+      className={className}
+      {...props}
+    >
+      <div className="mb-2 flex items-start justify-between">
+        <span className="text-sm text-[var(--fs-ink-dim)]">{title}</span>
+        {action}
       </div>
-    );
-  }
+      <div className="mb-2 text-2xl font-bold tabular-nums text-[var(--fs-ink)]">
+        {value}
+      </div>
+      {breakdown && (
+        <div className="flex flex-wrap items-center gap-3">{breakdown}</div>
+      )}
+      {footer && (
+        <div className="mt-4 border-t border-[var(--fs-rule)] pt-3">
+          {footer}
+        </div>
+      )}
+    </GlassSurface>
+  ),
 );
 
 StatCard.displayName = 'StatCard';

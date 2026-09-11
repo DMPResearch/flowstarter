@@ -3,6 +3,7 @@
 import { useI18n } from '@/lib/i18n';
 import { useFAQAccordion } from './hooks/useFAQAccordion';
 import { LANDING_COPY } from '../landing-copy';
+import { SectionEyebrow } from './SectionEyebrow';
 
 export function FAQSection() {
   const { t: tStrict } = useI18n();
@@ -16,30 +17,7 @@ export function FAQSection() {
       <div className="ls-grain" aria-hidden />
       <div className="ls-container">
         <div className="text-center max-w-3xl mx-auto">
-          <div
-            className="ls-eyebrow inline-flex items-center justify-center gap-3"
-            style={{ justifyContent: 'center' }}
-          >
-            <span
-              aria-hidden
-              style={{
-                display: 'inline-block',
-                width: '28px',
-                height: '1px',
-                background: 'var(--ls-ink-faint)',
-              }}
-            />
-            <span className="num">{t('landing.faq.eyebrow')}</span>
-            <span
-              aria-hidden
-              style={{
-                display: 'inline-block',
-                width: '28px',
-                height: '1px',
-                background: 'var(--ls-ink-faint)',
-              }}
-            />
-          </div>
+          <SectionEyebrow index="05" label={t('landing.faq.eyebrow')} />
           <h2 className="ls-display mt-7" style={{ textWrap: 'balance' }}>
             <span className="line">{t('landing.faq.headlinePrefix')}</span>
             <span className="line flourish mt-2">

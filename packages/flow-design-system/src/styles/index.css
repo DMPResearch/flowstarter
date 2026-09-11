@@ -76,76 +76,812 @@
   animation: flow-slide-up 0.3s ease-out;
 }
 
-/* ── Apple Liquid Glass border effect ── */
+/* ══════════════════════════════════════════════════════════════════════════
+   LIQUID GLASS
+   The product's one glass material. Every token it reads lives in brand.css;
+   nothing here invents a colour. Build surfaces with GlassSurface, StatTile
+   and MeshBackdrop rather than reaching for these class names by hand.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── The material ───────────────────────────────────────────────────────────
+   A blurred, saturated backdrop, a specular catch-light at the top-left and a
+   1px refractive edge. Both effects are pseudo-elements at z-index -1 inside
+   an isolated stacking context, so they paint over the surface's own fill and
+   under its content without any child needing a z-index of its own. */
+.fs-glass,
 .glass-liquid {
   position: relative;
-  transform-style: preserve-3d;
+  isolation: isolate;
+  border-radius: var(--fs-radius-glass);
+  background: var(--fs-glass-bg);
+  /* The brightness term is what separates frosted from smoked: in light it
+     lifts the mesh behind the pane, in dark it pulls it down, so dark glass
+     stops reading as a grey card. */
+  backdrop-filter: blur(var(--fs-glass-blur)) saturate(var(--fs-glass-saturate))
+    brightness(var(--fs-glass-brightness));
+  -webkit-backdrop-filter: blur(var(--fs-glass-blur))
+    saturate(var(--fs-glass-saturate)) brightness(var(--fs-glass-brightness));
+  box-shadow: var(--fs-glass-shadow);
+  color: var(--fs-ink);
+  transition:
+    transform var(--fs-dur-micro) var(--fs-ease-spring),
+    box-shadow var(--fs-dur-standard) var(--fs-ease-spring);
 }
 
-/* Specular highlight — bright top-left catch light */
+/* ── The elevation ladder ───────────────────────────────────────────────────
+   Each level sets the three variables the material reads, so a surface says
+   which level it is and the material does the rest. The order matters: these
+   sit immediately after .fs-glass so a level can be overridden by a modifier
+   further down (--strong, --overlay) at the same specificity.
+
+   Levels, thinnest pane to thickest: control, chrome, card, panel, overlay. */
+.fs-glass--control {
+  --fs-glass-blur: var(--fs-glass-blur-control);
+  --fs-glass-bg: var(--fs-glass-bg-control);
+}
+
+.fs-glass--chrome {
+  --fs-glass-blur: var(--fs-glass-blur-chrome);
+}
+
+.fs-glass--card {
+  --fs-glass-blur: var(--fs-glass-blur-card);
+  --fs-glass-shadow: var(--fs-glass-shadow-card);
+}
+
+/* A panel is the recessed level: thicker blur, thinner fill. That inversion is
+   deliberate. It makes a card laid on a panel the brighter of the two, so the
+   stack reads as depth instead of as two rectangles in the same paint. */
+.fs-glass--panel {
+  --fs-glass-blur: var(--fs-glass-blur-panel);
+  --fs-glass-bg: var(--fs-glass-bg-panel);
+  --fs-glass-shadow: var(--fs-glass-shadow-panel);
+}
+
+/* Specular highlight. The light source is top-left, so the diagonal sheen is
+   too, and a 1px line runs along the top inside edge the way it does on a
+   polished lip. Both are layers on one pseudo-element, which already clips to
+   the surface's radius. */
+.fs-glass::before,
 .glass-liquid::before {
   content: '';
   position: absolute;
   inset: 0;
+  z-index: -1;
   border-radius: inherit;
-  background: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.38) 0%,
-    rgba(255, 255, 255, 0.12) 20%,
-    rgba(255, 255, 255, 0.03) 40%,
-    transparent 60%
-  );
   pointer-events: none;
-  z-index: 1;
+  background:
+    linear-gradient(to bottom, var(--fs-glass-specular) 0 1px, transparent 1px),
+    linear-gradient(135deg, var(--fs-glass-highlight) 0%, transparent 46%);
 }
 
-[data-theme='dark'] .glass-liquid::before,
-.dark .glass-liquid::before {
-  background: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.10) 0%,
-    rgba(255, 255, 255, 0.04) 20%,
-    rgba(255, 255, 255, 0.01) 40%,
-    transparent 60%
-  );
-}
-
-/* Luminous refractive border with prismatic color shift */
+/* Refractive edge: a gradient border drawn by masking out the middle, so the
+   1px rim can carry a gradient that a plain `border-color` cannot. */
+.fs-glass::after,
 .glass-liquid::after {
   content: '';
   position: absolute;
-  inset: -1px;
+  inset: 0;
+  z-index: -1;
   border-radius: inherit;
   padding: 1px;
-  background: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.95) 0%,
-    rgba(255, 255, 255, 0.55) 15%,
-    rgba(200, 210, 255, 0.30) 30%,
-    rgba(180, 200, 255, 0.15) 50%,
-    rgba(200, 180, 255, 0.10) 70%,
-    rgba(255, 255, 255, 0.05) 85%,
-    transparent 100%
-  );
+  pointer-events: none;
+  background: var(--fs-glass-refraction);
   -webkit-mask:
     linear-gradient(#fff 0 0) content-box,
     linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
   mask-composite: exclude;
-  pointer-events: none;
-  z-index: 2;
-  transition: opacity 0.3s ease;
+  transition: opacity var(--fs-dur-micro) var(--fs-ease-spring);
 }
 
-[data-theme='dark'] .glass-liquid::after,
-.dark .glass-liquid::after {
+/* Variant padding. `chrome` sets none because a header lays out its own rows. */
+.fs-glass--card {
+  padding: var(--fs-space-5);
+}
+
+.fs-glass--panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fs-space-6);
+  padding: var(--fs-space-6);
+}
+
+/* A toned surface picks up the same wash a tile does; see the tone blocks
+   below for where --fs-tile-* comes from. */
+.fs-glass--toned {
+  --fs-tile-wash: transparent;
+  --fs-tile-edge: var(--fs-glass-edge);
+  --fs-tile-glow: transparent;
+  --fs-tile-ink: var(--fs-ink);
+}
+
+/* Denser fill, for content that has to stay legible over a busy mesh. */
+.fs-glass--strong {
+  background: var(--fs-glass-bg-strong);
+}
+
+/* Floating over page content that is not behind a scrim (cookie banner, toasts):
+   the text beneath must not read through, so this is glass in name only, with
+   the material's edge and blur but a near-opaque fill. */
+.fs-glass--overlay {
+  --fs-glass-blur: var(--fs-glass-blur-overlay);
+  background: var(--fs-glass-bg-overlay);
+  box-shadow: var(--fs-glass-shadow-overlay);
+}
+
+/* Header and sidebar: square, opaque-leaning, and it casts a rule not a drop. */
+.fs-glass--chrome {
+  border-radius: 0;
+  background: var(--fs-chrome-bg);
+  box-shadow: var(--fs-chrome-shadow);
+}
+
+/* Hover lifts the surface and brightens its edge, on the signature spring. */
+.fs-glass--interactive {
+  cursor: pointer;
+}
+
+.fs-glass--interactive:hover {
+  transform: translateY(-2px);
+  /* The tone glow has a fallback because most interactive surfaces are not
+     toned, and one undefined variable would drop the whole declaration. */
+  box-shadow:
+    var(--fs-glass-shadow),
+    0 16px 38px -14px var(--fs-tile-glow, transparent),
+    0 0 0 1px var(--fs-accent-ring);
+}
+
+.fs-glass--interactive:hover::after {
+  filter: brightness(1.35);
+}
+
+/* Press. Returning to translateY(0) only cancels the lift, which reads as the
+   surface going dead under the finger. Settling a hair below the resting plane
+   and pulling the drop in reads as the pane taking the weight. */
+.fs-glass--interactive:active {
+  transform: translateY(1px) scale(0.994);
+  box-shadow: var(--fs-glass-shadow);
+  transition-duration: 90ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fs-glass--interactive:hover,
+  .fs-glass--interactive:active {
+    transform: none;
+  }
+}
+
+/* ── Focus ring ─────────────────────────────────────────────────────────────
+   One ring for the whole product, drawn as an outline so it sits outside the
+   surface and never fights the refractive edge. Widths of 1, 2 and 3px at
+   offsets of 0, 2 and 3px were all in use at once; this is the one.
+   `.fs-glass-ring` stays as the name glass surfaces already use. */
+.fs-focus-ring:focus-visible,
+.fs-glass-ring:focus-visible {
+  outline: var(--fs-focus-ring-width) solid var(--fs-focus-ring-color);
+  outline-offset: var(--fs-focus-ring-offset);
+}
+
+/* ── Figures ────────────────────────────────────────────────────────────────
+   Any number a reader compares against another number, in a column or across
+   a row of tiles, or that ticks while they watch it. Proportional digits make
+   a changing figure jitter and a column of them ragged. */
+.fs-numeric {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* ── Tone-tinted tile ───────────────────────────────────────────────────────
+   Pair with .fs-glass.
+
+   A row of five tiles, each one filled with its own colour, is a chart of the
+   palette rather than a dashboard: everything shouts, so nothing is heard. The
+   default tile is therefore neutral glass. The tone survives in three quiet
+   places — the value ink, the icon chip and a thin rim — and the wash is a
+   whisper that fades out within the first corner.
+
+   One tile at a time is allowed to be loud, through `--emphasis`. That is the
+   tile with something the client has to do, and it is the only one that gets
+   the full wash and the bloom underneath. */
+.fs-glass-tile {
+  --fs-tile-wash: transparent;
+  --fs-tile-wash-strong: transparent;
+  --fs-tile-edge: var(--fs-glass-edge);
+  --fs-tile-glow: transparent;
+  --fs-tile-ink: var(--fs-ink);
+
+  display: flex;
+  flex-direction: column;
+  gap: var(--fs-space-1);
+  border-radius: var(--fs-radius-glass-inner);
+  padding: var(--fs-space-4);
+  text-align: left;
+  box-shadow: var(--fs-glass-shadow);
+
+  /* The value sizes itself against the tile, not the viewport: the same tile
+     is 170px wide four-up on a desktop and full width on a phone. */
+  container-type: inline-size;
+}
+
+/* The one loud tile. `data-tone="attention"` gets it without asking, because
+   "there is something for you to do" is exactly the case emphasis is for and
+   the client dashboard should not have to remember to pass the prop. */
+.fs-glass-tile--emphasis,
+.fs-glass-tile[data-tone='attention'] {
+  box-shadow:
+    var(--fs-glass-shadow),
+    0 12px 32px -6px var(--fs-tile-glow);
+}
+
+/* The default wash only ever touches the top-left corner and is gone by 40%,
+   so it reads as light catching the edge of the glass rather than as a fill. */
+.fs-glass-tile::before,
+.fs-glass--toned::before {
+  background:
+    linear-gradient(146deg, var(--fs-tile-wash) 0%, transparent 40%),
+    linear-gradient(to bottom, var(--fs-glass-specular) 0 1px, transparent 1px),
+    linear-gradient(135deg, var(--fs-glass-highlight) 0%, transparent 46%);
+}
+
+/* Emphasis: the wash carries across the whole tile, the way every tile used to.
+   It earns that by being the only one on the page doing it. */
+.fs-glass-tile--emphasis::before,
+.fs-glass-tile[data-tone='attention']::before {
+  background:
+    linear-gradient(
+      146deg,
+      var(--fs-tile-wash-strong) 0%,
+      var(--fs-tile-wash-strong) 14%,
+      transparent 88%
+    ),
+    linear-gradient(to bottom, var(--fs-glass-specular) 0 1px, transparent 1px),
+    linear-gradient(135deg, var(--fs-glass-highlight) 0%, transparent 46%);
+}
+
+/* The rim is the tone's, not the material's, so nine tiles in a row are told
+   apart by their edges as well as their numbers. */
+.fs-glass-tile::after,
+.fs-glass--toned::after {
   background: linear-gradient(
     135deg,
-    rgba(255, 255, 255, 0.22) 0%,
-    rgba(200, 210, 255, 0.14) 15%,
-    rgba(160, 180, 255, 0.10) 30%,
-    rgba(180, 160, 255, 0.06) 50%,
-    rgba(255, 255, 255, 0.03) 70%,
+    var(--fs-glass-specular) 0%,
+    var(--fs-tile-edge) 30%,
+    var(--fs-tile-edge) 70%,
     transparent 100%
   );
+}
+
+/* The visual tone is written to two attributes. `data-tone` is the default,
+   and `data-palette` is what a caller uses when it needs `data-tone` for a
+   meaning of its own (the client dashboard keeps the rules value there).
+   The palette blocks come second on purpose: same specificity, so when both
+   attributes are present the palette is the one that paints. */
+.fs-glass-tile[data-tone='accent'],
+.fs-glass--toned[data-tone='accent'] {
+  --fs-tile-wash: var(--fs-tone-accent-soft);
+  --fs-tile-wash-strong: var(--fs-tone-accent-emphasis);
+  --fs-tile-edge: var(--fs-tone-accent-edge);
+  --fs-tile-glow: var(--fs-tone-accent-glow);
+  --fs-tile-ink: var(--fs-tone-accent);
+}
+
+.fs-glass-tile[data-tone='ok'],
+.fs-glass--toned[data-tone='ok'] {
+  --fs-tile-wash: var(--fs-tone-ok-soft);
+  --fs-tile-wash-strong: var(--fs-tone-ok-emphasis);
+  --fs-tile-edge: var(--fs-tone-ok-edge);
+  --fs-tile-glow: var(--fs-tone-ok-glow);
+  --fs-tile-ink: var(--fs-tone-ok);
+}
+
+.fs-glass-tile[data-tone='info'],
+.fs-glass--toned[data-tone='info'] {
+  --fs-tile-wash: var(--fs-tone-info-soft);
+  --fs-tile-wash-strong: var(--fs-tone-info-emphasis);
+  --fs-tile-edge: var(--fs-tone-info-edge);
+  --fs-tile-glow: var(--fs-tone-info-glow);
+  --fs-tile-ink: var(--fs-tone-info);
+}
+
+.fs-glass-tile[data-tone='warn'],
+.fs-glass--toned[data-tone='warn'] {
+  --fs-tile-wash: var(--fs-tone-warn-soft);
+  --fs-tile-wash-strong: var(--fs-tone-warn-emphasis);
+  --fs-tile-edge: var(--fs-tone-warn-edge);
+  --fs-tile-glow: var(--fs-tone-warn-glow);
+  --fs-tile-ink: var(--fs-tone-warn);
+}
+
+.fs-glass-tile[data-tone='danger'],
+.fs-glass--toned[data-tone='danger'] {
+  --fs-tile-wash: var(--fs-tone-danger-soft);
+  --fs-tile-wash-strong: var(--fs-tone-danger-emphasis);
+  --fs-tile-edge: var(--fs-tone-danger-edge);
+  --fs-tile-glow: var(--fs-tone-danger-glow);
+  --fs-tile-ink: var(--fs-tone-danger);
+}
+
+.fs-glass-tile[data-tone='violet'],
+.fs-glass--toned[data-tone='violet'] {
+  --fs-tile-wash: var(--fs-tone-violet-soft);
+  --fs-tile-wash-strong: var(--fs-tone-violet-emphasis);
+  --fs-tile-edge: var(--fs-tone-violet-edge);
+  --fs-tile-glow: var(--fs-tone-violet-glow);
+  --fs-tile-ink: var(--fs-tone-violet);
+}
+
+.fs-glass-tile[data-tone='pink'],
+.fs-glass--toned[data-tone='pink'] {
+  --fs-tile-wash: var(--fs-tone-pink-soft);
+  --fs-tile-wash-strong: var(--fs-tone-pink-emphasis);
+  --fs-tile-edge: var(--fs-tone-pink-edge);
+  --fs-tile-glow: var(--fs-tone-pink-glow);
+  --fs-tile-ink: var(--fs-tone-pink);
+}
+
+.fs-glass-tile[data-tone='teal'],
+.fs-glass--toned[data-tone='teal'] {
+  --fs-tile-wash: var(--fs-tone-teal-soft);
+  --fs-tile-wash-strong: var(--fs-tone-teal-emphasis);
+  --fs-tile-edge: var(--fs-tone-teal-edge);
+  --fs-tile-glow: var(--fs-tone-teal-glow);
+  --fs-tile-ink: var(--fs-tone-teal);
+}
+
+.fs-glass-tile[data-tone='neutral'],
+.fs-glass--toned[data-tone='neutral'] {
+  --fs-tile-wash: var(--fs-tone-neutral-soft);
+  --fs-tile-wash-strong: var(--fs-tone-neutral-emphasis);
+  --fs-tile-edge: var(--fs-tone-neutral-edge);
+  --fs-tile-glow: var(--fs-tone-neutral-glow);
+  --fs-tile-ink: var(--fs-tone-neutral);
+}
+
+.fs-glass-tile[data-palette='accent'],
+.fs-glass--toned[data-palette='accent'] {
+  --fs-tile-wash: var(--fs-tone-accent-soft);
+  --fs-tile-wash-strong: var(--fs-tone-accent-emphasis);
+  --fs-tile-edge: var(--fs-tone-accent-edge);
+  --fs-tile-glow: var(--fs-tone-accent-glow);
+  --fs-tile-ink: var(--fs-tone-accent);
+}
+
+.fs-glass-tile[data-palette='ok'],
+.fs-glass--toned[data-palette='ok'] {
+  --fs-tile-wash: var(--fs-tone-ok-soft);
+  --fs-tile-wash-strong: var(--fs-tone-ok-emphasis);
+  --fs-tile-edge: var(--fs-tone-ok-edge);
+  --fs-tile-glow: var(--fs-tone-ok-glow);
+  --fs-tile-ink: var(--fs-tone-ok);
+}
+
+.fs-glass-tile[data-palette='info'],
+.fs-glass--toned[data-palette='info'] {
+  --fs-tile-wash: var(--fs-tone-info-soft);
+  --fs-tile-wash-strong: var(--fs-tone-info-emphasis);
+  --fs-tile-edge: var(--fs-tone-info-edge);
+  --fs-tile-glow: var(--fs-tone-info-glow);
+  --fs-tile-ink: var(--fs-tone-info);
+}
+
+.fs-glass-tile[data-palette='warn'],
+.fs-glass--toned[data-palette='warn'] {
+  --fs-tile-wash: var(--fs-tone-warn-soft);
+  --fs-tile-wash-strong: var(--fs-tone-warn-emphasis);
+  --fs-tile-edge: var(--fs-tone-warn-edge);
+  --fs-tile-glow: var(--fs-tone-warn-glow);
+  --fs-tile-ink: var(--fs-tone-warn);
+}
+
+.fs-glass-tile[data-palette='danger'],
+.fs-glass--toned[data-palette='danger'] {
+  --fs-tile-wash: var(--fs-tone-danger-soft);
+  --fs-tile-wash-strong: var(--fs-tone-danger-emphasis);
+  --fs-tile-edge: var(--fs-tone-danger-edge);
+  --fs-tile-glow: var(--fs-tone-danger-glow);
+  --fs-tile-ink: var(--fs-tone-danger);
+}
+
+.fs-glass-tile[data-palette='violet'],
+.fs-glass--toned[data-palette='violet'] {
+  --fs-tile-wash: var(--fs-tone-violet-soft);
+  --fs-tile-wash-strong: var(--fs-tone-violet-emphasis);
+  --fs-tile-edge: var(--fs-tone-violet-edge);
+  --fs-tile-glow: var(--fs-tone-violet-glow);
+  --fs-tile-ink: var(--fs-tone-violet);
+}
+
+.fs-glass-tile[data-palette='pink'],
+.fs-glass--toned[data-palette='pink'] {
+  --fs-tile-wash: var(--fs-tone-pink-soft);
+  --fs-tile-wash-strong: var(--fs-tone-pink-emphasis);
+  --fs-tile-edge: var(--fs-tone-pink-edge);
+  --fs-tile-glow: var(--fs-tone-pink-glow);
+  --fs-tile-ink: var(--fs-tone-pink);
+}
+
+.fs-glass-tile[data-palette='teal'],
+.fs-glass--toned[data-palette='teal'] {
+  --fs-tile-wash: var(--fs-tone-teal-soft);
+  --fs-tile-wash-strong: var(--fs-tone-teal-emphasis);
+  --fs-tile-edge: var(--fs-tone-teal-edge);
+  --fs-tile-glow: var(--fs-tone-teal-glow);
+  --fs-tile-ink: var(--fs-tone-teal);
+}
+
+.fs-glass-tile[data-palette='neutral'],
+.fs-glass--toned[data-palette='neutral'] {
+  --fs-tile-wash: var(--fs-tone-neutral-soft);
+  --fs-tile-wash-strong: var(--fs-tone-neutral-emphasis);
+  --fs-tile-edge: var(--fs-tone-neutral-edge);
+  --fs-tile-glow: var(--fs-tone-neutral-glow);
+  --fs-tile-ink: var(--fs-tone-neutral);
+}
+
+/* Tile typography. The value is the thing a client reads first, so it is the
+   only element in the tone ink; the label and note stay in the page's own ink
+   so nine tiles side by side do not turn into nine competing colours. */
+.fs-glass-tile__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--fs-space-2);
+}
+
+.fs-glass-tile__label {
+  font-size: var(--fs-text-label);
+  font-weight: var(--fs-weight-semibold);
+  letter-spacing: var(--fs-ls-label);
+  text-transform: uppercase;
+  color: var(--fs-glass-ink-dim);
+}
+
+/* The icon sits in its own little piece of glass, tinted with the tile's tone.
+   A bare glyph on a washed tile reads as debris; a chip reads as a control. */
+.fs-glass-tile__icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  /* The chip keeps the fuller colour: it is 32px, so a whisper at that size
+     would be invisible, and it is one of the three places the tone survives. */
+  background: var(--fs-tile-wash-strong);
+  box-shadow:
+    inset 0 0 0 1px var(--fs-tile-edge),
+    inset 0 1px 0 0 var(--fs-glass-specular);
+  color: var(--fs-tile-ink);
+}
+
+.fs-glass-tile__value {
+  /* 2.25rem is the ceiling, for a tile with room for it. A four-up tile gets
+     about 1.5rem, which is what "Connected" needs to stay on one line. */
+  font-size: clamp(1.5rem, 0.55rem + 6.5cqi, 2.25rem);
+  font-weight: 700;
+  overflow-wrap: break-word;
+  line-height: var(--fs-lh-tight);
+  letter-spacing: var(--fs-ls-heading);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+  color: var(--fs-tile-ink);
+}
+
+.fs-glass-tile__note {
+  font-size: var(--fs-text-caption);
+  line-height: var(--fs-lh-normal);
+  color: var(--fs-glass-ink-dim);
+}
+
+/* A link tile is still a tile: no underline, no colour change, just the lift. */
+a.fs-glass-tile {
+  text-decoration: none;
+}
+
+/* ── Pill ───────────────────────────────────────────────────────────────────
+   The small tinted shape that labels a row. Same discipline as the tiles: the
+   tone lives in the ink and a thin rim over a whisper of wash, so a table with
+   a pill on every row stays a table instead of turning into a bar chart.
+
+   It is a fully rounded shape on purpose. That is the one place the product
+   breaks from the concentric radii, because a pill reads as a pill at any
+   size, and matching it to its parent's corner would make it look like a
+   clipped rectangle at these heights. */
+.fs-pill {
+  --fs-tile-wash: transparent;
+  --fs-tile-wash-strong: transparent;
+  --fs-tile-edge: var(--fs-glass-edge);
+  --fs-tile-ink: var(--fs-ink);
+
+  display: inline-flex;
+  align-items: center;
+  gap: var(--fs-space-2);
+  box-sizing: border-box;
+  block-size: var(--fs-control-h-xs);
+  padding-inline: var(--fs-space-3);
+  border-radius: var(--fs-radius-full);
+  background: var(--fs-tile-wash);
+  box-shadow: inset 0 0 0 1px var(--fs-tile-edge);
+  color: var(--fs-tile-ink);
+  font-size: var(--fs-text-caption);
+  font-weight: var(--fs-weight-medium);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.fs-pill--sm {
+  block-size: 22px;
+  padding-inline: var(--fs-space-2);
+  font-size: var(--fs-text-overline);
+}
+
+/* The loud one. Same rule as the tiles: one per view. */
+.fs-pill--emphasis {
+  background: var(--fs-tile-wash-strong);
+}
+
+.fs-pill__dot {
+  inline-size: 6px;
+  block-size: 6px;
+  flex: none;
+  border-radius: var(--fs-radius-full);
+  background: currentcolor;
+}
+
+.fs-pill__icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
+
+/* A pill reads its tone from the same blocks the tiles do, so a tone only ever
+   has to be defined once. */
+.fs-pill[data-tone='accent'] {
+  --fs-tile-wash: var(--fs-tone-accent-soft);
+  --fs-tile-wash-strong: var(--fs-tone-accent-emphasis);
+  --fs-tile-edge: var(--fs-tone-accent-edge);
+  --fs-tile-ink: var(--fs-tone-accent);
+}
+
+.fs-pill[data-tone='ok'] {
+  --fs-tile-wash: var(--fs-tone-ok-soft);
+  --fs-tile-wash-strong: var(--fs-tone-ok-emphasis);
+  --fs-tile-edge: var(--fs-tone-ok-edge);
+  --fs-tile-ink: var(--fs-tone-ok);
+}
+
+.fs-pill[data-tone='info'] {
+  --fs-tile-wash: var(--fs-tone-info-soft);
+  --fs-tile-wash-strong: var(--fs-tone-info-emphasis);
+  --fs-tile-edge: var(--fs-tone-info-edge);
+  --fs-tile-ink: var(--fs-tone-info);
+}
+
+.fs-pill[data-tone='warn'] {
+  --fs-tile-wash: var(--fs-tone-warn-soft);
+  --fs-tile-wash-strong: var(--fs-tone-warn-emphasis);
+  --fs-tile-edge: var(--fs-tone-warn-edge);
+  --fs-tile-ink: var(--fs-tone-warn);
+}
+
+.fs-pill[data-tone='danger'] {
+  --fs-tile-wash: var(--fs-tone-danger-soft);
+  --fs-tile-wash-strong: var(--fs-tone-danger-emphasis);
+  --fs-tile-edge: var(--fs-tone-danger-edge);
+  --fs-tile-ink: var(--fs-tone-danger);
+}
+
+.fs-pill[data-tone='violet'] {
+  --fs-tile-wash: var(--fs-tone-violet-soft);
+  --fs-tile-wash-strong: var(--fs-tone-violet-emphasis);
+  --fs-tile-edge: var(--fs-tone-violet-edge);
+  --fs-tile-ink: var(--fs-tone-violet);
+}
+
+.fs-pill[data-tone='pink'] {
+  --fs-tile-wash: var(--fs-tone-pink-soft);
+  --fs-tile-wash-strong: var(--fs-tone-pink-emphasis);
+  --fs-tile-edge: var(--fs-tone-pink-edge);
+  --fs-tile-ink: var(--fs-tone-pink);
+}
+
+.fs-pill[data-tone='teal'] {
+  --fs-tile-wash: var(--fs-tone-teal-soft);
+  --fs-tile-wash-strong: var(--fs-tone-teal-emphasis);
+  --fs-tile-edge: var(--fs-tone-teal-edge);
+  --fs-tile-ink: var(--fs-tone-teal);
+}
+
+.fs-pill[data-tone='neutral'] {
+  --fs-tile-wash: var(--fs-tone-neutral-soft);
+  --fs-tile-wash-strong: var(--fs-tone-neutral-emphasis);
+  --fs-tile-edge: var(--fs-tone-neutral-edge);
+  --fs-tile-ink: var(--fs-tone-neutral);
+}
+
+/* ── Tone text ──────────────────────────────────────────────────────────────
+   For a number or a word that carries a tone outside a tile. */
+.fs-tone-text[data-tone='accent'] {
+  color: var(--fs-tone-accent);
+}
+.fs-tone-text[data-tone='ok'] {
+  color: var(--fs-tone-ok);
+}
+.fs-tone-text[data-tone='info'] {
+  color: var(--fs-tone-info);
+}
+.fs-tone-text[data-tone='warn'] {
+  color: var(--fs-tone-warn);
+}
+.fs-tone-text[data-tone='danger'] {
+  color: var(--fs-tone-danger);
+}
+.fs-tone-text[data-tone='violet'] {
+  color: var(--fs-tone-violet);
+}
+.fs-tone-text[data-tone='pink'] {
+  color: var(--fs-tone-pink);
+}
+.fs-tone-text[data-tone='teal'] {
+  color: var(--fs-tone-teal);
+}
+.fs-tone-text[data-tone='neutral'] {
+  color: var(--fs-tone-neutral);
+}
+
+/* ── Header row tint ───────────────────────────────────────────────────────
+   For the header strip of a table that sits inside a GlassSurface panel: the
+   same denser fill a toned tile uses, so the strip reads as a subtly raised
+   band rather than a hand-rolled bg-white/border-b box. No blur or shadow of
+   its own — it is a tint on glass that is already blurred. */
+.fs-glass-header-row {
+  background: var(--fs-glass-bg-strong);
+}
+
+/* ── The field ──────────────────────────────────────────────────────────────
+   The ground the glass refracts. Fixed and full-bleed, painted at z-index 0 so
+   a layout can put its content at z-index 10 above it.
+
+   It is still, and that is the change. The field used to drift on a 30 second
+   loop, which is charming on a page you scroll past once and wrong under a
+   dashboard someone works in: a surface that is never quite the same twice is
+   a surface you keep re-reading. Still also means the pseudo-element is no
+   longer oversized against a transform it no longer has, so `%` positions in
+   `--fs-mesh` resolve against the viewport and the geometry can be reasoned
+   about directly. */
+.fs-mesh-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background-color: var(--fs-bg-base);
+}
+
+.fs-mesh-backdrop::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: var(--fs-mesh);
+  opacity: var(--fs-mesh-opacity);
+}
+
+/* Dither, not texture. A wash this wide and this shallow is exactly the case
+   an 8-bit display bands on — a few levels of lightness spread over seventeen
+   hundred pixels — and a whisper of noise is what breaks the steps up. At this
+   opacity it is doing that job and nothing else: at 1x you cannot see it. */
+.fs-mesh-backdrop::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: var(--fs-mesh-grain);
+  background-repeat: repeat;
+  background-size: 140px 140px;
+  opacity: var(--fs-mesh-grain-opacity);
+}
+
+/* There used to be a rule per variant here, each multiplying the token above
+   by a second number. Both dials were real, so knowing what a surface looked
+   like meant holding their product in your head — which is part of how the
+   field ended up louder than anyone had signed off. There is one dial now, and
+   every variant turns it in brand.css beside the colours it applies to. */
+
+/* ── Glass as a control ─────────────────────────────────────────────────────
+   A secondary button is the same material as a card and none of its
+   proportions: it wears a control's radius, and it does not cast a drop,
+   because a row of buttons that each float is a row that reads as five cards.
+   Pair with `.fs-glass`; the hover lift still comes from
+   `.fs-glass--interactive`. */
+.fs-glass--control {
+  border-radius: var(--fs-btn-radius);
+  box-shadow: none;
+}
+
+.fs-glass--control.fs-glass--interactive:hover {
+  box-shadow: 0 0 0 1px var(--fs-accent-ring);
+}
+
+/* A control does not gain a drop on the way down, so the press is the inset
+   and the settle, without the card's shadow coming back. */
+.fs-glass--control.fs-glass--interactive:active {
+  box-shadow: none;
+}
+
+/* ── The control box ────────────────────────────────────────────────────────
+   Height, padding, radius and the ring, for anything a reader clicks or types
+   into. Put it on a button, an input, a select or a pill and it lines up with
+   everything else on the row; the material, if it wants one, is a separate
+   `.fs-glass .fs-glass--control` alongside.
+
+   The point is the agreement, not the number: a send button and the field it
+   sits beside were 52px and 48px, so they never lined up. */
+.fs-control {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--fs-control-gap);
+  box-sizing: border-box;
+  block-size: var(--fs-control-h);
+  padding-inline: var(--fs-control-px);
+  border-radius: var(--fs-radius-control);
+  font-size: var(--fs-text-body-sm);
+  font-weight: var(--fs-weight-medium);
+  line-height: 1;
+  white-space: nowrap;
+  transition:
+    transform var(--fs-dur-micro) var(--fs-ease-spring),
+    background-color var(--fs-dur-micro) var(--fs-ease-spring),
+    box-shadow var(--fs-dur-micro) var(--fs-ease-spring);
+}
+
+.fs-control--sm {
+  block-size: var(--fs-control-h-sm);
+  padding-inline: var(--fs-control-px-sm);
+  border-radius: var(--fs-radius-control-sm);
+}
+
+.fs-control--xs {
+  block-size: var(--fs-control-h-xs);
+  padding-inline: var(--fs-space-2);
+  border-radius: var(--fs-radius-control-sm);
+  font-size: var(--fs-text-caption);
+}
+
+/* A control that is exactly as wide as it is tall: an icon button. */
+.fs-control--square {
+  justify-content: center;
+  inline-size: var(--fs-control-h);
+  padding-inline: 0;
+}
+
+.fs-control--sm.fs-control--square {
+  inline-size: var(--fs-control-h-sm);
+}
+
+.fs-control--xs.fs-control--square {
+  inline-size: var(--fs-control-h-xs);
+}
+
+/* A text field is a control that happens to hold a caret, so it takes the same
+   box and only turns off the parts that belong to a button. */
+.fs-control--field {
+  display: flex;
+  inline-size: 100%;
+  font-weight: var(--fs-weight-regular);
+  white-space: normal;
+}
+
+/* ── A tone without the wash ────────────────────────────────────────────────
+   In a list of options where one is featured, the featured one gets the tinted
+   fill and the rest have to stay the same plain glass — otherwise every option
+   shouts and none of them is the answer. This keeps the tone in the rim and in
+   the ink and drops it from the fill. It comes after the tone blocks above at
+   the same weight, which is what lets it win. */
+.fs-glass--toned.fs-glass--plain,
+.fs-glass-tile.fs-glass--plain {
+  --fs-tile-wash: transparent;
 }

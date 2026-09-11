@@ -12,14 +12,16 @@
    repo root → packages/flow-design-system/src. */
 @source "../../../../packages/flow-design-system/src";
 
-/* Marketing-site design system, ported wholesale. Defines every
-   --ls-* token, the .ls-scope wrapper, atmospheric layers
+/* Marketing-site design system, shared from the package (previously a
+   byte-level fork living at ./landing-design.css — deleted so the editor
+   and flowstarter-main read from the same file instead of drifting apart).
+   Defines every --ls-* token, the .ls-scope wrapper, atmospheric layers
    (.ls-mesh / .ls-grain / .ls-orb / .ls-streak), typography
    (.ls-display / .ls-flourish / .ls-eyebrow / .ls-heading / .ls-body),
    buttons (.ls-cta / .ls-cta-hero / .ls-cta--sm), links (.ls-link),
    and dark-mode overrides. Apply `.ls-scope` to the editor root and
    every chrome surface inherits the marketing site's exact treatment. */
-@import "./landing-design.css";
+@import "@flowstarter/flow-design-system/styles/landing.css";
 
 @custom-variant dark (&:is(.dark, .dark *));
 
@@ -140,12 +142,17 @@
   --purple: var(--fs-accent);
   --surface-2: #ffffff;
 
-  /* Glass surfaces — mirrored exactly off the landing's
-     `--ls-glass-bg` / `--ls-glass-edge` / `--ls-card-shadow`. The
-     editor's chrome reads identically to a marketing-site card. */
-  --fs-glass-bg: rgba(255, 255, 255, 0.55);
-  --fs-glass-edge: rgba(18, 10, 34, 0.1);
-  --fs-glass-shadow:
+  /* Glass surfaces — `--fs-glass-bg` / `--fs-glass-edge` are NOT redefined
+     here on purpose: they now come straight from
+     @flowstarter/flow-design-system's brand.css (imported above), which is
+     what makes the editor's glass the same material as flowstarter-main's
+     instead of a hand-tuned lookalike that drifts every time the shared
+     tokens move. `--fs-surface-shadow` is a distinct, editor-specific
+     shorthand (inset highlight + colour drop, for the chrome/composer/
+     card surfaces below) — it is deliberately NOT named `--fs-glass-shadow`
+     so it can't shadow the package's own token of that name, which
+     `.fs-glass` (GlassSurface, StatTile) reads for its drop shadow. */
+  --fs-surface-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.85),
     inset 0 -1px 0 rgba(18, 10, 34, 0.04),
     0 24px 60px rgba(78, 94, 218, 0.06),
@@ -321,10 +328,10 @@
     --fs-warm-mid: rgba(255, 160, 80, 0.18);
     --fs-secondary-bloom: rgba(130, 148, 255, 0.26);
 
-    /* Direct port — design system dark glass + chrome tokens. */
-    --fs-glass-bg: rgba(22, 28, 45, 0.64);
-    --fs-glass-edge: rgba(148, 163, 184, 0.3);
-    --fs-glass-shadow:
+    /* `--fs-glass-bg` / `--fs-glass-edge`: package values (brand.css `.dark`),
+       same reasoning as the light block above. `--fs-surface-shadow` keeps
+       its editor-specific chrome shadow shape. */
+    --fs-surface-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.1),
       inset 0 -1px 0 rgba(0, 0, 0, 0.34),
       0 20px 50px rgba(2, 6, 23, 0.38),
@@ -770,11 +777,25 @@ body {
   -webkit-backdrop-filter: blur(22px) saturate(135%) !important;
 }
 
-/* Specular halo + inner rim pseudos disabled — clean chrome surface
-   instead. Kept as `content: none` so any old selectors that targeted
-   the pseudo elsewhere short-circuit gracefully. */
+/* Liquid glass signature — the same diagonal catch-light + 1px top
+   specular line every `.fs-glass` surface in flowstarter-main paints,
+   read from the shared brand.css tokens (`--fs-glass-specular`,
+   `--fs-glass-highlight`) so a token or hue change there lands here too.
+   `::after` stays disabled: the sidebar already has its own single-edge
+   `border-right`, and the package's mask-based refraction border draws a
+   full rectangle, which would read as an odd outline on a panel that's
+   flush with the viewport edge on three sides. */
 [data-slot="sidebar-inner"][data-sidebar="sidebar"]::before,
-[data-slot="sidebar-inner"]::before,
+[data-slot="sidebar-inner"]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(to bottom, var(--fs-glass-specular) 0 1px, transparent 1px),
+    linear-gradient(135deg, var(--fs-glass-highlight) 0%, transparent 46%);
+}
 [data-slot="sidebar-inner"][data-sidebar="sidebar"]::after,
 [data-slot="sidebar-inner"]::after {
   content: none !important;
@@ -948,9 +969,13 @@ html.dark [data-slot="sidebar-inset"] {
 }
 
 /* Chat header — single frosted band; light mode picks up a touch of
-   warm paper at the rim so it tucks into the main column. */
+   warm paper at the rim so it tucks into the main column. `position` +
+   `isolation` below give the liquid-glass specular pseudo (further down)
+   a stacking context to sit behind the header's own children in. */
 [data-slot="sidebar-inset"] > header,
 [data-slot="sidebar-inset"] > div > header {
+  position: relative;
+  isolation: isolate;
   background: color-mix(in oklab, var(--fs-chrome-bg) 92%, var(--fs-bg-base)) !important;
   border-bottom: 1px solid color-mix(in oklab, var(--fs-chrome-border) 65%, transparent) !important;
   box-shadow:
@@ -958,6 +983,21 @@ html.dark [data-slot="sidebar-inset"] {
     inset 0 1px 0 rgba(255, 255, 255, 0.22) !important;
   backdrop-filter: blur(24px) saturate(145%) !important;
   -webkit-backdrop-filter: blur(24px) saturate(145%) !important;
+}
+
+/* Liquid glass signature — diagonal catch-light, same shared tokens as
+   the sidebar's `::before` above and every `.fs-glass` surface in
+   flowstarter-main. No refraction `::after`: the header already carries
+   its own top/bottom hairlines and a second full-width border would
+   double up. */
+[data-slot="sidebar-inset"] > header::before,
+[data-slot="sidebar-inset"] > div > header::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(135deg, var(--fs-glass-highlight) 0%, transparent 46%);
 }
 
 html.dark [data-slot="sidebar-inset"] > header,
@@ -987,7 +1027,7 @@ html.dark [data-slot="sidebar-inset"] > div > header {
     inset 0 1px 0 rgba(255, 255, 255, 0.62),
     inset 0 0 0 1px rgba(255, 255, 255, 0.2),
     inset 0 -14px 28px -12px rgba(18, 10, 34, 0.045),
-    var(--fs-glass-shadow),
+    var(--fs-surface-shadow),
     0 18px 44px -14px rgba(18, 10, 34, 0.08) !important;
   backdrop-filter: blur(28px) saturate(150%) brightness(1.02) !important;
   -webkit-backdrop-filter: blur(28px) saturate(150%) brightness(1.02) !important;
@@ -1505,14 +1545,25 @@ html.dark
   border-color: var(--fs-rule) !important;
 }
 
-/* Popovers / dropdowns / menus — editorial cards with the same
-   shadow stack. They float, so they DO get a touch of backdrop-blur
-   so any background behind them reads through subtly. */
+/* Popovers / dropdowns / menus / dialogs / sheets — editorial cards with
+   the same shadow stack. They float, so they DO get a touch of
+   backdrop-blur so any background behind them reads through subtly.
+   `--fs-glass-shadow` here is deliberately the shared package token
+   (brand.css §11), not the editor's `--fs-surface-shadow` — a floating
+   panel is exactly the elevated, indigo-tinted drop the material was
+   designed for. `dialog-popup` / `alert-dialog-popup` / `sheet-popup`
+   already carry `position: fixed` from @base-ui/react, which is enough
+   of a containing block for the specular/refraction pseudos below. */
 [data-slot="popover-content"],
 [data-slot="dropdown-menu-content"],
 [data-slot="menu-popup"],
 [data-slot="select-content"],
-[data-slot="tooltip-content"] {
+[data-slot="tooltip-content"],
+[data-slot="dialog-popup"],
+[data-slot="alert-dialog-popup"],
+[data-slot="sheet-popup"] {
+  position: relative;
+  isolation: isolate;
   background: var(--fs-bg-elevated) !important;
   border: 1px solid var(--fs-rule-strong) !important;
   box-shadow: var(--fs-glass-shadow) !important;
@@ -1524,8 +1575,61 @@ html.dark [data-slot="popover-content"],
 html.dark [data-slot="dropdown-menu-content"],
 html.dark [data-slot="menu-popup"],
 html.dark [data-slot="select-content"],
-html.dark [data-slot="tooltip-content"] {
+html.dark [data-slot="tooltip-content"],
+html.dark [data-slot="dialog-popup"],
+html.dark [data-slot="alert-dialog-popup"],
+html.dark [data-slot="sheet-popup"] {
   background: var(--fs-bg-paper) !important;
+}
+
+/* Liquid glass signature — full treatment (specular + refractive edge)
+   for these discrete floating surfaces, straight off brand.css §11 so a
+   token change there lands here automatically. This is the one place in
+   the editor that draws the package's actual `.fs-glass::before/::after`
+   pair rather than a partial/adapted version, because a popover/dialog is
+   exactly the self-contained "card" the material was designed for. */
+[data-slot="popover-content"]::before,
+[data-slot="dropdown-menu-content"]::before,
+[data-slot="menu-popup"]::before,
+[data-slot="select-content"]::before,
+[data-slot="tooltip-content"]::before,
+[data-slot="dialog-popup"]::before,
+[data-slot="alert-dialog-popup"]::before,
+[data-slot="sheet-popup"]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    linear-gradient(to bottom, var(--fs-glass-specular) 0 1px, transparent 1px),
+    linear-gradient(135deg, var(--fs-glass-highlight) 0%, transparent 46%);
+}
+[data-slot="popover-content"]::after,
+[data-slot="dropdown-menu-content"]::after,
+[data-slot="menu-popup"]::after,
+[data-slot="select-content"]::after,
+[data-slot="tooltip-content"]::after,
+[data-slot="dialog-popup"]::after,
+[data-slot="alert-dialog-popup"]::after,
+[data-slot="sheet-popup"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  padding: 1px;
+  pointer-events: none;
+  background: var(--fs-glass-refraction);
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ import { BookingModalProvider } from '@/app/(dynamic-pages)/(main-pages)/compone
 // Make sure ls-* design tokens + marketing primitives are available on every
 // marketing page. The landing route group imports landing-design.css via its
 // own layout; pages outside that group need an explicit import.
-import '@/app/(dynamic-pages)/(main-pages)/landing-design.css';
+import '@flowstarter/flow-design-system/styles/landing.css';
 import './marketing.css';
 
 interface MarketingShellProps {

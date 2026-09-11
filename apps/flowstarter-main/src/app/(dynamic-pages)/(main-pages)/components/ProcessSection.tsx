@@ -25,8 +25,17 @@ export function ProcessSection() {
         </div>
 
         <div className="ls-process-grid">
-          {process.steps.map((step) => (
-            <div key={step.title} className="ls-process-card">
+          {process.steps.map((step, i) => (
+            // The steps arrive in order, eight pixels and a beat apart, which
+            // is the one place on this page where motion carries meaning:
+            // this is a sequence, and it reads as one.
+            <div
+              key={step.title}
+              className="ls-process-card ls-rise"
+              style={
+                { '--ls-rise-delay': `${i * 80}ms` } as React.CSSProperties
+              }
+            >
               <div className="ls-process-num">{step.number}</div>
               <h3 className="ls-process-title">{step.title}</h3>
               <p className="ls-process-body">{step.description}</p>

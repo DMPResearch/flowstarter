@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { Plus, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
+import { Pill } from '@flowstarter/flow-design-system/components/surfaces/Pill';
 import { useTranslations } from '@/lib/i18n';
 import { compactRelative } from '@/lib/format-utils';
 import {
@@ -11,8 +12,8 @@ import {
 } from '@/hooks/useTeamProjects';
 import {
   STAGE_I18N_KEYS,
-  STAGE_DOT,
   TIER_I18N_KEYS,
+  stageDotStyle,
 } from './dashboard.constants';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -80,7 +81,7 @@ export function ProjectsTable({
     <div className="overflow-x-auto">
       <table className="w-full text-[13.5px]">
         <thead>
-          <tr>
+          <tr className="fs-glass-header-row">
             <ColHead className="w-[1.5rem] pl-5"> </ColHead>
             <ColHead>{t('admin.dashboard.table.project')}</ColHead>
             <ColHead>{t('admin.dashboard.table.account')}</ColHead>
@@ -132,7 +133,8 @@ function ProjectRowItem({
       <td className="py-3 pl-5">
         <span
           aria-hidden
-          className={`inline-block h-2 w-2 rounded-full ${STAGE_DOT[stage]}`}
+          className="inline-block h-2 w-2 rounded-full"
+          style={stageDotStyle(stage)}
         />
       </td>
       <td className="px-3 py-3">
@@ -150,11 +152,11 @@ function ProjectRowItem({
       </td>
       <td className="px-3 py-3">
         {tierKey ? (
-          <span className="rounded-full border border-[var(--ls-rule)] px-2 py-0.5 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--ls-ink-dim)]">
+          <Pill tone="neutral" size="sm">
             {t(tierKey)}
-          </span>
+          </Pill>
         ) : (
-          <span className="text-[var(--ls-ink-faint)]">–</span>
+          <span className="text-[var(--ls-ink-faint)]">-</span>
         )}
       </td>
       <td className="px-3 py-3">
@@ -166,7 +168,7 @@ function ProjectRowItem({
         className="px-3 py-3 text-right font-mono text-[10.5px] tabular-nums text-[var(--ls-ink-faint)]"
         style={{ fontVariantNumeric: 'tabular-nums' }}
       >
-        {updatedAt ? compactRelative(updatedAt) : '–'}
+        {updatedAt ? compactRelative(updatedAt) : '-'}
       </td>
       <td className="py-3 pr-5 text-right">
         <ProjectActions project={project} />

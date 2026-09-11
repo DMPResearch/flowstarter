@@ -11,8 +11,10 @@
     "./clerk": "./src/clerk/index.ts",
     "./clerk-account.css": "./src/styles/clerk-account.css",
     "./styles": "./src/styles/index.css",
+    "./styles/landing.css": "./src/styles/landing.css",
     "./tokens": "./src/tokens/index.ts",
-    "./components/*": "./src/components/*.tsx"
+    "./components/*": "./src/components/*.tsx",
+    "./field-measure": "./scripts/lib/mesh-colour.mjs"
   },
   "scripts": {
     "lint": "eslint src/",
