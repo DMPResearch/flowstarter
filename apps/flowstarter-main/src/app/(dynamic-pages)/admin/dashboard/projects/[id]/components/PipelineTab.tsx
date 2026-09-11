@@ -652,11 +652,12 @@ export function PipelineTab({ project }: { project: Project }) {
           >
             {BOARD_COLUMNS.map((column) => {
               const columnJobs = byColumn.get(column.id) ?? [];
-              // `attention` is always the failed-or-cancelled column, so it
-              // always wears the louder wash — the same swap a stalled
-              // pipeline column makes when it currently holds a stall.
+              // `attention` holds the failed and cancelled jobs, so it is the
+              // one column here that is always broken by definition and the
+              // one that always wears the red wash — the same wash a pipeline
+              // column takes while it is holding a stalled card.
               const tone = columnTone(column.id);
-              const { rule, wash } = columnToneStyle(
+              const { rule, wash, ink, chip } = columnToneStyle(
                 tone,
                 column.id === 'attention'
               );
@@ -668,18 +669,22 @@ export function PipelineTab({ project }: { project: Project }) {
                 >
                   <span
                     aria-hidden
-                    className="absolute inset-x-0 top-0 h-[3px]"
+                    className="absolute inset-x-0 top-0 h-[2px]"
                     style={rule}
                   />
 
-                  <header className="mb-2 flex items-center justify-between gap-1.5 border-b border-[var(--fs-rule)] pb-2">
+                  {/* Same header shape in all six: one size, one weight, one
+                      tracking, the count hard against the right edge, and a
+                      two-line floor so "Needs attention" wrapping does not
+                      leave that column's divider lower than the rest. */}
+                  <header className="mb-2 flex min-h-[1.875rem] items-center justify-between gap-1.5 border-b border-[var(--fs-rule)] pb-2">
                     <h4
-                      className="fs-tone-text text-[11px] font-semibold uppercase tracking-wide"
-                      data-tone={tone}
+                      className="text-[11px] font-semibold uppercase tracking-[0.08em]"
+                      style={ink}
                     >
                       {column.title}
                     </h4>
-                    <Pill tone={tone} className="font-mono">
+                    <Pill className="shrink-0 font-mono" style={chip}>
                       {columnJobs.length}
                     </Pill>
                   </header>

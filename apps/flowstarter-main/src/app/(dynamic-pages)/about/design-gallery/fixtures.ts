@@ -95,12 +95,15 @@ export const galleryStats: TeamDashboardStatsPayload = {
 export const galleryClientCount = 19;
 
 /**
- * Four columns of the cross-project pipeline board, each with two or three
- * cards so it reads as a populated board rather than a placeholder, and one
- * card stalled, so a screenshot here shows every column tone at once —
- * including the louder emphasis wash a stalled column wears — without
- * signing in. "Riverside Veterinary Clinic" is deliberately the longest name
- * in the set: it is the one a truncated title would clip first.
+ * All six columns of the cross-project pipeline board, in the order the state
+ * machine allows, each with one to three cards so it reads as a populated
+ * board rather than a placeholder, and one card stalled.
+ *
+ * All six, not the four it used to be, because four of them skipped two steps
+ * of the accent ladder the board's colour now runs on — and a gallery that
+ * shows a ladder with rungs missing is a gallery nobody can check the ladder
+ * against. "Riverside Veterinary Clinic" is deliberately the longest name in
+ * the set: it is the one a truncated title would clip first.
  */
 export const galleryPipelineColumns: PipelineBoard['columns'] = [
   {
@@ -140,6 +143,80 @@ export const galleryPipelineColumns: PipelineBoard['columns'] = [
         stalled: false,
         stallReasons: [],
         createdAt: '2026-09-11T07:20:00.000Z',
+      },
+    ],
+  },
+  {
+    state: ProjectState.PREVIEW_READY,
+    stalledCount: 0,
+    cards: [
+      {
+        workspaceId: 'demo-pipeline-preview-ready-1',
+        name: 'kestrel-joinery',
+        businessName: 'Kestrel Joinery',
+        clientEmail: 'sean@kestreljoinery.example.com',
+        projectState: ProjectState.PREVIEW_READY,
+        quoteMinor: 74900,
+        currency: 'eur',
+        depositStatus: 'none',
+        depositPaidAt: null,
+        stateSince: '2026-09-10T16:40:00.000Z',
+        timeInStateMs: 9_000_000,
+        latestJob: {
+          id: 'demo-job-preview-ready-1',
+          kind: 'PREVIEW_GENERATE',
+          status: 'succeeded',
+          attemptCount: 1,
+          maxAttempts: 3,
+          createdAt: '2026-09-10T16:30:00.000Z',
+          startedAt: '2026-09-10T16:31:00.000Z',
+          finishedAt: '2026-09-10T16:40:00.000Z',
+          errorCode: null,
+          ageMs: 9_000_000,
+        },
+        stalled: false,
+        stallReasons: [],
+        createdAt: '2026-09-09T15:10:00.000Z',
+      },
+      {
+        workspaceId: 'demo-pipeline-preview-ready-2',
+        name: 'aldgate-optics',
+        businessName: 'Aldgate Optics',
+        clientEmail: 'reception@aldgateoptics.example.com',
+        projectState: ProjectState.PREVIEW_READY,
+        quoteMinor: 64900,
+        currency: 'eur',
+        depositStatus: 'none',
+        depositPaidAt: null,
+        stateSince: '2026-09-11T05:50:00.000Z',
+        timeInStateMs: 4_500_000,
+        latestJob: null,
+        stalled: false,
+        stallReasons: [],
+        createdAt: '2026-09-10T18:05:00.000Z',
+      },
+    ],
+  },
+  {
+    state: ProjectState.DEPOSIT_PAID,
+    stalledCount: 0,
+    cards: [
+      {
+        workspaceId: 'demo-pipeline-deposit-paid-1',
+        name: 'clontarf-physio',
+        businessName: 'Clontarf Physiotherapy',
+        clientEmail: 'aoife@clontarfphysio.example.com',
+        projectState: ProjectState.DEPOSIT_PAID,
+        quoteMinor: 109900,
+        currency: 'eur',
+        depositStatus: 'paid',
+        depositPaidAt: '2026-09-11T06:15:00.000Z',
+        stateSince: '2026-09-11T06:15:00.000Z',
+        timeInStateMs: 2_700_000,
+        latestJob: null,
+        stalled: false,
+        stallReasons: [],
+        createdAt: '2026-09-08T11:25:00.000Z',
       },
     ],
   },
