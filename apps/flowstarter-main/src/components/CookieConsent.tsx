@@ -65,7 +65,7 @@ export function CookieConsent() {
         {/* The banner is the first piece of the product a visitor is asked to
             touch, so it is the product's material: `--strong` because it sits
             over whatever part of the mesh happens to be under it. */}
-        <GlassSurface className="fs-glass--strong">
+        <GlassSurface className="fs-glass--overlay">
           <div className="flex items-start gap-4">
             {/* Icon */}
             <div className="w-10 h-10 rounded-xl bg-[var(--purple)]/10 flex items-center justify-center flex-shrink-0">

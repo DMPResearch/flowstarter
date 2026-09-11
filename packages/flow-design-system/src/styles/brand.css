@@ -438,6 +438,7 @@
 :root {
   /* @liquid-glass:light */
   --fs-glass-bg-strong: rgba(255, 255, 255, 0.72);  /* denser fill for content over a busy mesh */
+  --fs-glass-bg-overlay: rgba(255, 255, 255, 0.92); /* banners and toasts that float over unblurred page content */
   --fs-glass-highlight: rgba(255, 255, 255, 0.75);  /* diagonal catch-light, fades to transparent */
   --fs-glass-specular: rgba(255, 255, 255, 0.92);   /* 1px light line along the top inside edge */
   --fs-glass-ink-dim: rgba(18, 10, 34, 0.74);       /* label and note ink on a tinted tile */
@@ -554,6 +555,7 @@
 .dark {
   /* @liquid-glass:dark */
   --fs-glass-bg-strong: rgba(26, 32, 54, 0.62);     /* denser fill for content over a busy mesh */
+  --fs-glass-bg-overlay: rgba(26, 32, 54, 0.9);     /* banners and toasts that float over unblurred page content */
   --fs-glass-highlight: rgba(255, 255, 255, 0.14);  /* diagonal catch-light, fades to transparent */
   --fs-glass-specular: rgba(255, 255, 255, 0.38);   /* 1px light line along the top inside edge */
   --fs-glass-ink-dim: rgba(244, 238, 228, 0.84);    /* label and note ink on a tinted tile */

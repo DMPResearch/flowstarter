@@ -107,6 +107,7 @@ Radii: `--fs-radius-glass` (22px) and `--fs-radius-glass-inner`.
 | -------------------------------------- | ------------------------------------------------------------------------ |
 | `.fs-glass`                            | the material: fill, blur, specular, refractive edge                      |
 | `.fs-glass--strong`                    | swaps in the denser fill                                                 |
+| `.fs-glass--overlay`                   | near-opaque fill for banners and toasts floating over unblurred content  |
 | `.fs-glass--card` / `.fs-glass--panel` | the two content paddings                                                 |
 | `.fs-glass--chrome`                    | square, opaque-leaning, for a header or sidebar                          |
 | `.fs-glass--interactive`               | hover lift and edge brighten, on the spring easing                       |

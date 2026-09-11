@@ -170,6 +170,13 @@
   background: var(--fs-glass-bg-strong);
 }
 
+/* Floating over page content that is not behind a scrim (cookie banner, toasts):
+   the text beneath must not read through, so this is glass in name only, with
+   the material's edge and blur but a near-opaque fill. */
+.fs-glass--overlay {
+  background: var(--fs-glass-bg-overlay);
+}
+
 /* Header and sidebar: square, opaque-leaning, and it casts a rule not a drop. */
 .fs-glass--chrome {
   border-radius: 0;
