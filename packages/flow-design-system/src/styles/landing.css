@@ -3781,3 +3781,445 @@
 .ls-unlock__cta-ghost:hover {
   opacity: 1;
 }
+
+/* ═══════════════════════════════════════════════
+   PERSONALITY LAYER
+   The flat cream base decides the colour; this decides the craft.
+   Nothing below introduces a gradient, a mesh, a glass fill or a second
+   accent — the personality comes from type, rhythm, hairlines and drawn
+   marks, which is the only kind this page is allowed to have.
+   Every motion in here collapses under prefers-reduced-motion.
+   ═══════════════════════════════════════════════ */
+
+/* ── An eight-point rhythm ──
+   One spacing scale, used by everything below, so the vertical intervals on
+   the page are multiples of each other rather than a different clamp per
+   section. */
+.ls-scope {
+  --ls-step-1: 0.5rem; /* 8 */
+  --ls-step-2: 1rem; /* 16 */
+  --ls-step-3: 1.5rem; /* 24 */
+  --ls-step-4: 2rem; /* 32 */
+  --ls-step-6: 3rem; /* 48 */
+  --ls-step-8: 4rem; /* 64 */
+  /* One easing for every lift and draw on the page. */
+  --ls-spring: cubic-bezier(0.22, 1.2, 0.36, 1);
+}
+
+/* ── The hero headline ──
+   A display setting rather than a bigger body setting: tighter tracking, the
+   variable font's optical-size axis pushed to its display end, and the
+   grade/weight left to the flourish line so the two lines read as one
+   sentence with one word emphasised, not as two competing headlines. */
+.ls-display--hero {
+  font-variation-settings: 'opsz' 40;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+.ls-display--hero .line {
+  /* The break is set in the markup, one span per line, so the headline breaks
+     where it reads best rather than where the measure happens to run out.
+     `balance` is the fallback for the narrow viewports where the hand-set
+     line cannot hold. */
+  text-wrap: balance;
+}
+.ls-display--hero .line .brk {
+  display: block;
+}
+@media (max-width: 640px) {
+  .ls-display--hero .line .brk {
+    /* Below 640px the hand-set break would leave orphans; the browser gets to
+       choose again rather than stranding two words on a line of their own. */
+    display: inline;
+  }
+}
+.ls-display--hero .flourish {
+  font-variation-settings: 'opsz' 40;
+  letter-spacing: -0.035em;
+}
+
+/* ── The drawn mark under the blue line ──
+   A default `text-decoration` sits on the baseline at a uniform weight and
+   reads as a link. This is a stroke: tapered at both ends, a touch heavier in
+   the middle, sitting a little low and very slightly off-level, the way a
+   pen would leave it. It draws itself in on load. */
+.ls-mark {
+  position: relative;
+  display: inline;
+  padding-bottom: 0.06em;
+}
+.ls-mark::after {
+  content: '';
+  position: absolute;
+  left: -0.04em;
+  right: -0.06em;
+  bottom: -0.04em;
+  height: 0.085em;
+  min-height: 3px;
+  border-radius: 999px;
+  /* Tapered: transparent at the ends, full in the middle. The two stops are
+     not symmetrical on purpose — a drawn line never is. */
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in oklab, var(--ls-accent) 72%, transparent) 9%,
+    var(--ls-accent) 46%,
+    color-mix(in oklab, var(--ls-accent) 80%, transparent) 88%,
+    transparent 100%
+  );
+  transform: rotate(-0.45deg) scaleX(1);
+  transform-origin: left center;
+  opacity: 0.9;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .ls-mark::after {
+    animation: ls-mark-draw 760ms cubic-bezier(0.19, 1, 0.22, 1) 620ms both;
+  }
+}
+@keyframes ls-mark-draw {
+  from {
+    transform: rotate(-0.45deg) scaleX(0);
+    opacity: 0;
+  }
+  to {
+    transform: rotate(-0.45deg) scaleX(1);
+    opacity: 0.9;
+  }
+}
+.dark .ls-mark::after {
+  opacity: 0.78;
+}
+
+/* ── Hero texture ──
+   A hairline grid, not a colour. At this opacity it is not a pattern you
+   notice; it is the reason the hero does not read as flat paper. It is a
+   fixed, pointer-events-none layer inside a section that is not itself
+   scrolling, so it costs one paint. */
+.ls-hero-section .ls-weave {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(
+      to right,
+      color-mix(in oklab, var(--ls-ink) 100%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      color-mix(in oklab, var(--ls-ink) 100%, transparent) 1px,
+      transparent 1px
+    );
+  background-size: 64px 64px;
+  opacity: 0.022;
+  /* Fades out before it reaches the edges, so the grid never terminates in a
+     visible hard line. */
+  mask-image: radial-gradient(
+    120% 90% at 22% 38%,
+    #000 0%,
+    rgba(0, 0, 0, 0.55) 48%,
+    transparent 78%
+  );
+}
+.dark .ls-hero-section .ls-weave {
+  /* A hairline reads louder against near-black than against cream, so the
+     dark value is set by eye rather than mirrored from the light one. */
+  opacity: 0.028;
+}
+
+/* ── Numbered section eyebrows ──
+   The index is set in the mono face and coloured with the one accent; the
+   rule after it is what makes the pair read as a masthead line rather than a
+   label with a number stuck on the front. */
+.ls-eyebrow--numbered {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.ls-eyebrow--numbered .idx {
+  font-family: var(--ls-mono);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  color: var(--ls-accent);
+  font-variant-numeric: tabular-nums;
+}
+.ls-eyebrow--numbered .rule {
+  display: inline-block;
+  width: 1.75rem;
+  height: 1px;
+  background: color-mix(in oklab, var(--ls-accent) 45%, transparent);
+}
+
+/* ── The process, drawn as one line ──
+   The steps were three cards that happened to be numbered. They are now
+   stations on a single rule, which is what "a process" looks like: the line
+   runs behind the numerals and stops at the first and the last rather than
+   bleeding off both edges. */
+.ls-process-grid {
+  --ls-track-inset: clamp(1.5rem, 2.5vw, 2.25rem);
+  /* Half the numeral row's min-height: the track has to run through the
+     numerals, not above or below them. */
+  --ls-track-top: calc(var(--ls-track-inset) + 1.125rem);
+  position: relative;
+}
+.ls-process-grid::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  left: var(--ls-track-inset);
+  right: var(--ls-track-inset);
+  top: var(--ls-track-top);
+  height: 1px;
+  /* Stops short of both ends rather than bleeding off the section: a process
+     has a first step and a last one. */
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--ls-accent) 34%, transparent) 5%,
+    color-mix(in oklab, var(--ls-accent) 34%, transparent) 95%,
+    transparent
+  );
+}
+@media (max-width: 900px) {
+  .ls-process-grid::before {
+    /* Stacked into two columns: a single horizontal track would join steps
+       that are no longer in a row, so it is dropped rather than lied about. */
+    display: none;
+  }
+}
+.ls-process-card {
+  position: relative;
+  z-index: 1;
+}
+/* The numeral now sits ON the track, so the accent tick it used to draw for
+   itself is redundant: the track is the line. What it needs instead is a knot,
+   and the page colour behind it so the track does not run through the digits. */
+.ls-process-num {
+  position: relative;
+  padding-right: 0.55rem;
+}
+@media (min-width: 901px) {
+  .ls-process-num::before {
+    /* The per-step tick becomes the knot on the shared track. */
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    opacity: 1;
+    background: var(--ls-accent);
+  }
+  .ls-process-num::after {
+    content: '';
+    position: absolute;
+    inset: -0.25rem -0.4rem -0.25rem -0.4rem;
+    z-index: -1;
+    background: var(--ls-bg);
+  }
+  .dark .ls-process-num::after {
+    background: var(--ls-bg-2);
+  }
+}
+
+/* ── Testimonials: an avatar disc and a real quotation mark ──
+   The disc carries initials, not a stock face and not an icon-library
+   silhouette: the name is the only thing about the person we actually have. */
+.ls-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: 1px solid var(--ls-rule-strong);
+  background: color-mix(in oklab, var(--ls-accent) 8%, transparent);
+  color: var(--ls-accent-hot);
+  font-family: var(--ls-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.dark .ls-avatar {
+  color: var(--ls-accent);
+  background: color-mix(in oklab, var(--ls-accent) 12%, transparent);
+}
+
+/* The pull quote's opening mark, set as a real glyph at display size and
+   hung into the left margin so the first line of the quote still starts on
+   the card's text edge. */
+.ls-quote {
+  position: relative;
+  padding-top: var(--ls-step-2);
+}
+.ls-quote::before {
+  content: '\201C';
+  position: absolute;
+  top: -0.28em;
+  left: -0.06em;
+  font-family: var(--ls-sans);
+  font-size: 3.4rem;
+  line-height: 1;
+  font-weight: 500;
+  color: color-mix(in oklab, var(--ls-accent) 26%, transparent);
+  pointer-events: none;
+  user-select: none;
+}
+.dark .ls-quote::before {
+  color: color-mix(in oklab, var(--ls-accent) 34%, transparent);
+}
+
+/* ── Pricing: featured by weight, never by a wash ──
+   The middle milestone used to be picked out with a tinted fill, which is
+   exactly the "too colourful tile" the flat restore was about. The emphasis
+   is structural now: a heavier rule under the column, a heavier setting for
+   its own line, and a small tag that says what the emphasis means. */
+.ls-payment-milestone--accent {
+  background: transparent;
+  box-shadow: inset 0 -2px 0 0 var(--ls-ink);
+}
+.dark .ls-payment-milestone--accent {
+  box-shadow: inset 0 -2px 0 0
+    color-mix(in oklab, var(--ls-ink) 70%, transparent);
+}
+.ls-payment-milestone--accent strong {
+  font-weight: 700;
+}
+/* The tag. Ink on paper: the one accent is already spoken for by the eyebrow
+   index and the drawn mark, and a third use would flatten all three. */
+.ls-tag {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  margin-left: 0.6rem;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  background: var(--ls-ink);
+  color: var(--ls-bg);
+  font-family: var(--ls-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  vertical-align: 0.12em;
+}
+.dark .ls-tag {
+  background: var(--ls-ink);
+  color: var(--ls-bg);
+}
+/* The featured care plan, on the same principle: the row it sits in is
+   already a hairline table, so it is picked out by weight and by its rule. */
+.ls-care-plan-row--hi {
+  border-bottom-width: 2px;
+  border-bottom-color: var(--ls-ink);
+}
+.dark .ls-care-plan-row--hi {
+  border-bottom-color: color-mix(in oklab, var(--ls-ink) 70%, transparent);
+}
+.ls-care-plan-row--hi strong,
+.ls-care-plan-row--hi b {
+  font-weight: 700;
+}
+
+/* ── Reveal on scroll ──
+   Opacity and eight pixels, once. Anything further and the page starts
+   performing rather than arriving. Applied by `useRevealOnScroll`, which adds
+   `is-in` the first time the element crosses the viewport and then stops
+   watching it. */
+/* The resting state is *visible*. An element only becomes hidden once
+   `LandingReveal` has armed it, and it only ever arms elements that are
+   already off screen — so a visitor whose JS never runs, or runs late, reads
+   the page in full rather than scrolling past blank sections, and nothing
+   above the fold can flash out and back in. */
+.ls-rise {
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .ls-rise.is-armed {
+    opacity: 0;
+    transform: translateY(var(--ls-step-1));
+    transition:
+      opacity 620ms cubic-bezier(0.19, 1, 0.22, 1),
+      transform 620ms cubic-bezier(0.19, 1, 0.22, 1);
+    transition-delay: var(--ls-rise-delay, 0ms);
+  }
+  .ls-rise.is-armed.is-in {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── The lift ──
+   One pixel, on the one spring, for every pressable thing on the page. It is
+   the same distance every time, which is what makes it feel like a material
+   rather than an effect. */
+@media (prefers-reduced-motion: no-preference) {
+  .ls-cta,
+  .ls-cta-hero,
+  .ls-price-cta,
+  .ls-brief-finish {
+    transition:
+      transform 260ms var(--ls-spring),
+      background-position 600ms ease,
+      background 220ms ease,
+      border-color 220ms ease,
+      color 220ms ease;
+  }
+  .ls-cta:hover,
+  .ls-cta-hero:hover,
+  .ls-price-cta:hover,
+  .ls-brief-finish:hover {
+    transform: translateY(-1px);
+  }
+  .ls-cta:active,
+  .ls-cta-hero:active,
+  .ls-price-cta:active,
+  .ls-brief-finish:active {
+    transform: translateY(0);
+  }
+}
+
+/* ── The hero card's one line of life ──
+   The status bars already tick. This adds the thing that makes the card read
+   as being written rather than displayed: the active field's value types
+   itself in behind a caret. One field at a time, never more. */
+.ls-brief .ls-field.is-active .val {
+  position: relative;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .ls-brief .ls-field.is-active .val {
+    /* The value is revealed left to right by a clip, so the line never
+       reflows as it "types" — a width animation on text would. */
+    animation: ls-typeline 900ms steps(28, end) both;
+  }
+}
+@keyframes ls-typeline {
+  from {
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+.ls-brief .ls-field.is-active .val::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  vertical-align: -0.15em;
+  margin-left: 3px;
+  background: var(--ls-accent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .ls-brief .ls-field.is-active .val::after {
+    animation: ls-blink 1.05s steps(1) infinite;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ls-brief .ls-field.is-active .val::after {
+    display: none;
+  }
+}
