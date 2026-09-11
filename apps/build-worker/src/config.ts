@@ -13,6 +13,53 @@ export interface ValidatorCommand {
 }
 
 /**
+ * Where the trusted install/build commands actually execute.
+ *
+ * `native` is the historical path: the commands run on the build host as this
+ * process's user. `docker` runs each one inside a disposable container with
+ * only the site workspace mounted — no host credentials, no Docker socket, no
+ * home directory, nothing outside the workspace. It has to be asked for
+ * explicitly, because it needs a working Docker daemon on the host and a
+ * half-configured one must fail loudly rather than silently fall back to
+ * running a generated Astro build next to the service-role key.
+ */
+export type ValidatorIsolationMode = 'native' | 'docker';
+
+/**
+ * Programs the validation image is trusted to run directly. A command is never
+ * assembled from tenant text or handed to a shell: `pnpm` is rewritten to the
+ * pinned `corepack pnpm@<version>` wrapper, and anything outside this set is
+ * refused at boot.
+ */
+export const DOCKER_CONTAINER_PROGRAMS: ReadonlySet<string> = new Set([
+  'corepack',
+  'node',
+  'npm',
+  'npx',
+  'pnpm',
+]);
+
+export interface DockerValidationConfig {
+  /** The Docker CLI itself, on this worker's PATH. Bare executable name. */
+  bin: string;
+  /** Node 22 by default; the site toolchain comes from the image, not the host. */
+  image: string;
+  /**
+   * `bridge` — an install has to reach a registry. `none` is available for a
+   * pre-populated workspace, where the build must touch no network at all.
+   */
+  network: 'bridge' | 'none';
+  /** Container memory cap, docker size syntax (`4g`, `512m`). */
+  memory: string;
+  /** Size of the container's `/tmp`, which holds HOME and every cache. */
+  tmpfsSize: string;
+  /** Fork-bomb ceiling for the build. */
+  pidsLimit: number;
+  /** pnpm pinned through corepack *inside* the container. */
+  pnpmVersion: string;
+}
+
+/**
  * How a finished build reaches a reviewer.
  *
  * `github` is production: push the client branch and open the internal draft
@@ -57,7 +104,14 @@ export interface WorkerConfig {
     provider: string;
     modelId: string;
     apiKey: string;
-    thinkingLevel: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    thinkingLevel:
+      | 'off'
+      | 'minimal'
+      | 'low'
+      | 'medium'
+      | 'high'
+      | 'xhigh'
+      | 'max';
     timeoutMs: number;
   };
   git: {
@@ -77,6 +131,9 @@ export interface WorkerConfig {
   local: LocalPublishConfig | null;
   stagingUrlTemplate: string;
   validateCommands: ValidatorCommand[];
+  validateIsolation: ValidatorIsolationMode;
+  /** Null unless `validateIsolation` is `docker`. */
+  validateDocker: DockerValidationConfig | null;
   buildTimeoutMs: number;
   maxAttempts: number;
   concurrency: number;
@@ -102,6 +159,21 @@ const DEFAULT_VALIDATE_COMMANDS: ValidatorCommand[] = [
   { bin: 'pnpm', args: ['install', '--ignore-scripts', '--prefer-offline'] },
   { bin: 'pnpm', args: ['run', 'build'] },
 ];
+
+/**
+ * execFile never goes through a shell, but a name containing a separator would
+ * let an operator typo escape the intended toolchain, and one starting with `-`
+ * would be read as a flag by whatever it is passed to.
+ */
+const BARE_EXECUTABLE = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/;
+
+const DEFAULT_DOCKER_IMAGE = 'node:22-bookworm-slim';
+/**
+ * Pinned by this worker, never read from the host or from the generated site's
+ * own manifest: the package manager that installs tenant code is part of the
+ * trusted wrapper, not part of the build's input.
+ */
+const DEFAULT_DOCKER_PNPM_VERSION = '10.29.2';
 
 export class ConfigError extends Error {}
 
@@ -154,19 +226,124 @@ function parseValidateCommands(raw: string | undefined): ValidatorCommand[] {
       );
     }
     const [bin, ...args] = entry as string[];
-    // execFile never goes through a shell, but a bin containing a separator
-    // would let an operator typo escape the intended toolchain.
-    if (!/^[A-Za-z0-9._-]+$/.test(bin as string)) {
-      throw new ConfigError(`Validate command "${bin}" is not a bare executable name`);
+    if (!BARE_EXECUTABLE.test(bin as string)) {
+      throw new ConfigError(
+        `Validate command "${bin}" is not a bare executable name`,
+      );
     }
     return { bin: bin as string, args };
   });
 }
 
+function parseValidatorIsolation(
+  raw: string | undefined,
+): ValidatorIsolationMode {
+  const mode = raw?.trim() || 'native';
+  if (mode !== 'native' && mode !== 'docker') {
+    throw new ConfigError(
+      'FLOWSTARTER_BUILD_VALIDATE_ISOLATION must be "native" or "docker", ' +
+        `received "${mode}"`,
+    );
+  }
+  return mode;
+}
+
+/** A docker size argument: `512m`, `4g`. Rejects anything else outright. */
+function parseDockerSize(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  fallback: string,
+): string {
+  const raw = env[key]?.trim();
+  if (!raw) return fallback;
+  if (!/^[1-9][0-9]*[kmg]$/i.test(raw)) {
+    throw new ConfigError(
+      `${key} must be a docker size such as "512m" or "4g"`,
+    );
+  }
+  return raw;
+}
+
+function parseDockerValidation(
+  env: NodeJS.ProcessEnv,
+  commands: ValidatorCommand[],
+): DockerValidationConfig {
+  for (const command of commands) {
+    if (!DOCKER_CONTAINER_PROGRAMS.has(command.bin)) {
+      throw new ConfigError(
+        `Validate command "${command.bin}" is not available in the Docker ` +
+          'validation image; supported programs are ' +
+          `${Array.from(DOCKER_CONTAINER_PROGRAMS).sort().join(', ')}`,
+      );
+    }
+  }
+
+  const bin = env.FLOWSTARTER_BUILD_VALIDATE_DOCKER_BIN?.trim() || 'docker';
+  if (!BARE_EXECUTABLE.test(bin)) {
+    throw new ConfigError(
+      'FLOWSTARTER_BUILD_VALIDATE_DOCKER_BIN must be a bare executable name',
+    );
+  }
+
+  const image =
+    env.FLOWSTARTER_BUILD_VALIDATE_DOCKER_IMAGE?.trim() || DEFAULT_DOCKER_IMAGE;
+  // A reference, not a flag and not a shell fragment: this value is passed
+  // straight to `docker run` as argv.
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/.test(image)) {
+    throw new ConfigError(
+      'FLOWSTARTER_BUILD_VALIDATE_DOCKER_IMAGE is not a valid image reference',
+    );
+  }
+
+  const network =
+    env.FLOWSTARTER_BUILD_VALIDATE_DOCKER_NETWORK?.trim() || 'bridge';
+  if (network !== 'bridge' && network !== 'none') {
+    throw new ConfigError(
+      'FLOWSTARTER_BUILD_VALIDATE_DOCKER_NETWORK must be "bridge" or "none", ' +
+        `received "${network}"`,
+    );
+  }
+
+  const pnpmVersion =
+    env.FLOWSTARTER_BUILD_VALIDATE_PNPM_VERSION?.trim() ||
+    DEFAULT_DOCKER_PNPM_VERSION;
+  if (!/^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$/.test(pnpmVersion)) {
+    throw new ConfigError(
+      'FLOWSTARTER_BUILD_VALIDATE_PNPM_VERSION must be an exact version such ' +
+        `as "${DEFAULT_DOCKER_PNPM_VERSION}"`,
+    );
+  }
+
+  return {
+    bin,
+    image,
+    network,
+    memory: parseDockerSize(
+      env,
+      'FLOWSTARTER_BUILD_VALIDATE_DOCKER_MEMORY',
+      '4g',
+    ),
+    tmpfsSize: parseDockerSize(
+      env,
+      'FLOWSTARTER_BUILD_VALIDATE_DOCKER_TMPFS_SIZE',
+      '2g',
+    ),
+    pidsLimit: optionalNumber(
+      env,
+      'FLOWSTARTER_BUILD_VALIDATE_DOCKER_PIDS_LIMIT',
+      1_024,
+      { min: 64, max: 16_384 },
+    ),
+    pnpmVersion,
+  };
+}
+
 function parseRepository(value: string): { owner: string; repo: string } {
   const match = /^([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)$/.exec(value);
   if (!match) {
-    throw new ConfigError('FLOWSTARTER_SITES_REPO must be in "owner/repo" form');
+    throw new ConfigError(
+      'FLOWSTARTER_SITES_REPO must be in "owner/repo" form',
+    );
   }
   return { owner: match[1] as string, repo: match[2] as string };
 }
@@ -223,7 +400,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
 
   const thinkingLevel = env.PI_THINKING_LEVEL?.trim() || 'medium';
   if (!THINKING_LEVELS.has(thinkingLevel)) {
-    throw new ConfigError(`PI_THINKING_LEVEL "${thinkingLevel}" is not supported`);
+    throw new ConfigError(
+      `PI_THINKING_LEVEL "${thinkingLevel}" is not supported`,
+    );
   }
 
   // Local mode is expected to run on a laptop with nothing provisioned, so the
@@ -258,6 +437,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   if (publishMode !== 'local' && !stagingUrlTemplate.startsWith('https://')) {
     throw new ConfigError('FLOWSTARTER_STAGING_URL_TEMPLATE must be https');
   }
+
+  const validateCommands = parseValidateCommands(
+    env.FLOWSTARTER_BUILD_VALIDATE_COMMANDS,
+  );
+  const validateIsolation = parseValidatorIsolation(
+    env.FLOWSTARTER_BUILD_VALIDATE_ISOLATION,
+  );
 
   return {
     port,
@@ -312,13 +498,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
           }
         : null,
     stagingUrlTemplate,
-    validateCommands: parseValidateCommands(
-      env.FLOWSTARTER_BUILD_VALIDATE_COMMANDS,
+    validateCommands,
+    validateIsolation,
+    validateDocker:
+      validateIsolation === 'docker'
+        ? parseDockerValidation(env, validateCommands)
+        : null,
+    buildTimeoutMs: optionalNumber(
+      env,
+      'FLOWSTARTER_BUILD_TIMEOUT_MS',
+      900_000,
+      {
+        min: 30_000,
+        max: 3_600_000,
+      },
     ),
-    buildTimeoutMs: optionalNumber(env, 'FLOWSTARTER_BUILD_TIMEOUT_MS', 900_000, {
-      min: 30_000,
-      max: 3_600_000,
-    }),
     maxAttempts: optionalNumber(env, 'FLOWSTARTER_BUILD_MAX_ATTEMPTS', 3, {
       min: 1,
       max: 10,

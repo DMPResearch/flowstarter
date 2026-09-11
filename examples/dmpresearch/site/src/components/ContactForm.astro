@@ -1,0 +1,109 @@
+---
+import { copy } from '../locales/en';
+// The small native custom element works from MDX without a React runtime.
+---
+<customer-request>
+  <form data-sign-in>
+    <label>{copy.email} <input name="email" type="email" autocomplete="email" maxlength="254" required /></label>
+    <button type="submit">{copy.sendCode}</button>
+  </form>
+  <form data-verify hidden>
+    <label>{copy.code} <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6,10}" minlength="6" maxlength="10" required /></label>
+    <button type="submit">{copy.signIn}</button>
+  </form>
+  <form data-request hidden>
+    <fieldset>
+      <label>{copy.name} <input name="name" autocomplete="name" maxlength="120" required /></label>
+      <label>{copy.request} <textarea name="message" rows="5" maxlength="4000" required></textarea></label>
+      <button type="submit">{copy.sendRequest}</button>
+    </fieldset>
+  </form>
+  <button data-sign-out type="button" hidden>{copy.signOut}</button>
+  <p data-status role="status" aria-live="polite"></p>
+  <noscript>{copy.noScript}</noscript>
+</customer-request>
+<script>
+  import { copy } from '../locales/en';
+  import { supabase, config } from '../lib/supabase';
+
+  class CustomerRequest extends HTMLElement {
+    private dispose?: () => void;
+    connectedCallback() {
+      const signIn = this.querySelector<HTMLFormElement>('[data-sign-in]')!;
+      const verify = this.querySelector<HTMLFormElement>('[data-verify]')!;
+      const request = this.querySelector<HTMLFormElement>('[data-request]')!;
+      const signOut = this.querySelector<HTMLButtonElement>('[data-sign-out]')!;
+      const status = this.querySelector<HTMLElement>('[data-status]')!;
+      let email = '';
+      const showSession = (signedIn: boolean) => {
+        signIn.hidden = signedIn;
+        verify.hidden = true;
+        request.hidden = !signedIn;
+        signOut.hidden = !signedIn;
+      };
+      // No API errors, JWTs, or submitted personal data are logged/rendered.
+      const run = async (form: HTMLFormElement, action: () => Promise<void>) => {
+        const button = form.querySelector<HTMLButtonElement>('button')!;
+        if (button.disabled) return;
+        button.disabled = true;
+        try { await action(); }
+        catch { status.textContent = copy.failed; }
+        finally { button.disabled = false; }
+      };
+      signIn.addEventListener('submit', (event) => {
+        event.preventDefault();
+        void run(signIn, async () => {
+          email = String(new FormData(signIn).get('email')).trim();
+          const { error } = await supabase.auth.signInWithOtp({ email, options: { shouldCreateUser: false } });
+          if (error) throw error;
+          verify.hidden = false;
+          status.textContent = copy.codeSent;
+        });
+      });
+      verify.addEventListener('submit', (event) => {
+        event.preventDefault();
+        void run(verify, async () => {
+          const token = String(new FormData(verify).get('code')).trim();
+          const { error } = await supabase.auth.verifyOtp({ email, token, type: 'email' });
+          if (error) throw error;
+          verify.reset();
+          status.textContent = copy.signedIn;
+        });
+      });
+      request.addEventListener('submit', (event) => {
+        event.preventDefault();
+        void run(request, async () => {
+          const { data, error: authError } = await supabase.auth.getUser();
+          if (authError || !data.user?.email) throw new Error('Sign-in required');
+          const fields = new FormData(request);
+          const name = String(fields.get('name')).trim();
+          const message = String(fields.get('message')).trim();
+          if (!name || !message) throw new Error('Empty request');
+          const { error } = await supabase.from('dmpresearch_submissions').insert({
+            workspace_id: config.PUBLIC_TENANT_ID,
+            name,
+            email: data.user.email,
+            message,
+          }); // No .select(): the write does not depend on read permissions.
+          if (error) throw error;
+          request.reset();
+          status.textContent = copy.sent;
+        });
+      });
+      signOut.addEventListener('click', async () => {
+        signOut.disabled = true;
+        try {
+          const { error } = await supabase.auth.signOut({ scope: 'local' });
+          if (error) throw error;
+          request.reset();
+          status.textContent = copy.signedOut;
+        } catch { status.textContent = copy.signOutFailed; }
+        finally { signOut.disabled = false; }
+      });
+      const { data } = supabase.auth.onAuthStateChange((_event, session) => showSession(Boolean(session)));
+      this.dispose = () => data.subscription.unsubscribe();
+    }
+    disconnectedCallback() { this.dispose?.(); }
+  }
+  customElements.define('customer-request', CustomerRequest);
+</script>

@@ -26,12 +26,15 @@ import { llmActionConfig, recordLlmUsage } from '@/lib/ai/llm';
 import { missingGenerationPrerequisites } from '@/lib/discovery/generation-availability';
 import { createJob, getJob, updateJob } from '@/lib/discovery/live-jobs';
 import { isTransientPipelineFailure } from '@/lib/discovery/preview-failure';
+import { previewUrlForClient } from '@/lib/discovery/local-preview-frame';
+import { createRenderedPreviewAudit } from '@/lib/discovery/rendered-preview-audit';
 import { rememberClaimablePreview } from '@/lib/flowstarter/claim';
 import {
   injectCalComPreviewDemoIntoScaffoldFiles,
   resolveTenantCalComUrl,
 } from '@/lib/flowstarter/cal-com';
 import { publishFunnelPreview } from '@/lib/hosting/preview-publisher';
+import { buildSandboxStaticFiles } from '@/lib/hosting/sandbox-static-build';
 import type {
   BusinessIntakePayload,
   PreviewPublisher,
@@ -305,6 +308,37 @@ async function readPreviewFiles(root: string): Promise<TemplateScaffoldFile[]> {
   return files;
 }
 
+/**
+ * Where the vetted template sources (and their pre-installed node_modules)
+ * live on disk. Shared between the local `astro dev` fallback below and the
+ * dist build: both need the same dependency tree, and only one should decide
+ * where to find it.
+ */
+function templateRootDir(): string {
+  return (
+    process.env.FLOWSTARTER_TEMPLATE_ROOT?.trim() ||
+    resolve(process.cwd(), '../flowstarter-templates')
+  );
+}
+
+/** Export only a successful sandbox build. Local app credentials never enter tenant code. */
+async function buildPreviewDist(
+  sandboxId: string,
+  files: readonly TemplateScaffoldFile[]
+): Promise<TemplateScaffoldFile[] | undefined> {
+  try {
+    return (await buildSandboxStaticFiles(sandboxId, files)).map((file) => ({
+      ...file,
+      type: 'file' as const,
+    }));
+  } catch {
+    console.warn(
+      '[Flowstarter] sandbox static compilation failed; preview was not published'
+    );
+    return undefined;
+  }
+}
+
 async function reserveLocalPort(): Promise<number> {
   return new Promise((resolvePort, reject) => {
     const server = createServer();
@@ -334,11 +368,8 @@ async function publishLocalPreview(input: {
   if (process.env.FLOWSTARTER_LOCAL_PREVIEW !== 'true') {
     throw new Error('Local preview publishing is disabled');
   }
-  const templateRoot =
-    process.env.FLOWSTARTER_TEMPLATE_ROOT?.trim() ||
-    resolve(process.cwd(), '../flowstarter-templates');
   const dependencies = resolve(
-    templateRoot,
+    templateRootDir(),
     input.templateSlug,
     'node_modules'
   );
@@ -557,6 +588,9 @@ export async function POST(req: NextRequest) {
       // personalization actually takes, so the funnel timed out mid-pass.
       const previewModel =
         process.env.PI_PREVIEW_MODEL?.trim() || GLM_53_FLASH.id;
+      const previewThinkingLevel = z
+        .enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+        .parse(process.env.PI_PREVIEW_THINKING_LEVEL?.trim() || 'medium');
       const baseModel = process.env.PI_MODEL?.trim() || 'z-ai/glm-5.2';
       // The last attempt of a failing session runs on another model family.
       // Brand analysis and template selection fall over to the flash tier
@@ -606,6 +640,7 @@ export async function POST(req: NextRequest) {
           templateSelection: { timeoutMs: 240_000 },
           preview: {
             modelId: previewModel,
+            thinkingLevel: previewThinkingLevel,
             ...(previewModel === GLM_53_FLASH.id
               ? { modelOverride: GLM_53_FLASH }
               : {}),
@@ -646,6 +681,14 @@ export async function POST(req: NextRequest) {
         },
       };
 
+      // Set inside publisher.publish, once the workspace that produced
+      // `result.files` has a Daytona sandbox or local `astro dev` server up.
+      // publisher.publish's workspaceRoot is removed the instant pipeline.run()
+      // returns (PreviewGenerationPipeline's finally), so this is the only
+      // window in which the compiled dist/ output can be produced at all —
+      // it cannot be deferred to after `runPipeline()` resolves below.
+      let compiledPreviewFiles: TemplateScaffoldFile[] | undefined;
+
       const publisher: PreviewPublisher = {
         publish: async (input) => {
           const files = await readPreviewFiles(input.workspaceRoot);
@@ -668,6 +711,8 @@ export async function POST(req: NextRequest) {
                 // keeps the sandbox fields) so the edit loop can target the
                 // local workspace when there is no sandbox behind the preview.
                 updateJob(demoId, { localRoot: local.localRoot });
+                // A local dev preview is never permission to compile tenant code on the app host.
+                compiledPreviewFiles = undefined;
                 return { ...local, files };
               } catch (localError) {
                 throw new Error(
@@ -683,6 +728,10 @@ export async function POST(req: NextRequest) {
             }
             throw new Error(preview.error ?? 'Preview sandbox unavailable');
           }
+          compiledPreviewFiles = await buildPreviewDist(
+            preview.sandboxId,
+            files
+          );
           return {
             previewUrl: preview.previewUrl,
             artifactUrl: `daytona://${preview.sandboxId}`,
@@ -704,10 +753,14 @@ export async function POST(req: NextRequest) {
         publisher,
         (await loadTemplateClassifier()) as never,
         {
-          fullTemplateContext: true,
+          // Editable content and style tokens are already inlined. Keep the
+          // remaining template behind bounded reads instead of sending every
+          // component again on each model turn.
+          fullTemplateContext: false,
           qualitySweep: true,
           // Generous on purpose: the visitor sees most of the home page and
           // every section's heading, and pays for the substance behind them.
+          renderedAudit: createRenderedPreviewAudit(),
           teaser: {
             keepHomeSections: 6,
             keepSubpageSections: 3,
@@ -814,9 +867,19 @@ export async function POST(req: NextRequest) {
       // nothing a customer paid for. Never blocks the wizard: the sandbox URL
       // above is what the iframe shows, and the hosted one is reported
       // alongside it once (if) it comes up.
+      //
+      // `files` (source) is what makes the preview claimable; the previews
+      // Caddy is static and can only serve `builtFiles`, the compiled dist/
+      // output from buildPreviewDist. When the build failed or never ran,
+      // `builtFiles` is undefined and publishFunnelPreview falls back to
+      // `files` — which has no root index.html, so it refuses to deploy a
+      // source-only archive rather than pushing raw Astro source to Caddy.
       void publishFunnelPreview({
         previewId: demoId,
         files: filesWithCal as Array<{ path: string; content: string }>,
+        builtFiles: compiledPreviewFiles as
+          | Array<{ path: string; content: string; encoding?: 'base64' }>
+          | undefined,
         templateSlug: result.template?.slug ?? null,
         brandConfig: result.brandConfig,
       })
@@ -925,7 +988,10 @@ export async function GET(req: NextRequest) {
       status: job.status,
       phase: job.phase,
       personalized: job.personalized ?? false,
-      previewUrl: job.status === 'ready' ? job.previewUrl : undefined,
+      previewUrl:
+        job.status === 'ready'
+          ? previewUrlForClient(demoId, job.previewUrl)
+          : undefined,
       // Both, deliberately: the sandbox URL is what the iframe renders, the
       // hosted one is the durable, shareable copy on the previews host — and
       // it is only ever present once that host reported the site live.

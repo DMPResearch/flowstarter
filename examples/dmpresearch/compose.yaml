@@ -1,0 +1,27 @@
+# Run once per tenant with a unique --project-name and TENANT_HTTP_PORT.
+services:
+  site:
+    image: dmpresearch/site:${PUBLIC_TENANT_ID:?Set tenant UUID}-${RELEASE_ID:?Set immutable release ID}
+    build:
+      context: .
+      args:
+        PUBLIC_SUPABASE_URL: ${PUBLIC_SUPABASE_URL:?Set public Supabase URL}
+        PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${PUBLIC_SUPABASE_PUBLISHABLE_KEY:?Set public key}
+        PUBLIC_TENANT_ID: ${PUBLIC_TENANT_ID:?Set tenant UUID}
+    ports:
+      - '127.0.0.1:${TENANT_HTTP_PORT:?Set a unique loopback port}:8080'
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 64m
+    cpus: 0.50
+    tmpfs:
+      - /data:uid=10001,gid=10001,mode=0700,size=1m
+      - /config:uid=10001,gid=10001,mode=0700,size=1m
+    logging:
+      driver: local
+      options:
+        max-size: 5m
+        max-file: '2'

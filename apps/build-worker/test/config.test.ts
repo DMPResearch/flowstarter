@@ -104,6 +104,124 @@ describe('worker configuration', () => {
     ).toThrow(ConfigError);
   });
 
+  it('validates natively unless Docker isolation is explicitly asked for', () => {
+    const config = loadConfig(validEnv());
+    expect(config.validateIsolation).toBe('native');
+    expect(config.validateDocker).toBeNull();
+  });
+
+  it('refuses an isolation mode it does not implement', () => {
+    expect(() =>
+      loadConfig(validEnv({ FLOWSTARTER_BUILD_VALIDATE_ISOLATION: 'vm' })),
+    ).toThrow(ConfigError);
+  });
+
+  it('describes Docker isolation with a pinned image and pnpm, and bounded resources', () => {
+    const config = loadConfig(
+      validEnv({ FLOWSTARTER_BUILD_VALIDATE_ISOLATION: 'docker' }),
+    );
+    expect(config.validateIsolation).toBe('docker');
+    expect(config.validateDocker).toEqual({
+      bin: 'docker',
+      image: 'node:22-bookworm-slim',
+      network: 'bridge',
+      memory: '4g',
+      tmpfsSize: '2g',
+      pidsLimit: 1_024,
+      pnpmVersion: '10.29.2',
+    });
+  });
+
+  it('accepts an operator-pinned image, network, size and pnpm version', () => {
+    const config = loadConfig(
+      validEnv({
+        FLOWSTARTER_BUILD_VALIDATE_ISOLATION: 'docker',
+        FLOWSTARTER_BUILD_VALIDATE_DOCKER_IMAGE:
+          'node@sha256:' + 'a'.repeat(64),
+        FLOWSTARTER_BUILD_VALIDATE_DOCKER_NETWORK: 'none',
+        FLOWSTARTER_BUILD_VALIDATE_DOCKER_MEMORY: '8g',
+        FLOWSTARTER_BUILD_VALIDATE_DOCKER_TMPFS_SIZE: '512m',
+        FLOWSTARTER_BUILD_VALIDATE_DOCKER_PIDS_LIMIT: '256',
+        FLOWSTARTER_BUILD_VALIDATE_PNPM_VERSION: '10.30.0',
+      }),
+    );
+    expect(config.validateDocker).toMatchObject({
+      image: `node@sha256:${'a'.repeat(64)}`,
+      network: 'none',
+      memory: '8g',
+      tmpfsSize: '512m',
+      pidsLimit: 256,
+      pnpmVersion: '10.30.0',
+    });
+  });
+
+  it('refuses a validate command the Docker image cannot run', () => {
+    const env = {
+      FLOWSTARTER_BUILD_VALIDATE_ISOLATION: 'docker',
+      FLOWSTARTER_BUILD_VALIDATE_COMMANDS: JSON.stringify([['make', 'build']]),
+    };
+    // Native mode has always allowed whatever the operator installed on the
+    // host; only the container promises a fixed toolchain, so only it refuses.
+    const native = loadConfig(
+      validEnv({ ...env, FLOWSTARTER_BUILD_VALIDATE_ISOLATION: 'native' }),
+    );
+    expect(native.validateCommands).toEqual([{ bin: 'make', args: ['build'] }]);
+    expect(() => loadConfig(validEnv(env))).toThrow(/not available in the Docker/);
+  });
+
+  it('refuses Docker settings that would be read as flags or shell text', () => {
+    const docker = { FLOWSTARTER_BUILD_VALIDATE_ISOLATION: 'docker' };
+    expect(() =>
+      loadConfig(
+        validEnv({
+          ...docker,
+          FLOWSTARTER_BUILD_VALIDATE_DOCKER_IMAGE: '--privileged',
+        }),
+      ),
+    ).toThrow(ConfigError);
+    expect(() =>
+      loadConfig(
+        validEnv({
+          ...docker,
+          FLOWSTARTER_BUILD_VALIDATE_DOCKER_IMAGE: 'node:22; rm -rf /',
+        }),
+      ),
+    ).toThrow(ConfigError);
+    expect(() =>
+      loadConfig(
+        validEnv({
+          ...docker,
+          FLOWSTARTER_BUILD_VALIDATE_DOCKER_BIN: '/usr/local/bin/docker',
+        }),
+      ),
+    ).toThrow(ConfigError);
+  });
+
+  it('refuses a host network, an unbounded size and a floating pnpm version', () => {
+    const docker = { FLOWSTARTER_BUILD_VALIDATE_ISOLATION: 'docker' };
+    expect(() =>
+      loadConfig(
+        validEnv({
+          ...docker,
+          FLOWSTARTER_BUILD_VALIDATE_DOCKER_NETWORK: 'host',
+        }),
+      ),
+    ).toThrow(ConfigError);
+    expect(() =>
+      loadConfig(
+        validEnv({
+          ...docker,
+          FLOWSTARTER_BUILD_VALIDATE_DOCKER_MEMORY: 'lots',
+        }),
+      ),
+    ).toThrow(ConfigError);
+    expect(() =>
+      loadConfig(
+        validEnv({ ...docker, FLOWSTARTER_BUILD_VALIDATE_PNPM_VERSION: 'latest' }),
+      ),
+    ).toThrow(ConfigError);
+  });
+
   it('refuses an out-of-range concurrency', () => {
     expect(() => loadConfig(validEnv({ FLOWSTARTER_BUILD_CONCURRENCY: '0' }))).toThrow(
       ConfigError,

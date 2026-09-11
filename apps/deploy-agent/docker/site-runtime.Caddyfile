@@ -1,0 +1,24 @@
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+# TLS terminates once at the host's front Caddy, which reverse-proxies here
+# over loopback — see caddy-snippet.ts's `ServeTarget: proxy` output.
+:8080 {
+	root * /srv
+	encode zstd gzip
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options DENY
+		-Server
+	}
+	@assets path *.js *.mjs *.css *.woff *.woff2 *.png *.jpg *.jpeg *.gif *.svg *.webp *.avif *.ico
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+	@pages not path *.js *.mjs *.css *.woff *.woff2 *.png *.jpg *.jpeg *.gif *.svg *.webp *.avif *.ico
+	header @pages Cache-Control "no-cache"
+	try_files {path} {path}/ /index.html
+	file_server
+}

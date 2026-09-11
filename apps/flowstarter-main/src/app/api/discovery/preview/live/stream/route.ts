@@ -7,8 +7,9 @@
  * a poll happens to land. Phases already recorded are replayed on connect, so
  * a late subscriber or a reconnect still sees the whole run.
  */
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getJob } from '@/lib/discovery/live-jobs';
+import { previewUrlForClient } from '@/lib/discovery/local-preview-frame';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -73,7 +74,7 @@ export async function GET(request: NextRequest): Promise<Response> {
 
         if (job.status === 'ready') {
           send('ready', {
-            previewUrl: job.previewUrl,
+            previewUrl: previewUrlForClient(demoId, job.previewUrl),
             personalized: job.personalized ?? false,
             seconds: Math.round((Date.now() - job.createdAt) / 1000),
           });

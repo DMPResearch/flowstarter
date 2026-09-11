@@ -84,6 +84,17 @@ export class PreviewPublishError extends Error {
 }
 
 /**
+ * True when a root `index.html` is present — the one thing an Astro dist/
+ * build always has and raw Astro source never does (its entry point is
+ * `src/pages/index.astro`, not `index.html`). Caddy serves `/` straight off
+ * the site directory, so this is both the cheapest and the most direct check
+ * that what is about to be deployed is a compiled site rather than source.
+ */
+export function hasRootIndexHtml(files: readonly ArchiveFile[]): boolean {
+  return files.some((file) => file.path.trim().toLowerCase() === 'index.html');
+}
+
+/**
  * A site slug with 64 bits of entropy and no relationship whatsoever to the
  * business. Derivable from nothing the visitor typed, so it cannot be guessed
  * from the company name, the domain they want, or the preview id in the
@@ -154,10 +165,20 @@ export function previewsDeployAgentFromEnv(
 export interface PublishFunnelPreviewInput {
   previewId: string;
   /**
-   * The generated site, as `{path, content}`. Packed here — every HTML file
-   * gets the robots meta before a byte is written.
+   * The generated site's SOURCE — Astro pages, components, `package.json`.
+   * Never deployed as-is (a static Caddy cannot serve Astro source); this is
+   * what makes a preview claimable, stashed verbatim in the manifest.
    */
   files: readonly ArchiveFile[];
+  /**
+   * The compiled `dist/` output — what actually gets tarred, uploaded and
+   * pushed to the previews deploy-agent. Falls back to {@link files} when
+   * omitted, which {@link hasRootIndexHtml} then almost always refuses (raw
+   * Astro source has no root `index.html`): a caller with no compiled output
+   * should not silently deploy the source instead, so the fallback fails
+   * closed rather than resurrecting the old source-only behaviour.
+   */
+  builtFiles?: readonly ArchiveFile[];
   templateSlug?: string | null;
   templateVersion?: string | null;
   brandConfig?: unknown;
@@ -211,7 +232,65 @@ export async function publishFunnelPreview(
   const hostname = funnelPreviewHostname(slug);
   const url = `https://${hostname}`;
 
-  const tarball = packPreviewTarball(input.files);
+  // What actually goes out to the deploy-agent. `files` (source) is never a
+  // valid deploy target on its own — see PublishFunnelPreviewInput.builtFiles.
+  const deployFiles = input.builtFiles ?? input.files;
+  const deployable = deployFiles.length > 0 && hasRootIndexHtml(deployFiles);
+
+  // rememberClaimablePreview writes the full manifest — files AND the intake
+  // the claim later needs. Overwriting it with { files } minted workspaces
+  // with no intake: the claim found nothing, the workspace stayed in INTAKE,
+  // and the deposit was refused. Preserve whatever the row already carries
+  // and only refresh the keys this publisher actually owns.
+  //
+  // The manifest always stores `input.files` (source), never `deployFiles`:
+  // it is what the claim rebuilds the workspace from, and a claim rebuilt
+  // from compiled dist/ output would have nothing left to personalize.
+  const existingManifest =
+    existing?.manifest && typeof existing.manifest === 'object'
+      ? (existing.manifest as Record<string, unknown>)
+      : {};
+  const persistManifest = (artifactPath: string | null) =>
+    saveFunnelPreview({
+      previewId: input.previewId,
+      templateSlug: input.templateSlug ?? existing?.templateSlug ?? null,
+      templateVersion:
+        input.templateVersion ?? existing?.templateVersion ?? null,
+      brandConfig: input.brandConfig ?? existing?.brandConfig ?? {},
+      manifest: { ...existingManifest, files: input.files },
+      artifactPath,
+      ...(input.supabase ? { supabase: input.supabase } : {}),
+    });
+
+  if (!deployable) {
+    // The manifest still gets written — a preview with no compiled output
+    // is exactly as claimable as one the deploy-agent rejected outright, and
+    // must not cost the visitor that claim. What it must never do is tar up
+    // Astro source and hand it to a static Caddy as if it were a site.
+    await persistManifest(null);
+    const detail =
+      'the preview has no compiled dist/ output (no root index.html), so ' +
+      'it cannot be served as a static site; the manifest is still claimable';
+    await markFunnelPreviewDeployment({
+      previewId: input.previewId,
+      hostname,
+      status: 'failed',
+      error: detail,
+      ...(input.supabase ? { supabase: input.supabase } : {}),
+    });
+    return {
+      previewId: input.previewId,
+      slug,
+      hostname,
+      url,
+      status: 'failed',
+      detail,
+      artifactPath: null,
+      published: false,
+    };
+  }
+
+  const tarball = packPreviewTarball(deployFiles);
 
   const artifactPath = await uploadFunnelPreviewArtifact({
     previewId: input.previewId,
@@ -219,24 +298,7 @@ export async function publishFunnelPreview(
     supabase: input.supabase,
   });
 
-  // rememberClaimablePreview writes the full manifest — files AND the intake
-  // the claim later needs. Overwriting it with { files } minted workspaces
-  // with no intake: the claim found nothing, the workspace stayed in INTAKE,
-  // and the deposit was refused. Preserve whatever the row already carries
-  // and only refresh the keys this publisher actually owns.
-  const existingManifest =
-    existing?.manifest && typeof existing.manifest === 'object'
-      ? (existing.manifest as Record<string, unknown>)
-      : {};
-  await saveFunnelPreview({
-    previewId: input.previewId,
-    templateSlug: input.templateSlug ?? existing?.templateSlug ?? null,
-    templateVersion: input.templateVersion ?? existing?.templateVersion ?? null,
-    brandConfig: input.brandConfig ?? existing?.brandConfig ?? {},
-    manifest: { ...existingManifest, files: input.files },
-    artifactPath,
-    ...(input.supabase ? { supabase: input.supabase } : {}),
-  });
+  await persistManifest(artifactPath);
 
   if (!agent.configured) {
     const detail =
@@ -275,41 +337,59 @@ export async function publishFunnelPreview(
     };
   }
 
-  // The agent fetches the artifact itself from a URL — that is the only shape
-  // its `POST /sites/:slug/deploy` accepts, and it keeps a 20MB tarball out of
-  // this process's request path. A short-lived signed URL is therefore not an
-  // optimisation, it is the contract.
-  const signed = artifactPath
-    ? await signFunnelPreviewArtifact({
-        path: artifactPath,
-        ...(input.supabase ? { supabase: input.supabase } : {}),
-      })
-    : null;
+  // The agent fetches the artifact itself from a URL by default — that is the
+  // only shape its `POST /sites/:slug/deploy` accepts in production, and it
+  // keeps a 20MB tarball out of this process's request path. That contract
+  // cannot hold against a local deploy-agent, which has no way to fetch a
+  // signed URL pointing at 127.0.0.1. FLOWSTARTER_PREVIEW_ARTIFACT_TRANSPORT=
+  // bytes is the explicit, server-only opt-out for that case: the durable
+  // Storage upload above still happens either way (still the record a
+  // redeploy or an audit reads), only the deploy call itself skips the
+  // sign-and-fetch round trip in favour of the bytes HttpDeployAgentClient
+  // already knows how to send.
+  const useBytesTransport =
+    process.env.FLOWSTARTER_PREVIEW_ARTIFACT_TRANSPORT?.trim().toLowerCase() ===
+    'bytes';
 
-  if (!signed) {
-    // No URL means no deploy. Saying so is the whole point: pushing raw bytes
-    // the agent would reject with a 400 would look like a deploy attempt and
-    // leave nobody any wiser about the actual problem (Storage).
-    const detail =
-      'the preview artifact could not be stored or signed, so the previews ' +
-      'agent has nothing to fetch; the manifest is still claimable';
-    await markFunnelPreviewDeployment({
-      previewId: input.previewId,
-      hostname,
-      status: 'failed',
-      error: detail,
-      ...(input.supabase ? { supabase: input.supabase } : {}),
-    });
-    return {
-      previewId: input.previewId,
-      slug,
-      hostname,
-      url,
-      status: 'failed',
-      detail,
-      artifactPath,
-      published: false,
-    };
+  let artifact:
+    | { kind: 'url'; url: string }
+    | { kind: 'bytes'; bytes: ArrayBuffer };
+  if (useBytesTransport) {
+    artifact = { kind: 'bytes', bytes: toArrayBuffer(tarball) };
+  } else {
+    const signed = artifactPath
+      ? await signFunnelPreviewArtifact({
+          path: artifactPath,
+          ...(input.supabase ? { supabase: input.supabase } : {}),
+        })
+      : null;
+
+    if (!signed) {
+      // No URL means no deploy. Saying so is the whole point: pushing raw
+      // bytes the agent would reject with a 400 would look like a deploy
+      // attempt and leave nobody any wiser about the actual problem (Storage).
+      const detail =
+        'the preview artifact could not be stored or signed, so the previews ' +
+        'agent has nothing to fetch; the manifest is still claimable';
+      await markFunnelPreviewDeployment({
+        previewId: input.previewId,
+        hostname,
+        status: 'failed',
+        error: detail,
+        ...(input.supabase ? { supabase: input.supabase } : {}),
+      });
+      return {
+        previewId: input.previewId,
+        slug,
+        hostname,
+        url,
+        status: 'failed',
+        detail,
+        artifactPath,
+        published: false,
+      };
+    }
+    artifact = { kind: 'url', url: signed };
   }
 
   try {
@@ -317,7 +397,7 @@ export async function publishFunnelPreview(
       deployAgentUrl: agent.deployAgentUrl,
       sharedSecret: agent.sharedSecret,
       siteSlug: slug,
-      artifact: { kind: 'url', url: signed },
+      artifact,
       primaryDomain: hostname,
       additionalDomains: [],
     });

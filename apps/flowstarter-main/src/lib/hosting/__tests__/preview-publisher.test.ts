@@ -16,7 +16,7 @@
  * Static imports throughout: vi.mock is hoisted above them, and the app's
  * tsconfig does not allow top-level await in tests.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { gunzipSync } from 'node:zlib';
 import { createFakeHostingSupabase } from './fake-hosting-supabase';
 import { DryRunDeployAgentClient, type DeployAgentClient } from '../deploy';
@@ -33,6 +33,7 @@ import {
   PreviewPublishError,
   funnelPreviewHostname,
   funnelPreviewSlug,
+  hasRootIndexHtml,
   isFunnelPreviewSlug,
   previewsDeployAgentFromEnv,
   publishFunnelPreview,
@@ -46,6 +47,22 @@ const FILES = [
   { path: 'index.html', content: '<head></head><h1>Calm Path Therapy</h1>' },
   { path: 'about/index.html', content: '<head></head><p>About</p>' },
   { path: 'assets/app.css', content: 'body{margin:0}' },
+];
+
+/**
+ * The shape `readPreviewFiles` hands the publisher today: raw Astro source,
+ * with no root `index.html` anywhere — its entry point is a `.astro` page,
+ * not an HTML document a static Caddy could serve.
+ */
+const SOURCE_FILES = [
+  {
+    path: 'package.json',
+    content: JSON.stringify({
+      name: 'wellness-therapy',
+      scripts: { dev: 'astro dev' },
+    }),
+  },
+  { path: 'src/pages/index.astro', content: '<h1>Calm Path Therapy</h1>' },
 ];
 
 /** A recording agent, so the suite can assert on exactly what was sent. */
@@ -331,6 +348,173 @@ describe('publishFunnelPreview', () => {
     await expect(
       publishFunnelPreview({ previewId: PREVIEW_ID, files: [] })
     ).rejects.toBeInstanceOf(PreviewPublishError);
+  });
+});
+
+describe('hasRootIndexHtml', () => {
+  it('is true only for a root index.html, not a nested one or Astro source', () => {
+    expect(hasRootIndexHtml(FILES)).toBe(true);
+    expect(hasRootIndexHtml(SOURCE_FILES)).toBe(false);
+    expect(
+      hasRootIndexHtml([{ path: 'about/index.html', content: '<p>About</p>' }])
+    ).toBe(false);
+  });
+});
+
+describe('publishFunnelPreview refuses to deploy source-only archives', () => {
+  it('never pushes raw Astro source to the previews agent', async () => {
+    const agent = recordingAgent();
+    const result = await publishFunnelPreview({
+      previewId: PREVIEW_ID,
+      files: SOURCE_FILES,
+      agent: configured(agent.client),
+    });
+    expect(result.status).toBe('failed');
+    expect(result.published).toBe(false);
+    expect(result.detail).toContain('no compiled dist/ output');
+    expect(result.artifactPath).toBeNull();
+    // The bug this guards against: no tar, no upload, no push — a source
+    // manifest never reaches the deploy-agent under any artifact shape.
+    expect(agent.calls).toHaveLength(0);
+    expect(db.objects.size).toBe(0);
+  });
+
+  it('still leaves the preview claimable from its source manifest', async () => {
+    const agent = recordingAgent();
+    await publishFunnelPreview({
+      previewId: PREVIEW_ID,
+      files: SOURCE_FILES,
+      agent: configured(agent.client),
+    });
+    const row = db.rows('funnel_previews')[0];
+    expect(row.deploy_status).toBe('failed');
+    expect(row.artifact_path).toBeNull();
+    const manifest = row.manifest as { files: typeof SOURCE_FILES };
+    expect(manifest.files).toEqual(SOURCE_FILES);
+  });
+
+  it('also refuses builtFiles with no root index.html', async () => {
+    const agent = recordingAgent();
+    const result = await publishFunnelPreview({
+      previewId: PREVIEW_ID,
+      files: SOURCE_FILES,
+      builtFiles: [{ path: 'assets/app.css', content: 'body{margin:0}' }],
+      agent: configured(agent.client),
+    });
+    expect(result.status).toBe('failed');
+    expect(agent.calls).toHaveLength(0);
+  });
+});
+
+describe('publishFunnelPreview deploys the compiled dist/ output', () => {
+  it('tars and pushes builtFiles, not the source files', async () => {
+    const agent = recordingAgent();
+    const result = await publishFunnelPreview({
+      previewId: PREVIEW_ID,
+      files: SOURCE_FILES,
+      builtFiles: FILES,
+      agent: configured(agent.client),
+    });
+    expect(result.status).toBe('live');
+    expect(agent.calls).toHaveLength(1);
+    const stored = db.objects.get(result.artifactPath as string);
+    const tar = gunzipSync(Buffer.from(stored?.bytes as Uint8Array)).toString(
+      'utf8'
+    );
+    expect(tar).toContain('Calm Path Therapy');
+    expect(tar).not.toContain('astro dev');
+  });
+
+  it('keeps the claim manifest on the source files, not the compiled ones', async () => {
+    const agent = recordingAgent();
+    await publishFunnelPreview({
+      previewId: PREVIEW_ID,
+      files: SOURCE_FILES,
+      builtFiles: FILES,
+      agent: configured(agent.client),
+    });
+    const row = db.rows('funnel_previews')[0];
+    const manifest = row.manifest as { files: typeof SOURCE_FILES };
+    expect(manifest.files).toEqual(SOURCE_FILES);
+  });
+
+  it('preserves a compiled binary asset byte-for-byte', async () => {
+    const raw = Uint8Array.from([0xff, 0xd8, 0x00, 0x00, 0x10, 0xff]);
+    const agent = recordingAgent();
+    const result = await publishFunnelPreview({
+      previewId: PREVIEW_ID,
+      files: SOURCE_FILES,
+      builtFiles: [
+        ...FILES,
+        {
+          path: 'assets/hero.jpg',
+          content: Buffer.from(raw).toString('base64'),
+          encoding: 'base64' as const,
+        },
+      ],
+      agent: configured(agent.client),
+    });
+    const stored = db.objects.get(result.artifactPath as string);
+    const bytes = Buffer.from(stored?.bytes as Uint8Array);
+    const tar =
+      bytes[0] === 0x1f && bytes[1] === 0x8b ? gunzipSync(bytes) : bytes;
+    expect(tar.indexOf(Buffer.from(raw))).toBeGreaterThan(0);
+  });
+
+  it('falls back to files when builtFiles is omitted, for callers that already deploy compiled output', async () => {
+    const agent = recordingAgent();
+    const result = await publishFunnelPreview({
+      previewId: PREVIEW_ID,
+      files: FILES,
+      agent: configured(agent.client),
+    });
+    expect(result.status).toBe('live');
+    expect(agent.calls).toHaveLength(1);
+  });
+});
+
+describe('FLOWSTARTER_PREVIEW_ARTIFACT_TRANSPORT=bytes', () => {
+  const ORIGINAL = process.env.FLOWSTARTER_PREVIEW_ARTIFACT_TRANSPORT;
+  afterEach(() => {
+    if (ORIGINAL === undefined) {
+      delete process.env.FLOWSTARTER_PREVIEW_ARTIFACT_TRANSPORT;
+    } else {
+      process.env.FLOWSTARTER_PREVIEW_ARTIFACT_TRANSPORT = ORIGINAL;
+    }
+  });
+
+  it('sends the built tarball as bytes instead of a signed URL', async () => {
+    process.env.FLOWSTARTER_PREVIEW_ARTIFACT_TRANSPORT = 'bytes';
+    const agent = recordingAgent();
+    const result = await publishFunnelPreview({
+      previewId: PREVIEW_ID,
+      files: SOURCE_FILES,
+      builtFiles: FILES,
+      agent: configured(agent.client),
+    });
+    expect(result.status).toBe('live');
+    const artifact = agent.calls[0].args.artifact as {
+      kind: string;
+      bytes: ArrayBuffer;
+    };
+    expect(artifact.kind).toBe('bytes');
+    expect(artifact.bytes.byteLength).toBeGreaterThan(0);
+    // Storage is still written, even though the deploy skipped signing it.
+    expect(result.artifactPath).toBe(`funnel/${PREVIEW_ID}/site.tar.gz`);
+    expect(db.objects.has(result.artifactPath as string)).toBe(true);
+  });
+
+  it('still defaults to a signed URL when unset', async () => {
+    delete process.env.FLOWSTARTER_PREVIEW_ARTIFACT_TRANSPORT;
+    const agent = recordingAgent();
+    await publishFunnelPreview({
+      previewId: PREVIEW_ID,
+      files: SOURCE_FILES,
+      builtFiles: FILES,
+      agent: configured(agent.client),
+    });
+    const artifact = agent.calls[0].args.artifact as { kind: string };
+    expect(artifact.kind).toBe('url');
   });
 });
 

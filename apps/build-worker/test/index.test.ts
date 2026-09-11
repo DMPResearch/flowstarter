@@ -155,6 +155,14 @@ const CONFIG_ENV_KEYS = [
   'FLOWSTARTER_MAIN_URL',
   'FLOWSTARTER_BUILD_OUTPUT_DIR',
   'FLOWSTARTER_BUILD_VALIDATE_COMMANDS',
+  'FLOWSTARTER_BUILD_VALIDATE_ISOLATION',
+  'FLOWSTARTER_BUILD_VALIDATE_DOCKER_BIN',
+  'FLOWSTARTER_BUILD_VALIDATE_DOCKER_IMAGE',
+  'FLOWSTARTER_BUILD_VALIDATE_DOCKER_NETWORK',
+  'FLOWSTARTER_BUILD_VALIDATE_DOCKER_MEMORY',
+  'FLOWSTARTER_BUILD_VALIDATE_DOCKER_TMPFS_SIZE',
+  'FLOWSTARTER_BUILD_VALIDATE_DOCKER_PIDS_LIMIT',
+  'FLOWSTARTER_BUILD_VALIDATE_PNPM_VERSION',
   'FLOWSTARTER_BUILD_TIMEOUT_MS',
   'FLOWSTARTER_BUILD_MAX_ATTEMPTS',
   'FLOWSTARTER_BUILD_CONCURRENCY',
@@ -516,6 +524,47 @@ describe('build worker entry point (src/index.ts)', () => {
 
         const res = await fetch(`${baseUrl}/health`);
         expect(res.status).toBe(200);
+      } finally {
+        server.close();
+      }
+    });
+
+    it('wires the real validator to Docker isolation when the host asks for it', async () => {
+      const { baseUrl, server } = await boot(
+        await localEnv({
+          FLOWSTARTER_BUILD_STUB_AGENT: 'false',
+          PI_API_KEY: 'test-pi-key',
+          FLOWSTARTER_BUILD_VALIDATE_ISOLATION: 'docker',
+          FLOWSTARTER_BUILD_VALIDATE_DOCKER_IMAGE: 'node:22-alpine',
+        }),
+      );
+      try {
+        const listeningLine = consoleInfoSpy.mock.calls
+          .map((call: unknown[]) => String(call[0]))
+          .find((line: string) => line.includes('listening on'));
+        // Which isolation a host is running is the first thing to check when a
+        // build behaves differently on one machine, so it is in the boot line.
+        expect(listeningLine).toContain('validation docker node:22-alpine');
+
+        const res = await fetch(`${baseUrl}/health`);
+        expect(res.status).toBe(200);
+      } finally {
+        server.close();
+      }
+    });
+
+    it('defaults to native validation, naming it in the boot line', async () => {
+      const { server } = await boot(
+        await localEnv({
+          FLOWSTARTER_BUILD_STUB_AGENT: 'false',
+          PI_API_KEY: 'test-pi-key',
+        }),
+      );
+      try {
+        const listeningLine = consoleInfoSpy.mock.calls
+          .map((call: unknown[]) => String(call[0]))
+          .find((line: string) => line.includes('listening on'));
+        expect(listeningLine).toContain('validation native');
       } finally {
         server.close();
       }

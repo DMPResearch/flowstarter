@@ -285,9 +285,15 @@ export default clerkMiddleware(async (auth, req) => {
   // The client editor renders the tenant's site in a same-origin iframe from
   // /api/client/site/<id>/preview; without this exception the response is
   // stamped frame-ancestors 'none' and every client sees a blank pane.
+  // Local concierge previews are proxied under
+  // /api/discovery/preview/live/frame/<demoId> for the same reason: the
+  // wizard is often HTTPS while astro is HTTP loopback.
   const frameable =
     pathname.startsWith('/preview') ||
-    /^\/api\/client\/site\/[0-9a-f-]{36}\/preview(?:\/|$)/i.test(pathname);
+    /^\/api\/client\/site\/[0-9a-f-]{36}\/preview(?:\/|$)/i.test(pathname) ||
+    /^\/api\/discovery\/preview\/live\/frame\/[0-9a-f-]{36}(?:\/|$)/i.test(
+      pathname
+    );
 
   // Check for path traversal patterns (including URL-encoded variants)
   const pathTraversalPatterns = [

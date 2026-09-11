@@ -224,5 +224,6 @@ export default {
     '@earendil-works/pi-coding-agent',
     '@earendil-works/pi-agent-core',
     '@earendil-works/pi-tui',
+    'playwright',
   ],
 };

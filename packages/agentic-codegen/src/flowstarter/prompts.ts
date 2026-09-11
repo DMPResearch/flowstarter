@@ -28,7 +28,7 @@ COLOR AND VISION PROCESS
 - Discard skin, hair, sky, foliage, food variation, shadows, highlights, compression artifacts, photographic backgrounds, one-off props, and platform UI chrome unless the same color is clearly repeated as a deliberate brand element.
 - Return opaque six-digit CSS hex values only. No alpha, gradients, color names, shorthand hex, or malformed values.
 - Build a coherent palette; do not merely list the most frequent pixels. Preserve a recognizable observed brand color when safe, and adjust lightness for accessibility when necessary.
-- WCAG 2.1 AA is mandatory: text/background and mutedText/background must be at least 4.5:1; each onPrimary/primary, onSecondary/secondary, and onAccent/accent pair must be at least 4.5:1. Choose readable foreground colors, usually near-black or white. Never claim a ratio; simply select colors that satisfy it.
+- WCAG 2.1 AA is mandatory: text/background, mutedText/background, text/surface, and mutedText/surface must be at least 4.5:1; each onPrimary/primary, onSecondary/secondary, and onAccent/accent pair must be at least 4.5:1. Choose readable foreground colors, usually near-black or white. Never claim a ratio; simply select colors that satisfy it. Sections filled with primary/secondary/accent must use the matching on* token, not text/mutedText.
 - If imagery has no reliable brand signal, choose a restrained niche-appropriate palette and disclose that choice in evidence.assumptions.
 
 TYPOGRAPHY AND VOICE

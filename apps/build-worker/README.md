@@ -69,11 +69,58 @@ Optional:
 | `FLOWSTARTER_SITES_BASE_REF` / `FLOWSTARTER_SITES_REMOTE` | `main` / `origin` |
 | `FLOWSTARTER_STAGING_URL_TEMPLATE` | `https://{projectId}.staging.flowstarter.net` |
 | `FLOWSTARTER_BUILD_VALIDATE_COMMANDS` | `[["pnpm","install","--ignore-scripts","--prefer-offline"],["pnpm","run","build"]]` |
+| `FLOWSTARTER_BUILD_VALIDATE_ISOLATION` | `native` — see below |
 | `FLOWSTARTER_BUILD_TIMEOUT_MS` | `900000` (per command) |
 | `FLOWSTARTER_BUILD_MAX_ATTEMPTS` | `3` |
 | `FLOWSTARTER_BUILD_CONCURRENCY` / `FLOWSTARTER_BUILD_QUEUE_LIMIT` | `1` / `32` |
 
 The service refuses to start if any required value is missing or malformed.
+
+## Validation isolation
+
+Validation is the one step that executes generated code for real: an Astro build
+runs the site's own config, its integrations and whatever the install resolved.
+`FLOWSTARTER_BUILD_VALIDATE_ISOLATION` decides where that happens.
+
+`native` (default) runs the commands on the build host as this service's user —
+the historical behaviour, and the only option on a host with no Docker daemon.
+
+`docker` runs each command inside a disposable container. It is opt-in per host
+rather than automatic: it needs a working daemon, and a half-configured one must
+fail loudly instead of silently falling back to building next to the
+service-role key. Each command gets its own container, and the container is
+given:
+
+- **one** bind mount, the site workspace, at `/site` — no host home directory,
+  no Docker socket, no path outside the workspace;
+- `--cap-drop=ALL --security-opt=no-new-privileges`, a memory cap and a pids
+  cap, `--init` so a timeout actually stops the build, `--rm` plus a
+  `docker rm --force` by name for the one case `--rm` cannot cover (a killed
+  client leaving the daemon holding a live container);
+- an environment built from scratch: `HOME` and every cache point into the
+  container's own tmpfs, so nothing is inherited from this process;
+- `corepack pnpm@10.29.2` as the package manager. An operator-configured `pnpm`
+  command is rewritten to that pinned wrapper; the toolchain comes from the
+  image, never from the host and never from the generated site's manifest.
+
+Only `corepack`, `node`, `npm`, `npx` and `pnpm` can be named in
+`FLOWSTARTER_BUILD_VALIDATE_COMMANDS` under `docker`, and the service refuses to
+start if something else is. The image must be public or already pulled: the
+Docker CLI is invoked with `PATH`, `HOME`, `DOCKER_HOST` and `DOCKER_CONTEXT`
+and no registry credentials.
+
+| Variable | Default |
+|----------|---------|
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_BIN` | `docker` (bare executable name) |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_IMAGE` | `node:22-bookworm-slim` |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_NETWORK` | `bridge` (`none` for a pre-populated workspace) |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_MEMORY` | `4g` |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_TMPFS_SIZE` | `2g` (holds `HOME` and the pnpm store) |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_PIDS_LIMIT` | `1024` |
+| `FLOWSTARTER_BUILD_VALIDATE_PNPM_VERSION` | `10.29.2` |
+
+Build output is logged the same way in both modes, and the `dist/` gate is still
+checked on the host — the bind mount is where the container wrote it.
 
 ## Boundaries
 
@@ -81,6 +128,11 @@ The service refuses to start if any required value is missing or malformed.
   rooted at `generated-sites/<uuid>/` — no shell, no general filesystem.
 - Validation commands are operator-defined and run **outside** Pi. Their names
   must be bare executables, and they run through `execFile` (no shell).
+- A validation command never inherits this process's environment, in either
+  isolation mode. The child gets an allowlist — `PATH`, `HOME`, locale, cache and
+  proxy variables — so the service-role key, the Pi key and the GitHub token
+  cannot reach a generated build. An allowlist, not a denylist: the rule has to
+  stay correct when the next secret is added to the worker's environment.
 - The GitHub token reaches git through `GIT_CONFIG_*` env vars, not `git -c` or
   a credential-bearing remote URL, so it never appears in process argv or the
   repo config. Git and GitHub error text is redacted before it is logged or

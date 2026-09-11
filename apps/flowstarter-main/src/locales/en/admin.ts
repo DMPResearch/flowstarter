@@ -140,4 +140,23 @@ export const adminKeys = {
     'Example: Spoke with Maria - runs a small dental clinic in Bucharest with two dentists, mostly word-of-mouth. She wants a clean modern site to attract younger patients and mentioned online booking. Budget around €2k. Tone friendly but professional…',
   'admin.dashboard.newProject.discovery.enhanceWithAi': 'Enhance with AI',
   'admin.dashboard.newProject.discovery.enhancing': 'Enhancing…',
+
+  // Hosting — connect an existing (already bootstrapped) Hetzner server
+  'admin.hosting.connectExisting.button': 'Connect existing server',
+  'admin.hosting.connectExisting.pending': 'Connecting…',
+  'admin.hosting.connectExisting.success': 'Existing server connected',
+  'admin.hosting.connectExisting.error.generic':
+    'Could not connect the existing server',
+  'admin.hosting.connectExisting.error.configMissing':
+    'Existing server is not configured on this environment',
+  'admin.hosting.connectExisting.error.secretUnavailable':
+    'Existing server credentials are not available',
+  'admin.hosting.connectExisting.error.healthCheckFailed':
+    'Could not verify the existing server is ready',
+  'admin.hosting.connectExisting.error.hetznerApiFailed':
+    'Could not verify the server with the hosting provider',
+  'admin.hosting.connectExisting.error.serverNotReady':
+    'The existing server is not running yet',
+  'admin.hosting.connectExisting.error.dbError':
+    'Could not save the server record',
 } as const;

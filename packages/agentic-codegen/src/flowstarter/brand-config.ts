@@ -93,6 +93,8 @@ export function validateBrandConfig(
 
   checkContrast(colors, 'text', 'background', 4.5, issues);
   checkContrast(colors, 'mutedText', 'background', 4.5, issues);
+  checkContrast(colors, 'text', 'surface', 4.5, issues);
+  checkContrast(colors, 'mutedText', 'surface', 4.5, issues);
   checkContrast(colors, 'onPrimary', 'primary', 4.5, issues);
   checkContrast(colors, 'onSecondary', 'secondary', 4.5, issues);
   checkContrast(colors, 'onAccent', 'accent', 4.5, issues);

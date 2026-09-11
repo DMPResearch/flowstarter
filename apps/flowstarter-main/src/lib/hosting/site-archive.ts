@@ -65,12 +65,19 @@ export function injectNoindex(html: string): string {
   return `${NOINDEX_META}\n${html}`;
 }
 
-/** Applies {@link injectNoindex} to every HTML file in a manifest. */
+/**
+ * Applies {@link injectNoindex} to every HTML file in a manifest.
+ *
+ * Spreads rather than rebuilding `{path, content}` by hand: a binary entry's
+ * `encoding: 'base64'` marker used to get dropped here, which packed its
+ * base64 text as UTF-8 bytes instead of decoding it — every image or font
+ * that passed through this on its way into a tarball came out corrupted.
+ */
 export function withNoindex(files: readonly ArchiveFile[]): ArchiveFile[] {
   return files.map((file) =>
     isHtmlPath(file.path)
-      ? { path: file.path, content: injectNoindex(file.content) }
-      : { path: file.path, content: file.content }
+      ? { ...file, content: injectNoindex(file.content) }
+      : file
   );
 }
 
