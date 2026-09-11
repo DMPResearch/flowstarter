@@ -20,10 +20,10 @@ export interface LiveJob {
   demoId: string;
   status: 'building' | 'ready' | 'failed';
   /**
-   * What the wizard's iframe points at: the sandbox (Daytona) or local dev
-   * server. Stays the iframe source even after the hosted copy goes live —
-   * it is the one we know is serving, and swapping the frame under a visitor
-   * mid-look to prove a point about our infrastructure is not an improvement.
+   * Upstream URL for the live site: Daytona sandbox or local `astro dev`
+   * (http://127.0.0.1:<port>). Clients never see loopback URLs over HTTPS —
+   * GET/stream rewrite those through `/api/discovery/preview/live/frame/<id>/`
+   * so the wizard iframe is same-origin.
    */
   previewUrl?: string;
   /**

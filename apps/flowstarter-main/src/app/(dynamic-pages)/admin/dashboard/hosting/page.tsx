@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { TeamDashboardShell } from '../components/TeamDashboardShell';
+import { ConnectExistingHostingServer } from './ConnectExistingHostingServer';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -201,9 +202,12 @@ export default function HostingPage() {
       subtitle="Hetzner Caddy fleet that hosts client sites"
       icon={<Server className="w-5 h-5" />}
       actions={
-        <Button onClick={() => setShowProvision(true)} size="sm">
-          <Plus className="w-4 h-4" /> Provision server
-        </Button>
+        <>
+          <ConnectExistingHostingServer />
+          <Button onClick={() => setShowProvision(true)} size="sm">
+            <Plus className="w-4 h-4" /> Provision server
+          </Button>
+        </>
       }
     >
       {/* Stats */}

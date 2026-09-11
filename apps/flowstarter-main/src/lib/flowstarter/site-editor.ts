@@ -653,6 +653,12 @@ export interface WorkspaceSite {
   subscriptionStatus: SubscriptionAccessStatus;
   workspaceName: string;
   slug: string;
+  /**
+   * Raw `workspaces.tier_name`, which is nullable and may still hold a legacy
+   * value. Normalised by `normaliseTierKey` at the point of use rather than
+   * here, so nothing in this module has to know the plan vocabulary.
+   */
+  tierName: string | null;
 }
 
 /**
@@ -667,7 +673,7 @@ export async function loadWorkspaceSite(
     await Promise.all([
       supabase
         .from('workspaces')
-        .select('id, name, slug, subscription_status')
+        .select('id, name, slug, subscription_status, tier_name')
         .eq('id', workspaceId)
         .maybeSingle(),
       supabase
@@ -707,6 +713,7 @@ export async function loadWorkspaceSite(
     subscriptionStatus: subscriptionAccessStatus(workspace.subscription_status),
     workspaceName: workspace.name,
     slug: workspace.slug,
+    tierName: workspace.tier_name ?? null,
   };
 }
 
@@ -895,18 +902,51 @@ export function startOfUtcDay(now = new Date()): string {
   ).toISOString();
 }
 
-export async function countProposalsToday(
+/**
+ * Proposals since an instant. The daily cap and the monthly allowance count
+ * the same rows over different windows, so they count them through the same
+ * query: two nearly-identical counters would drift the first time one of them
+ * learned about a new event kind.
+ */
+export async function countProposalsSince(
   workspaceId: string,
-  now = new Date()
+  sinceIso: string
+): Promise<number> {
+  return countEventsSince(workspaceId, 'site_edit_proposed', sinceIso);
+}
+
+/**
+ * Applied edits since an instant, which is what the client's own dashboard
+ * shows as "changes you made". Deliberately not the same number as the credit
+ * count: credits are spent on the proposal, whether or not the client kept it.
+ */
+export async function countAppliedEditsSince(
+  workspaceId: string,
+  sinceIso: string
+): Promise<number> {
+  return countEventsSince(workspaceId, 'site_edited', sinceIso);
+}
+
+async function countEventsSince(
+  workspaceId: string,
+  kind: SiteEditorEventKind,
+  sinceIso: string
 ): Promise<number> {
   const { count, error } = await db()
     .from('project_events')
     .select('id', { count: 'exact', head: true })
     .eq('workspace_id', workspaceId)
-    .eq('kind', 'site_edit_proposed')
-    .gte('created_at', startOfUtcDay(now));
+    .eq('kind', kind)
+    .gte('created_at', sinceIso);
   if (error) throw error;
   return count ?? 0;
+}
+
+export async function countProposalsToday(
+  workspaceId: string,
+  now = new Date()
+): Promise<number> {
+  return countProposalsSince(workspaceId, startOfUtcDay(now));
 }
 
 /**

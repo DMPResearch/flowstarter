@@ -22,7 +22,7 @@
  * agent, we'll fill the ExecStart in.
  */
 
-const CLOUD_INIT_VERSION = 3;
+const CLOUD_INIT_VERSION = 4;
 
 /**
  * Pinned versions for the host's coding-agent stack. Bump these together
@@ -32,6 +32,8 @@ const NODE_MAJOR = 22;
 const CLAUDE_CODE_NPM_PACKAGE = '@anthropic-ai/claude-code';
 
 export interface CloudInitOptions {
+  /** New hosts serve each built site in its own restricted static container. */
+  siteRuntime?: 'docker' | 'filesystem';
   /** SSH public key(s) to add to the server's root account */
   sshAuthorizedKeys?: string[];
   /** Hostname to set on the server (FQDN or short name) */
@@ -163,6 +165,7 @@ write_files:
     content: |
       DEPLOY_AGENT_SHARED_SECRET=${opts.deployAgentSharedSecret}
       DEPLOY_AGENT_PORT=8443
+      DEPLOY_AGENT_SITE_RUNTIME=${opts.siteRuntime ?? 'docker'}
     owner: root:root
     permissions: '0600'
   - path: /etc/flowstarter/anthropic.env
@@ -241,7 +244,15 @@ write_files:
       WantedBy=multi-user.target
     owner: root:root
     permissions: '0644'
-${previewsSecret ? previewsWriteFiles(previewsSecret, previewsSuffix) : ''}
+${
+  previewsSecret
+    ? previewsWriteFiles(
+        previewsSecret,
+        previewsSuffix,
+        opts.siteRuntime ?? 'docker'
+      )
+    : ''
+}
 runcmd:
   # ─── Caddy install (official repo) ────────────────────────────────────
   - curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
@@ -347,12 +358,17 @@ final_message: "Flowstarter host bootstrap complete (cloud_init_version=${CLOUD_
  * because only one process can, and hands the preview zone to the previews
  * Caddy over loopback through a single static block that no agent ever writes.
  */
-function previewsWriteFiles(sharedSecret: string, hostSuffix: string): string {
+function previewsWriteFiles(
+  sharedSecret: string,
+  hostSuffix: string,
+  siteRuntime: 'docker' | 'filesystem'
+): string {
   return `  - path: /etc/flowstarter/preview-deploy-agent.env
     content: |
       # SECOND deploy-agent instance — funnel previews only.
       # Same binary as the paid agent, everything that matters different.
       DEPLOY_AGENT_MODE=previews
+      DEPLOY_AGENT_SITE_RUNTIME=${siteRuntime}
       DEPLOY_AGENT_SHARED_SECRET=${sharedSecret}
       DEPLOY_AGENT_PORT=${PREVIEWS.agentPort}
       DEPLOY_AGENT_SITES_ROOT=${PREVIEWS.sitesRoot}
@@ -372,7 +388,8 @@ function previewsWriteFiles(sharedSecret: string, hostSuffix: string): string {
       # It imports ONLY its own snippet directory; nothing in here can be
       # reached from /etc/caddy/Caddyfile's import glob.
       {
-        admin off
+        admin 127.0.0.1:2020
+        default_bind 127.0.0.1
         auto_https off
         http_port ${PREVIEWS.caddyHttpPort}
         https_port ${PREVIEWS.caddyHttpsPort}
@@ -391,7 +408,7 @@ function previewsWriteFiles(sharedSecret: string, hostSuffix: string): string {
       User=caddy
       Group=caddy
       ExecStart=/usr/bin/caddy run --environ --config ${PREVIEWS.caddyDir}/Caddyfile
-      ExecReload=/usr/bin/caddy reload --config ${PREVIEWS.caddyDir}/Caddyfile --force
+      ExecReload=/usr/bin/caddy reload --config ${PREVIEWS.caddyDir}/Caddyfile --address 127.0.0.1:2020 --force
       Restart=on-failure
       RestartSec=5
       # A previews Caddy that cannot start must not take the box with it.

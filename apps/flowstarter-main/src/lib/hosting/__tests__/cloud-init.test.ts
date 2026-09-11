@@ -2,6 +2,20 @@ import { describe, expect, it } from 'vitest';
 import { buildCloudInit, getCloudInitVersion } from '../cloud-init';
 
 describe('buildCloudInit', () => {
+  it('enables Docker for both new site fleets and permits explicit legacy hosts', () => {
+    const options = {
+      deployAgentSharedSecret: 'paid-secret',
+      previewsDeployAgentSharedSecret: 'preview-secret',
+      caddyAcmeEmail: 'ops@example.com',
+    };
+    const docker = buildCloudInit(options);
+    expect(docker.match(/DEPLOY_AGENT_SITE_RUNTIME=docker/g)).toHaveLength(2);
+    const legacy = buildCloudInit({ ...options, siteRuntime: 'filesystem' });
+    expect(legacy.match(/DEPLOY_AGENT_SITE_RUNTIME=filesystem/g)).toHaveLength(
+      2
+    );
+    expect(legacy).not.toContain('DEPLOY_AGENT_SITE_RUNTIME=docker');
+  });
   it('throws if shared secret is missing', () => {
     expect(() =>
       buildCloudInit({
@@ -172,6 +186,9 @@ describe('buildCloudInit — previews stack', () => {
     // TLS is terminated by the front Caddy; this instance must not try to
     // fight it for :443 or ask Let's Encrypt for anything.
     expect(previewsCaddyfile).toContain('auto_https off');
+    expect(previewsCaddyfile).toContain('admin 127.0.0.1:2020');
+    expect(previewsCaddyfile).toContain('default_bind 127.0.0.1');
+    expect(out).toContain('--address 127.0.0.1:2020 --force');
   });
 
   it('serves the preview zone through one static, never-generated block', () => {

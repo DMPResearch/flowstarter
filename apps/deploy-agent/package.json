@@ -1,6 +1,6 @@
 {
   "name": "@flowstarter/deploy-agent",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Per-server agent that receives Caddy host deploys from flowstarter-main",
   "type": "module",
@@ -9,7 +9,9 @@
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "build:linux": "bun build --compile --minify --target=bun-linux-x64 --outfile dist/deploy-agent-linux-x64 src/index.ts",
+    "build:linux-arm64": "bun build --compile --minify --target=bun-linux-arm64 --outfile dist/deploy-agent-linux-arm64 src/index.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.3.9",

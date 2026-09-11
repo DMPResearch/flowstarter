@@ -21,6 +21,9 @@ const state: {
   workspace: Record<string, unknown> | null;
   hosts: Array<{ hostname: string; is_primary: boolean }>;
   messages: Array<Record<string, unknown>>;
+  leads: Array<Record<string, unknown>>;
+  events: Array<Record<string, unknown>>;
+  products: Array<Record<string, unknown>>;
   /** Status the access helper refuses with: 404 for a stranger, 401 signed out. */
   refusalStatus: number;
 } = {
@@ -28,8 +31,34 @@ const state: {
   workspace: null,
   hosts: [],
   messages: [],
+  leads: [],
+  events: [],
+  products: [],
   refusalStatus: 404,
 };
+
+/** Recent enough to land inside both the 30-day and the this-month windows. */
+const NOW_ISO = new Date().toISOString();
+
+function lead(overrides: Record<string, unknown> = {}) {
+  return {
+    id: `lead-${Math.random()}`,
+    workspace_id: MINE,
+    status: 'new',
+    created_at: NOW_ISO,
+    ...overrides,
+  };
+}
+
+function event(kind: string, overrides: Record<string, unknown> = {}) {
+  return {
+    id: `event-${Math.random()}`,
+    workspace_id: MINE,
+    kind,
+    created_at: NOW_ISO,
+    ...overrides,
+  };
+}
 
 class NotFoundSignal extends Error {}
 class RedirectSignal extends Error {
@@ -67,29 +96,69 @@ vi.mock('@/lib/api-auth', () => ({
         },
 }));
 
+/**
+ * A chainable stand-in for the service-role client.
+ *
+ * It filters rather than returning everything, because the overview tiles are
+ * counts over `eq`/`neq`/`gte` and a fake that ignored filters would report
+ * the same number for "enquiries this month" and "enquiries ever". A filter is
+ * only applied to rows that actually carry the column, which is how the older
+ * `workspace_hosts` fixtures (hostname and is_primary only) still work.
+ */
+function tableRows(table: string): Array<Record<string, unknown>> {
+  if (table === 'workspaces') return state.workspace ? [state.workspace] : [];
+  if (table === 'workspace_hosts') return state.hosts;
+  if (table === 'project_messages') return state.messages;
+  if (table === 'leads') return state.leads;
+  if (table === 'project_events') return state.events;
+  if (table === 'commerce_products') return state.products;
+  return [];
+}
+
 vi.mock('@/supabase-clients/server', () => ({
   createSupabaseServiceRoleClient: () => ({
     from: (table: string) => {
-      const rows =
-        table === 'workspaces'
-          ? state.workspace
-            ? [state.workspace]
-            : []
-          : table === 'workspace_hosts'
-          ? state.hosts
-          : state.messages;
+      let rows = tableRows(table);
+      const keep = (
+        predicate: (row: Record<string, unknown>) => boolean,
+        column: string
+      ) => {
+        rows = rows.filter((row) => !(column in row) || predicate(row));
+      };
       const builder = {
         select: () => builder,
-        eq: () => builder,
+        eq: (column: string, value: unknown) => {
+          keep((row) => row[column] === value, column);
+          return builder;
+        },
+        neq: (column: string, value: unknown) => {
+          keep((row) => row[column] !== value, column);
+          return builder;
+        },
+        gte: (column: string, value: string) => {
+          keep((row) => String(row[column]) >= value, column);
+          return builder;
+        },
+        in: (column: string, values: unknown[]) => {
+          keep((row) => values.includes(row[column]), column);
+          return builder;
+        },
         order: () => builder,
         maybeSingle: async () => ({ data: rows[0] ?? null, error: null }),
         then: (resolve: (value: unknown) => unknown) =>
-          resolve({ data: rows, error: null }),
+          resolve({ data: rows, count: rows.length, error: null }),
       };
       return builder;
     },
   }),
 }));
+
+/** The overview tile with this key, or undefined when the rules omitted it. */
+function tile(key: string): HTMLElement | undefined {
+  return screen
+    .getAllByTestId('site-overview-tile')
+    .find((element) => element.dataset.key === key);
+}
 
 function workspaceRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -105,8 +174,19 @@ function workspaceRow(overrides: Record<string, unknown> = {}) {
     deposit_status: 'pending',
     final_status: 'pending',
     final_invoice_url: null,
+    tier_name: 'starter',
+    cal_com_url: null,
     ...overrides,
   };
+}
+
+/** A workspace whose site is actually being served, which most tiles need. */
+function liveWorkspace(overrides: Record<string, unknown> = {}) {
+  return workspaceRow({
+    project_state: ProjectState.LIVE_SUBSCRIPTION,
+    deploy_status: 'live',
+    ...overrides,
+  });
 }
 
 async function renderPage(workspaceId: string) {
@@ -121,6 +201,9 @@ beforeEach(() => {
   state.workspace = workspaceRow();
   state.hosts = [];
   state.messages = [];
+  state.leads = [];
+  state.events = [];
+  state.products = [];
   state.refusalStatus = 404;
 });
 
@@ -295,5 +378,150 @@ describe('open asks and the site link', () => {
       'href',
       'https://acmedental.ie'
     );
+  });
+});
+
+/**
+ * The "Your site" panel.
+ *
+ * Every number here is a count over rows the service role can see across every
+ * tenant, so the cases below seed rows for this workspace and one for another,
+ * and assert the tile reports only the first. The copy cases exist because a
+ * tile that says "0" for a site that is not built yet and a site nobody
+ * contacted are two different messages.
+ */
+describe('the site overview', () => {
+  it('keeps the project stepper inside the new section', async () => {
+    await renderPage(MINE);
+    expect(screen.getByText('Your site')).toBeInTheDocument();
+    expect(screen.getAllByTestId('project-stage')).toHaveLength(6);
+  });
+
+  it('shows the edits, enquiries, bookings and changes tiles to a member', async () => {
+    await renderPage(MINE);
+    expect(
+      screen.getAllByTestId('site-overview-tile').map((el) => el.dataset.key)
+    ).toEqual(['credits', 'enquiries', 'bookings', 'changes']);
+  });
+
+  it('counts this month’s proposals against the plan allowance', async () => {
+    state.events = Array.from({ length: 4 }, () => event('site_edit_proposed'));
+    await renderPage(MINE);
+
+    expect(tile('credits')).toHaveTextContent('46 of 50');
+    expect(tile('credits')).toHaveTextContent(/Edits left this month/);
+    expect(tile('credits')).toHaveAttribute(
+      'href',
+      `/dashboard/projects/${MINE}/editor`
+    );
+  });
+
+  it('gives a Pro plan the larger allowance the copy sells', async () => {
+    state.workspace = workspaceRow({ tier_name: 'pro' });
+    state.events = [event('site_edit_proposed')];
+    await renderPage(MINE);
+    expect(tile('credits')).toHaveTextContent('149 of 150');
+  });
+
+  it('never counts another workspace’s edits against this client', async () => {
+    state.events = [
+      event('site_edit_proposed'),
+      event('site_edit_proposed', { workspace_id: THEIRS }),
+    ];
+    await renderPage(MINE);
+    expect(tile('credits')).toHaveTextContent('49 of 50');
+  });
+
+  it('counts applied edits, not proposals, as changes made', async () => {
+    state.events = [
+      event('site_edit_proposed'),
+      event('site_edited'),
+      event('site_edited'),
+    ];
+    await renderPage(MINE);
+    expect(tile('changes')).toHaveTextContent('2');
+    expect(tile('changes')).toHaveTextContent(
+      'Changes you made in the editor this month.'
+    );
+  });
+
+  it('explains an empty enquiries tile before the site is live', async () => {
+    await renderPage(MINE);
+    expect(tile('enquiries')).toHaveAttribute('data-tone', 'muted');
+    expect(tile('enquiries')).toHaveTextContent(
+      /will show here once your site is live/
+    );
+  });
+
+  it('counts real enquiries once the site is serving', async () => {
+    state.workspace = liveWorkspace();
+    state.hosts = [{ hostname: 'acmedental.ie', is_primary: true }];
+    state.leads = [
+      lead(),
+      lead({ status: 'contacted' }),
+      lead({ status: 'spam' }),
+      lead({ workspace_id: THEIRS }),
+    ];
+    await renderPage(MINE);
+
+    // Two enquiries, one of them still waiting; the spam row is not an
+    // enquiry and the other tenant's row is not this client's.
+    expect(tile('enquiries')).toHaveTextContent(
+      'In the last 30 days. 2 enquiries in total, 1 waiting for a reply.'
+    );
+    expect(tile('enquiries')).toHaveAttribute('data-tone', 'attention');
+  });
+
+  it('asks the client to connect a booking link when there is none', async () => {
+    await renderPage(MINE);
+    expect(tile('bookings')).toHaveTextContent('Not set up');
+    expect(tile('bookings')).toHaveAttribute('data-tone', 'attention');
+    expect(tile('bookings')).toHaveAttribute(
+      'href',
+      `/dashboard/projects/${MINE}/booking`
+    );
+  });
+
+  it('says the booking link is connected once one is set', async () => {
+    state.workspace = workspaceRow({ cal_com_url: 'https://cal.com/acme' });
+    await renderPage(MINE);
+    expect(tile('bookings')).toHaveTextContent('Connected');
+    expect(tile('bookings')).toHaveAttribute('data-tone', 'ok');
+  });
+
+  it('treats a blank booking link as no booking link', async () => {
+    state.workspace = workspaceRow({ cal_com_url: '   ' });
+    await renderPage(MINE);
+    expect(tile('bookings')).toHaveTextContent('Not set up');
+  });
+
+  it('keeps the shop tile off a plan with nothing to sell', async () => {
+    await renderPage(MINE);
+    expect(tile('store')).toBeUndefined();
+  });
+
+  it('shows the shop tile on an ecommerce plan', async () => {
+    state.workspace = workspaceRow({ tier_name: 'ecommerce' });
+    state.products = [
+      { id: 'p1', workspace_id: MINE },
+      { id: 'p2', workspace_id: MINE },
+      { id: 'p3', workspace_id: THEIRS },
+    ];
+    await renderPage(MINE);
+
+    expect(tile('store')).toHaveTextContent('2');
+    expect(tile('store')).toHaveTextContent('2 products in your catalogue.');
+  });
+
+  it('never shows a column name or a plan key in the tiles', async () => {
+    state.workspace = liveWorkspace({ tier_name: 'ecommerce' });
+    state.products = [{ id: 'p1', workspace_id: MINE }];
+    await renderPage(MINE);
+
+    for (const element of screen.getAllByTestId('site-overview-tile')) {
+      expect(element.textContent).not.toMatch(
+        /tier_name|workspace_id|site_edit|cal_com_url/i
+      );
+    }
   });
 });

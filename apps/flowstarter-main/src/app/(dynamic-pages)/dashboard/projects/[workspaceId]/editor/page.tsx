@@ -17,9 +17,14 @@ import { notFound, redirect } from 'next/navigation';
 import Link from 'next/link';
 import { requireWorkspaceAccess } from '@/lib/api-auth';
 import {
+  editCreditPosition,
+  startOfUtcMonth,
+} from '@/lib/flowstarter/edit-credits';
+import {
   DAILY_EDIT_CAP,
   MAX_INSTRUCTION_CHARS,
   SiteEditorError,
+  countProposalsSince,
   countProposalsToday,
   decideEditorAction,
   listEditableTargets,
@@ -65,9 +70,14 @@ export default async function ClientSiteEditorPage({
     subscriptionStatus: site.subscriptionStatus,
   };
 
-  const [versions, used] = await Promise.all([
+  // One clock for the page, for the same reason the edit route uses one: the
+  // day window, the month window and the reset date the client is quoted all
+  // have to come from the same instant.
+  const now = new Date();
+  const [versions, used, usedThisMonth] = await Promise.all([
     listSiteVersions(access.workspaceId),
-    countProposalsToday(access.workspaceId),
+    countProposalsToday(access.workspaceId, now),
+    countProposalsSince(access.workspaceId, startOfUtcMonth(now)),
   ]);
 
   const initial: EditorState = {
@@ -90,6 +100,11 @@ export default async function ClientSiteEditorPage({
       used,
       cap: DAILY_EDIT_CAP,
       maxInstructionChars: MAX_INSTRUCTION_CHARS,
+      credits: editCreditPosition({
+        tier: site.tierName,
+        usedThisMonth,
+        now,
+      }),
     },
     policy: {
       content: decideEditorAction(editorAccess, 'content'),

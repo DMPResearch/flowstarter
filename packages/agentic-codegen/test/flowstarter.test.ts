@@ -192,6 +192,15 @@ describe('BrandConfig validation', () => {
       validateBrandConfig(value, new Set(['text-1', 'image-1'])),
     ).toThrow(InvalidBrandConfigError);
   });
+
+  it('rejects dark body copy on a dark surface token', () => {
+    const value = validBrandConfig();
+    value.colors.surface = '#123B5D';
+    value.colors.text = '#111111';
+    expect(() =>
+      validateBrandConfig(value, new Set(['text-1', 'image-1'])),
+    ).toThrow(/colors\.text\/colors\.surface/);
+  });
 });
 
 describe('Template selection prompt boundary', () => {

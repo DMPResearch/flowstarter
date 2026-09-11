@@ -7,6 +7,7 @@
  * flattening it into "something went wrong": a client whose subscription
  * lapsed needs to be told that, not shown a broken button.
  */
+import type { EditCreditPosition } from '@/lib/flowstarter/edit-credits';
 
 export interface EditorTarget {
   id: string;
@@ -44,7 +45,14 @@ export interface EditorState {
   };
   targets: EditorTarget[];
   versions: EditorVersion[];
-  allowance: { used: number; cap: number; maxInstructionChars: number };
+  allowance: {
+    /** Proposals today, against the burst cap. */
+    used: number;
+    cap: number;
+    maxInstructionChars: number;
+    /** The monthly plan allowance, which is the one the client bought. */
+    credits: EditCreditPosition;
+  };
   policy: {
     content: PolicyDecision;
     image: PolicyDecision;

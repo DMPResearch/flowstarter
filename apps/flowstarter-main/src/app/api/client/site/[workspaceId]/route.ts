@@ -1,8 +1,9 @@
 import 'server-only';
 /**
  * GET — everything the editor panel needs to draw itself for one workspace:
- * the blocks that can be edited, the version history, how much of today's edit
- * allowance is left, and the policy's verdict on each capability.
+ * the blocks that can be edited, the version history, how much of the day's
+ * burst cap and of the month's plan allowance is left, and the policy's
+ * verdict on each capability.
  *
  * The policy decisions are returned rather than inferred client-side so the UI
  * can show the reason a control is unavailable in the policy's own words. They
@@ -10,8 +11,13 @@ import 'server-only';
  */
 import { NextRequest, NextResponse } from 'next/server';
 import {
+  editCreditPosition,
+  startOfUtcMonth,
+} from '@/lib/flowstarter/edit-credits';
+import {
   DAILY_EDIT_CAP,
   MAX_INSTRUCTION_CHARS,
+  countProposalsSince,
   countProposalsToday,
   decideEditorAction,
   listEditableTargets,
@@ -35,9 +41,13 @@ export async function GET(
   const { context } = opened;
 
   try {
-    const [versions, used] = await Promise.all([
+    // One clock, so the day window, the month window and the reset date the
+    // client is quoted all come from the same instant.
+    const now = new Date();
+    const [versions, used, usedThisMonth] = await Promise.all([
       listSiteVersions(context.workspaceId),
-      countProposalsToday(context.workspaceId),
+      countProposalsToday(context.workspaceId, now),
+      countProposalsSince(context.workspaceId, startOfUtcMonth(now)),
     ]);
 
     return NextResponse.json({
@@ -61,6 +71,11 @@ export async function GET(
         used,
         cap: DAILY_EDIT_CAP,
         maxInstructionChars: MAX_INSTRUCTION_CHARS,
+        credits: editCreditPosition({
+          tier: context.site.tierName,
+          usedThisMonth,
+          now,
+        }),
       },
       policy: {
         content: decideEditorAction(context.access, 'content'),

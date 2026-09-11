@@ -431,9 +431,17 @@ export class PreviewGenerationPipeline {
       });
       if (this.options.renderedAudit) {
         input.onPhase?.('Reviewing the rendered preview');
-        const renderIssue = await this.options.renderedAudit(
-          published.previewUrl,
-        );
+        let renderIssue: string | undefined;
+        try {
+          renderIssue = await this.options.renderedAudit(published.previewUrl);
+        } catch (error) {
+          // Auditor crashes must not cost the visitor their preview.
+          console.warn(
+            `[rendered-audit] skipped: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
         if (renderIssue) {
           input.onPhase?.('Repairing rendered issues');
           await personalize(

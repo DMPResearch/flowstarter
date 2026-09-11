@@ -100,6 +100,44 @@ export function EditorShowcase() {
           <span className="ls-editor-mark ls-editor-mark--br" aria-hidden />
 
           <div
+            className="ls-dashboard-mock"
+            role="img"
+            aria-label={t('landing.editorShowcase.dashboard.label')}
+          >
+            <div className="ls-dashboard-mock-hdr">
+              <span className="ls-dashboard-mock-label">
+                {t('landing.editorShowcase.dashboard.label')}
+              </span>
+              <span className="ls-dashboard-mock-status">
+                <i aria-hidden />
+                {t('landing.editorShowcase.dashboard.statusLive')}
+              </span>
+            </div>
+            <div className="ls-dashboard-mock-body">
+              <div className="ls-dashboard-mock-project">
+                <strong>{t('landing.editorShowcase.dashboard.project')}</strong>
+                <div className="ls-dashboard-mock-phase">
+                  <span>
+                    {t('landing.editorShowcase.dashboard.phaseLabel')}
+                  </span>
+                  <b>{t('landing.editorShowcase.dashboard.phaseValue')}</b>
+                </div>
+              </div>
+              <div className="ls-dashboard-mock-actions">
+                <span className="ls-dashboard-mock-cta">
+                  {t('landing.editorShowcase.dashboard.openEditor')}
+                </span>
+                <span className="ls-dashboard-mock-link">
+                  {t('landing.editorShowcase.dashboard.viewSite')}
+                </span>
+              </div>
+            </div>
+            <p className="ls-dashboard-mock-hint">
+              {t('landing.editorShowcase.dashboard.hint')}
+            </p>
+          </div>
+
+          <div
             className={`ls-editor-surface ${
               mobileEditorExpanded
                 ? 'ls-editor-surface--mobile-expanded'

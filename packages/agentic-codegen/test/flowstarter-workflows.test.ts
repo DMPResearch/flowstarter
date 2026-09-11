@@ -1560,6 +1560,55 @@ describe('rendered-audit repair loop', () => {
     expect(teardowns).toBe(1);
     expect(result.previewUrl).toBe('http://preview/2');
   });
+
+  it('keeps the first publish when the auditor throws', async () => {
+    const { PreviewGenerationPipeline } = await import('../src/flowstarter/workflows');
+    const { mkdir: mkdirP, writeFile: writeF } = await import('node:fs/promises');
+    const { join: joinP } = await import('node:path');
+
+    const agents = {
+      analyzeBrand: async () => validBrandConfig(),
+      selectTemplate: async () => ({
+        slug: 'wellness-therapy', reason: 'r', matchedSignals: [], confidence: 0.9,
+      }),
+      buildPreview: async (input: { workspaceRoot: string }) => {
+        const target = joinP(input.workspaceRoot, 'src/content/site.md');
+        await mkdirP(joinP(input.workspaceRoot, 'src/content'), { recursive: true });
+        await writeF(target, `# ${validIntake().business.name}`, 'utf8');
+        return { summary: 'ok', changedPaths: ['src/content/site.md'] };
+      },
+    } as never;
+    const library = {
+      search: async () => [],
+      getDetails: async () => ({}),
+      scaffold: async () => ({
+        template: { metadata: { slug: 'wellness-therapy', displayName: 'x', description: 'x', category: 'services', useCase: [], fileCount: 1, totalLOC: 1 }, config: {} },
+        files: [{ path: 'src/content/site.md', content: 'seed', type: 'file' }],
+      }),
+      close: async () => undefined,
+    } as never;
+    const validator = { validate: async () => undefined } as never;
+    const publisher = {
+      publish: async () => ({
+        previewUrl: 'http://preview/kept',
+        artifactUrl: 'local://x',
+        files: [],
+      }),
+    } as never;
+
+    const pipeline = new PreviewGenerationPipeline(agents, library, validator, publisher, undefined, {
+      renderedAudit: async () => {
+        throw new Error('browser failed to launch');
+      },
+    });
+
+    const result = await pipeline.run({
+      intake: validIntake(),
+      corpus: validCorpus(validIntake().projectId),
+      cachedAssets: [],
+    });
+    expect(result.previewUrl).toBe('http://preview/kept');
+  });
 });
 
 describe('the quality sweep is decided by a residue check, not run by habit', () => {

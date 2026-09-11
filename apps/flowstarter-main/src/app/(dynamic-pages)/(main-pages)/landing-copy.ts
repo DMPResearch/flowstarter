@@ -52,8 +52,8 @@ export interface DifferentiationCard {
 
 export const LANDING_COPY = {
   hero: {
-    headlinePrefix: 'Your business already has a brand.',
-    headlineHighlight: 'We turn it into a website.',
+    headlinePrefix: 'Your business already has a brand',
+    headlineHighlight: 'We turn it into a website',
     subheadlineBold: '',
     subheadline:
       'Tell us about the business and share the public profiles that already sound like you. We turn that voice and visual identity into a tailored site preview, then build and care for the real thing.',
@@ -65,8 +65,8 @@ export const LANDING_COPY = {
       'First month is free. If you are not happy within 30 days, we refund half your setup fee and you keep the work.',
   },
   brandIntelligence: {
-    headline: 'We start with what is already true.',
-    headlineFlourish: 'Then make it useful.',
+    headline: 'We start with what is already true',
+    headlineFlourish: 'Then make it useful',
     intro:
       'Your answers and public profiles reveal how the business sounds, looks and earns trust. The agent turns those clues into a clear direction for your website.',
     inputs: [
@@ -87,8 +87,8 @@ export const LANDING_COPY = {
       'Only the public profiles you choose are analyzed. You review the result before it becomes your preview.',
   },
   templateLibrary: {
-    headline: 'The right starting point is selected.',
-    headlineFlourish: 'Then the agent makes it yours.',
+    headline: 'The right starting point is selected',
+    headlineFlourish: 'Then the agent makes it yours',
     intro:
       'The design agent reviews our approved starting designs and chooses the one that best fits your offer, your customers and what you want visitors to do.',
     explainer:
@@ -116,7 +116,7 @@ export const LANDING_COPY = {
     ],
   },
   process: {
-    title: 'Preview first. Commitment second.',
+    title: 'Preview first. Commitment second',
     steps: [
       {
         number: 'PREVIEW FIRST',
@@ -145,7 +145,7 @@ export const LANDING_COPY = {
     ],
   },
   problem: {
-    title: 'You know how this usually goes.',
+    title: 'You know how this usually goes',
     pains: [
       {
         icon: 'sparkles',
@@ -167,7 +167,7 @@ export const LANDING_COPY = {
       'Flowstarter is a new way to build sites and custom software. Specific to your business, then yours to change yourself.',
   },
   included: {
-    title: 'Set up before you touch a thing.',
+    title: 'Set up before you touch a thing',
     cards: [
       {
         icon: 'globe',
@@ -208,7 +208,7 @@ export const LANDING_COPY = {
     ],
   },
   pricing: {
-    title: 'Pay for progress. Stay for the care.',
+    title: 'Pay for progress. Stay for the care',
     subtitle:
       'Every project gets a final quote after the preview. The build is paid in two milestones, then your monthly or yearly plan keeps the site fully operational.',
     socialProof:
@@ -290,7 +290,7 @@ export const LANDING_COPY = {
       'No payment during intake. Pay 20% after the preview is approved, then 80% after the complete site passes our review and yours.',
   },
   differentiation: {
-    title: 'Automation with a human finish.',
+    title: 'Automation with a human finish',
     cards: [
       {
         label: 'Specialists, not one generic bot',
@@ -370,7 +370,7 @@ export const LANDING_COPY = {
     ],
   },
   audience: {
-    title: 'For small businesses across Europe, service or store.',
+    title: 'For small businesses across Europe, service or store',
     items: [
       { icon: 'users', label: 'Coaches' },
       { icon: 'mic', label: 'Consultants' },
@@ -426,7 +426,7 @@ export const LANDING_COPY = {
     ],
   },
   testimonials: {
-    title: 'In their words.',
+    title: 'In their words',
     items: [
       {
         slug: 'lebadusul',
@@ -439,7 +439,7 @@ export const LANDING_COPY = {
     ],
   },
   faq: {
-    title: 'Questions we get asked a lot.',
+    title: 'Questions we get asked a lot',
     items: [
       {
         question: 'When do I pay the deposit?',

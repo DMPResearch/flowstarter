@@ -110,6 +110,12 @@ const validator = config.local?.stubAgent
   : new CommandSiteValidator({
       commands: config.validateCommands,
       timeoutMs: config.buildTimeoutMs,
+      // Docker isolation is opt-in per host (it needs a daemon), and config.ts
+      // has already refused to start if it was asked for with commands the
+      // image cannot run.
+      isolation: config.validateDocker
+        ? { mode: 'docker', docker: config.validateDocker }
+        : { mode: 'native' },
       onProgress: report,
       onOutput: (command, lines) => {
         report(`Output of ${command}:`);
@@ -269,10 +275,13 @@ async function start(): Promise<void> {
       ? `local deploy via ${config.local.flowstarterMainUrl}` +
         (config.local.stubAgent ? ', stub agent' : '')
       : `repo ${config.github?.owner}/${config.github?.repo}`;
+    const validation = config.validateDocker
+      ? `docker ${config.validateDocker.image}`
+      : 'native';
     console.info(
       `[build-worker] v${VERSION} listening on ${config.hostname}:${config.port} ` +
         `(mode ${config.publishMode}, model ${config.pi.modelId}, ` +
-        `concurrency ${config.concurrency}, ${target})`,
+        `concurrency ${config.concurrency}, validation ${validation}, ${target})`,
     );
   });
 }

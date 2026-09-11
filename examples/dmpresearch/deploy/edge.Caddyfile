@@ -1,0 +1,5 @@
+# Import this from the HOST Caddyfile. Replace the example hostname with the
+# verified tenant domain. Host Caddy owns ports 80/443 and persisted TLS state.
+tenant-a.example.com {
+	reverse_proxy 127.0.0.1:8088
+}
