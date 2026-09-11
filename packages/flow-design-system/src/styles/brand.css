@@ -572,6 +572,41 @@
   --fs-tone-neutral-glow: hsl(233, 20%, 60%, 0.10);
   /* @tone-tokens:end */
 
+  /* ── Stage steps — one hue, four values ──
+     A kanban board is a sequence, not a category list. Giving each column its
+     own tone turns the board into a colour chart: six hues left to right, none
+     of which mean anything except "a different column". Position on the board
+     already carries the progress, so colour only has to agree with it.
+
+     These are four steps of the accent hue (233) and nothing else. A board's
+     progress columns take step 1 for the first and the deepest step for the
+     last, so the ladder runs light to dark left to right and the eye reads a
+     ramp rather than a rainbow. Saturation climbs with the darkness, which is
+     what makes the last step read as arrival rather than as more of the same.
+
+     Two tokens per step:
+       --fs-stage-N       ink, for the column header and its count pill
+       --fs-stage-N-rim   the 2px rule along the top of the column panel
+
+     The ink is checked to 4.5:1 by
+     packages/flow-design-system/scripts/check-tone-contrast.mjs, on the panel
+     glass (thinner than a card, so the harder backdrop) over both the
+     brightest and the darkest point of the field. The rim is a graphic line,
+     not text, so it is set brighter than the ink it belongs to: it has to be
+     visible at 2px, not readable. Only the three semantic exceptions
+     (`warn` for a column that needs an operator, `ok` for the finished one,
+     `danger` for a broken one) reach outside this ladder. */
+  /* @stage-tokens:light */
+  --fs-stage-1: hsl(233, 32%, 48%);                 /* the first touch: indigo, almost grey */
+  --fs-stage-1-rim: hsl(233, 34%, 74%);
+  --fs-stage-2: hsl(233, 48%, 42%);
+  --fs-stage-2-rim: hsl(233, 46%, 64%);
+  --fs-stage-3: hsl(233, 66%, 35%);
+  --fs-stage-3-rim: hsl(233, 62%, 52%);
+  --fs-stage-4: hsl(233, 84%, 28%);                 /* the last progress column: the brand hue at full commitment */
+  --fs-stage-4-rim: hsl(233, 82%, 40%);
+  /* @stage-tokens:end */
+
   /* ── The field ──
      What the glass sits on, and the reason the material has anything to
      refract. It is not a picture hung behind the interface: it is the page's
@@ -716,6 +751,21 @@
   --fs-tone-neutral-edge: hsl(233, 22%, 74%, 0.26);
   --fs-tone-neutral-glow: hsl(233, 22%, 64%, 0.12);
   /* @tone-tokens:end */
+
+  /* The same four steps, read the same way round: step 1 is the quietest and
+     step 4 the most present. In dark that means the ladder climbs in lightness
+     instead of falling, because on a dark panel the brighter ink is the louder
+     one. The rim ladder climbs with it. */
+  /* @stage-tokens:dark */
+  --fs-stage-1: hsl(233, 22%, 66%);                 /* the first touch: indigo, almost grey */
+  --fs-stage-1-rim: hsl(233, 28%, 58%);
+  --fs-stage-2: hsl(233, 40%, 73%);
+  --fs-stage-2-rim: hsl(233, 46%, 66%);
+  --fs-stage-3: hsl(233, 66%, 79%);
+  --fs-stage-3-rim: hsl(233, 70%, 73%);
+  --fs-stage-4: hsl(233, 96%, 86%);                 /* the last progress column: the brand hue at full commitment */
+  --fs-stage-4-rim: hsl(233, 98%, 81%);
+  /* @stage-tokens:end */
 
   /* ── The field, in dark ──
      Same two layers, same restraint, and here the tint does not have to be

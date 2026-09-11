@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { stageTone, stageDotStyle } from '../dashboard.constants';
+import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
+import {
+  stageTone,
+  stageDotStyle,
+  PROJECT_STATE_TONE,
+  projectStateTone,
+} from '../dashboard.constants';
+import { isStageStep } from '@/lib/flowstarter/pipeline/job-labels';
 
 describe('stageTone', () => {
   it('reads intake as neutral, before anything has started', () => {
@@ -33,5 +40,66 @@ describe('stageDotStyle', () => {
     expect(stageDotStyle('build')).toEqual({
       backgroundColor: 'var(--fs-tone-warn)',
     });
+  });
+});
+
+describe('PROJECT_STATE_TONE', () => {
+  it('gives every ProjectState a tone', () => {
+    for (const state of Object.values(ProjectState)) {
+      expect(PROJECT_STATE_TONE[state]).toBeDefined();
+    }
+  });
+
+  it('reads as progress, in the order the state machine allows', () => {
+    // Object.keys on string-keyed object preserves insertion order, so this
+    // also pins the table to stay written in state-machine order rather than
+    // being reshuffled alphabetically or by tone.
+    expect(Object.keys(PROJECT_STATE_TONE)).toEqual([
+      ProjectState.INTAKE,
+      ProjectState.PREVIEW_READY,
+      ProjectState.DEPOSIT_PAID,
+      ProjectState.AGENTS_WORKING,
+      ProjectState.HUMAN_QA,
+      ProjectState.LIVE_SUBSCRIPTION,
+    ]);
+    expect(Object.values(PROJECT_STATE_TONE)).toEqual([
+      'stage-1',
+      'stage-2',
+      'stage-3',
+      'stage-4',
+      'warn',
+      'ok',
+    ]);
+  });
+
+  it('steps the four progress states through one hue, in order', () => {
+    // The whole point of the table: four columns that are nothing but
+    // progress must not each pick a hue of their own, and the steps must not
+    // be shuffled, or the ramp stops reading as a ramp.
+    const progress = [
+      ProjectState.INTAKE,
+      ProjectState.PREVIEW_READY,
+      ProjectState.DEPOSIT_PAID,
+      ProjectState.AGENTS_WORKING,
+    ].map(projectStateTone);
+
+    expect(progress).toEqual(['stage-1', 'stage-2', 'stage-3', 'stage-4']);
+    for (const tone of progress) expect(isStageStep(tone)).toBe(true);
+  });
+
+  it('spends a second hue only on the two states that are not progress', () => {
+    expect(projectStateTone(ProjectState.LIVE_SUBSCRIPTION)).toBe('ok');
+    expect(projectStateTone(ProjectState.HUMAN_QA)).toBe('warn');
+
+    const semantic = Object.values(PROJECT_STATE_TONE).filter(
+      (tone) => !isStageStep(tone)
+    );
+    expect(semantic).toEqual(['warn', 'ok']);
+  });
+
+  it('reads the same table projectStateTone does', () => {
+    expect(projectStateTone(ProjectState.INTAKE)).toBe(
+      PROJECT_STATE_TONE[ProjectState.INTAKE]
+    );
   });
 });

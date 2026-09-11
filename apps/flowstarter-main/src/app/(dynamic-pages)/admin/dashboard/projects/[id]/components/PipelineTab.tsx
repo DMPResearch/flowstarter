@@ -29,6 +29,8 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
+import { Pill, type Tone } from '@flowstarter/flow-design-system';
+import { DANGER_NOTE, RunningDot } from '../../../pipeline/PipelineColumns';
 import { ShellCard } from '../../../components/TeamDashboardShell';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -51,6 +53,8 @@ import {
   BOARD_COLUMNS,
   actorLabel,
   boardColumnFor,
+  columnTone,
+  columnToneStyle,
   errorCodeLabel,
   eventKindLabel,
   eventSummary,
@@ -73,19 +77,30 @@ import { BuildConversation } from './BuildConversation';
 import { BuildLog } from './BuildLog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
-/** Same chip recipe as the pipeline board, the billing and hosting tabs. */
-const NEUTRAL_TONE =
-  'border-[var(--fs-rule)] bg-transparent text-[var(--fs-ink-dim)]';
-
-const JOB_TONE: Record<string, string> = {
-  queued: 'border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300',
-  running:
-    'border-indigo-500/25 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300',
-  succeeded:
-    'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
-  failed: 'border-red-500/25 bg-red-500/10 text-red-700 dark:text-red-300',
-  canceled: NEUTRAL_TONE,
+/**
+ * Same rule as the cross-project board: a job card carries at most one
+ * colour, and only when something is wrong.
+ *
+ * Four of the five statuses here used to have a hue of their own — sky,
+ * indigo, emerald, red — so a healthy build board was a row of coloured
+ * chips in which the one red chip had to compete with three others. `failed`
+ * is the only status an operator has to act on, so it is the only one with a
+ * tone; `running` says it is running by moving instead (`RunningDot`).
+ */
+const JOB_TONE: Record<string, Tone> = {
+  failed: 'danger',
 };
+
+const NEUTRAL_TONE: Tone = 'neutral';
+
+/** The three colours a tone supplies, as the chip and box styles want them. */
+function toneFill(tone: Tone): React.CSSProperties {
+  return {
+    background: `var(--fs-tone-${tone}-soft)`,
+    color: `var(--fs-tone-${tone})`,
+    boxShadow: `inset 0 0 0 1px var(--fs-tone-${tone}-edge)`,
+  };
+}
 
 /**
  * Kinds the build worker runs, and so the only ones with a conversation to
@@ -111,10 +126,10 @@ function errorMessage(e: unknown, fallback: string): string {
 function StatusChip({ status }: { status: string }) {
   return (
     <span
-      className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[11px] font-medium leading-5 ${
-        JOB_TONE[status] ?? NEUTRAL_TONE
-      }`}
+      className="inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-medium leading-5"
+      style={toneFill(JOB_TONE[status] ?? NEUTRAL_TONE)}
     >
+      {status === 'running' && <RunningDot />}
       {jobStatusLabel(status)}
     </span>
   );
@@ -142,7 +157,6 @@ function BuildCard({
   const [reason, setReason] = useState('');
 
   const busy = redispatch.isPending || cancel.isPending;
-  const running = job.status === 'running';
   const canTalk = CONVERSATIONAL_KINDS.has(job.kind);
 
   const onRedispatch = async () => {
@@ -203,13 +217,9 @@ function BuildCard({
       </div>
 
       {job.latestPhase && (
-        <p className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-snug text-[var(--fs-ink-dim)]">
-          {running && (
-            <span
-              className="mt-0.5 inline-block h-2.5 w-2.5 shrink-0 animate-spin rounded-full border-2 border-[var(--purple-primary)] border-t-transparent"
-              aria-hidden
-            />
-          )}
+        <p className="mt-1.5 flex items-start gap-1 text-[11px] leading-snug text-[var(--fs-ink-dim)]">
+          {/* The status chip above already carries the running dot; the
+              phase line does not need a second, purple one of its own. */}
           <span className="min-w-0">{phaseLabel(job.latestPhase)}</span>
         </p>
       )}
@@ -227,7 +237,7 @@ function BuildCard({
 
       {job.errorCode && (
         <p
-          className="mt-1.5 line-clamp-2 text-[11px] text-red-500"
+          className={`mt-1.5 line-clamp-2 px-2 py-1 text-[11px] leading-snug text-[var(--fs-ink-dim)] ${DANGER_NOTE}`}
           title={job.errorDetail ?? undefined}
         >
           {errorCodeLabel(job.errorCode)}
@@ -549,18 +559,23 @@ export function PipelineTab({ project }: { project: Project }) {
           </Button>
         </div>
 
+        {/* The same quiet note the board's cards use, for the same reason:
+            an amber-filled box with amber text was a third hue on a panel
+            that already says everything else in ink. The icon carries the
+            colour, the rule carries the edge, the words stay readable. */}
         {card.stallReasons.length > 0 && (
-          <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/[0.08] p-3">
-            <p className="flex items-center gap-1.5 text-xs font-semibold text-amber-600 dark:text-amber-400">
-              <AlertTriangle className="h-3.5 w-3.5" aria-hidden />
+          <div className={`mt-4 p-3 ${DANGER_NOTE}`}>
+            <p className="flex items-center gap-1.5 text-xs font-semibold text-[var(--fs-ink)]">
+              <AlertTriangle
+                className="h-3.5 w-3.5"
+                style={{ color: 'var(--fs-tone-danger)' }}
+                aria-hidden
+              />
               Needs attention
             </p>
             <ul className="mt-1.5 space-y-0.5">
               {card.stallReasons.map((r) => (
-                <li
-                  key={r}
-                  className="text-xs text-amber-600 dark:text-amber-400"
-                >
+                <li key={r} className="text-xs text-[var(--fs-ink-dim)]">
                   {r}
                 </li>
               ))}
@@ -641,41 +656,75 @@ export function PipelineTab({ project }: { project: Project }) {
         ) : (
           <div
             data-testid="build-board"
-            className="-mx-1 grid grid-flow-col auto-cols-[15rem] gap-3 overflow-x-auto px-1 pb-2 xl:auto-cols-auto xl:grid-flow-row xl:grid-cols-6 xl:overflow-visible xl:pb-0"
+            // `minmax(11rem,1fr)` is the same floor the cross-project board
+            // uses, and for the same measured reason: six columns of 240px
+            // need 1520px, which no admin screen has beside the sidebar, so
+            // the board scrolled with its first column clipped on every
+            // machine. At 176px six fit, `1fr` shares out the remainder so
+            // there is no dead space at the right, and `items-start` keeps
+            // one column's content height from stretching the rest.
+            className="-mx-1 grid grid-flow-col auto-cols-[minmax(11rem,1fr)] items-start gap-3 overflow-x-auto px-1 pb-2"
           >
             {BOARD_COLUMNS.map((column) => {
               const columnJobs = byColumn.get(column.id) ?? [];
+              // `attention` holds the failed and cancelled jobs, so it is the
+              // one column here that is always broken by definition and the
+              // one that always wears the red wash — the same wash a pipeline
+              // column takes while it is holding a stalled card.
+              const tone = columnTone(column.id);
+              const { rule, wash, ink, chip } = columnToneStyle(
+                tone,
+                column.id === 'attention'
+              );
               return (
                 <section
                   key={column.id}
                   aria-label={column.title}
-                  className="flex min-h-[9rem] flex-col rounded-xl border border-[var(--fs-rule)] bg-[var(--fs-glass-bg)]/40 p-2"
+                  className="relative flex min-h-[9rem] flex-col overflow-hidden rounded-xl border border-[var(--fs-rule)] bg-[var(--fs-glass-bg)]/40 p-2"
                 >
-                  <header className="mb-2 flex items-center justify-between gap-1.5 border-b border-[var(--fs-rule)] pb-2">
-                    <h4 className="truncate text-[11px] font-semibold uppercase tracking-wide text-[var(--fs-ink-dim)]">
+                  <span
+                    aria-hidden
+                    className="absolute inset-x-0 top-0 h-[2px]"
+                    style={rule}
+                  />
+
+                  {/* Same header shape in all six: one size, one weight, one
+                      tracking, the count hard against the right edge, and a
+                      two-line floor so "Needs attention" wrapping does not
+                      leave that column's divider lower than the rest. */}
+                  <header className="mb-2 flex min-h-[1.875rem] items-center justify-between gap-1.5 border-b border-[var(--fs-rule)] pb-2">
+                    <h4
+                      className="text-[11px] font-semibold uppercase tracking-[0.08em]"
+                      style={ink}
+                    >
                       {column.title}
                     </h4>
-                    <span className="shrink-0 font-mono text-[11px] text-[var(--fs-ink-faint)]">
+                    <Pill className="shrink-0 font-mono" style={chip}>
                       {columnJobs.length}
-                    </span>
+                    </Pill>
                   </header>
 
-                  {columnJobs.length === 0 ? (
-                    <p className="px-1 py-1 text-[11px] leading-snug text-[var(--fs-ink-faint)]">
-                      {column.hint}
-                    </p>
-                  ) : (
-                    <div className="space-y-2">
-                      {columnJobs.map((job) => (
-                        <BuildCard
-                          key={job.id}
-                          job={job}
-                          projectId={project.id}
-                          onOpen={() => setOpenJobId(job.id)}
-                        />
-                      ))}
-                    </div>
-                  )}
+                  <div
+                    className="-mx-2 -mb-2 flex flex-1 flex-col px-2 pb-2"
+                    style={wash}
+                  >
+                    {columnJobs.length === 0 ? (
+                      <p className="px-1 py-1 text-[11px] leading-snug text-[var(--fs-ink-faint)]">
+                        {column.hint}
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {columnJobs.map((job) => (
+                          <BuildCard
+                            key={job.id}
+                            job={job}
+                            projectId={project.id}
+                            onOpen={() => setOpenJobId(job.id)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </section>
               );
             })}

@@ -186,6 +186,137 @@ const PHASE_COLUMN: Readonly<Record<string, BoardColumnId>> = {
 };
 
 /**
+ * What colours a kanban column, on either board.
+ *
+ * A board is a sequence, so most columns are not a category at all: they are a
+ * position in one. Those take a step of the accent hue — `--fs-stage-1` to
+ * `--fs-stage-4` in brand.css — and step 1 is always the board's first
+ * progress column, the deepest step always its last, so the ladder runs light
+ * to dark left to right.
+ *
+ * Only three things on a board are genuinely a different kind of state, and
+ * they are the only three that get a second hue:
+ *   `warn`   a column that will not move without an operator
+ *   `ok`     the finished one
+ *   `danger` a broken one
+ */
+export type StageStep = 'stage-1' | 'stage-2' | 'stage-3' | 'stage-4';
+export type ColumnTone = StageStep | 'warn' | 'ok' | 'danger';
+
+const STAGE_STEPS: readonly StageStep[] = [
+  'stage-1',
+  'stage-2',
+  'stage-3',
+  'stage-4',
+];
+
+/** True for the four accent steps, false for the three semantic exceptions. */
+export function isStageStep(tone: ColumnTone): tone is StageStep {
+  return (STAGE_STEPS as readonly string[]).includes(tone);
+}
+
+/**
+ * The build board's columns in colour, left to right in the order work
+ * actually moves. Companion to `PROJECT_STATE_TONE` in `dashboard.constants.ts`
+ * — that table colours the cross-project pipeline board's `ProjectState`
+ * columns, this one colours a single project's build-job columns, which are
+ * not project states and so need their own table.
+ *
+ * Three of these six columns are progress and nothing else — a job waits, then
+ * gets built, then gets published — so they take the first three steps of the
+ * one accent ladder in that order. The other three are the exceptions:
+ * `checking`, where a build is compiled and repaired, does not move without an
+ * operator, so it is `warn`; `done` is `ok`; `attention`, holding failed and
+ * cancelled jobs, is `danger`, the tone the rest of the system reserves for a
+ * real failure.
+ *
+ * The old table gave all six a hue of their own (neutral, accent, warn, info,
+ * ok, danger) and the board read as a colour chart rather than as a pipeline.
+ */
+export const BOARD_COLUMN_TONE: Readonly<Record<BoardColumnId, ColumnTone>> = {
+  waiting: 'stage-1',
+  building: 'stage-2',
+  checking: 'warn',
+  publishing: 'stage-3',
+  done: 'ok',
+  attention: 'danger',
+};
+
+export function columnTone(id: BoardColumnId): ColumnTone {
+  return BOARD_COLUMN_TONE[id];
+}
+
+/** What `columnToneStyle` hands back: every inline style a kanban column on
+ * the pipeline or the build board paints with. */
+export interface ColumnToneStyle {
+  /** The 2px rule along the top of the column panel. */
+  rule: { background: string };
+  /** The column body. Neutral panel fill unless the column is flagged. */
+  wash: { background: string };
+  /** The header label. */
+  ink: { color: string };
+  /** The count pill: fill, ink and rim, in one object. */
+  chip: { background: string; color: string; boxShadow: string };
+}
+
+/**
+ * The one recipe every kanban-shaped column shares, on both boards.
+ *
+ * The progression is carried by the top rule and the header ink stepping
+ * through the accent ladder, and by nothing else. The body is left as the
+ * panel's own fill: four columns washed in four alphas of the same hue would
+ * be four tints of one colour that say nothing the rules above them have not
+ * already said, and a board of tinted rectangles is the colour chart this
+ * table exists to stop being.
+ *
+ * The count pill follows the header rather than carrying its own colour: one
+ * accent whisper and one accent rim for every stage column, with only the ink
+ * stepping, so a row of six pills reads as one shape at six weights.
+ *
+ * `emphasis` is the one thing that fills a body, and it fills it with
+ * `danger` whatever the column's own colour is, because it means exactly one
+ * thing: every card in this column is broken. Only the build board's
+ * `attention` column, which holds nothing but failed and cancelled jobs,
+ * wears it. The column keeps its own rule and ink underneath.
+ *
+ * The cross-project pipeline board used to pass it while a column held a
+ * stalled card, and that was wrong twice over: the wash is a top-down
+ * gradient and stalled cards sort to the top, so what it actually tinted was
+ * the stalled card itself, which read as a pink card rather than as a warned
+ * column; and a column holding one stuck project out of five is not a broken
+ * column. The stall says so on its own card and in the header count instead.
+ */
+export function columnToneStyle(
+  tone: ColumnTone,
+  emphasis = false,
+): ColumnToneStyle {
+  const ink = isStageStep(tone)
+    ? `var(--fs-${tone})`
+    : `var(--fs-tone-${tone})`;
+  const rule = isStageStep(tone)
+    ? `var(--fs-${tone}-rim)`
+    : `var(--fs-tone-${tone})`;
+  // A stage column's pill is the accent's own whisper; a semantic one wears
+  // its own, so `warn`, `ok` and `danger` still read at a glance.
+  const chipTone = isStageStep(tone) ? 'accent' : tone;
+
+  return {
+    rule: { background: rule },
+    wash: {
+      background: emphasis
+        ? 'linear-gradient(to bottom, var(--fs-tone-danger-emphasis), transparent)'
+        : 'transparent',
+    },
+    ink: { color: ink },
+    chip: {
+      background: `var(--fs-tone-${chipTone}-soft)`,
+      color: ink,
+      boxShadow: `inset 0 0 0 1px var(--fs-tone-${chipTone}-edge)`,
+    },
+  };
+}
+
+/**
  * Where a job sits on the build board.
  *
  * Status decides first — a finished job is done wherever its last phase left

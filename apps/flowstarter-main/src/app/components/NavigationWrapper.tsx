@@ -37,6 +37,7 @@ const publicRoutePrefixes = [
   '/faq',
   '/library',
   '/admin',
+  '/design-gallery',
 ];
 
 function isPublicPath(pathname: string): boolean {
@@ -105,11 +106,17 @@ export function NavigationWrapper() {
   const isDashboardRoute = pathname === '/dashboard';
   const isClientDashboard = pathname.startsWith('/dashboard'); // Client dashboard has its own header
   const isLibraryRoute = pathname.startsWith('/library'); // Library has its own editorial Mast
+  // The design gallery embeds the real admin shell — its own header, its own
+  // sidebar — so it is treated exactly like `/admin`: no marketing chrome on
+  // top of it. Prefix-matched rather than listed literally, so a future
+  // `/design-gallery/<surface>` sub-page needs no second entry.
+  const isDesignGalleryRoute = pathname.startsWith('/design-gallery');
   const isNoNavbarRoute =
     noNavbarRoutes.includes(pathname) ||
     isTeamRoute ||
     isClientDashboard ||
-    isLibraryRoute;
+    isLibraryRoute ||
+    isDesignGalleryRoute;
   // Subscribed rather than polled: the flag is published by ErrorPageLayout in
   // a layout effect, so this re-renders before paint and the two headers never
   // appear together.

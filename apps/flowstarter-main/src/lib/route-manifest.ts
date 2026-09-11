@@ -55,6 +55,15 @@ export const PUBLIC_ROUTES = [
   '/relaunch(.*)',
   '/faq(.*)',
   '/library(.*)', // Public template library (also reachable via library.* subdomain rewrite)
+
+  // Development-only screenshot surface. Public so a reviewer can open it
+  // without a Clerk session; the page itself calls `notFound()` unless
+  // `NODE_ENV` is non-production or `FLOWSTARTER_DESIGN_GALLERY=1`, so the
+  // middleware letting it through never means production serves it. It used
+  // to hide under `/about/design-gallery` to borrow that prefix's public
+  // entry, which is also how it inherited the marketing header and the
+  // marketing content column it has no business rendering inside.
+  '/design-gallery(.*)',
 ] as const;
 
 /**
@@ -83,4 +92,5 @@ export const KNOWN_APP_ROUTES = [
   '/new(.*)',
   '/api(.*)',
   '/library(.*)',
+  '/design-gallery(.*)',
 ] as const;

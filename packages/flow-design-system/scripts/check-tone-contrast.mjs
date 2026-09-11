@@ -29,6 +29,14 @@
  * `-soft` by default and the much stronger `-emphasis` when it is the one thing
  * on the page that needs acting on.
  *
+ * The four `--fs-stage-N` inks are checked the same way, in their own pass.
+ * They are not tones — they are four values of the one accent hue that the
+ * kanban boards step through — and they are printed on a column header, which
+ * is panel glass with no wash under it, or a whisper of `accent-soft` if a
+ * board ever chooses the toned body. Both backdrops are measured, so the ink
+ * is safe whichever wash the board wears. The rims are not checked: a 2px rule
+ * is a graphic line, not text.
+ *
  * Run: node packages/flow-design-system/scripts/check-tone-contrast.mjs
  * Exits non-zero if any pair falls under 4.5:1.
  */
@@ -65,6 +73,22 @@ function tonesFor(mode) {
   return tones;
 }
 
+/** Pulls the `--fs-stage-N` inks out of one marked block of brand.css. */
+function stagesFor(mode) {
+  const start = css.indexOf(`/* @stage-tokens:${mode} */`);
+  if (start < 0)
+    throw new Error(`no @stage-tokens:${mode} marker in brand.css`);
+  const block = css.slice(start, css.indexOf('/* @stage-tokens:end */', start));
+
+  const stages = {};
+  for (const [, step, value] of block.matchAll(
+    /--fs-stage-(\d+)\s*:\s*([^;]+);/g,
+  )) {
+    stages[`stage-${step}`] = value.trim();
+  }
+  return stages;
+}
+
 // ── report ──────────────────────────────────────────────────────────────────
 
 /** The `data-variant`s that render tiles. Marketing has its own script. */
@@ -72,6 +96,7 @@ const SURFACES = ['app', 'editor'];
 
 let failed = false;
 const rows = [];
+const stageRows = [];
 
 for (const mode of ['light', 'dark']) {
   const glass = parseColor(token('--fs-glass-bg', mode));
@@ -117,6 +142,39 @@ for (const mode of ['light', 'dark']) {
       ok: worst.low >= AA ? 'pass' : 'FAIL',
     });
   }
+
+  // The stage inks print on a column header: panel glass, which is thinner
+  // than the tile glass above and therefore the harder backdrop, with either
+  // nothing or a whisper of `accent-soft` behind it.
+  const panel = parseColor(token('--fs-glass-bg-panel', mode));
+  const accentSoft = parseColor(token('--fs-tone-accent-soft', mode));
+
+  for (const [step, ink] of Object.entries(stagesFor(mode))) {
+    let worst = null;
+
+    for (const surface of surfaces) {
+      const bare = over(panel, surface.rgb);
+      for (const [header, which] of [
+        [bare, 'neutral'],
+        [over(accentSoft, bare), 'toned'],
+      ]) {
+        const value = ratio(parseColor(ink), header);
+        if (!worst || value < worst.value) {
+          worst = { ...surface, value, which };
+        }
+      }
+    }
+
+    if (worst.value < AA) failed = true;
+    stageRows.push({
+      mode,
+      step,
+      value: worst.value.toFixed(2),
+      on: worst.name,
+      body: worst.which,
+      ok: worst.value >= AA ? 'pass' : 'FAIL',
+    });
+  }
 }
 
 const width = Math.max(...rows.map((r) => r.tone.length));
@@ -129,9 +187,19 @@ console.log(
   `\n${rows.length} tones checked against ${AA}:1, on both washes, each over the brightest and\nthe darkest point of the field on every signed-in surface.`,
 );
 
+console.log('');
+for (const r of stageRows) {
+  console.log(
+    `${r.mode.padEnd(5)}  ${r.step.padEnd(width)}  ink   ${r.value.padStart(5)}:1   on a ${r.body.padEnd(7)} column header where the field is ${r.on.padEnd(19)}  ${r.ok}`,
+  );
+}
+console.log(
+  `\n${stageRows.length} stage inks checked against ${AA}:1 on the panel glass, with and without the\naccent whisper behind them.`,
+);
+
 if (failed) {
   console.error(
-    'Some tone is below AA. Adjust the ink lightness in brand.css.',
+    'Some tone or stage ink is below AA. Adjust the ink lightness in brand.css.',
   );
   process.exit(1);
 }

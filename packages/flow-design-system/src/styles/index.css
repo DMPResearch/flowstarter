@@ -178,16 +178,31 @@
   transition: opacity var(--fs-dur-micro) var(--fs-ease-spring);
 }
 
-/* Variant padding. `chrome` sets none because a header lays out its own rows. */
+/* Variant padding. `chrome` sets none because a header lays out its own rows.
+   Each variant's own step is the fallback of --fs-glass-pad rather than a
+   literal, so `.fs-glass--dense` below can swap it. It has to be a token and
+   not a Tailwind `p-*` on the call site: these rules are unlayered, Tailwind's
+   utilities live in `@layer utilities`, and unlayered CSS wins the cascade —
+   so a `p-3` written next to `variant="panel"` silently did nothing, and a
+   kanban column believed it had 12px of padding while it was wearing 24. */
 .fs-glass--card {
-  padding: var(--fs-space-5);
+  padding: var(--fs-glass-pad, var(--fs-space-5));
 }
 
 .fs-glass--panel {
   display: flex;
   flex-direction: column;
-  gap: var(--fs-space-6);
-  padding: var(--fs-space-6);
+  gap: var(--fs-glass-gap, var(--fs-space-6));
+  padding: var(--fs-glass-pad, var(--fs-space-6));
+}
+
+/* The dense step, for surfaces that are a grid of small objects rather than a
+   page section: a kanban column and the cards stacked in it. Three nested
+   surfaces at the default step spend 88px of a 179px column on padding alone,
+   which is how a business name came to wrap mid-word. */
+.fs-glass--dense {
+  --fs-glass-pad: var(--fs-space-3);
+  --fs-glass-gap: var(--fs-space-3);
 }
 
 /* A toned surface picks up the same wash a tile does; see the tone blocks
