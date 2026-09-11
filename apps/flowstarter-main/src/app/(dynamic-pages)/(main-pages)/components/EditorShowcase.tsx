@@ -115,7 +115,9 @@ export function EditorShowcase() {
             </div>
             <div className="ls-dashboard-mock-body">
               <div className="ls-dashboard-mock-project">
-                <strong>{t('landing.editorShowcase.dashboard.project')}</strong>
+                <strong>
+                  {t('landing.editorShowcase.dashboard.project')}
+                </strong>
                 <div className="ls-dashboard-mock-phase">
                   <span>
                     {t('landing.editorShowcase.dashboard.phaseLabel')}
