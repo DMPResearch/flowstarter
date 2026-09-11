@@ -132,8 +132,12 @@ export const MIN_PHRASE_LETTERS = 8;
 const NOT_PROSE =
   /^(https?:\/\/\S*|\/\S*|#[0-9a-fA-F]{3,8}|[\s\d.,:;%+\-_/\\|*#[\]{}()"'`=<>]*)$/;
 
-/** `"pid": 97132,` and every other quoted JSON key with a value after it. */
-const JSON_KEYED = /^["'][^"']{0,80}["']\s*:/;
+/**
+ * `"pid": 97132,` and every other quoted JSON key with a value after it.
+ * Every quantifier is bounded: this runs over untrusted file content, and an
+ * unbounded one here is a denial of service with extra steps.
+ */
+const JSON_KEYED = /^["'][^"']{0,80}["'][ \t]{0,8}:/;
 
 /** `2026-09-11T21:51:12.985Z`, in a line or on its own. */
 const TIMESTAMP = /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
@@ -156,8 +160,14 @@ export function phraseFromLine(line: string): string | null {
   if (!text) return null;
   // List bullet, then `key:` prefix, then surrounding quotes.
   text = text.replace(/^[-*+]\s+/, '');
-  const keyed = /^[A-Za-z0-9_.$[\]-]+\s*:\s*(.+)$/.exec(text);
-  if (keyed?.[1]) text = keyed[1].trim();
+  // Bounded on both sides of the colon. The unbounded `+\s*:\s*` this
+  // replaces is a polynomial-backtracking shape on a line of the form
+  // `$:` followed by a long run of spaces, and the input here is a file the
+  // client's own preview workspace produced.
+  const keyed = /^([A-Za-z0-9_.$[\]-]{1,80})[ \t]{0,8}:[ \t]{0,8}(.+)$/.exec(
+    text,
+  );
+  if (keyed?.[2]) text = keyed[2].trim();
   text = text.replace(/^(['"`])([\s\S]*)\1$/, '$2').trim();
   // Markdown emphasis and heading markers are formatting, not words.
   text = text
@@ -234,18 +244,36 @@ export function isTextManifestFile(file: {
 }
 
 /**
- * Every usable phrase in the given files, most relevant file first.
+ * How many candidate lines a re-derivation will consider before ranking them.
+ * Bounded because this runs over a whole content collection.
+ */
+const PHRASE_CANDIDATE_CAP = 200;
+
+/**
+ * Every usable phrase in the given files, most relevant first.
  *
  * Used to re-derive an edit's evidence at build time when what was stored is
- * unusable. It is a weaker record than a diff — it cannot tell the line the
- * client's change added from the lines that were always there — but the check
+ * unusable. It is a weaker record than a diff - it cannot tell the line the
+ * client's change added from the lines that were always there - but the check
  * it feeds fails a build only when *every* phrase is gone, so a wider list can
  * never fail a build a narrower one would have passed. It can only stop the
  * gate from firing on nothing at all.
+ *
+ * `instruction` is what stops it being merely wider. A phrase the client's own
+ * sentence contains is the one line in the file that this edit is certainly
+ * about, so those come first. For the 2026-09-12 workspace that is the
+ * difference between checking the site's meta title and checking "I build
+ * websites with AI agents, supervised by people", which is what the client
+ * actually asked for and paid for.
  */
 export function phrasesFromFiles(
   files: readonly TemplateScaffoldFile[],
-  options: { paths?: readonly string[]; limit: number },
+  options: {
+    paths?: readonly string[];
+    limit: number;
+    /** The client's own words, used to rank rather than to generate. */
+    instruction?: string;
+  },
 ): string[] {
   const byPath = new Map<string, string>();
   for (const file of files) {
@@ -255,18 +283,22 @@ export function phrasesFromFiles(
   const candidates = options.paths
     ? options.paths.filter((path) => byPath.has(path))
     : Array.from(byPath.keys());
-  const phrases: string[] = [];
+
+  const asked = normalizePhrase(options.instruction ?? '');
+  const named: string[] = [];
+  const rest: string[] = [];
   const seen = new Set<string>();
-  for (const path of orderByRelevance(candidates)) {
+  outer: for (const path of orderByRelevance(candidates)) {
     for (const line of (byPath.get(path) ?? '').split('\n')) {
-      if (phrases.length >= options.limit) return phrases;
+      if (named.length + rest.length >= PHRASE_CANDIDATE_CAP) break outer;
       const phrase = phraseFromLine(line);
       if (!phrase || !isUsablePhrase(phrase)) continue;
       const key = normalizePhrase(phrase);
       if (seen.has(key)) continue;
       seen.add(key);
-      phrases.push(phrase);
+      if (asked.length > 0 && asked.includes(key)) named.push(phrase);
+      else rest.push(phrase);
     }
   }
-  return phrases;
+  return [...named, ...rest].slice(0, options.limit);
 }

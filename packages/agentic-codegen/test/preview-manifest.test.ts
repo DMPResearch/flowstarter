@@ -226,6 +226,31 @@ describe('phrasesFromFiles', () => {
     ).toEqual([HEADLINE]);
   });
 
+  it("leads with the line the client's own sentence names", () => {
+    // The 2026-09-12 shape: the content file's meta title and description
+    // come first by position, and the headline the client asked for comes
+    // last. Ranking by the instruction is what puts it back in front.
+    const labels = [
+      file(
+        'src/content/site-labels.md',
+        `siteMeta:\n  title: "Darius Mihai Popescu, product builder"\n` +
+          `  description: "An AI-driven website studio for service businesses"\n` +
+          `hero:\n  title: "${HEADLINE}"\n`
+      ),
+    ];
+
+    expect(
+      phrasesFromFiles(labels, {
+        limit: 8,
+        instruction: `Make the hero headline say ${HEADLINE}`,
+      })[0]
+    ).toBe(HEADLINE);
+    // Without the instruction it is still found, just not first.
+    expect(phrasesFromFiles(labels, { limit: 8 })[0]).toBe(
+      'Darius Mihai Popescu, product builder'
+    );
+  });
+
   it('stops at the limit', () => {
     expect(phrasesFromFiles(files, { limit: 1 })).toEqual([HEADLINE]);
   });

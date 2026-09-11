@@ -1650,6 +1650,7 @@ export function resolveApprovedEdit(
       ? phrasesFromFiles(approvedFiles, {
           paths,
           limit: APPROVED_EDITS_PHRASE_LIMIT,
+          instruction: edit.instruction,
         })
       : [];
   if (rederived.length > 0) {
