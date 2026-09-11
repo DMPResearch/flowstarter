@@ -127,6 +127,7 @@ function Pill({
  */
 const GlassLinkCard = GlassSurface as unknown as ComponentType<
   ComponentProps<typeof Link> & {
+    as: typeof Link;
     variant?: GlassSurfaceVariant;
     interactive?: boolean;
   }
@@ -139,6 +140,7 @@ const GlassLinkCard = GlassSurface as unknown as ComponentType<
 function PipelineCard({ card }: { card: PipelineCardData }) {
   return (
     <GlassLinkCard
+      as={Link}
       href={`/admin/dashboard/projects/${card.workspaceId}`}
       variant="card"
       interactive
