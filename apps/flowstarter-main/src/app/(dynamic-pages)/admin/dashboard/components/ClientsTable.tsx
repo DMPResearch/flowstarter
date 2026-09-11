@@ -21,7 +21,7 @@ export function ClientsTable({
     <div className="overflow-x-auto">
       <table className="w-full text-[13.5px]">
         <thead>
-          <tr>
+          <tr className="fs-glass-header-row">
             <ColHead className="pl-5">
               {t('admin.dashboard.clients.col.account')}
             </ColHead>

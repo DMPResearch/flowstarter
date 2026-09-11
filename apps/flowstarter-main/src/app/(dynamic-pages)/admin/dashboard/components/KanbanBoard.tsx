@@ -353,7 +353,7 @@ function ColumnSkeleton() {
       {[1, 2].map((i) => (
         <div
           key={i}
-          className="h-[68px] animate-pulse rounded-[8px] border border-[var(--ls-rule)] bg-[var(--ls-glass-bg)]"
+          className="h-[68px] animate-pulse rounded-[8px] border border-[var(--fs-rule)] bg-[var(--fs-glass-bg)]"
         />
       ))}
     </>

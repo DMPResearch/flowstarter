@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Inbox, CheckCircle2 } from 'lucide-react';
+import { GlassSurface } from '@flowstarter/flow-design-system';
 import { Button } from '@/components/ui/unified-button';
 import { timeAgo } from '@/lib/format-utils';
 
@@ -105,10 +106,7 @@ export function OperatorRequestsList() {
               .replace('@flowstarter.net', '');
             const disabled = Boolean(item.responded_at);
             return (
-              <div
-                key={item.id}
-                className="rounded-xl border border-[var(--fs-rule)] bg-white/50 p-3 dark:bg-white/[0.03]"
-              >
+              <GlassSurface key={item.id} variant="card" className="p-3">
                 <div className="mb-1 flex items-center justify-between gap-2">
                   <p className="text-xs font-medium text-[var(--fs-ink)]">
                     Session {sessionLabel.slice(0, 14)}...
@@ -156,7 +154,7 @@ export function OperatorRequestsList() {
                     {handlingId === item.id ? 'Sending…' : 'Mark handled'}
                   </Button>
                 </div>
-              </div>
+              </GlassSurface>
             );
           })}
         </div>

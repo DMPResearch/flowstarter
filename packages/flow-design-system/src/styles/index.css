@@ -505,6 +505,15 @@ a.fs-glass-tile {
   color: var(--fs-tone-neutral);
 }
 
+/* ── Header row tint ───────────────────────────────────────────────────────
+   For the header strip of a table that sits inside a GlassSurface panel: the
+   same denser fill a toned tile uses, so the strip reads as a subtly raised
+   band rather than a hand-rolled bg-white/border-b box. No blur or shadow of
+   its own — it is a tint on glass that is already blurred. */
+.fs-glass-header-row {
+  background: var(--fs-glass-bg-strong);
+}
+
 /* ── Mesh backdrop ──────────────────────────────────────────────────────────
    The living gradient the glass refracts. Fixed and full-bleed, painted at
    z-index 0 so a layout can put its content at z-index 10 above it. The drift

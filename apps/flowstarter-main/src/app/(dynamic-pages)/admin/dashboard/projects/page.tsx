@@ -13,27 +13,12 @@ import {
 import { useTranslations, type TranslationKeys } from '@/lib/i18n';
 import { compactRelative } from '@/lib/format-utils';
 import { TeamDashboardShell } from '../components/TeamDashboardShell';
+import { Panel } from '../components/Panel';
 import { useTeamProjects } from '@/hooks/useTeamProjects';
-
-const STAGE_I18N_KEYS: Partial<Record<string, TranslationKeys>> = {
-  intake: 'admin.stage.intake',
-  brief: 'admin.stage.brief',
-  build: 'admin.stage.build',
-  internal_review: 'admin.stage.build',
-  client_review: 'admin.stage.review',
-  launched: 'admin.stage.live',
-  care: 'admin.stage.live',
-};
-
-const STAGE_DOT: Record<string, string> = {
-  intake: 'bg-slate-400 dark:bg-slate-500',
-  brief: 'bg-sky-500',
-  build: 'bg-amber-500',
-  internal_review: 'bg-amber-500',
-  client_review: 'bg-orange-500',
-  launched: 'bg-emerald-500',
-  care: 'bg-emerald-500',
-};
+import {
+  STAGE_I18N_KEYS,
+  stageDotStyle,
+} from '../components/dashboard.constants';
 
 const TIER_I18N_KEYS: Partial<Record<string, TranslationKeys>> = {
   essential: 'admin.tier.essential',
@@ -123,26 +108,12 @@ export default function TeamProjectsPage() {
         </Link>
       }
     >
-      <section className="ls-card overflow-hidden !p-0">
-        <header className="flex items-end justify-between gap-4 border-b border-[var(--ls-rule)] px-5 py-3.5 sm:px-6">
-          <div>
-            <div className="ls-admin-label">
-              {t('admin.dashboard.accounts.eyebrow')}
-            </div>
-            <h2 className="mt-0.5 text-[15px] font-medium tracking-[-0.005em] text-[var(--ls-ink)]">
-              {t('admin.nav.projects')}
-            </h2>
-          </div>
-          {panelMeta && (
-            <span
-              className="hidden max-w-md text-right text-[13px] leading-snug text-[var(--ls-ink-dim)] sm:inline"
-              style={{ fontFamily: 'var(--ls-sans)' }}
-            >
-              {panelMeta}
-            </span>
-          )}
-        </header>
-
+      <Panel
+        eyebrow={t('admin.dashboard.accounts.eyebrow')}
+        title={t('admin.nav.projects')}
+        meta={panelMeta}
+        flush
+      >
         <div className="border-b border-[var(--ls-rule)] px-5 py-3 sm:px-6">
           <div className="relative max-w-md">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--ls-ink-faint)]" />
@@ -191,7 +162,7 @@ export default function TeamProjectsPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-[13.5px]">
               <thead>
-                <tr>
+                <tr className="fs-glass-header-row">
                   <ColHead className="w-[1.5rem] pl-5">{'\u00a0'}</ColHead>
                   <ColHead>{t('admin.dashboard.table.project')}</ColHead>
                   <ColHead>{t('admin.dashboard.table.account')}</ColHead>
@@ -231,9 +202,8 @@ export default function TeamProjectsPage() {
                       <td className="py-3 pl-5">
                         <span
                           aria-hidden
-                          className={`inline-block h-2 w-2 rounded-full ${
-                            STAGE_DOT[stage] ?? STAGE_DOT.intake
-                          }`}
+                          className="inline-block h-2 w-2 rounded-full"
+                          style={stageDotStyle(stage)}
                         />
                       </td>
                       <td className="px-3 py-3">
@@ -296,7 +266,7 @@ export default function TeamProjectsPage() {
             </table>
           </div>
         )}
-      </section>
+      </Panel>
     </TeamDashboardShell>
   );
 }
