@@ -264,7 +264,7 @@ export default function CookiesPage() {
             latest revision.
           </p>
 
-          <div className="ls-callout">
+          <div className="ls-callout fs-glass">
             <p>
               Questions about cookies? Write to{' '}
               <a href="mailto:privacy@flowstarter.net">

@@ -159,7 +159,7 @@ export default function AboutPage() {
           <div className="ls-container">
             <div className="grid gap-6 sm:gap-7 md:grid-cols-2">
               {/* Darius */}
-              <div className="ls-card" style={founderCardStyle}>
+              <div className="ls-card fs-glass" style={founderCardStyle}>
                 <div
                   style={{
                     display: 'flex',
@@ -189,7 +189,7 @@ export default function AboutPage() {
               </div>
 
               {/* Dorin */}
-              <div className="ls-card" style={founderCardStyle}>
+              <div className="ls-card fs-glass" style={founderCardStyle}>
                 <div
                   style={{
                     display: 'flex',
@@ -327,7 +327,7 @@ export default function AboutPage() {
               {principles.map((p, i) => (
                 <div
                   key={p.title}
-                  className="ls-card"
+                  className="ls-card fs-glass"
                   style={{
                     display: 'flex',
                     flexDirection: 'column',
@@ -365,7 +365,7 @@ export default function AboutPage() {
               {steps.map((step, i) => (
                 <div
                   key={i}
-                  className="ls-card"
+                  className="ls-card fs-glass"
                   style={{
                     display: 'flex',
                     flexDirection: 'column',

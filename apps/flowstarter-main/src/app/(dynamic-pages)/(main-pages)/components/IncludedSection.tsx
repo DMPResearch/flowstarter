@@ -53,7 +53,7 @@ export function IncludedSection() {
           {included.cards.map((c, i) => (
             <div
               key={c.title}
-              className="ls-card ls-included-card"
+              className="ls-card fs-glass ls-included-card"
               style={{
                 animation: `ls-reveal 900ms cubic-bezier(0.19,1,0.22,1) ${
                   i * 70
@@ -70,7 +70,7 @@ export function IncludedSection() {
 
           {/* Ownership promise — featured line item */}
           <div
-            className="ls-card ls-included-card ls-included-card--featured"
+            className="ls-card fs-glass ls-included-card ls-included-card--featured"
             style={{
               animation: `ls-reveal 900ms cubic-bezier(0.19,1,0.22,1) ${
                 included.cards.length * 70

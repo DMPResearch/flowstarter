@@ -157,7 +157,7 @@ export function LandingHero() {
                 ? 'translateY(0) translateX(0)'
                 : 'translateY(22px) translateX(16px)',
             }}
-            className="ls-card ls-brief"
+            className="ls-card ls-brief fs-glass"
             data-hero-stage={activeStep + 1}
           >
             <div className="ls-brief-hdr">

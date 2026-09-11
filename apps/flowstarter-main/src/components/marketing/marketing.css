@@ -135,16 +135,13 @@
   background: var(--ls-ink-faint);
 }
 
-/* Soft callout card used to wrap CTA boxes / contact email blocks. */
+/* Soft callout card used to wrap CTA boxes / contact email blocks.
+ * Layout only: pair it with `.fs-glass` in the markup and the fill, the blur,
+ * the specular line and the refractive rim all come from the one material. */
 .ls-callout {
   margin-top: clamp(2.5rem, 5vh, 3.5rem);
   padding: clamp(1.4rem, 2.5vw, 1.85rem);
-  border-radius: 18px;
-  background: var(--ls-glass-bg);
-  border: 1px solid var(--ls-glass-edge);
-  backdrop-filter: blur(28px) saturate(160%);
-  -webkit-backdrop-filter: blur(28px) saturate(160%);
-  box-shadow: var(--ls-card-shadow);
+  border-radius: var(--fs-radius-glass);
 }
 .ls-callout p {
   color: var(--ls-ink-dim);

@@ -65,13 +65,17 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
           />
         )}
 
+        {/* The header is the product's chrome material once it has something
+            to sit on: transparent over the hero, then `.fs-glass--chrome` —
+            the same translucent, blurred, hairline-edged surface the app
+            sidebar wears — as soon as content scrolls under it. */}
         <header
           className={`ls-theme fixed top-0 left-0 right-0 z-50 transition-all duration-500 ${
             headerLoaded ? 'opacity-100' : 'opacity-0'
           } ${
             scrolled || mobileMenuOpen
-              ? 'border-b border-[var(--fs-glass-edge)] bg-white/65 dark:bg-[var(--fs-bg-base)]/55 backdrop-blur-2xl backdrop-saturate-[180%] shadow-[0_2px_16px_rgba(0,0,0,0.08),0_1px_0_rgba(255,255,255,0.6)_inset] dark:shadow-[0_2px_16px_rgba(0,0,0,0.4),0_1px_0_rgba(255,255,255,0.06)_inset]'
-              : 'border-b border-transparent bg-transparent backdrop-blur-0 shadow-none'
+              ? 'fs-glass fs-glass--chrome'
+              : 'bg-transparent shadow-none'
           }`}
         >
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-12">
@@ -173,7 +177,9 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
 
             <div
               className={`ls-mobile-menu lg:hidden overflow-hidden transition-all duration-[420ms] ease-[cubic-bezier(0.19,1,0.22,1)] ${
-                mobileMenuOpen ? 'ls-mobile-menu--open max-h-[40rem] pb-6' : 'max-h-0'
+                mobileMenuOpen
+                  ? 'ls-mobile-menu--open max-h-[40rem] pb-6'
+                  : 'max-h-0'
               }`}
             >
               <nav
@@ -359,7 +365,7 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
 
   return (
     <header
-      className={`fixed top-0 left-0 right-0 z-50 transition-opacity duration-500 border-b border-[var(--fs-glass-edge)] bg-white/65 dark:bg-[var(--fs-bg-base)]/55 backdrop-blur-2xl backdrop-saturate-[180%] shadow-[0_2px_16px_rgba(0,0,0,0.08),0_1px_0_rgba(255,255,255,0.6)_inset] dark:shadow-[0_2px_16px_rgba(0,0,0,0.4),0_1px_0_rgba(255,255,255,0.06)_inset] ${
+      className={`ls-theme fs-glass fs-glass--chrome fixed top-0 left-0 right-0 z-50 transition-opacity duration-500 ${
         headerLoaded ? 'opacity-100' : 'opacity-0'
       }`}
     >

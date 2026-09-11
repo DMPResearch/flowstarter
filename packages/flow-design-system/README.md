@@ -62,6 +62,13 @@ viewport, and checks every tone over both the brightest and the darkest point
 it finds, because the glass is thin enough that where a tile sits on the
 gradient changes how readable it is. It exits non-zero below AA.
 
+`node scripts/check-ink-contrast.mjs` is its companion, for the other half of
+the problem: the marketing pages put plain body and heading copy straight onto
+the mesh with no tile under it. It checks the `--ls-*` inks in landing.css over
+the same two extremes, bare and through the glass. Both scripts share the
+gradient maths in `scripts/lib/mesh-colour.mjs`, so a blob only has to move in
+one place for both to follow.
+
 Mesh: `--fs-mesh-1` to `--fs-mesh-4`, the composed `--fs-mesh` radial stack,
 `--fs-mesh-opacity`, and `--fs-mesh-grain` with `--fs-mesh-grain-opacity`.
 Four large overlapping blobs, each wide enough to cross most of the viewport:
@@ -81,6 +88,8 @@ Radii: `--fs-radius-glass` (22px) and `--fs-radius-glass-inner`.
 | `.fs-glass--chrome`                    | square, opaque-leaning, for a header or sidebar                          |
 | `.fs-glass--interactive`               | hover lift and edge brighten, on the spring easing                       |
 | `.fs-glass--toned`                     | lets a surface take a tone wash                                          |
+| `.fs-glass--plain`                     | keeps the tone in the rim and the ink, drops the wash                    |
+| `.fs-glass--control`                   | the material at a button's radius, with no drop of its own               |
 | `.fs-glass-tile`                       | a toned tile, with `__label`, `__value`, `__note`, `__icon`              |
 | `.fs-tone-text`                        | tone-coloured text outside a tile                                        |
 | `.fs-glass-ring`                       | the focus-visible ring                                                   |
@@ -104,10 +113,11 @@ call sites keep working; do not use it in new code.
   same body; only the wrapper element changes.
 - `MeshBackdrop`: `{ variant: 'app' | 'landing' | 'editor' }`. The gradient
   field the glass refracts. Fixed, decorative, painted at z-index 0 so a layout
-  can lift its content to z-index 10 over it. It is a sibling of
-  `FlowBackground`, not a replacement. `FlowBackground` draws the orbs and line
-  work for marketing and admin; this draws the quieter field underneath app
-  pages.
+  can lift its content to z-index 10 over it. It replaces `FlowBackground`
+  wherever glass is the material — the client dashboard, and every marketing
+  page — because `FlowBackground` paints an opaque base of its own, so
+  whichever of the two ends up on top hides the other. `FlowBackground` still
+  draws the orbs and line work for admin and the auth pages.
 
 `GlassCard`, `GlassPanel` and `StatCard` are thin wrappers kept for existing
 call sites. New code should use `GlassSurface` and `StatTile` directly.

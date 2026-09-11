@@ -66,7 +66,7 @@ export default function FAQPage() {
             </div>
 
             <div
-              className="ls-callout mx-auto mt-12 max-w-3xl"
+              className="ls-callout fs-glass mx-auto mt-12 max-w-3xl"
               style={{ textAlign: 'center' }}
             >
               <p

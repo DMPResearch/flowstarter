@@ -29,7 +29,7 @@ export function AddOnsSection() {
 
         <div className="mt-14 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {ADDONS.map((item) => (
-            <article key={item.label} className="ls-card p-6">
+            <article key={item.label} className="ls-card fs-glass p-6">
               <h3 className="text-[1.01rem] font-semibold text-[var(--ls-ink)]">
                 {item.label}
               </h3>

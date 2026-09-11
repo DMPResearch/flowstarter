@@ -12,7 +12,7 @@
   --ls-bg-2: #f3ecdb;
   --ls-ink: #120a22;
   --ls-ink-dim: rgba(18, 10, 34, 0.62);
-  --ls-ink-faint: rgba(18, 10, 34, 0.36);
+  --ls-ink-faint: rgba(18, 10, 34, 0.5); /* 3.2:1 on the mesh; see scripts/check-ink-contrast.mjs */
   --ls-accent: hsl(233, 65%, 50%);
   --ls-accent-hot: hsl(233, 70%, 40%);
   --ls-accent-warm: #b45309;
@@ -34,7 +34,7 @@
   --ls-bg-2: #0a0714;
   --ls-ink: #f4eee4;
   --ls-ink-dim: rgba(244, 238, 228, 0.58);
-  --ls-ink-faint: rgba(244, 238, 228, 0.32);
+  --ls-ink-faint: rgba(244, 238, 228, 0.42); /* 3.3:1 on the mesh; see scripts/check-ink-contrast.mjs */
   --ls-accent: hsl(233, 70%, 74%);
   --ls-accent-hot: hsl(233, 65%, 58%);
   --ls-accent-warm: #ffb27a;
@@ -59,7 +59,7 @@
   --ls-bg-2: #f3ecdb;
   --ls-ink: #120a22;
   --ls-ink-dim: rgba(18, 10, 34, 0.62);
-  --ls-ink-faint: rgba(18, 10, 34, 0.36);
+  --ls-ink-faint: rgba(18, 10, 34, 0.5); /* 3.2:1 on the mesh; see scripts/check-ink-contrast.mjs */
   --ls-accent: hsl(233, 65%, 50%);
   --ls-accent-hot: hsl(233, 70%, 40%);
   --ls-accent-warm: #b45309;
@@ -94,7 +94,7 @@
   --ls-bg-2: #0a0714;
   --ls-ink: #f4eee4;
   --ls-ink-dim: rgba(244, 238, 228, 0.58);
-  --ls-ink-faint: rgba(244, 238, 228, 0.32);
+  --ls-ink-faint: rgba(244, 238, 228, 0.42); /* 3.3:1 on the mesh; see scripts/check-ink-contrast.mjs */
   --ls-accent: hsl(233, 70%, 74%);
   --ls-accent-hot: hsl(233, 65%, 58%);
   --ls-accent-warm: #ffb27a;
@@ -565,19 +565,26 @@
   background: var(--ls-rule-strong);
 }
 
-/* Glass cards */
+/* Glass cards.
+   Layout only. The material is split out below so a card that also carries
+   `.fs-glass` in its markup takes the product's one glass — its fill, its
+   specular line and its refractive rim — instead of a second, parallel
+   translucency invented here. Marketing cards opt in; admin's do not, which
+   is why the fallback block still exists. */
 .ls-card {
   position: relative;
   border-radius: 24px;
   padding: 1.6rem 1.6rem 1.5rem;
+  overflow: hidden;
+}
+.ls-card:not(.fs-glass) {
   background: var(--ls-glass-bg);
   backdrop-filter: blur(40px) saturate(180%);
   -webkit-backdrop-filter: blur(40px) saturate(180%);
   border: 1px solid var(--ls-glass-edge);
   box-shadow: var(--ls-card-shadow);
-  overflow: hidden;
 }
-.ls-card::before {
+.ls-card:not(.fs-glass)::before {
   content: '';
   position: absolute;
   top: -1px;
@@ -592,7 +599,7 @@
   );
   opacity: 0.45;
 }
-.dark .ls-card::before {
+.dark .ls-card:not(.fs-glass)::before {
   background: linear-gradient(
     90deg,
     transparent,
@@ -2974,44 +2981,11 @@
   color: var(--ls-ink-dim);
 }
 
-.ls-payment-terms {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  border-top: 1px solid var(--ls-rule-strong);
-  border-bottom: 1px solid var(--ls-rule-strong);
-}
-.ls-payment-milestone {
-  min-height: 13rem;
-  padding: clamp(1.4rem, 2.8vw, 2.25rem);
-  border-left: 1px solid var(--ls-rule);
-}
-.ls-payment-milestone:first-child {
-  border-left: 0;
-}
-.ls-payment-milestone--accent {
-  background: color-mix(in oklab, var(--ls-accent) 8%, transparent);
-}
-.ls-payment-milestone > span {
-  display: block;
-  margin-bottom: 2.75rem;
-  font-family: var(--ls-mono);
-  font-size: 0.68rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--ls-accent);
-}
-.ls-payment-milestone strong {
-  display: block;
-  font-size: 1.15rem;
-  letter-spacing: -0.02em;
-}
-.ls-payment-milestone p {
-  max-width: 32ch;
-  margin: 0.65rem 0 0;
-  font-size: 0.86rem;
-  line-height: 1.5;
-  color: var(--ls-ink-dim);
-}
+/* The payment milestones are `StatTile`s now — a label, the figure and a line
+   of plain English, on the same tinted glass the client dashboard uses for
+   their own numbers. The ruled three-column grid they used to live in is gone
+   with them; `.ls-stat-row` at the foot of this file lays the tiles out. */
+
 .ls-care-pricing {
   display: grid;
   grid-template-columns: minmax(18rem, 0.72fr) minmax(0, 1.28fr);
@@ -3254,8 +3228,7 @@
   .ls-template-alternatives {
     grid-template-columns: 1fr;
   }
-  .ls-process-grid,
-  .ls-payment-terms {
+  .ls-process-grid {
     grid-template-columns: 1fr;
   }
   .ls-process-card {
@@ -3286,17 +3259,6 @@
     height: 1rem;
     margin-left: 0.35rem;
     flex: none;
-  }
-  .ls-payment-milestone {
-    min-height: auto;
-    border-left: 0;
-    border-bottom: 1px solid var(--ls-rule);
-  }
-  .ls-payment-milestone:last-child {
-    border-bottom: 0;
-  }
-  .ls-payment-milestone > span {
-    margin-bottom: 1.75rem;
   }
   .ls-care-plan-row,
   .ls-care-custom-row {
@@ -3780,4 +3742,164 @@
 }
 .ls-unlock__cta-ghost:hover {
   opacity: 1;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LIQUID GLASS — the marketing pages join the product's one material
+   ═══════════════════════════════════════════════════════════════════════════
+   Everything above this line grew up as its own translucency: an `--ls-glass-*`
+   fill, a hand-picked blur, a card shadow with its own inset highlight. The
+   client dashboard now sits on `.fs-glass` over a gradient mesh, and a visitor
+   who signs up should not feel the floor change under them.
+
+   So this block does two things and nothing else. It points the `--ls-*`
+   material tokens at the `--fs-*` ones, which moves every rule above that
+   already reads `var(--ls-glass-bg)` onto the real material for free; and it
+   teaches the handful of marketing surfaces that are not `.ls-card` how to
+   wear `.fs-glass` without fighting it. No rgba() is invented here.
+
+   Admin keeps its own surfaces: `.ls-admin-dashboard` and the team login scope
+   are excluded, because they were tuned against the old fill and are being
+   moved separately.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.ls-scope:not(.ls-admin-dashboard):not(.admin-team-login-scope),
+.ls-theme {
+  --ls-glass-bg: var(--fs-glass-bg);
+  --ls-glass-edge: var(--fs-glass-edge);
+  --ls-card-shadow: var(--fs-glass-shadow);
+}
+
+/* Same values in dark: the --fs-* tokens already switch themselves, but the
+   `.dark .ls-scope` block at the top of this file is more specific than the
+   rule above, so the remap has to be restated at that weight to win. */
+.dark .ls-scope:not(.ls-admin-dashboard):not(.admin-team-login-scope),
+.dark .ls-theme {
+  --ls-glass-bg: var(--fs-glass-bg);
+  --ls-glass-edge: var(--fs-glass-edge);
+  --ls-card-shadow: var(--fs-glass-shadow);
+}
+
+/* A card that opted into the material keeps its editorial padding and takes
+   the system's radius, so its corners stay concentric with anything nested
+   inside it. Fill, blur, specular and rim all come from `.fs-glass`. */
+.ls-card.fs-glass {
+  border-radius: var(--fs-radius-glass);
+}
+
+/* ── Hero: the "Agents at work" brief ───────────────────────────────────────
+   The one card above the fold, and the reason the mesh is there at all. It
+   takes the denser fill because four lines of small type sit on it. */
+.ls-brief.fs-glass {
+  background: var(--fs-glass-bg-strong);
+}
+
+/* ── FAQ ────────────────────────────────────────────────────────────────────
+   The questions were hairline-separated rows on a flat page. On the mesh that
+   reads as text floating in a gradient, so each question becomes its own thin
+   pane and the rules come out. */
+.ls-faq-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+.ls-faq-item.fs-glass {
+  border-top: 0;
+  padding: 0 1.25rem;
+}
+.ls-faq-item.fs-glass:last-child {
+  border-bottom: 0;
+}
+.ls-faq-item.fs-glass .ls-faq-body {
+  padding-left: 0;
+}
+.ls-faq-item.fs-glass.open .ls-faq-body {
+  padding-bottom: 1.1rem;
+}
+
+/* ── The process grid: one pane, hairlines inside ───────────────────────────
+   The four steps are read across, not one at a time, so they stay a single
+   ruled grid rather than becoming four floating cards. Making the grid itself
+   the glass keeps that reading and still puts the content on the material. */
+.ls-process-grid.fs-glass {
+  border-top: 0;
+  border-bottom: 0;
+  overflow: hidden;
+}
+
+/* ── Care plans ─────────────────────────────────────────────────────────────
+   Three plans that used to be rows in a list. Each becomes its own pane with
+   its own tone, so a visitor can tell them apart before reading a word: the
+   starter plan indigo, the pro plan violet, the store plan green. */
+.ls-care-plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  border-top: 0;
+}
+.ls-care-plan-row.fs-glass,
+.ls-care-custom-row.fs-glass {
+  border-bottom: 0;
+  padding: 1.1rem 1.25rem;
+}
+.ls-care-plan-row.fs-glass:hover,
+.ls-care-custom-row.fs-glass:hover {
+  color: var(--ls-ink);
+}
+.ls-care-plan-row.fs-glass--toned[data-tone] b,
+.ls-care-custom-row.fs-glass--toned[data-tone] b {
+  color: var(--fs-tile-ink);
+}
+
+/* ── Final CTA ──────────────────────────────────────────────────────────────
+   The last card on the page had the loudest hand-rolled glass of the lot: two
+   insets, three drops and a hard-coded white. It is the same material as
+   everything else now, just wider. */
+.ls-cta-card.fs-glass,
+.dark .ls-cta-card.fs-glass {
+  border: 0;
+  border-radius: var(--fs-radius-glass);
+  background: var(--fs-glass-bg-strong);
+  box-shadow: var(--fs-glass-shadow);
+  padding: clamp(2rem, 4.5vw, 3.5rem) clamp(1.5rem, 6vw, 5rem);
+}
+
+/* ── Stat tiles on the landing ──────────────────────────────────────────────
+   `.fs-glass-tile` is sized for a dashboard grid. On a marketing page a tile
+   sits in a row of three under a headline, so it gets a little more air.
+   Nothing else about it changes. */
+.ls-stat-row {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ls-stat-row .fs-glass-tile {
+  padding: var(--fs-space-5);
+}
+
+/* ── Secondary controls ─────────────────────────────────────────────────────
+   A ghost CTA next to a primary one is a control, not a card: same fill and
+   rim, a button's radius, and no drop of its own so a row of them stays flat
+   against the section. */
+.ls-price-cta.fs-glass,
+.ls-unlock__cta-ghost.fs-glass {
+  border: 0;
+  border-radius: var(--fs-radius-md);
+  box-shadow: none;
+  color: var(--ls-ink);
+}
+
+/* ── Marketing atmosphere ───────────────────────────────────────────────────
+   `.ls-orb` and `.ls-grain` painted a second, per-section atmosphere on top of
+   FlowBackground. The page now has one mesh behind everything, so the
+   per-section layers come down to a whisper rather than stacking four
+   gradients under every glass panel. */
+.ls-scope:not(.ls-admin-dashboard) .ls-orb {
+  opacity: calc(var(--ls-orb-opacity) * 0.4);
+}
+.ls-scope:not(.ls-admin-dashboard) .ls-grain {
+  opacity: calc(var(--ls-grain-opacity) * 0.6);
 }

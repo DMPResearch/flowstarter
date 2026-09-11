@@ -128,7 +128,7 @@ export default function TermsPage() {
             before they take effect.
           </p>
 
-          <div className="ls-callout">
+          <div className="ls-callout fs-glass">
             <p>
               Questions about a clause? Write to{' '}
               <a href="mailto:hello@flowstarter.net">hello@flowstarter.net</a>{' '}

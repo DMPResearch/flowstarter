@@ -115,7 +115,7 @@ export default function ContactPage() {
             <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
               {/* Contact form */}
               <div
-                className="ls-card"
+                className="ls-card fs-glass"
                 style={{
                   padding: cardPadding,
                   display: 'flex',
@@ -354,7 +354,7 @@ export default function ContactPage() {
               >
                 {/* Discovery call */}
                 <div
-                  className="ls-card"
+                  className="ls-card fs-glass"
                   style={{
                     padding: cardPadding,
                     display: 'flex',
@@ -385,7 +385,7 @@ export default function ContactPage() {
 
                 {/* Email + socials */}
                 <div
-                  className="ls-card"
+                  className="ls-card fs-glass"
                   style={{
                     padding: cardPadding,
                     display: 'flex',
@@ -561,7 +561,7 @@ export default function ContactPage() {
 
                 {/* Response time */}
                 <div
-                  className="ls-card"
+                  className="ls-card fs-glass"
                   style={{
                     padding: '1.25rem 1.35rem',
                     display: 'flex',

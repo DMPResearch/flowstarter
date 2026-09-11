@@ -19,7 +19,7 @@ export function AboutCtaBand() {
       <div className="ls-cta-bg" aria-hidden />
       <div className="ls-cta-glow" aria-hidden />
       <div className="ls-container">
-        <div className="ls-cta-card">
+        <div className="ls-cta-card fs-glass">
           <div
             style={{
               position: 'relative',

@@ -123,7 +123,7 @@ export default function RelaunchPage() {
             </div>
             <div className="grid gap-5 sm:gap-6 md:grid-cols-2">
               {painPoints.map((p, i) => (
-                <div key={i} className="ls-card" style={painCardStyle}>
+                <div key={i} className="ls-card fs-glass" style={painCardStyle}>
                   <h3 style={painTitleStyle}>{p.title}</h3>
                   <p style={painBodyStyle}>{p.body}</p>
                 </div>
@@ -233,7 +233,7 @@ export default function RelaunchPage() {
         <section className="ls-section ls-section--pad" id="form">
           <div className="ls-container">
             <div
-              className="ls-card mx-auto"
+              className="ls-card fs-glass mx-auto"
               style={{
                 maxWidth: '32rem',
                 padding: '2rem 1.85rem',
