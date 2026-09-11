@@ -14,8 +14,8 @@ there is no build step here.
 
 One translucent material, used everywhere. It is a blurred and saturated
 backdrop under a specular catch-light and a 1px refractive edge that is
-brightest at the top-left, sitting on a slow gradient mesh so the blur has
-something to refract. Corners are concentric: a tile nested inside a panel uses
+brightest at the top-left, sitting on a still, very low-chroma field so the
+blur has something to refract. Corners are concentric: a tile nested inside a panel uses
 the inner radius so the two curves stay parallel.
 
 **The rule: no hand-rolled glass.** If a surface needs a translucent fill, a
@@ -71,10 +71,11 @@ is the grey card again by another route. The rim and the catch-light are both
 brighter in dark than in light, because with the fill that thin the lit edge is
 most of what tells you a pane is there.
 
-The fill is deliberately thin. Glass that you cannot see the mesh through is
-just a white box, so `--fs-glass-bg` lets roughly half the gradient come back
-up through the panel, and the blur and the saturation are what keep the result
-legible rather than muddy.
+The fill is deliberately thin. Glass that you cannot see the field through is
+just a white box, so `--fs-glass-bg` lets roughly half of it come back up
+through the panel, and the blur and the saturation are what keep the result
+legible rather than muddy. With the field as quiet as it now is, the rim and
+the catch-light do most of the work of saying a pane is there, in both modes.
 
 `--fs-glass-ink-dim` exists because text on a tinted, half-transparent tile
 needs more weight than the same text on the flat page behind it. Use it for
@@ -100,35 +101,54 @@ treatment without asking. Use it for the thing the reader has to act on; a page
 where every tile asks for emphasis has none.
 
 Ink lightness is set per mode so that the value on a tile clears 4.5:1 against
-its own wash, composited over the glass, the mesh and the page. Run
-`node scripts/check-tone-contrast.mjs` after changing any tone or moving any
-blob. It parses the `--fs-mesh` gradient stack, samples it across a 1440x900
-viewport, and checks every tone over both the brightest and the darkest point
-it finds, because the glass is thin enough that where a tile sits on the
-gradient changes how readable it is. It exits non-zero below AA.
+its own wash, composited over the glass, the field and the page. Run
+`node scripts/check-tone-contrast.mjs` after changing any tone or touching the
+field. It parses the `--fs-mesh` gradient stack, samples it across a 1440x900
+viewport once per signed-in variant, and checks every tone over both the
+brightest and the darkest point it finds, because the glass is thin enough that
+where a tile sits on the field changes how readable it is. It exits non-zero
+below AA.
 
 `node scripts/check-ink-contrast.mjs` is its companion, for the other half of
 the problem: the marketing pages put plain body and heading copy straight onto
-the mesh with no tile under it. It checks the `--ls-*` inks in landing.css over
-the same two extremes, bare and through the glass. Both scripts share the
-gradient maths in `scripts/lib/mesh-colour.mjs`, so a blob only has to move in
-one place for both to follow.
+the backdrop with no tile under it. It checks the `--ls-*` inks in landing.css
+over the landing variant's own two extremes, bare and through the glass. Both
+scripts share the maths in `scripts/lib/mesh-colour.mjs`, so a colour only has
+to move in one place for both to follow, and both measure the variant a surface
+actually renders rather than the default the tokens declare.
 
-Mesh: `--fs-mesh-1` to `--fs-mesh-4`, the composed `--fs-mesh` radial stack,
-`--fs-mesh-opacity`, and `--fs-mesh-grain` with `--fs-mesh-grain-opacity`.
-Four large overlapping blobs, each wide enough to cross most of the viewport:
-indigo, pink, teal and warm amber in light; indigo, violet, teal and magenta in
-dark.
+**The field.** `--fs-field-tint` and `--fs-field-bloom`, composed into
+`--fs-mesh`, dimmed by `--fs-mesh-opacity`, with `--fs-mesh-grain` at
+`--fs-mesh-grain-opacity` laid over the top.
 
-The landing variant overrides `--fs-mesh-1..4` on
-`.fs-mesh-backdrop[data-variant='landing']`: one soft indigo bloom behind the
-hero card, a whisper top-left, a faint tint low on the page, and no pink or
-amber at all. Marketing is the one place a visitor has not asked to be, so the
-headline and the hero card have to win before the background gets a turn. Note
-that the variant dimmer in index.css multiplies these alphas — landing runs at
-0.45 of the master and the app at 0.88, so the product of the two dials is what
-you actually see. The grain is a tiny SVG noise tile laid over the top, which is what stops
-gradients this wide from banding on an 8-bit display.
+It is the page's own surface tone with a very slow modulation in it, not a
+picture hung behind the interface. `--fs-field-tint` is a near neighbour of
+`--fs-bg-base` — two and a half points of lightness and six degrees of hue away
+in light, and in dark it is `--fs-bg-raised` itself, the next rung of the same
+surface ladder — washed diagonally across the viewport from a radial so wide
+that the visible part of it is a ramp rather than a blob. `--fs-field-bloom` is
+the only colour left: one indigo radial 70vw across, sitting high behind the
+header, whose alpha peaks under 0.05 anywhere it is painted. At that strength
+the eye reads it as a temperature.
+
+It does not move. A slow drift is charming on a page you scroll past once and
+wrong under a dashboard someone works in, where a surface that is never quite
+the same twice is a surface you keep re-reading. The grain is a tiny SVG noise
+tile, and at 0.012 it is dither rather than texture: a wash this shallow spread
+this wide is exactly what an 8-bit display bands on, and noise is what breaks
+the steps up.
+
+**One dial, and a trap worth knowing.** A variant says how loud it is with
+`--fs-mesh-opacity` and nothing else — app 0.8, editor 0.72, landing 0.45. That
+was always the documented rule and it is now the only rule that can work: a
+custom property whose value contains `var()` is substituted where it is
+_declared_, so `--fs-mesh` resolves its colours on `:root` and a variant that
+overrides only `--fs-field-tint` changes nothing. Both the app and the landing
+blocks had been doing exactly that, and both had been quietly painting the old
+four saturated blobs at half opacity instead of the quiet colours they asked
+for. A variant that genuinely needs different colours has to restate `--fs-mesh`
+itself; the landing block, which marketing no longer mounts, is the one that
+does. `design-system-field.test.ts` in `flowstarter-main` holds that line.
 
 Radii: `--fs-radius-glass` (22px), then one 8px step in per level of nesting.
 The rule is one subtraction: a child's radius is its parent's radius minus the
@@ -174,7 +194,7 @@ another number or watches tick.
 | `.fs-glass-tile`                       | a toned tile, with `__label`, `__value`, `__note`, `__icon`                             |
 | `.fs-tone-text`                        | tone-coloured text outside a tile                                                       |
 | `.fs-glass-ring`                       | the focus-visible ring                                                                  |
-| `.fs-mesh-backdrop`                    | the fixed full-bleed mesh, `data-variant`, one of app, landing or editor                |
+| `.fs-mesh-backdrop`                    | the fixed full-bleed field, `data-variant`, one of app, landing or editor               |
 
 A toned surface reads its tone from `data-tone`, or from `data-palette` when
 the caller needs `data-tone` for a meaning of its own. When both are present,
@@ -199,8 +219,8 @@ call sites keep working; do not use it in new code.
   line of plain English. `linkComponent` takes the app's own router link, so
   this package stays framework-free. The link and the static tile render the
   same body; only the wrapper element changes.
-- `MeshBackdrop`: `{ variant: 'app' | 'landing' | 'editor' }`. The gradient
-  field the glass refracts. Fixed, decorative, painted at z-index 0 so a layout
+- `MeshBackdrop`: `{ variant: 'app' | 'landing' | 'editor' }`. The field the
+  glass refracts. Fixed, decorative, painted at z-index 0 so a layout
   can lift its content to z-index 10 over it. It replaces `FlowBackground`
   wherever glass is the material — the client dashboard, and every marketing
   page — because `FlowBackground` paints an opaque base of its own, so
@@ -212,6 +232,6 @@ call sites. New code should use `GlassSurface` and `StatTile` directly.
 
 ### Motion
 
-Transitions use `--fs-ease-spring` and the `--fs-dur-*` durations. The mesh
-drifts on a 42 second loop. Both the drift and the hover lift stop under
+Transitions use `--fs-ease-spring` and the `--fs-dur-*` durations. The field
+behind them is still. The hover lift stops under
 `prefers-reduced-motion: reduce`.
