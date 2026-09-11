@@ -1902,8 +1902,15 @@ const en = {
   // Storage promise (shared across hero, included, pricing)
 
   // Landing Hero — editorial redesign
-  'landing.hero.displayPrefix': 'Your business already has a brand',
-  'landing.hero.displayFlourish': 'We turn it into a website',
+  // The headline, hand-set in two lines each. The break is a typographic
+  // decision, not a consequence of the measure: "Your business already / has
+  // a brand" lands the noun at the start of a line, and "a website" gets a
+  // line of its own so the drawn mark under it has something to sit on.
+  // Below 640px the halves run back together (see `.ls-display--hero .brk`).
+  'landing.hero.displayPrefix': 'Your business already',
+  'landing.hero.displayPrefixTail': 'has a brand',
+  'landing.hero.displayFlourish': 'We turn it into',
+  'landing.hero.displayFlourishTail': 'a website',
   'landing.hero.proofLine': 'A tailored preview, before you pay',
   'landing.hero.subhead':
     'Share your details and public profiles. Our agent picks the right starting design and creates a preview shaped around you.',
@@ -2021,6 +2028,9 @@ const en = {
   'landing.pricing.eyebrow': 'Pricing',
   'landing.pricing.headlinePrefix': 'Pay for progress',
   'landing.pricing.headlineFlourish': 'Stay for the care',
+  // The tag on the featured care plan. Says what the emphasis means, so the
+  // heavier row is a fact rather than a nudge.
+  'landing.pricing.mostChosen': 'Most chosen',
 
   // Testimonials — editorial redesign
   'landing.testimonials.eyebrow': 'In their words',
@@ -2224,6 +2234,30 @@ const en = {
   'landing.discovery.preview.paneSkeleton':
     'Your site appears here as the agents build it. Nothing on this panel is real yet.',
   'landing.discovery.preview.askForChange': 'Ask for a change',
+
+  // The preview pane beside the intake conversation. It is a skeleton of a
+  // site, not a draft of one: the only real words on it are the ones the
+  // visitor typed. Its shape is derived in `preview-skeleton.ts`, and these
+  // are the labels for the bands that shape produces.
+  'landing.discovery.preview.pane.title': 'Your preview',
+  'landing.discovery.preview.pane.caption':
+    'The shape of your site, from your answers. It fills in as we talk, then the agents build the real thing on top of it.',
+  'landing.discovery.preview.pane.knownTitle': 'What we know so far',
+  'landing.discovery.preview.pane.factName': 'Name',
+  'landing.discovery.preview.pane.factBusiness': 'Business',
+  'landing.discovery.preview.pane.factStyle': 'Style',
+  'landing.discovery.preview.pane.factPages': 'Pages',
+  'landing.discovery.preview.pane.factEmpty': 'Not yet',
+  'landing.discovery.preview.pane.stripCount': '{done} of {total} details in',
+  'landing.discovery.preview.pane.section.hero': 'Opening',
+  'landing.discovery.preview.pane.section.services': 'What you offer',
+  'landing.discovery.preview.pane.section.menu': 'Menu',
+  'landing.discovery.preview.pane.section.work': 'Your work',
+  'landing.discovery.preview.pane.section.products': 'Products',
+  'landing.discovery.preview.pane.section.booking': 'Booking',
+  'landing.discovery.preview.pane.section.about': 'About',
+  'landing.discovery.preview.pane.section.testimonials': 'What people say',
+  'landing.discovery.preview.pane.section.contact': 'Contact',
 
   // The intake conversation (steps 1–6). The question order, the validation
   // and the decision that the intake is finished all live in

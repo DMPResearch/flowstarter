@@ -2,6 +2,22 @@ import Link from 'next/link';
 
 import { tServer } from '@/lib/i18n-server';
 import { LANDING_COPY } from '../landing-copy';
+import { SectionEyebrow } from './SectionEyebrow';
+
+/**
+ * The first letter of the first two words of a name. Latin-1 friendly, which
+ * is what the client list actually contains; a name that yields nothing
+ * (initials of "" is "") leaves an empty disc rather than a placeholder
+ * glyph, which is the honest failure here.
+ */
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((word) => word[0] ?? '')
+    .join('');
+}
 
 /**
  * Client testimonials — sits between Proof and Pricing so the social proof
@@ -24,30 +40,10 @@ export function TestimonialsSection() {
 
       <div className="ls-container">
         <div className="text-center max-w-3xl mx-auto">
-          <div
-            className="ls-eyebrow inline-flex items-center justify-center gap-3"
-            style={{ justifyContent: 'center' }}
-          >
-            <span
-              aria-hidden
-              style={{
-                display: 'inline-block',
-                width: '28px',
-                height: '1px',
-                background: 'var(--ls-ink-faint)',
-              }}
-            />
-            <span className="num">{t('landing.testimonials.eyebrow')}</span>
-            <span
-              aria-hidden
-              style={{
-                display: 'inline-block',
-                width: '28px',
-                height: '1px',
-                background: 'var(--ls-ink-faint)',
-              }}
-            />
-          </div>
+          <SectionEyebrow
+            index="04"
+            label={t('landing.testimonials.eyebrow')}
+          />
 
           <h2 className="ls-display mt-7" style={{ textWrap: 'balance' }}>
             <span className="line">
@@ -72,19 +68,24 @@ export function TestimonialsSection() {
           {testimonials.items.map((item, i) => (
             <li
               key={item.slug}
-              style={{
-                minWidth: 0,
-                animation: `ls-reveal 800ms cubic-bezier(0.19,1,0.22,1) ${
-                  i * 90
-                }ms both`,
-              }}
+              className="ls-rise"
+              style={
+                {
+                  minWidth: 0,
+                  '--ls-rise-delay': `${i * 90}ms`,
+                } as React.CSSProperties
+              }
             >
               <figure
                 className="ls-card flex h-full flex-col justify-between"
                 style={{ padding: '1.75rem 1.75rem 1.5rem', margin: 0 }}
               >
+                {/* A real opening quotation mark, hung into the margin at
+                    display size, rather than a pair of straight ASCII ticks
+                    inline with the first word. The closing mark is dropped:
+                    one hung mark reads as a pull quote, two read as speech. */}
                 <blockquote
-                  className="ls-body"
+                  className="ls-body ls-quote"
                   style={{
                     margin: 0,
                     fontSize: '1.02rem',
@@ -92,33 +93,42 @@ export function TestimonialsSection() {
                     color: 'var(--ls-ink)',
                   }}
                 >
-                  &ldquo;{item.quote}&rdquo;
+                  {item.quote}
                 </blockquote>
                 <figcaption
-                  className="mt-6 flex items-baseline justify-between gap-3"
+                  className="mt-6 flex items-center justify-between gap-3"
                   style={{
                     borderTop: '1px solid var(--ls-rule)',
                     paddingTop: '1rem',
                   }}
                 >
-                  <span>
-                    <span
-                      style={{
-                        display: 'block',
-                        fontWeight: 600,
-                        color: 'var(--ls-ink)',
-                      }}
-                    >
-                      {item.name}
+                  <span className="flex min-w-0 items-center gap-3">
+                    {/* Initials, not a stock face and not a silhouette icon:
+                        the name is the only thing about this person we
+                        actually have, so it is the only thing the disc
+                        claims. */}
+                    <span className="ls-avatar" aria-hidden="true">
+                      {initials(item.name)}
                     </span>
-                    <span
-                      style={{
-                        display: 'block',
-                        fontSize: '0.85rem',
-                        color: 'var(--ls-ink-faint)',
-                      }}
-                    >
-                      {item.role}
+                    <span className="min-w-0">
+                      <span
+                        style={{
+                          display: 'block',
+                          fontWeight: 600,
+                          color: 'var(--ls-ink)',
+                        }}
+                      >
+                        {item.name}
+                      </span>
+                      <span
+                        style={{
+                          display: 'block',
+                          fontSize: '0.85rem',
+                          color: 'var(--ls-ink-faint)',
+                        }}
+                      >
+                        {item.role}
+                      </span>
                     </span>
                   </span>
                   <Link

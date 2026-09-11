@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '@flowstarter/flow-design-system';
 import {
   type DiscoveryData,
@@ -24,7 +24,10 @@ import {
 import { IntakeConversation } from './steps/IntakeConversation';
 import { IntakeGraphConversation } from './steps/IntakeGraphConversation';
 import { InfoAgentStep } from './steps/InfoAgentStep';
+import { IntakePreviewPane } from './steps/IntakePreviewPane';
+import { IntakeStage } from './steps/IntakeStage';
 import { PreviewStep } from './steps/PreviewStep';
+import { derivePreviewSkeleton } from './preview-skeleton';
 
 /**
  * The LangGraph HITL intake is the default: the model leads the conversation,
@@ -104,6 +107,14 @@ export interface DiscoveryCompletePayload {
   data: DiscoveryData;
 }
 
+/**
+ * How much room the wizard needs, which is the only thing the host modal has
+ * to know about which stage is on screen. Both stages are two panes wide now,
+ * but the intake's panes hold a conversation and a skeleton, not a real site
+ * in a scaled iframe, so it wants noticeably less than the concierge.
+ */
+export type WizardStage = 'intake' | 'concierge';
+
 export function DiscoveryWizard({
   initialTier,
   source,
@@ -115,8 +126,8 @@ export function DiscoveryWizard({
   initialTier?: Tier | null;
   source: string;
   onComplete: (payload: DiscoveryCompletePayload) => void;
-  /** Signals the host modal to widen for the large preview step. */
-  onWideChange?: (wide: boolean) => void;
+  /** Tells the host modal how much room the stage on screen needs. */
+  onWideChange?: (stage: WizardStage) => void;
   /** The agent's pause before a new question. Tests pass 0; the default is the conversation's. */
   conversationPaceMs?: number;
   t: (key: string) => string;
@@ -138,6 +149,18 @@ export function DiscoveryWizard({
   );
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  /**
+   * An edit asked for from the preview pane's fact list. The nonce is what
+   * makes pressing the same pencil twice land in the conversation; see
+   * `IntakeConversation`'s `editRequest`.
+   */
+  const [editRequest, setEditRequest] = useState<{
+    id: IntakeQuestionId;
+    nonce: number;
+  } | null>(null);
+  const requestEdit = useCallback((id: IntakeQuestionId) => {
+    setEditRequest((previous) => ({ id, nonce: (previous?.nonce ?? 0) + 1 }));
+  }, []);
 
   // Persist the draft on every change (cheap; object is small).
   useEffect(() => {
@@ -170,22 +193,29 @@ export function DiscoveryWizard({
     if (target !== step) setStep(target);
   }, [answered, data, step]);
 
-  // The concierge stage — the info agent and the preview it flows into — is
-  // two panes wide, so the modal widens one step earlier than it used to and
-  // stays wide. Widening at the preview alone would have resized the modal
-  // underneath a conversation that never stopped.
+  // Every stage is two panes wide now, so the modal is wide from the first
+  // question rather than growing under the visitor part-way through. The
+  // preview pane the conversation fills in needs the same room the concierge
+  // stage needed, and resizing the dialog mid-conversation was always the
+  // jarring part of the old behaviour.
   //
   // Re-asserted on the next macrotask as well as immediately: the host modal
   // clears its own `wide` flag when it opens, and React runs this child's
-  // effects *before* the parent's, so a wizard that mounts straight onto the
-  // concierge stage (a restored draft) would otherwise be reset back to narrow
-  // a moment after asking for the room it needs.
+  // effects *before* the parent's, so the wizard would otherwise be reset back
+  // to narrow a moment after asking for the room it needs.
+  const stage: WizardStage = step >= INFO_STEP ? 'concierge' : 'intake';
   useEffect(() => {
-    const wide = step >= INFO_STEP;
-    onWideChange?.(wide);
-    const reassert = setTimeout(() => onWideChange?.(wide), 0);
+    onWideChange?.(stage);
+    const reassert = setTimeout(() => onWideChange?.(stage), 0);
     return () => clearTimeout(reassert);
-  }, [step, onWideChange]);
+  }, [stage, onWideChange]);
+
+  /**
+   * The preview's shape, derived from the answers so far. Pure, so it is
+   * recomputed rather than stored: there is no second source of truth about
+   * what the visitor has said.
+   */
+  const skeleton = useMemo(() => derivePreviewSkeleton(data), [data]);
 
   const update = useCallback(
     <K extends keyof DiscoveryData>(key: K, value: DiscoveryData[K]) => {
@@ -280,28 +310,40 @@ export function DiscoveryWizard({
           they used to sit under went with the form, replaced by the stepper
           above and the quiet progress line it draws while the script runs. */}
       <section>
-        {talking &&
-          (USE_INTAKE_GRAPH ? (
-            <IntakeGraphConversation
-              data={data}
-              update={update}
-              answered={answered}
-              onState={({ data: nextData, answered: nextAnswered }) => {
-                setData(nextData);
-                setAnswered(nextAnswered);
-              }}
-              t={t}
-            />
-          ) : (
-            <IntakeConversation
-              data={data}
-              update={update}
-              answered={answered}
-              onAnswer={handleAnswer}
-              paceMs={conversationPaceMs}
-              t={t}
-            />
-          ))}
+        {talking && (
+          <IntakeStage
+            answeredCount={skeleton.answeredCount}
+            factTotal={skeleton.facts.length}
+            t={t}
+            preview={
+              <IntakePreviewPane data={data} t={t} onEdit={requestEdit} />
+            }
+            conversation={
+              USE_INTAKE_GRAPH ? (
+                <IntakeGraphConversation
+                  data={data}
+                  update={update}
+                  answered={answered}
+                  onState={({ data: nextData, answered: nextAnswered }) => {
+                    setData(nextData);
+                    setAnswered(nextAnswered);
+                  }}
+                  t={t}
+                />
+              ) : (
+                <IntakeConversation
+                  data={data}
+                  update={update}
+                  answered={answered}
+                  onAnswer={handleAnswer}
+                  paceMs={conversationPaceMs}
+                  editRequest={editRequest}
+                  t={t}
+                />
+              )
+            }
+          />
+        )}
         {step === INFO_STEP && (
           <InfoAgentStep
             data={data}

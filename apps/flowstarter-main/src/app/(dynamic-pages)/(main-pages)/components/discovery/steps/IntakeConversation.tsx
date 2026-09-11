@@ -132,6 +132,7 @@ export function IntakeConversation({
   answered,
   onAnswer,
   paceMs = DEFAULT_PACE_MS,
+  editRequest = null,
   t,
 }: {
   data: DiscoveryData;
@@ -145,6 +146,13 @@ export function IntakeConversation({
   onAnswer: (id: IntakeQuestionId, raw: string) => void;
   /** The agent's pause before a question it has not asked yet. 0 = none. */
   paceMs?: number;
+  /**
+   * An edit asked for from outside the log -- the "what we know so far" list
+   * beside the preview has its own pencils. The `nonce` is what makes a
+   * repeat request for the same question land: pressing the same pencil twice
+   * must reopen it, and an id on its own cannot say that.
+   */
+  editRequest?: { id: IntakeQuestionId; nonce: number } | null;
   t: (key: string) => string;
 }) {
   const [editing, setEditing] = useState<IntakeQuestionId | null>(null);
@@ -156,11 +164,29 @@ export function IntakeConversation({
   const frameRef = useRef<HTMLDivElement>(null);
   /** Questions the agent has already put on screen: those come back at once. */
   const revealed = useRef<Set<IntakeQuestionId>>(new Set());
+  /** `answered`, readable from the edit effect without re-firing it. */
+  const answeredRef = useRef(answered);
+  answeredRef.current = answered;
 
   const pending = useMemo(() => nextQuestion(data, answered), [data, answered]);
   const current: IntakeQuestion | null = editing
     ? questionById(editing) ?? null
     : pending;
+
+  // An edit asked for from the preview's fact list. Only a question the
+  // visitor has actually dealt with can be reopened: re-asking one the agent
+  // has not put on screen yet would jump the script.
+  const editNonce = editRequest?.nonce ?? 0;
+  const editId = editRequest?.id ?? null;
+  useEffect(() => {
+    if (!editId || editNonce <= 0) return;
+    if (!answeredRef.current.includes(editId)) return;
+    setEditing(editId);
+    // Keyed on the nonce so the same pencil pressed twice reopens the
+    // question; `answered` is read through a ref for the same reason, since
+    // it changes on every turn and would otherwise re-fire the edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editNonce, editId]);
 
   const history = useMemo(
     () => answeredQuestions(data, answered),

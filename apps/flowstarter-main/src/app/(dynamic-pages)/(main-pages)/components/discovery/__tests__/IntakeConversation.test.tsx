@@ -522,3 +522,96 @@ describe('the commercial panels', () => {
     });
   });
 });
+
+/**
+ * The preview pane beside the conversation. Its shape is covered by
+ * `preview-skeleton.test.ts` and `IntakePreviewPane.test.tsx`; what needs the
+ * whole wizard is the wiring -- that an answer typed into the conversation
+ * reaches the skeleton, and that the fact list's pencil really does send the
+ * conversation back to that question rather than only looking like it does.
+ */
+describe('the preview beside the conversation', () => {
+  it('is on screen from the first question', () => {
+    renderWizard();
+    expect(screen.getByTestId('intake-preview-pane')).toBeInTheDocument();
+    expect(screen.getByTestId('known-so-far')).toBeInTheDocument();
+  });
+
+  it('puts the business name on the skeleton as soon as it is given', async () => {
+    const { user } = renderWizard();
+    await say(user, 'Ana');
+    await say(user, 'ana@sablefig.ro');
+
+    expect(screen.queryByTestId('preview-hero-name')).toBeNull();
+    await say(user, 'Sable Fig');
+
+    expect(await screen.findByTestId('preview-hero-name')).toHaveTextContent(
+      'Sable Fig'
+    );
+    expect(screen.getByTestId('preview-header-name')).toHaveTextContent(
+      'Sable Fig'
+    );
+  });
+
+  it('reshapes the skeleton when the industry lands', async () => {
+    const { user } = renderWizard();
+    await say(user, 'Ana');
+    await say(user, 'ana@sablefig.ro');
+    await say(user, 'Sable Fig');
+    await say(user, 'We roast and serve single origin coffee in Cluj.');
+
+    const sections = () =>
+      screen.getByTestId('derived-site-skeleton').dataset.sections ?? '';
+    expect(sections()).toContain('services');
+
+    await tap(user, 'Hospitality & food');
+    await waitFor(() => expect(sections()).toContain('menu'));
+    expect(sections()).not.toContain('services');
+  });
+
+  it('sends the conversation back to a question when its pencil is pressed', async () => {
+    const { user } = renderWizard();
+    await say(user, 'Ana');
+    await say(user, 'ana@sablefig.ro');
+    await say(user, 'Sable Fig');
+
+    // The agent has moved on to the description.
+    expect(
+      await screen.findByText(
+        said('landing.discovery.chat.q.description.prompt', {
+          business: 'Sable Fig',
+        })
+      )
+    ).toBeInTheDocument();
+
+    const facts = screen.getByTestId('known-so-far');
+    await user.click(
+      within(facts).getByRole('button', {
+        name: `${t('landing.discovery.chat.edit')}: ${t(
+          'landing.discovery.preview.pane.factBusiness'
+        )}`,
+      })
+    );
+
+    // Back on the business name, with the old answer waiting in the composer.
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText(t('landing.discovery.chat.composerLabel'))
+      ).toHaveValue('Sable Fig')
+    );
+
+    // Answering again moves the conversation forward, not sideways.
+    await say(user, 'Sable Fig Coffee');
+    await waitFor(() =>
+      expect(screen.getByTestId('preview-hero-name')).toHaveTextContent(
+        'Sable Fig Coffee'
+      )
+    );
+  });
+
+  it('offers no pencil for a question the visitor has not answered yet', () => {
+    renderWizard();
+    const facts = screen.getByTestId('known-so-far');
+    expect(within(facts).queryAllByRole('button')).toHaveLength(0);
+  });
+});

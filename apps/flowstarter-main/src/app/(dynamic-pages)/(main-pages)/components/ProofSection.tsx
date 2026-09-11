@@ -4,6 +4,7 @@ import Link from 'next/link';
 
 import { tServer } from '@/lib/i18n-server';
 import { LANDING_COPY } from '../landing-copy';
+import { SectionEyebrow } from './SectionEyebrow';
 
 /**
  * The proof shelf — a small, considered grid of work and starter templates.
@@ -33,30 +34,7 @@ export function ProofSection() {
 
       <div className="ls-container">
         <div className="text-center max-w-3xl mx-auto">
-          <div
-            className="ls-eyebrow inline-flex items-center justify-center gap-3"
-            style={{ justifyContent: 'center' }}
-          >
-            <span
-              aria-hidden
-              style={{
-                display: 'inline-block',
-                width: '28px',
-                height: '1px',
-                background: 'var(--ls-ink-faint)',
-              }}
-            />
-            <span className="num">{t('landing.proof.eyebrow')}</span>
-            <span
-              aria-hidden
-              style={{
-                display: 'inline-block',
-                width: '28px',
-                height: '1px',
-                background: 'var(--ls-ink-faint)',
-              }}
-            />
-          </div>
+          <SectionEyebrow index="03" label={t('landing.proof.eyebrow')} />
 
           <h2 className="ls-display mt-7" style={{ textWrap: 'balance' }}>
             <span className="line">{t('landing.proof.headlinePrefix')}</span>

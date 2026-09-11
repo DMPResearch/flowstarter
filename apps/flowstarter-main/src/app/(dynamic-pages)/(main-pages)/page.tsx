@@ -15,6 +15,7 @@ import { ProofSection } from './components/ProofSection';
 import { TestimonialsSection } from './components/TestimonialsSection';
 import { ScrollFab } from './components/ScrollFab';
 import { BookingModalProvider } from './components/BookingModalProvider';
+import { LandingReveal } from './components/LandingReveal';
 
 // Below-the-fold client islands — code-split into separate chunks so they
 // don't bloat the initial JS payload. SSR stays on (default).
@@ -68,6 +69,7 @@ export default function LandingPage() {
         <FinalCTASection />
       </main>
       <Footer />
+      <LandingReveal />
       <CookieConsent />
       <ScrollFab />
       <SupportBot />
