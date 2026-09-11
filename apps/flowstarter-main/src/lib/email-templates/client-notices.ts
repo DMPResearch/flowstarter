@@ -165,6 +165,54 @@ export function balanceInvoiceEmail(input: {
   };
 }
 
+/**
+ * Somebody booked time through the calendar on the client's own site.
+ *
+ * The one email in this file that is not about the build. It is here for the
+ * same reason the others are: the moment happens inside a webhook, where an
+ * email is easy to forget and dangerous to add, and `notifyClientOnce` is the
+ * only safe way to send one from there. Cal.com sends its own confirmation to
+ * both people, so this is deliberately not a second copy of that. It says one
+ * booking landed and points at the list, and it says nothing about the
+ * attendee beyond their name, because the details are on a page behind a login
+ * and an inbox is not.
+ */
+export function newBookingEmail(input: {
+  bookingsUrl: string;
+  when: string;
+  attendeeName?: string | null;
+  eventName?: string | null;
+  businessName?: string | null;
+  clientName?: string | null;
+}): RenderedEmail {
+  const who = input.attendeeName?.trim()
+    ? escapeHtml(input.attendeeName.trim())
+    : 'Someone';
+  const what = input.eventName?.trim()
+    ? escapeHtml(input.eventName.trim())
+    : 'time with you';
+  return {
+    subject: 'New booking on your site',
+    html: baseEmailTemplate(`
+    <h1>New booking on your site</h1>
+    <p>${greeting(input.clientName)}</p>
+    <p>
+      ${who} booked ${what} through the calendar on
+      ${projectPhrase(input.businessName)}.
+    </p>
+    <p><strong>${escapeHtml(input.when)}</strong></p>
+    <p>
+      It is already in your Cal.com calendar, so there is nothing to accept.
+      Your dashboard keeps the full list, including anything that gets moved or
+      cancelled later.
+    </p>
+    <div style="text-align: center;">
+      <a href="${input.bookingsUrl}" class="button">See your bookings</a>
+    </div>
+  `),
+  };
+}
+
 /** The deploy finished and the site is being served. */
 export function siteLiveEmail(input: {
   siteUrl: string;

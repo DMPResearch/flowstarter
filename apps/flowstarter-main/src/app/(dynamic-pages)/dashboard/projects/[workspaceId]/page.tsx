@@ -103,7 +103,14 @@ export default async function ClientProjectPage({
     edits: { appliedThisMonth: counts.edits.appliedThisMonth },
     booking: {
       connected: Boolean(workspace.cal_com_url?.trim()),
-      href: `/dashboard/projects/${workspaceId}/booking`,
+      // Straight to the list when there is something to read, to the connect
+      // screen when there is not.
+      href: counts.bookings.total
+        ? `/dashboard/projects/${workspaceId}/booking/list`
+        : `/dashboard/projects/${workspaceId}/booking`,
+      upcoming: counts.bookings.upcoming,
+      nextAt: counts.bookings.nextAt,
+      last30Days: counts.bookings.last30Days,
     },
     store: counts.store,
     editorHref: `/dashboard/projects/${workspaceId}/editor`,

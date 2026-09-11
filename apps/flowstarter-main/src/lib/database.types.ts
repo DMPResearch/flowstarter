@@ -1573,6 +1573,65 @@ export type Database = {
           },
         ]
       }
+      workspace_bookings: {
+        Row: {
+          attendee_email: string | null
+          attendee_name: string | null
+          created_at: string
+          end_at: string | null
+          event_type_slug: string | null
+          external_uid: string
+          id: string
+          payload: Json
+          provider: string
+          start_at: string | null
+          status: string
+          title: string | null
+          updated_at: string
+          workspace_id: string
+        }
+        Insert: {
+          attendee_email?: string | null
+          attendee_name?: string | null
+          created_at?: string
+          end_at?: string | null
+          event_type_slug?: string | null
+          external_uid: string
+          id?: string
+          payload?: Json
+          provider?: string
+          start_at?: string | null
+          status?: string
+          title?: string | null
+          updated_at?: string
+          workspace_id: string
+        }
+        Update: {
+          attendee_email?: string | null
+          attendee_name?: string | null
+          created_at?: string
+          end_at?: string | null
+          event_type_slug?: string | null
+          external_uid?: string
+          id?: string
+          payload?: Json
+          provider?: string
+          start_at?: string | null
+          status?: string
+          title?: string | null
+          updated_at?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "workspace_bookings_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       workspace_hosts: {
         Row: {
           created_at: string
@@ -1638,6 +1697,7 @@ export type Database = {
           billing_currency: string
           billing_interval: string
           cal_com_url: string | null
+          cal_com_webhook_secret: string | null
           claimed_preview_id: string | null
           client_business_name: string | null
           client_email: string | null
@@ -1708,6 +1768,7 @@ export type Database = {
           billing_currency?: string
           billing_interval?: string
           cal_com_url?: string | null
+          cal_com_webhook_secret?: string | null
           claimed_preview_id?: string | null
           client_business_name?: string | null
           client_email?: string | null
@@ -1778,6 +1839,7 @@ export type Database = {
           billing_currency?: string
           billing_interval?: string
           cal_com_url?: string | null
+          cal_com_webhook_secret?: string | null
           claimed_preview_id?: string | null
           client_business_name?: string | null
           client_email?: string | null

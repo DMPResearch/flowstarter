@@ -21,6 +21,8 @@ import 'server-only';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '@/lib/database.types';
 import { startOfUtcMonth } from './edit-credits';
+import { summariseBookings, type BookingSummary } from './bookings';
+import { loadBookingRowsForSummary } from './bookings-data';
 
 export interface SiteOverviewCounts {
   enquiries: {
@@ -36,6 +38,12 @@ export interface SiteOverviewCounts {
     proposedThisMonth: number;
   };
   store: { products: number };
+  /**
+   * Not a count query. Three of the four numbers the bookings tile needs are
+   * derived from the same rows, and one of them is a time rather than a
+   * total, so the rows come back once and `summariseBookings` decides.
+   */
+  bookings: BookingSummary;
 }
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -48,7 +56,7 @@ export async function loadSiteOverviewCounts(
   const monthStart = startOfUtcMonth(now);
   const thirtyDaysAgo = new Date(now.getTime() - THIRTY_DAYS_MS).toISOString();
 
-  const [total, last30Days, unread, applied, proposed, products] =
+  const [total, last30Days, unread, applied, proposed, products, bookingRows] =
     await Promise.all([
       // Spam is excluded everywhere it is counted: it is not an enquiry, and a
       // client told they had 40 enquiries would go looking for 40 people.
@@ -96,12 +104,16 @@ export async function loadSiteOverviewCounts(
           .select('id', { count: 'exact', head: true })
           .eq('workspace_id', workspaceId)
       ),
+      // Filtered by the same workspace id inside; returns [] on any error,
+      // for the same reason every count above returns zero.
+      loadBookingRowsForSummary(supabase, workspaceId),
     ]);
 
   return {
     enquiries: { total, last30Days, unread },
     edits: { appliedThisMonth: applied, proposedThisMonth: proposed },
     store: { products },
+    bookings: summariseBookings(bookingRows, now),
   };
 }
 

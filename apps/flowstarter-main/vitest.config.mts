@@ -20,7 +20,13 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: 'jsdom',
-    exclude: ['e2e/**', 'node_modules/**', 'dist/**', '.next/**', 'templates/**'],
+    exclude: [
+      'e2e/**',
+      'node_modules/**',
+      'dist/**',
+      '.next/**',
+      'templates/**',
+    ],
     setupFiles: ['./test/setup.ts'],
     typecheck: {
       tsconfig: './tsconfig.test.json',
@@ -97,6 +103,10 @@ export default defineConfig({
         'lib/hosting/**': MONEY_AND_DATA,
         'lib/webhook-verification.ts': MONEY_AND_DATA,
         'app/api/webhooks/**': MONEY_AND_DATA,
+        // Inbound third-party webhooks that write one tenant's rows, with an
+        // HMAC and no session behind them. Same class of code as
+        // `app/api/webhooks/**`, so the same bar.
+        'app/api/integrations/**': MONEY_AND_DATA,
         'app/api/client/**': MONEY_AND_DATA,
         'app/api/admin/projects/**': MONEY_AND_DATA,
         'app/api/team/projects/**': MONEY_AND_DATA,
