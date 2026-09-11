@@ -30,6 +30,7 @@ import {
 } from '@flowstarter/flow-design-system/components/surfaces/GlassSurface';
 import { StatTile } from '@flowstarter/flow-design-system/components/surfaces/StatTile';
 import { ProjectStateStepper } from './ProjectStateStepper';
+import type { ClientBuildSignal } from './project-build-signal';
 import type { SiteOverviewTile, SiteOverviewTileKey } from './site-overview';
 
 /**
@@ -70,9 +71,12 @@ export function tilePalette(tile: SiteOverviewTile): Tone {
 export function SiteOverview({
   state,
   tiles,
+  buildSignal,
 }: {
   state: ProjectState;
   tiles: SiteOverviewTile[];
+  /** Passed straight through: the stepper owns what a stopped build reads as. */
+  buildSignal?: ClientBuildSignal | null;
 }) {
   return (
     <GlassSurface as="section" variant="panel">
@@ -83,7 +87,7 @@ export function SiteOverview({
         >
           Your site
         </p>
-        <ProjectStateStepper state={state} />
+        <ProjectStateStepper state={state} buildSignal={buildSignal} />
       </div>
 
       {/* Five subjects into four columns left the fifth tile stranded on a row

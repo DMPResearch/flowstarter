@@ -33,17 +33,38 @@ import type {
   PreviewIntent,
   TemplateScaffoldFile,
 } from '@flowstarter/agentic-codegen/src/flowstarter/types';
+import {
+  isPreviewToolingPath,
+  isUsablePhrase,
+  orderByRelevance,
+  phraseFromLine,
+  normalizePhrase,
+  stripPreviewToolingFiles,
+  usablePhrases,
+  MAX_PHRASE_CHARS,
+  MIN_PHRASE_CHARS,
+} from '@flowstarter/agentic-codegen/src/flowstarter/preview-manifest';
+
+/**
+ * The phrase rules moved to `@flowstarter/agentic-codegen` so the build worker
+ * can apply exactly the same ones when it re-derives an edit's evidence. They
+ * are re-exported here because this module is where the rest of the app (and
+ * every test written against it) has always looked for them.
+ */
+export {
+  isPreviewToolingPath,
+  isUsablePhrase,
+  phraseFromLine,
+  normalizePhrase,
+  stripPreviewToolingFiles,
+  usablePhrases,
+  MAX_PHRASE_CHARS,
+  MIN_PHRASE_CHARS,
+};
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/**
- * A phrase shorter than this is not evidence that a change survived: "Home",
- * "Contact" and "2026" appear in every template ever written.
- */
-export const MIN_PHRASE_CHARS = 12;
-/** Longer than this and a reflowed paragraph would fail a verbatim check. */
-export const MAX_PHRASE_CHARS = 200;
 /** Enough to pin a copy change; few enough that the payload stays compact. */
 export const MAX_PHRASES_PER_EDIT = 8;
 /** The free-change cap is 2; the ceiling is here so payload size is bounded. */
@@ -55,42 +76,15 @@ export const MAX_INSTRUCTION_CHARS = 2_000;
 export const DEPOSIT_PERCENT = 20;
 export const BALANCE_PERCENT = 80;
 
-/** Values that are long enough but carry no prose: ids, colours, numbers, urls. */
-const NOT_PROSE =
-  /^(https?:\/\/\S*|\/\S*|#[0-9a-fA-F]{3,8}|[\s\d.,:;%+\-_/\\|*#[\]{}()"'`=<>]*)$/;
-
 /**
- * One line of a content file reduced to the text a reader would see.
+ * The text half of a manifest, with tooling state left out.
  *
- * The preview's content lives in YAML-ish front matter and markdown, so the
- * interesting half of `heroHeadline: "I build websites with AI agents"` is the
- * quoted value, not the key. Stripping the key also means renaming a key never
- * looks like new copy.
+ * The exclusion is here as well as at capture time on purpose: this function
+ * is what a diff is computed from, and a manifest captured before the capture
+ * rule existed still holds `.astro/dev.json`. Skipping it here means an old
+ * preview edited today produces a clean record rather than a record of a dev
+ * server's process id.
  */
-export function phraseFromLine(line: string): string | null {
-  let text = line.trim();
-  if (!text) return null;
-  // List bullet, then `key:` prefix, then surrounding quotes.
-  text = text.replace(/^[-*+]\s+/, '');
-  const keyed = /^[A-Za-z0-9_.$[\]-]+\s*:\s*(.+)$/.exec(text);
-  if (keyed?.[1]) text = keyed[1].trim();
-  text = text.replace(/^(['"`])([\s\S]*)\1$/, '$2').trim();
-  // Markdown emphasis and heading markers are formatting, not words.
-  text = text
-    .replace(/^#{1,6}\s+/, '')
-    .replace(/[*_~]{1,3}/g, '')
-    .trim();
-  if (text.length < MIN_PHRASE_CHARS) return null;
-  if (NOT_PROSE.test(text)) return null;
-  if (!/[A-Za-z]/.test(text)) return null;
-  return text.slice(0, MAX_PHRASE_CHARS);
-}
-
-/** Whitespace-insensitive, case-insensitive form used for every comparison. */
-export function normalizePhrase(value: string): string {
-  return value.replace(/\s+/g, ' ').trim().toLowerCase();
-}
-
 function textFiles(
   files: readonly TemplateScaffoldFile[]
 ): Map<string, string> {
@@ -99,6 +93,7 @@ function textFiles(
     if (!file || typeof file.path !== 'string') continue;
     if (file.encoding === 'base64') continue;
     if (typeof file.content !== 'string') continue;
+    if (isPreviewToolingPath(file.path)) continue;
     map.set(file.path, file.content);
   }
   return map;
@@ -112,6 +107,21 @@ function textFiles(
  * means reordering, re-indenting or re-quoting a line is not mistaken for new
  * copy, which matters: every false phrase here becomes a build the validator
  * fails for no reason.
+ *
+ * Two rules decide which lines are even looked at, and both exist because of
+ * the 2026-09-12 false positive:
+ *
+ *   The file has to be somewhere a client's change can meaningfully land, and
+ *   the content files are read before the pages, components and layouts. Path
+ *   order used to decide this, which put `.astro/` first and `src/content/`
+ *   last, and the eight-phrase cap then filled with a dev server's pid, port
+ *   and start time before it ever reached the headline.
+ *
+ *   The line has to be prose. `"pid": 97132,` is long enough and has letters
+ *   in it, which was the entire previous test.
+ *
+ * The cap is applied last, after both filters, so it now bounds evidence
+ * rather than truncating it.
  */
 export function appliedPreviewEdit(input: {
   index: number;
@@ -132,13 +142,24 @@ export function appliedPreviewEdit(input: {
     const previous = before.get(path);
     if (previous === content) continue;
     changedPaths.push(path);
+  }
+  // A deleted file is a change too, and the build should know the path moved.
+  for (const path of Array.from(before.keys())) {
+    if (!after.has(path) && !changedPaths.includes(path))
+      changedPaths.push(path);
+  }
+
+  for (const path of orderByRelevance(changedPaths)) {
+    const content = after.get(path);
+    if (content === undefined) continue;
+    const previous = before.get(path);
     const known = new Set(
       (previous ?? '').split('\n').map((line) => normalizePhrase(line))
     );
     for (const line of content.split('\n')) {
       if (known.has(normalizePhrase(line))) continue;
       const phrase = phraseFromLine(line);
-      if (!phrase) continue;
+      if (!phrase || !isUsablePhrase(phrase)) continue;
       const key = normalizePhrase(phrase);
       if (seen.has(key)) continue;
       // A phrase already somewhere else in the old file is not this edit's
@@ -147,11 +168,6 @@ export function appliedPreviewEdit(input: {
       seen.add(key);
       phrases.push(phrase);
     }
-  }
-  // A deleted file is a change too, and the build should know the path moved.
-  for (const path of Array.from(before.keys())) {
-    if (!after.has(path) && !changedPaths.includes(path))
-      changedPaths.push(path);
   }
 
   return {
@@ -204,8 +220,17 @@ export function parseAppliedEdits(raw: unknown): ApprovedPreviewEdit[] {
           ? record['index']
           : edits.length + 1,
       instruction: instruction.slice(0, MAX_INSTRUCTION_CHARS),
-      changedPaths: strings(record['changedPaths'], MAX_CHANGED_PATHS_PER_EDIT),
-      addedPhrases: strings(record['addedPhrases'], MAX_PHRASES_PER_EDIT),
+      // Tooling paths and unusable phrases are dropped on the way out as
+      // well as on the way in: `funnel_previews.manifest` rows written before
+      // this rule existed hold `.astro/dev.json` and the eight lines of dev
+      // server state it produced, and a build must never be held to them.
+      changedPaths: strings(
+        record['changedPaths'],
+        MAX_CHANGED_PATHS_PER_EDIT
+      ).filter((path) => !isPreviewToolingPath(path)),
+      addedPhrases: usablePhrases(
+        strings(record['addedPhrases'], MAX_PHRASES_PER_EDIT)
+      ),
       appliedAt:
         typeof record['appliedAt'] === 'string'
           ? record['appliedAt']

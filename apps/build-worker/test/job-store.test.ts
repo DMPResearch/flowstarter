@@ -191,6 +191,39 @@ describe('artifact parsing', () => {
     ).toThrow(JobArtifactError);
   });
 
+  it('skips the tooling state an older manifest still carries', () => {
+    // `flowstarter_project_artifacts.preview_manifest` for the workspace that
+    // failed on 2026-09-12 holds seven `.astro/` scratch paths. Materializing
+    // a dev server's process id into a build worktree is how a paid build
+    // ends up being checked against one, so they are skipped here rather than
+    // rejected: an old row must still build.
+    expect(
+      parseApprovedPreviewFiles({
+        files: [
+          { path: '.astro/dev.json', content: '{"pid": 97132}' },
+          { path: 'node_modules/astro/index.js', content: 'x' },
+          { path: 'pnpm-lock.yaml', content: 'lockfileVersion: 9' },
+          { path: 'dist/index.html', content: '<h1>stale</h1>' },
+          { path: 'src/content/site.md', content: 'Approved preview' },
+        ],
+      }),
+    ).toEqual([
+      {
+        path: 'src/content/site.md',
+        content: 'Approved preview',
+        type: 'file',
+      },
+    ]);
+  });
+
+  it('refuses a manifest that is nothing but tooling state', () => {
+    expect(() =>
+      parseApprovedPreviewFiles({
+        files: [{ path: '.astro/dev.json', content: '{"pid": 97132}' }],
+      }),
+    ).toThrow(JobArtifactError);
+  });
+
   it('falls back to the preview manifest when the payload carries no integrations', () => {
     expect(
       parseRequiredIntegrations({}, { requiredIntegrations: ['newsletter'] }),

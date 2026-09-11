@@ -42,6 +42,137 @@ function labels(headline: string): TemplateScaffoldFile[] {
   ];
 }
 
+/**
+ * `.astro/dev.json` exactly as the Astro dev server writes it, and exactly as
+ * it sat in `funnel_previews.manifest` for workspace
+ * `c009105e-f8ec-42bf-bdcf-cf92bb500f45` on 2026-09-12. Its eight lines filled
+ * the whole phrase budget and the loop never reached the file with the
+ * client's headline in it.
+ */
+const DEV_JSON = `{
+  "toolbar": {
+    "placement": "bottom-center"
+  },
+  "pid": 97132,
+  "port": 56092,
+  "url": "http://localhost:56092",
+  "network": [
+    "http://192.168.3.188:56092/"
+  ],
+  "networkInterfaceNames": [
+    "en0"
+  ],
+  "background": false,
+  "startedAt": "2026-09-11T21:51:12.985Z"
+}
+`;
+
+const SITE_LABELS = (title: string) => `---
+hero:
+  artMark: "D"
+  label: "Flowstarter, an AI-driven website studio"
+  title: "${title}"
+---
+`;
+
+describe('the 2026-09-12 false positive', () => {
+  it('derives the headline and nothing else from a workspace with .astro in it', () => {
+    const edit = appliedPreviewEdit({
+      index: 1,
+      instruction: `Make the hero headline say ${HEADLINE}`,
+      before: [
+        file('.astro/dev.json', DEV_JSON.replace('97132', '51004')),
+        file(
+          '.astro/settings.json',
+          '{\n  "_variables": {\n    "lastUpdateCheck": 1789139680613\n  }\n}\n'
+        ),
+        file('src/content/site-labels.md', SITE_LABELS(ORIGINAL)),
+      ],
+      after: [
+        file('.astro/dev.json', DEV_JSON),
+        file(
+          '.astro/settings.json',
+          '{\n  "_variables": {\n    "lastUpdateCheck": 1789162735907\n  }\n}\n'
+        ),
+        file('src/content/site-labels.md', SITE_LABELS(HEADLINE)),
+      ],
+    });
+
+    expect(edit.addedPhrases).toEqual([HEADLINE]);
+    expect(edit.changedPaths).toEqual(['src/content/site-labels.md']);
+  });
+
+  it('reads the content file before the pages, whatever the paths sort like', () => {
+    const edit = appliedPreviewEdit({
+      index: 1,
+      instruction: 'rewrite the hero and the contact line',
+      before: [
+        file('src/content/site-labels.md', SITE_LABELS(ORIGINAL)),
+        file('src/pages/contact.astro', '<p>old</p>'),
+      ],
+      after: [
+        file('src/content/site-labels.md', SITE_LABELS(HEADLINE)),
+        file(
+          'src/pages/contact.astro',
+          '<p>Find me on Instagram at darius.flowstarter</p>'
+        ),
+      ],
+    });
+
+    expect(edit.addedPhrases[0]).toBe(HEADLINE);
+    expect(edit.addedPhrases).toHaveLength(2);
+  });
+
+  it('never takes a phrase out of a file a client edit cannot reach', () => {
+    const edit = appliedPreviewEdit({
+      index: 1,
+      instruction: 'bump the dependency',
+      before: [file('package.json', '{\n  "astro": "5.0.0"\n}\n')],
+      after: [
+        file(
+          'package.json',
+          '{\n  "astro": "5.1.0",\n  "description": "A portfolio built with Astro"\n}\n'
+        ),
+      ],
+    });
+
+    expect(edit.addedPhrases).toEqual([]);
+    expect(edit.changedPaths).toEqual(['package.json']);
+  });
+
+  it('strips the stored dev-server phrases when an old manifest is read back', () => {
+    const [edit] = parseAppliedEdits([
+      {
+        index: 1,
+        instruction: `Make the hero headline say ${HEADLINE}`,
+        addedPhrases: [
+          '"pid": 97132,',
+          '"port": 56092,',
+          '"url": "http://localhost:56092",',
+          '"network": [',
+          '"http://192.168.3.188:56092/"',
+          '"networkInterfaceNames": [',
+          '"background": false,',
+          'startedAt": "2026-09-11T21:51:12.985Z',
+        ],
+        changedPaths: [
+          '.astro/dev.json',
+          '.astro/settings.json',
+          '.astro/types.d.ts',
+          'src/content/site-labels.md',
+          'src/pages/contact.astro',
+        ],
+      },
+    ]);
+
+    expect(edit?.addedPhrases).toEqual([]);
+    expect(edit?.changedPaths).toEqual([
+      'src/content/site-labels.md',
+      'src/pages/contact.astro',
+    ]);
+  });
+});
+
 describe('phraseFromLine', () => {
   it('takes the value out of a keyed content line', () => {
     expect(phraseFromLine(`  heroHeadline: "${HEADLINE}"`)).toBe(HEADLINE);
@@ -107,8 +238,8 @@ describe('appliedPreviewEdit', () => {
   });
 
   it('does not mistake re-indenting or re-quoting for a new phrase', () => {
-    const before = [file('a.md', `  heroHeadline: "${HEADLINE}"`)];
-    const after = [file('a.md', `heroHeadline: '${HEADLINE}'`)];
+    const before = [file('src/content/a.md', `  heroHeadline: "${HEADLINE}"`)];
+    const after = [file('src/content/a.md', `heroHeadline: '${HEADLINE}'`)];
 
     expect(
       appliedPreviewEdit({ index: 1, instruction: 'tidy', before, after })
@@ -118,10 +249,16 @@ describe('appliedPreviewEdit', () => {
 
   it('does not mistake a moved line for a new one', () => {
     const before = [
-      file('a.md', `one: "${HEADLINE}"\ntwo: "Something else here"`),
+      file(
+        'src/content/a.md',
+        `one: "${HEADLINE}"\ntwo: "Something else here"`
+      ),
     ];
     const after = [
-      file('a.md', `two: "Something else here"\none: "${HEADLINE}"`),
+      file(
+        'src/content/a.md',
+        `two: "Something else here"\none: "${HEADLINE}"`
+      ),
     ];
 
     expect(
@@ -134,8 +271,11 @@ describe('appliedPreviewEdit', () => {
     const edit = appliedPreviewEdit({
       index: 1,
       instruction: 'Drop the testimonials page',
-      before: [file('a.md', 'kept'), file('src/pages/testimonials.astro', 'x')],
-      after: [file('a.md', 'kept')],
+      before: [
+        file('src/content/a.md', 'kept'),
+        file('src/pages/testimonials.astro', 'x'),
+      ],
+      after: [file('src/content/a.md', 'kept')],
     });
 
     expect(edit.changedPaths).toEqual(['src/pages/testimonials.astro']);
@@ -165,8 +305,8 @@ describe('appliedPreviewEdit', () => {
     const edit = appliedPreviewEdit({
       index: 1,
       instruction: 'rewrite everything',
-      before: [file('a.md', '')],
-      after: [file('a.md', body)],
+      before: [file('src/content/a.md', '')],
+      after: [file('src/content/a.md', body)],
     });
 
     expect(edit.addedPhrases).toHaveLength(8);
@@ -177,7 +317,7 @@ describe('appliedPreviewEdit', () => {
       index: 1,
       instruction: 'x',
       before: [],
-      after: [file('a.md', 'A brand new sentence of copy')],
+      after: [file('src/content/a.md', 'A brand new sentence of copy')],
     });
 
     expect(Date.parse(edit.appliedAt)).toBeGreaterThan(0);

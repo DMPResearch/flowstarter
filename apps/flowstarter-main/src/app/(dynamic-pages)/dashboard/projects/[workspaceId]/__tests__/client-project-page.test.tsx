@@ -25,6 +25,7 @@ const state: {
   events: Array<Record<string, unknown>>;
   products: Array<Record<string, unknown>>;
   bookings: Array<Record<string, unknown>>;
+  jobs: Array<Record<string, unknown>>;
   /** Status the access helper refuses with: 404 for a stranger, 401 signed out. */
   refusalStatus: number;
 } = {
@@ -36,6 +37,7 @@ const state: {
   events: [],
   products: [],
   bookings: [],
+  jobs: [],
   refusalStatus: 404,
 };
 
@@ -90,6 +92,16 @@ vi.mock('next/navigation', () => ({
   },
 }));
 
+const notifyClientBuildNeedsReview = vi.fn(
+  async (_input: { workspaceId: string; jobId: string }) => ({ sent: true })
+);
+vi.mock('@/lib/flowstarter/build-failure-notice', () => ({
+  notifyClientBuildNeedsReview: (input: {
+    workspaceId: string;
+    jobId: string;
+  }) => notifyClientBuildNeedsReview(input),
+}));
+
 vi.mock('@/lib/api-auth', () => ({
   requireWorkspaceAccess: async (workspaceId: string) =>
     state.authorizedFor.includes(workspaceId)
@@ -127,6 +139,7 @@ function tableRows(table: string): Array<Record<string, unknown>> {
   if (table === 'project_events') return state.events;
   if (table === 'commerce_products') return state.products;
   if (table === 'workspace_bookings') return state.bookings;
+  if (table === 'flowstarter_agent_jobs') return state.jobs;
   return [];
 }
 
@@ -159,6 +172,10 @@ vi.mock('@/supabase-clients/server', () => ({
           return builder;
         },
         order: () => builder,
+        limit: (count: number) => {
+          rows = rows.slice(0, count);
+          return builder;
+        },
         maybeSingle: async () => ({ data: rows[0] ?? null, error: null }),
         then: (resolve: (value: unknown) => unknown) =>
           resolve({ data: rows, count: rows.length, error: null }),
@@ -220,7 +237,9 @@ beforeEach(() => {
   state.events = [];
   state.products = [];
   state.bookings = [];
+  state.jobs = [];
   state.refusalStatus = 404;
+  notifyClientBuildNeedsReview.mockClear();
 });
 
 describe('client project page authorization', () => {
@@ -573,5 +592,78 @@ describe('the site overview', () => {
         /tier_name|workspace_id|site_edit|cal_com_url/i
       );
     }
+  });
+});
+
+/**
+ * The state this page had no words for on 2026-09-12: a paid build that
+ * failed, rolled back to DEPOSIT_PAID by the worker so a retry could claim
+ * it, and read by the dashboard as "about to start".
+ */
+describe('a build that stopped', () => {
+  const JOB = '74859ac5-6737-4dde-80ce-d82ef5e76a59';
+
+  function failedBuild(overrides: Record<string, unknown> = {}) {
+    return {
+      id: JOB,
+      workspace_id: MINE,
+      kind: 'FULL_SITE_BUILD',
+      status: 'failed',
+      created_at: NOW_ISO,
+      run_after: NOW_ISO,
+      started_at: NOW_ISO,
+      finished_at: NOW_ISO,
+      ...overrides,
+    };
+  }
+
+  it('tells the client a person is checking it, not that it is about to start', async () => {
+    state.workspace = workspaceRow({
+      project_state: ProjectState.DEPOSIT_PAID,
+      deposit_status: 'paid',
+      final_status: 'paid',
+    });
+    state.jobs = [failedBuild()];
+
+    await renderPage(MINE);
+
+    const title = screen.getByTestId('project-stage-title');
+    expect(title).toHaveTextContent('Your build needs a second look');
+    expect(title.dataset.buildAttention).toBe('failed');
+    expect(screen.queryByText(/about to start/)).toBeNull();
+    expect(screen.getByTestId('payment-line-balance')).toHaveTextContent(
+      /needs a second look/
+    );
+  });
+
+  it('emails the client once, keyed on the job that stopped', async () => {
+    state.workspace = workspaceRow({
+      project_state: ProjectState.DEPOSIT_PAID,
+      deposit_status: 'paid',
+    });
+    state.jobs = [failedBuild()];
+
+    await renderPage(MINE);
+
+    expect(notifyClientBuildNeedsReview).toHaveBeenCalledTimes(1);
+    expect(notifyClientBuildNeedsReview.mock.calls[0]?.[0]).toMatchObject({
+      workspaceId: MINE,
+      jobId: JOB,
+    });
+  });
+
+  it('says nothing and sends nothing while the build is running normally', async () => {
+    state.workspace = workspaceRow({
+      project_state: ProjectState.AGENTS_WORKING,
+      deposit_status: 'paid',
+    });
+    state.jobs = [failedBuild({ status: 'running', finished_at: null })];
+
+    await renderPage(MINE);
+
+    expect(screen.getByTestId('project-stage-title')).toHaveTextContent(
+      "We're building your site"
+    );
+    expect(notifyClientBuildNeedsReview).not.toHaveBeenCalled();
   });
 });

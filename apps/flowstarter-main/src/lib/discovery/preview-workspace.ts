@@ -12,6 +12,7 @@ import 'server-only';
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import type { TemplateScaffoldFile } from '@flowstarter/agentic-codegen/src/flowstarter/types';
+import { isPreviewToolingPath } from '@flowstarter/agentic-codegen/src/flowstarter/preview-manifest';
 
 /**
  * Files that must never be read as text. Reading a JPEG as UTF-8 yields NUL
@@ -48,19 +49,30 @@ export function isBinaryPreviewPath(path: string): boolean {
   );
 }
 
+/**
+ * Every file in a preview workspace that belongs to the client's site.
+ *
+ * Tooling state is skipped by the one shared rule in
+ * `@flowstarter/agentic-codegen`. It used to be skipped by hand and only for
+ * `node_modules` and `.git*`, which left the Astro dev server's `.astro/`
+ * scratch directory inside the manifest of record: its `dev.json` holds the
+ * server's process id, port, LAN URL and start time, it changes on every
+ * restart, and on 2026-09-12 those lines became the text a paid build was
+ * failed for not containing. A directory is pruned rather than walked, so a
+ * `node_modules` nobody needs is not read either.
+ */
 export async function readPreviewWorkspaceFiles(
   root: string
 ): Promise<TemplateScaffoldFile[]> {
   const files: TemplateScaffoldFile[] = [];
   async function walk(directory: string): Promise<void> {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (entry.name === 'node_modules' || entry.name.startsWith('.git'))
-        continue;
       const absolute = join(directory, entry.name);
+      const path = relative(root, absolute).split(sep).join('/');
+      if (isPreviewToolingPath(path)) continue;
       if (entry.isDirectory()) {
         await walk(absolute);
       } else if (entry.isFile()) {
-        const path = relative(root, absolute).split(sep).join('/');
         if (isBinaryPreviewPath(path)) {
           files.push({
             path,

@@ -56,6 +56,7 @@ import {
   appliedPreviewEdit,
   MAX_CARRIED_EDITS,
   parseAppliedEdits,
+  stripPreviewToolingFiles,
 } from './preview-intent';
 import { parseQuoteInputToMinor } from './quote';
 import type { RoutingResult } from './routing-rules';
@@ -128,7 +129,15 @@ export async function rememberClaimablePreview(
 ): Promise<void> {
   if (!UUID.test(preview.previewId)) return;
   reapStashedPreviews();
-  stash.set(preview.previewId, { ...preview, capturedAt: Date.now() });
+  // The last gate before a manifest becomes the record. `readPreviewWorkspaceFiles`
+  // already refuses to read tooling state, but this function is also called
+  // with file sets assembled elsewhere (the generator's own scaffold, a
+  // re-capture after an edit), and the manifest written here is what the paid
+  // build seeds from. One dev server scratch file in it is what failed a paid
+  // build on 2026-09-12, so the rule is applied at the write rather than
+  // trusted at every call site.
+  const files = stripPreviewToolingFiles(preview.files);
+  stash.set(preview.previewId, { ...preview, files, capturedAt: Date.now() });
   while (stash.size > MAX_STASHED_PREVIEWS) {
     const oldest = stash.keys().next();
     if (oldest.done) break;
@@ -143,7 +152,7 @@ export async function rememberClaimablePreview(
         (preview.template as { version?: string } | undefined)?.version ?? null,
       brandConfig: preview.brandConfig,
       manifest: {
-        files: preview.files,
+        files,
         intake: preview.intake,
         ...(preview.appliedEdits?.length
           ? { appliedEdits: preview.appliedEdits }
@@ -202,7 +211,11 @@ export async function getClaimablePreview(
       slug: row.templateSlug ?? '',
       ...(row.templateVersion ? { version: row.templateVersion } : {}),
     } as TemplateSelection,
-    files: manifest.files,
+    // Tolerated, not trusted: a row written before the tooling rule existed
+    // still carries `.astro/` and friends, and every reader of this record
+    // (the claim, the seed, the edit diff) must see the same clean set a row
+    // written today would give it.
+    files: stripPreviewToolingFiles(manifest.files),
     ...(manifest.calComUrl ? { calComUrl: manifest.calComUrl } : {}),
     ...(manifest.previewArtifactUrl
       ? { previewArtifactUrl: manifest.previewArtifactUrl }
@@ -243,7 +256,12 @@ export async function recordClaimablePreviewEdit(input: {
   appliedAt?: string;
 }): Promise<ApprovedPreviewEdit | null> {
   if (!UUID.test(input.previewId)) return null;
-  if (input.files.length === 0) return null;
+  // Tooling state is out before the diff, not after it. A preview claimed
+  // before this rule existed still has `.astro/` in its stored files, and
+  // diffing a clean capture against a dirty one would report every one of
+  // those paths as a change the client made.
+  const files = stripPreviewToolingFiles(input.files);
+  if (files.length === 0) return null;
   try {
     const previous = await getClaimablePreview(input.previewId);
     if (!previous) return null;
@@ -251,7 +269,7 @@ export async function recordClaimablePreviewEdit(input: {
       index: (previous.appliedEdits?.length ?? 0) + 1,
       instruction: input.instruction,
       before: previous.files,
-      after: input.files,
+      after: files,
       ...(input.appliedAt ? { appliedAt: input.appliedAt } : {}),
     });
     const appliedEdits = [...(previous.appliedEdits ?? []), edit].slice(
@@ -260,7 +278,7 @@ export async function recordClaimablePreviewEdit(input: {
     const { capturedAt: _captured, ...carried } = previous;
     await rememberClaimablePreview({
       ...carried,
-      files: input.files,
+      files,
       appliedEdits,
     });
     return edit;

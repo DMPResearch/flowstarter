@@ -8,6 +8,7 @@
  * (see `packages/agentic-codegen/src/flowstarter/state-machine.ts`).
  */
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
+import type { ClientBuildSignal } from './project-build-signal';
 
 export interface ProjectStage {
   state: ProjectState;
@@ -108,4 +109,44 @@ export function stageStatus(
   if (mine < here) return 'done';
   if (mine === here) return 'current';
   return 'upcoming';
+}
+
+/**
+ * What the client reads at the top of their dashboard, with the build's own
+ * health folded in.
+ *
+ * The stage copy above is written for a project that is moving. A project
+ * whose build failed is sitting in DEPOSIT_PAID because the worker put it back
+ * there for a retry, so it reads its way into "your build is booked and about
+ * to start" and stays there. That sentence is the one thing a client in this
+ * state must not be told, so a build that has stopped or stalled replaces the
+ * title and the sentence with what is actually true: it stopped, a person has
+ * it, and nothing is being asked of them.
+ *
+ * Only the words change. The stepper still shows the stage the project is in,
+ * because inventing a seventh stage would mean inventing a seventh state, and
+ * the state machine is the state machine.
+ */
+export function stageCopy(
+  state: ProjectState,
+  signal?: ClientBuildSignal | null
+): { title: string; detail: string } {
+  const stage = currentStage(state);
+  if (!signal) return { title: stage.title, detail: stage.detail };
+  if (signal.attention === 'failed') {
+    return {
+      title: 'Your build needs a second look',
+      detail:
+        'Your build stopped before it finished and a person on our team is ' +
+        'checking it now. Nothing is needed from you, and nothing you have ' +
+        'paid is affected. We will email you as soon as it is moving again.',
+    };
+  }
+  return {
+    title: 'Your build has not moved for a while',
+    detail:
+      'Your build has been sitting longer than it should and a person on our ' +
+      'team is looking at it. Nothing is needed from you. We will email you ' +
+      'as soon as it is moving again.',
+  };
 }

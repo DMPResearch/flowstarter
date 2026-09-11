@@ -90,5 +90,6 @@ export * from './flowstarter/site-media';
 export * from './flowstarter/generated-assets';
 export * from './flowstarter/site-tarball';
 export * from './flowstarter/page-set';
+export * from './flowstarter/preview-manifest';
 export * from './flowstarter/teaser-rule';
 export * from './flowstarter/placeholder-copy';

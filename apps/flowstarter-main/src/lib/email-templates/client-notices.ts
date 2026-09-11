@@ -1,12 +1,13 @@
 /**
- * The four emails a paying client gets while their site is being made.
+ * The emails a paying client gets while their site is being made.
  *
  * Until now the product sent the client nothing between "your deposit went
  * through" on a guest checkout and an operator typing them a message by hand.
  * A real run of the whole funnel produced zero emails, and the person who paid
  * asked, reasonably, whether he would ever receive one. These are the four
  * moments that answer that: the deposit landing, the preview being ready, the
- * balance invoice going out, and the site going live.
+ * balance invoice going out, the site going live, and the one that was missing
+ * until a real run needed it, a build that stopped and has to be looked at.
  *
  * House style, and the reason these live in one file: each is six lines of
  * prose and a button. Splitting them across four modules would make the
@@ -241,6 +242,49 @@ export function siteLiveEmail(input: {
     <p class="muted">
       Your dashboard is at
       <a href="${input.dashboardUrl}">${input.dashboardUrl}</a>.
+    </p>
+  `),
+  };
+}
+
+/**
+ * The build stopped and a person has to look at it.
+ *
+ * Written after a client paid in full on 2026-09-12, had their build failed by
+ * a gate, and was told by their dashboard for the rest of the day that it was
+ * "about to start". Silence is the worst of the available answers, so this one
+ * exists even though it carries no good news.
+ *
+ * Deliberately vague about the cause and specific about the ownership. The
+ * client does not want to read an error code; they want to know a person has
+ * it, that they are not expected to do anything, and that their money is not
+ * gone. It promises a follow-up rather than a time, because the time is not
+ * known when this is sent.
+ */
+export function buildNeedsReviewEmail(input: {
+  dashboardUrl: string;
+  clientName?: string | null;
+  businessName?: string | null;
+}): RenderedEmail {
+  return {
+    subject: 'Your build needs a second look',
+    html: baseEmailTemplate(`
+    <h1>Your build needs a second look</h1>
+    <p>${greeting(input.clientName)}</p>
+    <p>
+      The build of ${projectPhrase(input.businessName)} stopped before it was
+      finished, so one of us is going through it now. Nothing is needed from
+      you, and nothing you have paid is affected.
+    </p>
+    <p>
+      We will email you again as soon as it is moving, and your dashboard shows
+      where it has got to in the meantime.
+    </p>
+    <div style="text-align: center;">
+      <a href="${input.dashboardUrl}" class="button">Open your dashboard</a>
+    </div>
+    <p class="muted" style="margin-top: 24px;">
+      If you would rather talk to a person about it, reply to this email.
     </p>
   `),
   };

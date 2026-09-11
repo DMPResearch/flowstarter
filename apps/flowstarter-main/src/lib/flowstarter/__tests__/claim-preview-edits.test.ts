@@ -196,3 +196,71 @@ describe('recordClaimablePreviewEdit', () => {
     ).toContain(ORIGINAL);
   });
 });
+
+describe('the manifest of record and tooling state', () => {
+  const devJson = {
+    path: '.astro/dev.json',
+    content: '{\n  "pid": 97132,\n  "port": 56092\n}\n',
+    type: 'file' as const,
+  };
+
+  it('never writes a dev server scratch file into the manifest', async () => {
+    await rememberClaimablePreview(
+      previewInput([
+        devJson,
+        {
+          path: 'node_modules/astro/index.js',
+          content: 'export default 1;',
+          type: 'file' as const,
+        },
+        ...labels(ORIGINAL),
+      ] as never)
+    );
+
+    clearClaimablePreviews();
+    const stored = await getClaimablePreview(PREVIEW_ID);
+    expect(stored?.files.map((file) => file.path)).toEqual([
+      'src/content/site-labels.md',
+    ]);
+  });
+
+  it('records an edit against the site, not against a restarted dev server', async () => {
+    // The pre-fix shape: `.astro/dev.json` in the manifest, its contents
+    // different on either side of the edit because the server restarted. This
+    // is exactly what produced eight phrases of process id on 2026-09-12.
+    await rememberClaimablePreview(
+      previewInput([devJson, ...labels(ORIGINAL)] as never)
+    );
+
+    const edit = await recordClaimablePreviewEdit({
+      previewId: PREVIEW_ID,
+      instruction: `Make the hero headline say ${HEADLINE}`,
+      files: [
+        { ...devJson, content: '{\n  "pid": 41002,\n  "port": 61234\n}\n' },
+        ...labels(HEADLINE),
+      ],
+      appliedAt: '2026-09-11T18:30:00.000Z',
+    });
+
+    expect(edit?.changedPaths).toEqual(['src/content/site-labels.md']);
+    expect(edit?.addedPhrases).toEqual([HEADLINE]);
+
+    clearClaimablePreviews();
+    const stored = await getClaimablePreview(PREVIEW_ID);
+    expect(stored?.files.map((file) => file.path)).toEqual([
+      'src/content/site-labels.md',
+    ]);
+  });
+
+  it('refuses a re-capture that is nothing but tooling state', async () => {
+    await rememberClaimablePreview(previewInput());
+
+    expect(
+      await recordClaimablePreviewEdit({
+        previewId: PREVIEW_ID,
+        instruction: 'restart the dev server',
+        files: [devJson],
+      })
+    ).toBeNull();
+  });
+});
