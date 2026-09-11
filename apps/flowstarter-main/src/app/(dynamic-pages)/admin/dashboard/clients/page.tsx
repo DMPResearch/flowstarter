@@ -8,6 +8,7 @@ import { Mail, Phone, Plus, Search, Users, ChevronRight } from 'lucide-react';
 import { useTranslations, type TranslationKeys } from '@/lib/i18n';
 import { compactRelative, formatEuro, getInitials } from '@/lib/format-utils';
 import { TeamDashboardShell } from '../components/TeamDashboardShell';
+import { Panel } from '../components/Panel';
 
 /** Mirrors `GET /api/admin/clients` response rows. */
 interface Client {
@@ -248,26 +249,12 @@ export default function ClientsPage() {
         </Link>
       }
     >
-      <section className="ls-card overflow-hidden !p-0">
-        <header className="flex items-end justify-between gap-4 border-b border-[var(--ls-rule)] px-5 py-3.5 sm:px-6">
-          <div>
-            <div className="ls-admin-label">
-              {t('admin.dashboard.accounts.eyebrow')}
-            </div>
-            <h2 className="mt-0.5 text-[15px] font-medium tracking-[-0.005em] text-[var(--ls-ink)]">
-              {t('admin.nav.accounts')}
-            </h2>
-          </div>
-          {panelMeta && (
-            <span
-              className="hidden max-w-md text-right text-[13px] leading-snug text-[var(--ls-ink-dim)] sm:inline"
-              style={{ fontFamily: 'var(--ls-sans)' }}
-            >
-              {panelMeta}
-            </span>
-          )}
-        </header>
-
+      <Panel
+        eyebrow={t('admin.dashboard.accounts.eyebrow')}
+        title={t('admin.nav.accounts')}
+        meta={panelMeta}
+        flush
+      >
         <div className="border-b border-[var(--ls-rule)] px-5 py-3 sm:px-6">
           <div className="relative max-w-md">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--ls-ink-faint)]" />
@@ -316,7 +303,7 @@ export default function ClientsPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-[13.5px]">
               <thead>
-                <tr>
+                <tr className="fs-glass-header-row">
                   <ColHead className="pl-5">
                     {t('admin.dashboard.clients.col.account')}
                   </ColHead>
@@ -344,7 +331,7 @@ export default function ClientsPage() {
             </table>
           </div>
         )}
-      </section>
+      </Panel>
     </TeamDashboardShell>
   );
 }

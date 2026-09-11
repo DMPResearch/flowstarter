@@ -33,8 +33,12 @@ export const skeletonClass = 'bg-[var(--fs-rule)] rounded animate-pulse';
 
 export const sidebarNavBaseClass =
   'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors duration-150';
+/** The accent tone wash, the same pairing `.fs-glass-tile[data-tone='accent']`
+ * uses: the soft tint as the fill, the tone ink as the text, the edge token
+ * as a hairline ring — so the active item reads as "this surface's accent"
+ * rather than a one-off purple pill. */
 export const sidebarNavActiveClass =
-  'bg-[var(--purple)] text-white font-semibold shadow-md hover:brightness-110';
+  'bg-[var(--fs-tone-accent-soft)] text-[var(--fs-tone-accent)] font-semibold shadow-[inset_0_0_0_1px_var(--fs-tone-accent-edge)]';
 export const sidebarNavIdleClass =
   'text-[var(--fs-ink-dim)] hover:bg-[var(--fs-bg-elevated)]/75 hover:text-[var(--fs-ink)]';
 export const sidebarSectionLabelClass =

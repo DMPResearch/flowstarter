@@ -14,6 +14,11 @@ import {
   Trash2,
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
+import {
+  GlassSurface,
+  StatTile,
+  type Tone,
+} from '@flowstarter/flow-design-system';
 import { TeamDashboardShell } from '../components/TeamDashboardShell';
 import { ConnectExistingHostingServer } from './ConnectExistingHostingServer';
 import { Button } from '@/components/ui/button';
@@ -55,16 +60,12 @@ type HostingServer = {
   decommissioned_at: string | null;
 };
 
-const STATUS_TONE: Record<string, string> = {
-  active:
-    'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400',
-  provisioning:
-    'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400',
-  draining:
-    'bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400',
-  decommissioned:
-    'bg-slate-100 text-slate-600 dark:bg-slate-500/15 dark:text-slate-400',
-  error: 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-400',
+const STATUS_TONE: Record<string, Tone> = {
+  active: 'ok',
+  provisioning: 'warn',
+  draining: 'warn',
+  decommissioned: 'neutral',
+  error: 'danger',
 };
 
 const LOCATION_LABELS: Record<string, string> = {
@@ -212,25 +213,28 @@ export default function HostingPage() {
     >
       {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-        <StatCard
+        <StatTile
           label="Active servers"
           value={stats.active}
+          tone="ok"
           icon={<Server className="w-4 h-4" />}
         />
-        <StatCard
+        <StatTile
           label="Provisioning"
           value={stats.provisioning}
+          tone="warn"
           icon={<Clock className="w-4 h-4" />}
-          accent={stats.provisioning > 0 ? 'amber' : undefined}
         />
-        <StatCard
+        <StatTile
           label="Sites hosted"
           value={`${stats.capacityUsed}/${stats.capacityTotal}`}
+          tone="accent"
           icon={<Globe2 className="w-4 h-4" />}
         />
-        <StatCard
+        <StatTile
           label="Total servers"
           value={stats.total}
+          tone="neutral"
           icon={<Cpu className="w-4 h-4" />}
         />
       </div>
@@ -251,14 +255,7 @@ export default function HostingPage() {
       ) : serversQuery.error ? (
         <p className="text-sm text-red-500">Failed to load servers.</p>
       ) : servers.length === 0 ? (
-        <div
-          className="rounded-[var(--fs-radius-2xl)] border p-12 text-center"
-          style={{
-            background: 'var(--fs-glass-bg)',
-            borderColor: 'var(--fs-glass-edge)',
-            boxShadow: 'var(--fs-card-shadow)',
-          }}
-        >
+        <GlassSurface variant="panel" className="p-12 text-center">
           <Server className="mx-auto mb-3 h-8 w-8 text-[var(--fs-ink-faint)]" />
           <p className="text-sm font-medium text-[var(--fs-ink)] mb-1">
             No hosting servers yet
@@ -270,7 +267,7 @@ export default function HostingPage() {
           <Button onClick={() => setShowProvision(true)} size="sm">
             <Plus className="w-4 h-4" /> Provision your first server
           </Button>
-        </div>
+        </GlassSurface>
       ) : (
         <div className="space-y-3">
           {servers.map((s) => (
@@ -410,43 +407,6 @@ export default function HostingPage() {
   );
 }
 
-function StatCard({
-  label,
-  value,
-  icon,
-  accent,
-}: {
-  label: string;
-  value: string | number;
-  icon?: React.ReactNode;
-  accent?: 'amber';
-}) {
-  return (
-    <div
-      className="rounded-xl border p-3"
-      style={{
-        background: 'var(--fs-glass-bg)',
-        borderColor: 'var(--fs-glass-edge)',
-        boxShadow: 'var(--fs-card-shadow)',
-      }}
-    >
-      <div className="flex items-center justify-between">
-        <span className="text-[0.65rem] uppercase tracking-wide text-[var(--fs-ink-faint)]">
-          {label}
-        </span>
-        <span
-          className={
-            accent === 'amber' ? 'text-amber-500' : 'text-[var(--fs-ink-faint)]'
-          }
-        >
-          {icon}
-        </span>
-      </div>
-      <p className="mt-1 text-xl font-semibold text-[var(--fs-ink)]">{value}</p>
-    </div>
-  );
-}
-
 function ServerRow({
   server,
   onDecommission,
@@ -456,15 +416,10 @@ function ServerRow({
   onDecommission: (force: boolean) => void;
   isDecommissioning: boolean;
 }) {
+  const statusTone = STATUS_TONE[server.status] ?? STATUS_TONE.provisioning;
+
   return (
-    <div
-      className="rounded-xl border p-4 backdrop-blur-2xl backdrop-saturate-150"
-      style={{
-        background: 'var(--fs-glass-bg)',
-        borderColor: 'var(--fs-glass-edge)',
-        boxShadow: 'var(--fs-card-shadow)',
-      }}
-    >
+    <GlassSurface variant="card" className="p-4">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="flex items-center gap-2 mb-1">
@@ -472,9 +427,9 @@ function ServerRow({
               {server.name}
             </h3>
             <span
-              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.6rem] font-bold uppercase tracking-wider ${
-                STATUS_TONE[server.status] ?? STATUS_TONE.provisioning
-              }`}
+              className="fs-tone-text inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.6rem] font-bold uppercase tracking-wider"
+              data-tone={statusTone}
+              style={{ background: `var(--fs-tone-${statusTone}-soft)` }}
             >
               <StatusIcon status={server.status} />
               {server.status}
@@ -531,6 +486,6 @@ function ServerRow({
           </button>
         )}
       </div>
-    </div>
+    </GlassSurface>
   );
 }

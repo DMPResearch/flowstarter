@@ -37,8 +37,10 @@ export function DashboardSidebarShell({
   expandedWidthClass = 'w-52 lg:w-60',
   mobileWidthClass = 'w-72',
 }: DashboardSidebarShellProps) {
-  const sidebarChromeClass =
-    'bg-[var(--fs-chrome-bg)] shadow-[var(--fs-chrome-shadow)] backdrop-blur-[16px] backdrop-saturate-[120%] dark:backdrop-blur-[14px] dark:backdrop-saturate-[125%]';
+  // The one glass surface, square and opaque-leaning: `.fs-glass--chrome`
+  // reads the same `--fs-chrome-*` tokens this used to hand-roll, plus the
+  // specular catch-light and refractive edge every other surface gets.
+  const sidebarChromeClass = 'fs-glass fs-glass--chrome';
 
   return (
     <>
@@ -53,9 +55,19 @@ export function DashboardSidebarShell({
       )}
 
       <aside
+        // `.fs-glass--chrome` zeroes the radius (a header/sidebar is square);
+        // the mobile drawer wants its outer right corners back, and the
+        // inline style guarantees both that and `position: fixed` win the
+        // cascade regardless of stylesheet import order. `position: fixed`
+        // still gives the pseudo-elements a containing block to anchor to.
+        style={{
+          position: 'fixed',
+          borderTopRightRadius: 'var(--fs-radius-xl)',
+          borderBottomRightRadius: 'var(--fs-radius-xl)',
+        }}
         className={cn(
           sidebarChromeClass,
-          'md:hidden fixed bottom-0 left-0 z-[160] rounded-r-xl border-r border-[var(--fs-chrome-border)]',
+          'md:hidden bottom-0 left-0 z-[160] border-r border-[var(--fs-chrome-border)]',
           mobileTopOffsetClass,
           mobileWidthClass,
           'transform transition-transform duration-300 ease-in-out',
@@ -67,9 +79,10 @@ export function DashboardSidebarShell({
       </aside>
 
       <aside
+        style={{ position: 'fixed' }}
         className={cn(
           sidebarChromeClass,
-          'hidden md:flex fixed left-0 bottom-0 z-40 flex-col border-r border-[var(--fs-chrome-border)] transition-all duration-300',
+          'hidden md:flex left-0 bottom-0 z-40 flex-col border-r border-[var(--fs-chrome-border)] transition-all duration-300',
           desktopTopOffsetClass,
           collapsed ? collapsedWidthClass : expandedWidthClass
         )}

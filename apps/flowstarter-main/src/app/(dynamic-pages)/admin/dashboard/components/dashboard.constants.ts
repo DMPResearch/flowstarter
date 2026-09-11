@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import type { TranslationKeys } from '@/lib/i18n';
+import type { Tone } from '@flowstarter/flow-design-system';
 
 // ─── Stage display (read-only — kanban owns the writes) ───────────────────
 
@@ -13,15 +14,32 @@ export const STAGE_I18N_KEYS: Partial<Record<string, TranslationKeys>> = {
   care: 'admin.stage.live',
 };
 
-export const STAGE_DOT: Record<string, string> = {
-  intake: 'bg-slate-400 dark:bg-slate-500',
-  brief: 'bg-sky-500',
-  build: 'bg-amber-500',
-  internal_review: 'bg-amber-500',
-  client_review: 'bg-orange-500',
-  launched: 'bg-emerald-500',
-  care: 'bg-emerald-500',
+/**
+ * The lifecycle in colour: `neutral` before anything has started, `info` once
+ * there is a brief, `warn` while it is being built or reviewed internally
+ * (there is work an operator owns), `accent` once it is in front of the
+ * client, `ok` once it has launched. Anything unrecognised falls back to
+ * `neutral` rather than guessing.
+ */
+export const STAGE_TONE: Record<string, Tone> = {
+  intake: 'neutral',
+  brief: 'info',
+  build: 'warn',
+  internal_review: 'warn',
+  client_review: 'accent',
+  launched: 'ok',
+  care: 'ok',
 };
+
+export function stageTone(stage: string): Tone {
+  return STAGE_TONE[stage] ?? 'neutral';
+}
+
+/** Inline style for a small status dot, from the same tone tokens the rest
+ * of the system reads its colour from — no per-stage Tailwind palette. */
+export function stageDotStyle(stage: string): { backgroundColor: string } {
+  return { backgroundColor: `var(--fs-tone-${stageTone(stage)})` };
+}
 
 export const TIER_I18N_KEYS: Partial<Record<string, TranslationKeys>> = {
   essential: 'admin.tier.essential',

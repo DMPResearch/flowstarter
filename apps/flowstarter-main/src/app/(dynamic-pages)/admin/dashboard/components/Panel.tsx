@@ -1,4 +1,5 @@
 import type React from 'react';
+import { GlassSurface } from '@flowstarter/flow-design-system';
 
 export function Panel({
   eyebrow,
@@ -20,20 +21,28 @@ export function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <section className={`ls-card overflow-hidden !p-0 ${className}`}>
-      <header className="flex items-end justify-between gap-4 border-b border-[var(--ls-rule)] px-5 py-3.5 sm:px-6">
+    <GlassSurface
+      as="section"
+      variant="panel"
+      className={`!gap-0 !p-0 overflow-hidden ${className}`}
+    >
+      <header className="fs-glass-header-row flex items-end justify-between gap-4 border-b border-[var(--fs-glass-edge)] px-5 py-3.5 sm:px-6">
         <div>
-          {eyebrow && <div className="ls-admin-label">{eyebrow}</div>}
-          <h2 className="mt-0.5 text-[15px] font-medium tracking-[-0.005em] text-[var(--ls-ink)]">
+          {eyebrow && (
+            <div
+              className="fs-tone-text text-xs font-semibold uppercase tracking-widest"
+              data-tone="accent"
+            >
+              {eyebrow}
+            </div>
+          )}
+          <h2 className="mt-0.5 text-[15px] font-medium tracking-[-0.005em] text-[var(--fs-ink)]">
             {title}
           </h2>
         </div>
         <div className="flex items-center gap-4">
           {meta && (
-            <span
-              className="hidden max-w-md text-right text-[13px] leading-snug text-[var(--ls-ink-dim)] sm:inline"
-              style={{ fontFamily: 'var(--ls-sans)' }}
-            >
+            <span className="hidden max-w-md text-right text-[13px] leading-snug text-[var(--fs-ink-dim)] sm:inline">
               {meta}
             </span>
           )}
@@ -41,6 +50,6 @@ export function Panel({
         </div>
       </header>
       <div className={flush ? '' : 'p-5 sm:p-6'}>{children}</div>
-    </section>
+    </GlassSurface>
   );
 }

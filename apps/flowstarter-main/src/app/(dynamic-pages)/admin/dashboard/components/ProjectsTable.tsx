@@ -11,8 +11,8 @@ import {
 } from '@/hooks/useTeamProjects';
 import {
   STAGE_I18N_KEYS,
-  STAGE_DOT,
   TIER_I18N_KEYS,
+  stageDotStyle,
 } from './dashboard.constants';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -80,7 +80,7 @@ export function ProjectsTable({
     <div className="overflow-x-auto">
       <table className="w-full text-[13.5px]">
         <thead>
-          <tr>
+          <tr className="fs-glass-header-row">
             <ColHead className="w-[1.5rem] pl-5"> </ColHead>
             <ColHead>{t('admin.dashboard.table.project')}</ColHead>
             <ColHead>{t('admin.dashboard.table.account')}</ColHead>
@@ -132,7 +132,8 @@ function ProjectRowItem({
       <td className="py-3 pl-5">
         <span
           aria-hidden
-          className={`inline-block h-2 w-2 rounded-full ${STAGE_DOT[stage]}`}
+          className="inline-block h-2 w-2 rounded-full"
+          style={stageDotStyle(stage)}
         />
       </td>
       <td className="px-3 py-3">

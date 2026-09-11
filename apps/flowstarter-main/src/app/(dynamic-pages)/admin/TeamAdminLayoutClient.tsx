@@ -1,5 +1,6 @@
 'use client';
 
+import { usePathname } from 'next/navigation';
 import { SidebarProvider } from '@/contexts/SidebarContext';
 import { FlowBackground } from '@flowstarter/flow-design-system';
 
@@ -10,17 +11,23 @@ export default function TeamAdminLayoutClient({
   children: React.ReactNode;
   initialSidebarCollapsed: boolean;
 }) {
+  const pathname = usePathname();
+
+  // `/admin/dashboard/**` renders its own liquid-glass atmosphere
+  // (`MeshBackdrop` inside `DashboardBaseLayout`) — skip the marketing-style
+  // `FlowBackground` there so the two do not stack and fight. Login and join
+  // have nothing else behind them, so they keep it.
+  const showFlowBackground = !pathname?.startsWith('/admin/dashboard');
+
   return (
     <SidebarProvider initialCollapsed={initialSidebarCollapsed}>
       <div className="relative min-h-screen">
-        {/* `landing` variant matches the editor + auth pages so the
-            Flowstarter orbs read consistently across the whole product.
-            The previous "dashboard" variant was muted to ~0.12 bloom
-            which made the brand pattern nearly invisible on admin. */}
-        <FlowBackground
-          variant="landing"
-          style={{ position: 'fixed', inset: 0, zIndex: 0 }}
-        />
+        {showFlowBackground && (
+          <FlowBackground
+            variant="landing"
+            style={{ position: 'fixed', inset: 0, zIndex: 0 }}
+          />
+        )}
         <div className="relative z-10">{children}</div>
       </div>
     </SidebarProvider>

@@ -3,6 +3,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { Sparkles, TrendingUp, Zap, DollarSign } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
+import { StatTile } from '@flowstarter/flow-design-system';
 import {
   TeamDashboardShell,
   ShellCard,
@@ -16,35 +17,6 @@ interface Project {
   generation_cost_usd: number | null;
   created_at: string;
   updated_at: string;
-}
-
-function StatCard({
-  icon,
-  label,
-  value,
-  sub,
-  iconBg,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  sub?: string;
-  iconBg: string;
-}) {
-  return (
-    <ShellCard className="!p-5">
-      <div
-        className={`w-10 h-10 rounded-xl ${iconBg} flex items-center justify-center mb-3`}
-      >
-        {icon}
-      </div>
-      <p className="text-xs text-[var(--fs-ink-faint)] mb-1">{label}</p>
-      <p className="text-2xl font-bold text-[var(--fs-ink)]">{value}</p>
-      {sub && (
-        <p className="text-xs text-[var(--fs-ink-faint)] mt-0.5">{sub}</p>
-      )}
-    </ShellCard>
-  );
 }
 
 export default function AiUsagePage() {
@@ -94,28 +66,28 @@ export default function AiUsagePage() {
           ))
         ) : (
           <>
-            <StatCard
-              icon={<Zap className="w-5 h-5 text-[var(--purple)]" />}
-              iconBg="bg-[var(--purple)]/10"
+            <StatTile
+              icon={<Zap className="w-5 h-5" />}
+              tone="accent"
               label="Total credits used"
               value={totalCredits.toLocaleString()}
             />
-            <StatCard
-              icon={<DollarSign className="w-5 h-5 text-emerald-500" />}
-              iconBg="bg-emerald-500/10"
+            <StatTile
+              icon={<DollarSign className="w-5 h-5" />}
+              tone="warn"
               label="Total cost"
               value={`€${totalCostEur.toFixed(2)}`}
-              sub={`$${totalCostUsd.toFixed(2)} USD`}
+              note={`$${totalCostUsd.toFixed(2)} USD`}
             />
-            <StatCard
-              icon={<TrendingUp className="w-5 h-5 text-blue-500" />}
-              iconBg="bg-blue-500/10"
+            <StatTile
+              icon={<TrendingUp className="w-5 h-5" />}
+              tone="info"
               label="Projects with AI"
               value={projects.length.toString()}
             />
-            <StatCard
-              icon={<Sparkles className="w-5 h-5 text-amber-500" />}
-              iconBg="bg-amber-500/10"
+            <StatTile
+              icon={<Sparkles className="w-5 h-5" />}
+              tone="warn"
               label="Avg cost / project"
               value={`€${avgPerProject.toFixed(2)}`}
             />
@@ -125,7 +97,7 @@ export default function AiUsagePage() {
 
       {/* Per-project table */}
       <ShellCard className="!p-0 overflow-hidden">
-        <div className="px-5 py-4 border-b border-[var(--fs-rule)]">
+        <div className="fs-glass-header-row px-5 py-4 border-b border-[var(--fs-rule)]">
           <h2 className="text-sm font-semibold text-[var(--fs-ink)]">
             Breakdown by project
           </h2>

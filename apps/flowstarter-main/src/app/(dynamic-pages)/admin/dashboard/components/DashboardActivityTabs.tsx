@@ -7,6 +7,7 @@ import { ArrowUpRight } from 'lucide-react';
 import { useTranslations } from '@/lib/i18n';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
+import { GlassSurface } from '@flowstarter/flow-design-system';
 
 type ActivityTab = 'projects' | 'accounts';
 
@@ -34,36 +35,39 @@ export function DashboardActivityTabs({
 
   const tabTriggerClass = cn(
     'h-auto flex-none rounded-none border-0 border-b-2 border-transparent bg-transparent px-1 py-2.5 sm:px-2',
-    // Mirrors `.ls-admin-label` (avoid that class here so active `text-*` wins cleanly).
-    'font-mono text-[11px] uppercase leading-none tracking-[0.18em] text-[var(--ls-ink-faint)] shadow-none backdrop-blur-none',
-    'data-[state=active]:!bg-transparent data-[state=active]:border-[var(--ls-ink)] data-[state=active]:text-[var(--ls-ink)]',
-    'data-[state=active]:shadow-none dark:data-[state=active]:text-[var(--ls-ink)]',
-    '[@media(hover:hover)]:hover:text-[var(--ls-ink-dim)]'
+    'font-mono text-[11px] uppercase leading-none tracking-[0.18em] text-[var(--fs-ink-faint)] shadow-none backdrop-blur-none',
+    'data-[state=active]:!bg-transparent data-[state=active]:border-[var(--fs-tone-accent)] data-[state=active]:text-[var(--fs-tone-accent)]',
+    'data-[state=active]:shadow-none',
+    '[@media(hover:hover)]:hover:text-[var(--fs-ink-dim)]'
   );
 
   return (
-    <section className={cn('ls-card overflow-hidden !p-0', className)}>
-      <header className="flex items-end justify-between gap-4 border-b border-[var(--ls-rule)] px-5 py-3.5 sm:px-6">
+    <GlassSurface
+      as="section"
+      variant="panel"
+      className={cn('!gap-0 !p-0 overflow-hidden', className)}
+    >
+      <header className="fs-glass-header-row flex items-end justify-between gap-4 border-b border-[var(--fs-glass-edge)] px-5 py-3.5 sm:px-6">
         <div>
-          <div className="ls-admin-label">
+          <div
+            className="fs-tone-text text-xs font-semibold uppercase tracking-widest"
+            data-tone="accent"
+          >
             {t('admin.dashboard.activity.eyebrow')}
           </div>
-          <h2 className="mt-0.5 text-[15px] font-medium tracking-[-0.005em] text-[var(--ls-ink)]">
+          <h2 className="mt-0.5 text-[15px] font-medium tracking-[-0.005em] text-[var(--fs-ink)]">
             {t('admin.dashboard.activity.title')}
           </h2>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3 sm:gap-4">
           {meta ? (
-            <span
-              className="hidden max-w-md text-right text-[13px] leading-snug text-[var(--ls-ink-dim)] sm:inline"
-              style={{ fontFamily: 'var(--ls-sans)' }}
-            >
+            <span className="hidden max-w-md text-right text-[13px] leading-snug text-[var(--fs-ink-dim)] sm:inline">
               {meta}
             </span>
           ) : null}
           <Link
             href={viewAllHref}
-            className="inline-flex items-center gap-1 font-mono text-[10.5px] uppercase tracking-[0.16em] text-[var(--ls-ink-dim)] hover:text-[var(--ls-ink)]"
+            className="inline-flex items-center gap-1 font-mono text-[10.5px] uppercase tracking-[0.16em] text-[var(--fs-ink-dim)] hover:text-[var(--fs-ink)]"
           >
             {t('admin.dashboard.viewAll')}
             <ArrowUpRight className="h-3 w-3" />
@@ -76,7 +80,7 @@ export function DashboardActivityTabs({
         onValueChange={(v) => setTab(v as ActivityTab)}
         className="gap-0"
       >
-        <div className="border-b border-[var(--ls-rule)] px-5 sm:px-6">
+        <div className="border-b border-[var(--fs-glass-edge)] px-5 sm:px-6">
           <TabsList
             className={cn(
               'h-auto min-h-0 w-full justify-start gap-4 sm:gap-6',
@@ -105,6 +109,6 @@ export function DashboardActivityTabs({
           {accountsContent}
         </TabsContent>
       </Tabs>
-    </section>
+    </GlassSurface>
   );
 }
