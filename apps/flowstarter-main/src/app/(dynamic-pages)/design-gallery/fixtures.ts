@@ -12,7 +12,7 @@ import { editCreditPosition } from '@/lib/flowstarter/edit-credits';
 import type { SiteOverviewInput } from '@/components/flowstarter/site-overview';
 import type { TeamDashboardStatsPayload } from '@/lib/team-dashboard/team-dashboard-stats';
 import type { PipelineBoard } from '@/hooks/usePipeline';
-import type { ProjectRow } from '../../admin/dashboard/components/ProjectsTable';
+import type { ProjectRow } from '../admin/dashboard/components/ProjectsTable';
 
 /**
  * Starter plan, mid-build. The site is not serving yet, so enquiries reads

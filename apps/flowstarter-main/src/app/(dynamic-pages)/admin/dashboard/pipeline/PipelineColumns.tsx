@@ -1,12 +1,12 @@
 /**
- * The pipeline board's column and card, pulled out of `page.tsx`.
+ * The pipeline board's grid, column and card, pulled out of `page.tsx`.
  *
  * A page component can only ever have one export — the page itself — so the
- * design gallery (`/about/design-gallery`), which renders this board on
- * fixture data for a screenshot nobody has to sign in for, needs the column
- * and the card as their own module. `page.tsx` imports them back rather than
- * keeping its own copy, so the real board and the gallery's are pixel-for-
- * pixel the same component.
+ * design gallery (`/design-gallery`), which renders this board on fixture
+ * data for a screenshot nobody has to sign in for, needs them as their own
+ * module. `page.tsx` imports them back rather than keeping its own copy, so
+ * the real board and the gallery's are pixel-for-pixel the same component,
+ * down to the grid that sizes the columns.
  */
 import Link from 'next/link';
 import type { ComponentProps, ComponentType } from 'react';
@@ -41,23 +41,18 @@ export const STATE_LABEL: Record<ProjectState, string> = {
 const NEUTRAL_TONE: Tone = 'neutral';
 
 /**
- * A queued job reads `neutral` — "not switched on yet" is the tone's own
- * meaning, and it was the last thing on this board still spending `info` on a
- * state the four hues the columns use already cover. `running` is `accent`,
- * the same indigo the progress columns step through, so a card in flight and
- * the column it is in agree.
+ * A card carries at most one colour, and only when something is wrong.
+ *
+ * Every card in the pipeline has a deposit, a quote and, usually, a job, so
+ * colouring those said nothing: a column of cards each wearing a green
+ * "Deposit paid" and a green "Finished" is a wall of green that flags the
+ * normal case. The only job status an operator has to act on is `failed`, so
+ * that is the only one with a tone of its own; everything else is the
+ * neutral chip the rest of the board uses. A running job says it is running
+ * by moving (see `RunningDot`), not by turning indigo.
  */
 const JOB_TONE: Record<string, Tone> = {
-  queued: 'neutral',
-  running: 'accent',
-  succeeded: 'ok',
   failed: 'danger',
-  canceled: 'neutral',
-};
-
-const DEPOSIT_TONE: Record<string, Tone> = {
-  paid: 'ok',
-  refunded: 'warn',
 };
 
 /**
@@ -68,6 +63,19 @@ const DEPOSIT_TONE: Record<string, Tone> = {
  * amber in three places and red in a fourth.
  */
 const STALLED_TONE: Tone = 'danger';
+
+/**
+ * "Something went wrong here", as a quiet note rather than a red box.
+ *
+ * Exported because the build board's job cards say the same thing about a
+ * failed job and must say it in the same shape. A neutral fill keeps the
+ * words readable and keeps the card's largest element out of the colour
+ * argument; the 2px rule down the left edge is the danger, and it is the
+ * same rule and the same red the stalled card wears on its own left edge, so
+ * the two read as one mark rather than two.
+ */
+export const DANGER_NOTE =
+  'rounded-r-lg border-l-2 border-l-[var(--fs-tone-danger)] bg-[var(--fs-tone-neutral-soft)]';
 
 /** The build-board column a job is in, by name. This board has no phase data, so a running job reads as its first stage. */
 function buildStageLabel(status: string): string {
@@ -135,6 +143,23 @@ function Pill({
 }
 
 /**
+ * "This one is moving", said by moving rather than by colour.
+ *
+ * A running build used to be an indigo pill, which put a third hue on a card
+ * that already had a green deposit and a green job status. The dot is the
+ * card's own ink at a low alpha, so it reads as motion and nothing else, and
+ * it holds still for anyone who has asked their system to stop animating.
+ */
+export function RunningDot() {
+  return (
+    <span
+      aria-hidden
+      className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-current opacity-70 motion-safe:animate-pulse"
+    />
+  );
+}
+
+/**
  * GlassSurface typed for `as={Link}`. The base props type does not know
  * which extra props the element passed to `as` accepts, so this narrows it
  * locally for the one call site that needs `href`.
@@ -144,6 +169,7 @@ const GlassLinkCard = GlassSurface as unknown as ComponentType<
     as: typeof Link;
     variant?: GlassSurfaceVariant;
     interactive?: boolean;
+    dense?: boolean;
   }
 >;
 
@@ -160,9 +186,10 @@ export function PipelineCard({ card }: { card: PipelineCardData }) {
       href={`/admin/dashboard/projects/${card.workspaceId}`}
       variant="card"
       interactive
-      className="block p-3"
+      dense
+      className="block"
       // The left rule, from the tone token rather than a Tailwind palette, so
-      // it is the same red the column wash and the reasons below already use.
+      // it is the same red the icon and the reasons below already use.
       style={
         card.stalled
           ? { borderLeft: `2px solid var(--fs-tone-${STALLED_TONE})` }
@@ -171,9 +198,11 @@ export function PipelineCard({ card }: { card: PipelineCardData }) {
     >
       <div className="flex items-start justify-between gap-2">
         {/* Two lines, not one truncated to an ellipsis: "Riverside
-            Veterinary Clinic" has to read in full, and a column narrow
-            enough to need more than that is a column that should scroll
-            rather than clip a name. */}
+            Veterinary Clinic" has to read in full. Two is enough because the
+            surfaces around it are `dense` — at the default glass padding a
+            179px column leaves 91px for the name here, narrow enough that
+            "Physiotherapy" does not fit on a line of its own and breaks
+            mid-word. */}
         <span className="line-clamp-2 min-w-0 break-words text-sm font-semibold text-[var(--ls-ink)]">
           {card.businessName}
         </span>
@@ -188,11 +217,12 @@ export function PipelineCard({ card }: { card: PipelineCardData }) {
 
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         <Pill tone={NEUTRAL_TONE}>{money(card.quoteMinor, card.currency)}</Pill>
-        <Pill tone={DEPOSIT_TONE[card.depositStatus] ?? NEUTRAL_TONE}>
+        <Pill tone={NEUTRAL_TONE}>
           {card.depositStatus === 'paid' ? 'Deposit paid' : 'No deposit'}
         </Pill>
         {card.latestJob && (
           <Pill tone={JOB_TONE[card.latestJob.status] ?? NEUTRAL_TONE}>
+            {card.latestJob.status === 'running' && <RunningDot />}
             {jobKindLabel(card.latestJob.kind)} ·{' '}
             {jobStatusLabel(card.latestJob.status)}
             {/* A running job says which stage it is at, the same word the
@@ -208,19 +238,19 @@ export function PipelineCard({ card }: { card: PipelineCardData }) {
         {compactRelative(card.createdAt)}
       </p>
 
+      {/* The reasons read as a quiet note with a red edge, not as a red box.
+          The card already says "danger" three times — the left rule, the
+          icon, the count in the column header — and a fourth, filling the
+          largest element on the card, is what turned one stalled project
+          into a pink card among white ones. Neutral fill, neutral ink, and
+          the same 2px danger rule as the card's own left edge to tie the two
+          together. */}
       {card.stallReasons.length > 0 && (
-        <ul
-          className="mt-2.5 space-y-1 rounded-lg px-2.5 py-2"
-          style={{
-            background: `var(--fs-tone-${STALLED_TONE}-soft)`,
-            boxShadow: `inset 0 0 0 1px var(--fs-tone-${STALLED_TONE}-edge)`,
-          }}
-        >
+        <ul className={`mt-2.5 space-y-1 px-2.5 py-2 ${DANGER_NOTE}`}>
           {card.stallReasons.map((reason) => (
             <li
               key={reason}
-              className="fs-tone-text text-[11px] leading-snug"
-              data-tone={STALLED_TONE}
+              className="text-[11px] leading-snug text-[var(--ls-ink-dim)]"
             >
               {reason}
             </li>
@@ -238,9 +268,15 @@ export function PipelineCard({ card }: { card: PipelineCardData }) {
  * The state's place in the sequence is the only thing colour says here (see
  * `PROJECT_STATE_TONE`): a 2px rule along the top and the header label, both
  * stepping through the accent ladder, with the count pill following the
- * header's ink. The body is left as the panel's own fill, and it fills with
- * red for one reason only — the column is holding a stalled card, and that is
- * the one thing on this board worth shouting about.
+ * header's ink. The body is always the panel's own fill.
+ *
+ * It used to wash red while the column held a stalled card. The wash is a
+ * top-down gradient, so what it actually tinted was the first card in the
+ * column — and since stalled cards sort to the top, that card was always the
+ * stalled one, which is how one stuck project came to read as a pink card.
+ * The stall is still the loudest thing on the board, but it says so on the
+ * card it belongs to (left rule, icon) and in the header count, not by
+ * colouring the panel behind it.
  */
 export function PipelineBoardColumn({
   state,
@@ -254,13 +290,14 @@ export function PipelineBoardColumn({
   emptyLabel?: string;
 }) {
   const tone = projectStateTone(state);
-  const { rule, wash, ink, chip } = columnToneStyle(tone, stalledCount > 0);
+  const { rule, wash, ink, chip } = columnToneStyle(tone);
 
   return (
     <GlassSurface
       as="section"
       variant="panel"
-      className="relative flex min-h-[13rem] flex-col overflow-hidden p-3"
+      dense
+      className="relative flex min-h-[13rem] flex-col overflow-hidden"
     >
       <span
         aria-hidden
@@ -304,5 +341,56 @@ export function PipelineBoardColumn({
         )}
       </div>
     </GlassSurface>
+  );
+}
+
+/**
+ * The board itself: six columns across the full width available to it.
+ *
+ * `grid-flow-col` with `auto-cols-[minmax(11rem,1fr)]` is what makes the row
+ * fill rather than fit. `1fr` lets every column take an equal share of
+ * whatever is left over, so there is never dead space to the right of the
+ * last one; `11rem` is the floor below which it stops sharing and starts
+ * scrolling instead.
+ *
+ * That floor is measured, not picked. At 1440 with the sidebar expanded the
+ * admin content box is 1440 − 240 (sidebar) − 64 (the shell's `lg:px-8`
+ * gutters) = 1136px, and six columns with five 12px gutters leave 1076px to
+ * divide: 179px each. 176px is the nearest round floor under that, so six
+ * columns fit on a 1440 screen with room to spare and settle at ~179px wide,
+ * and anything narrower scrolls. The old 240px floor needed 1520px and so
+ * scrolled on every screen anyone actually uses, which is why the board was
+ * usually seen with its first column half off the left edge.
+ *
+ * `items-start` keeps a column's height its own — a column holding a stalled
+ * card's extra reasons box should not stretch every quiet column beside it
+ * into a tall, mostly empty panel.
+ */
+export function PipelineBoard({
+  columns,
+  emptyLabel,
+}: {
+  columns: {
+    state: ProjectState;
+    cards: PipelineCardData[];
+    stalledCount: number;
+  }[];
+  emptyLabel?: string;
+}) {
+  return (
+    <div
+      data-testid="pipeline-board"
+      className="-mx-1 grid grid-flow-col auto-cols-[minmax(11rem,1fr)] items-start gap-3 overflow-x-auto px-1 pb-2"
+    >
+      {columns.map((column) => (
+        <PipelineBoardColumn
+          key={column.state}
+          state={column.state}
+          cards={column.cards}
+          stalledCount={column.stalledCount}
+          emptyLabel={emptyLabel}
+        />
+      ))}
+    </div>
   );
 }

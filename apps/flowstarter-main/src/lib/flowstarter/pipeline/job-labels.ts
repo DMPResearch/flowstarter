@@ -274,10 +274,16 @@ export interface ColumnToneStyle {
  *
  * `emphasis` is the one thing that fills a body, and it fills it with
  * `danger` whatever the column's own colour is, because it means exactly one
- * thing on both boards: something in this column is broken. The build board's
- * `attention` column always wears it; a pipeline column wears it while it
- * holds a stalled card. The column keeps its own rule and ink underneath —
- * a card being stuck does not move the column's place in the sequence.
+ * thing: every card in this column is broken. Only the build board's
+ * `attention` column, which holds nothing but failed and cancelled jobs,
+ * wears it. The column keeps its own rule and ink underneath.
+ *
+ * The cross-project pipeline board used to pass it while a column held a
+ * stalled card, and that was wrong twice over: the wash is a top-down
+ * gradient and stalled cards sort to the top, so what it actually tinted was
+ * the stalled card itself, which read as a pink card rather than as a warned
+ * column; and a column holding one stuck project out of five is not a broken
+ * column. The stall says so on its own card and in the header count instead.
  */
 export function columnToneStyle(
   tone: ColumnTone,

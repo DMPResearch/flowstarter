@@ -25,7 +25,9 @@ component that will drift out of the system the next time the brand moves.
 
 To see the client dashboard and admin surfaces rendered on fixture data
 (useful for screenshots without a signed-in session), run `flowstarter-main`
-in development and visit `/about/design-gallery`.
+in development and visit `/design-gallery`. Each section renders full-bleed
+inside the real admin shell, so a screenshot taken there is the width the
+surface actually has in the product.
 
 ### Tokens
 

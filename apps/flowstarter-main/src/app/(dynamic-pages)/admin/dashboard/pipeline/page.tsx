@@ -19,7 +19,7 @@ import { AlertTriangle, GitBranch, RefreshCw } from 'lucide-react';
 import { TeamDashboardShell } from '../components/TeamDashboardShell';
 import { Button } from '@/components/ui/button';
 import { usePipelineBoard } from '@/hooks/usePipeline';
-import { PipelineBoardColumn } from './PipelineColumns';
+import { PipelineBoard } from './PipelineColumns';
 
 export default function PipelineBoardPage() {
   const { data, isLoading, error, refetch, isFetching } = usePipelineBoard();
@@ -45,10 +45,16 @@ export default function PipelineBoardPage() {
         data
           ? `${data.total} project${data.total === 1 ? '' : 's'} · ${
               data.stalledCount
-            } need attention`
+            } need${data.stalledCount === 1 ? 's' : ''} attention`
           : 'Every project in the concierge flow, by state'
       }
       icon={<GitBranch className="h-5 w-5" aria-hidden />}
+      // The board is the page, and a board is as wide as the screen lets it
+      // be. The shell's default 1280px cap left dead space to the right of
+      // the last column on a wide screen while the first column was clipped
+      // off the left, which is the worst of both: boxed and scrolling at the
+      // same time.
+      maxWidth="full"
       actions={
         <div className="flex items-center gap-2">
           <Button
@@ -89,24 +95,10 @@ export default function PipelineBoardPage() {
           ))}
         </div>
       ) : (
-        // `auto-cols-[minmax(240px,1fr)]` is the floor a business name needs
-        // to read on two lines without the column itself going narrower than
-        // is sensible; six of those plus gutters is wider than most screens,
-        // so the row scrolls horizontally rather than wrapping into a second
-        // one. `items-start` keeps a column's height its own — a column with
-        // a stalled card's extra reasons box should not stretch every quiet
-        // column beside it into a tall, mostly empty panel.
-        <div className="-mx-1 grid grid-flow-col auto-cols-[minmax(240px,1fr)] items-start gap-4 overflow-x-auto px-1 pb-2">
-          {columns.map((column) => (
-            <PipelineBoardColumn
-              key={column.state}
-              state={column.state}
-              cards={column.cards}
-              stalledCount={column.stalledCount}
-              emptyLabel={stalledOnly ? 'Nothing stalled here' : 'Empty'}
-            />
-          ))}
-        </div>
+        <PipelineBoard
+          columns={columns}
+          emptyLabel={stalledOnly ? 'Nothing stalled here' : 'Empty'}
+        />
       )}
     </TeamDashboardShell>
   );
