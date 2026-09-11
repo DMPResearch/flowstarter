@@ -12,7 +12,9 @@ import { describe, expect, it } from 'vitest';
 import { GlassSurface } from '@flowstarter/flow-design-system/components/surfaces/GlassSurface';
 import { StatTile } from '@flowstarter/flow-design-system/components/surfaces/StatTile';
 import { MeshBackdrop } from '@flowstarter/flow-design-system/components/backgrounds/MeshBackdrop';
-import { tilePalette } from '../SiteOverview';
+import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
+import { SiteOverview, tilePalette } from '../SiteOverview';
+import { ProjectStateStepper } from '../ProjectStateStepper';
 import type { SiteOverviewTile } from '../site-overview';
 
 function tile(overrides: Partial<SiteOverviewTile> = {}): SiteOverviewTile {
@@ -162,6 +164,30 @@ describe('StatTile', () => {
     expect(link).toHaveAttribute('data-palette', 'accent');
   });
 
+  it('is quiet by default and only wears the emphasis class when asked', () => {
+    // The default has to stay quiet: a grid where every tile asks for the
+    // loud wash is a grid where none of them is louder than the others.
+    const { rerender } = render(
+      <StatTile label="Edits" value="4" tone="accent" data-testid="tile" />
+    );
+    expect(screen.getByTestId('tile').className).not.toContain(
+      'fs-glass-tile--emphasis'
+    );
+
+    rerender(
+      <StatTile
+        label="Edits"
+        value="4"
+        tone="accent"
+        emphasis
+        data-testid="tile"
+      />
+    );
+    expect(screen.getByTestId('tile').className).toContain(
+      'fs-glass-tile--emphasis'
+    );
+  });
+
   it('drops the note and the icon entirely rather than rendering empty nodes', () => {
     const { container } = render(<StatTile label="Edits" value="4" />);
     expect(container.querySelector('.fs-glass-tile__note')).toBeNull();
@@ -238,5 +264,50 @@ describe('tilePalette', () => {
     for (const candidate of every) {
       expect(tilePalette(candidate)).not.toBe('danger');
     }
+  });
+});
+
+describe('SiteOverview', () => {
+  it('gives the loud wash to the tile with something to do, and to no other', () => {
+    render(
+      <SiteOverview
+        state={ProjectState.AGENTS_WORKING}
+        tiles={[
+          tile({ key: 'credits', tone: 'ok' }),
+          tile({ key: 'bookings', label: 'Bookings', tone: 'attention' }),
+          tile({ key: 'changes', label: 'Changes made', tone: 'muted' }),
+        ]}
+      />
+    );
+
+    const tiles = screen.getAllByTestId('site-overview-tile');
+    const loud = tiles.filter((el) =>
+      el.className.includes('fs-glass-tile--emphasis')
+    );
+    expect(loud).toHaveLength(1);
+    expect(loud[0]).toHaveAttribute('data-tone', 'attention');
+  });
+});
+
+describe('ProjectStateStepper', () => {
+  it('ticks the finished stages instead of filling them, and fills only the current one', () => {
+    const { container } = render(
+      <ProjectStateStepper state={ProjectState.AGENTS_WORKING} />
+    );
+    const stages = screen.getAllByTestId('project-stage');
+
+    const done = stages.filter((s) => s.dataset.status === 'done');
+    const current = stages.filter((s) => s.dataset.status === 'current');
+    expect(done.length).toBeGreaterThan(0);
+    expect(current).toHaveLength(1);
+
+    // A finished stage says so with a tick, not with a green fill.
+    for (const stage of done) {
+      expect(stage.querySelector('svg')).not.toBeNull();
+      expect(stage.className).not.toContain('--fs-tone-ok-emphasis');
+    }
+    // The one filled pill is the one the client is on.
+    expect(current[0].className).toContain('--fs-tone-accent-emphasis');
+    expect(container.querySelectorAll('svg')).toHaveLength(done.length);
   });
 });

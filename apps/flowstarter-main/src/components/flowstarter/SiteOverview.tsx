@@ -111,6 +111,9 @@ function Tile({ tile }: { tile: SiteOverviewTile }) {
       value={tile.value}
       note={tile.note}
       tone={tilePalette(tile)}
+      // One loud tile per panel, and it is the one with something to do. The
+      // rest stay neutral glass so this one is actually louder than them.
+      emphasis={tile.tone === 'attention'}
       icon={<Icon size={15} strokeWidth={2.25} aria-hidden="true" />}
       href={tile.href}
       linkComponent={tile.href ? Link : undefined}

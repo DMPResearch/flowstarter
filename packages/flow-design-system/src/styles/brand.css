@@ -463,58 +463,72 @@
     );
 
   /* ── Tones — nine content tints ──
-     Each tone T ships four tokens:
-       --fs-tone-T        ink, for the value and any tone-coloured text
-       --fs-tone-T-soft   tint wash laid over the glass
-       --fs-tone-T-edge   tone-coloured refractive edge
-       --fs-tone-T-glow   soft outer bloom
+     Each tone T ships five tokens:
+       --fs-tone-T           ink, for the value and any tone-coloured text
+       --fs-tone-T-soft      the default wash: a whisper, barely a tint
+       --fs-tone-T-emphasis  the loud wash, for the one tile that wants the eye
+       --fs-tone-T-edge      tone-coloured refractive edge
+       --fs-tone-T-glow      soft outer bloom, only used under emphasis
+
+     A grid of tiles is not a colour chart. The default tile is neutral glass
+     and the tone lives in the value, the icon chip and a thin rim, so the one
+     tile that carries an emphasis wash is the one the eye lands on.
      Ink lightness is set per mode so the ink clears 4.5:1 on its own wash over
      the glass over the brightest and the darkest part of the mesh. Verified by
      packages/flow-design-system/scripts/check-tone-contrast.mjs. */
   /* @tone-tokens:light */
   --fs-tone-accent: hsl(233, 76%, 44%);             /* indigo, the brand hue: primary emphasis */
-  --fs-tone-accent-soft: hsl(233, 90%, 86%, 0.85);
-  --fs-tone-accent-edge: hsl(233, 74%, 56%, 0.55);
+  --fs-tone-accent-soft: hsl(233, 88%, 58%, 0.10);
+  --fs-tone-accent-emphasis: hsl(233, 92%, 72%, 0.28);
+  --fs-tone-accent-edge: hsl(233, 74%, 56%, 0.35);
   --fs-tone-accent-glow: hsl(233, 86%, 56%, 0.18);
 
   --fs-tone-ok: hsl(152, 76%, 23%);                 /* green: something is working */
-  --fs-tone-ok-soft: hsl(152, 90%, 86%, 0.85);
-  --fs-tone-ok-edge: hsl(152, 74%, 56%, 0.55);
+  --fs-tone-ok-soft: hsl(152, 88%, 58%, 0.10);
+  --fs-tone-ok-emphasis: hsl(152, 92%, 72%, 0.28);
+  --fs-tone-ok-edge: hsl(152, 74%, 56%, 0.35);
   --fs-tone-ok-glow: hsl(152, 86%, 56%, 0.18);
 
   --fs-tone-info: hsl(205, 76%, 29%);               /* blue: neutral reporting */
-  --fs-tone-info-soft: hsl(205, 90%, 86%, 0.85);
-  --fs-tone-info-edge: hsl(205, 74%, 56%, 0.55);
+  --fs-tone-info-soft: hsl(205, 88%, 58%, 0.10);
+  --fs-tone-info-emphasis: hsl(205, 92%, 72%, 0.28);
+  --fs-tone-info-edge: hsl(205, 74%, 56%, 0.35);
   --fs-tone-info-glow: hsl(205, 86%, 56%, 0.18);
 
   --fs-tone-warn: hsl(36, 76%, 25%);                /* amber: there is something for you to do */
-  --fs-tone-warn-soft: hsl(36, 90%, 86%, 0.85);
-  --fs-tone-warn-edge: hsl(36, 74%, 56%, 0.55);
+  --fs-tone-warn-soft: hsl(36, 88%, 58%, 0.10);
+  --fs-tone-warn-emphasis: hsl(36, 92%, 72%, 0.28);
+  --fs-tone-warn-edge: hsl(36, 74%, 56%, 0.35);
   --fs-tone-warn-glow: hsl(36, 86%, 56%, 0.18);
 
   --fs-tone-danger: hsl(356, 76%, 35%);             /* red: reserved for real failure */
-  --fs-tone-danger-soft: hsl(356, 90%, 86%, 0.85);
-  --fs-tone-danger-edge: hsl(356, 74%, 56%, 0.55);
+  --fs-tone-danger-soft: hsl(356, 88%, 58%, 0.10);
+  --fs-tone-danger-emphasis: hsl(356, 92%, 72%, 0.28);
+  --fs-tone-danger-edge: hsl(356, 74%, 56%, 0.35);
   --fs-tone-danger-glow: hsl(356, 86%, 56%, 0.18);
 
   --fs-tone-violet: hsl(268, 76%, 43%);             /* violet: work the client did themselves */
-  --fs-tone-violet-soft: hsl(268, 90%, 86%, 0.85);
-  --fs-tone-violet-edge: hsl(268, 74%, 56%, 0.55);
+  --fs-tone-violet-soft: hsl(268, 88%, 58%, 0.10);
+  --fs-tone-violet-emphasis: hsl(268, 92%, 72%, 0.28);
+  --fs-tone-violet-edge: hsl(268, 74%, 56%, 0.35);
   --fs-tone-violet-glow: hsl(268, 86%, 56%, 0.18);
 
   --fs-tone-pink: hsl(330, 76%, 34%);               /* pink: audience and reach */
-  --fs-tone-pink-soft: hsl(330, 90%, 86%, 0.85);
-  --fs-tone-pink-edge: hsl(330, 74%, 56%, 0.55);
+  --fs-tone-pink-soft: hsl(330, 88%, 58%, 0.10);
+  --fs-tone-pink-emphasis: hsl(330, 92%, 72%, 0.28);
+  --fs-tone-pink-edge: hsl(330, 74%, 56%, 0.35);
   --fs-tone-pink-glow: hsl(330, 86%, 56%, 0.18);
 
   --fs-tone-teal: hsl(182, 76%, 23%);               /* teal: scheduling and time */
-  --fs-tone-teal-soft: hsl(182, 90%, 86%, 0.85);
-  --fs-tone-teal-edge: hsl(182, 74%, 56%, 0.55);
+  --fs-tone-teal-soft: hsl(182, 88%, 58%, 0.10);
+  --fs-tone-teal-emphasis: hsl(182, 92%, 72%, 0.28);
+  --fs-tone-teal-edge: hsl(182, 74%, 56%, 0.35);
   --fs-tone-teal-glow: hsl(182, 86%, 56%, 0.18);
 
   --fs-tone-neutral: hsl(233, 18%, 32%);            /* off: not switched on yet */
-  --fs-tone-neutral-soft: hsl(233, 16%, 90%, 0.85);
-  --fs-tone-neutral-edge: hsl(233, 20%, 58%, 0.40);
+  --fs-tone-neutral-soft: hsl(233, 16%, 48%, 0.08);
+  --fs-tone-neutral-emphasis: hsl(233, 18%, 72%, 0.26);
+  --fs-tone-neutral-edge: hsl(233, 20%, 58%, 0.30);
   --fs-tone-neutral-glow: hsl(233, 20%, 60%, 0.10);
   /* @tone-tokens:end */
 
@@ -523,12 +537,12 @@
      refract. Four large overlapping blobs, each wide enough to cross most of
      the viewport, so the page reads as one coloured field rather than four
      corner stains. The grain on top stops the wide gradients from banding. */
-  --fs-mesh-1: hsl(233, 94%, 64%, 0.42);            /* indigo, top-left */
-  --fs-mesh-2: hsl(330, 92%, 70%, 0.40);            /* pink, bottom-right */
-  --fs-mesh-3: hsl(182, 88%, 56%, 0.38);            /* teal, mid-right */
-  --fs-mesh-4: hsl(36, 96%, 62%, 0.40);             /* warm amber, bottom-left */
+  --fs-mesh-1: hsl(233, 94%, 64%, 0.25);            /* indigo, top-left */
+  --fs-mesh-2: hsl(330, 92%, 70%, 0.24);            /* pink, bottom-right */
+  --fs-mesh-3: hsl(182, 88%, 56%, 0.23);            /* teal, mid-right */
+  --fs-mesh-4: hsl(36, 96%, 62%, 0.24);             /* warm amber, bottom-left */
   --fs-mesh-opacity: 1;                             /* master dimmer for the whole mesh */
-  --fs-mesh-grain-opacity: 0.045;                   /* how much film grain sits over the blobs */
+  --fs-mesh-grain-opacity: 0.03;                   /* how much film grain sits over the blobs */
   --fs-mesh-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
   --fs-mesh:
     radial-gradient(104vw 96vw at 0% -10%, var(--fs-mesh-1) 0%, transparent 100%),
@@ -559,57 +573,91 @@
 
   /* @tone-tokens:dark */
   --fs-tone-accent: hsl(233, 94%, 80%);             /* indigo, the brand hue: primary emphasis */
-  --fs-tone-accent-soft: hsl(233, 66%, 36%, 0.48);
-  --fs-tone-accent-edge: hsl(233, 82%, 74%, 0.42);
+  --fs-tone-accent-soft: hsl(233, 82%, 62%, 0.12);
+  --fs-tone-accent-emphasis: hsl(233, 70%, 46%, 0.28);
+  --fs-tone-accent-edge: hsl(233, 82%, 74%, 0.32);
   --fs-tone-accent-glow: hsl(233, 88%, 64%, 0.30);
 
   --fs-tone-ok: hsl(152, 94%, 80%);                 /* green: something is working */
-  --fs-tone-ok-soft: hsl(152, 66%, 36%, 0.48);
-  --fs-tone-ok-edge: hsl(152, 82%, 74%, 0.42);
+  --fs-tone-ok-soft: hsl(152, 82%, 62%, 0.12);
+  --fs-tone-ok-emphasis: hsl(152, 70%, 46%, 0.28);
+  --fs-tone-ok-edge: hsl(152, 82%, 74%, 0.32);
   --fs-tone-ok-glow: hsl(152, 88%, 64%, 0.30);
 
   --fs-tone-info: hsl(205, 94%, 80%);               /* blue: neutral reporting */
-  --fs-tone-info-soft: hsl(205, 66%, 36%, 0.48);
-  --fs-tone-info-edge: hsl(205, 82%, 74%, 0.42);
+  --fs-tone-info-soft: hsl(205, 82%, 62%, 0.12);
+  --fs-tone-info-emphasis: hsl(205, 70%, 46%, 0.28);
+  --fs-tone-info-edge: hsl(205, 82%, 74%, 0.32);
   --fs-tone-info-glow: hsl(205, 88%, 64%, 0.30);
 
   --fs-tone-warn: hsl(36, 94%, 80%);                /* amber: there is something for you to do */
-  --fs-tone-warn-soft: hsl(36, 66%, 36%, 0.48);
-  --fs-tone-warn-edge: hsl(36, 82%, 74%, 0.42);
+  --fs-tone-warn-soft: hsl(36, 82%, 62%, 0.12);
+  --fs-tone-warn-emphasis: hsl(36, 70%, 46%, 0.28);
+  --fs-tone-warn-edge: hsl(36, 82%, 74%, 0.32);
   --fs-tone-warn-glow: hsl(36, 88%, 64%, 0.30);
 
   --fs-tone-danger: hsl(356, 94%, 80%);             /* red: reserved for real failure */
-  --fs-tone-danger-soft: hsl(356, 66%, 36%, 0.48);
-  --fs-tone-danger-edge: hsl(356, 82%, 74%, 0.42);
+  --fs-tone-danger-soft: hsl(356, 82%, 62%, 0.12);
+  --fs-tone-danger-emphasis: hsl(356, 70%, 46%, 0.28);
+  --fs-tone-danger-edge: hsl(356, 82%, 74%, 0.32);
   --fs-tone-danger-glow: hsl(356, 88%, 64%, 0.30);
 
   --fs-tone-violet: hsl(268, 94%, 80%);             /* violet: work the client did themselves */
-  --fs-tone-violet-soft: hsl(268, 66%, 36%, 0.48);
-  --fs-tone-violet-edge: hsl(268, 82%, 74%, 0.42);
+  --fs-tone-violet-soft: hsl(268, 82%, 62%, 0.12);
+  --fs-tone-violet-emphasis: hsl(268, 70%, 46%, 0.28);
+  --fs-tone-violet-edge: hsl(268, 82%, 74%, 0.32);
   --fs-tone-violet-glow: hsl(268, 88%, 64%, 0.30);
 
   --fs-tone-pink: hsl(330, 94%, 80%);               /* pink: audience and reach */
-  --fs-tone-pink-soft: hsl(330, 66%, 36%, 0.48);
-  --fs-tone-pink-edge: hsl(330, 82%, 74%, 0.42);
+  --fs-tone-pink-soft: hsl(330, 82%, 62%, 0.12);
+  --fs-tone-pink-emphasis: hsl(330, 70%, 46%, 0.28);
+  --fs-tone-pink-edge: hsl(330, 82%, 74%, 0.32);
   --fs-tone-pink-glow: hsl(330, 88%, 64%, 0.30);
 
   --fs-tone-teal: hsl(182, 94%, 80%);               /* teal: scheduling and time */
-  --fs-tone-teal-soft: hsl(182, 66%, 36%, 0.48);
-  --fs-tone-teal-edge: hsl(182, 82%, 74%, 0.42);
+  --fs-tone-teal-soft: hsl(182, 82%, 62%, 0.12);
+  --fs-tone-teal-emphasis: hsl(182, 70%, 46%, 0.28);
+  --fs-tone-teal-edge: hsl(182, 82%, 74%, 0.32);
   --fs-tone-teal-glow: hsl(182, 88%, 64%, 0.30);
 
   --fs-tone-neutral: hsl(233, 22%, 84%);            /* off: not switched on yet */
-  --fs-tone-neutral-soft: hsl(233, 16%, 36%, 0.44);
-  --fs-tone-neutral-edge: hsl(233, 22%, 74%, 0.30);
+  --fs-tone-neutral-soft: hsl(233, 14%, 66%, 0.10);
+  --fs-tone-neutral-emphasis: hsl(233, 16%, 46%, 0.26);
+  --fs-tone-neutral-edge: hsl(233, 22%, 74%, 0.26);
   --fs-tone-neutral-glow: hsl(233, 22%, 64%, 0.12);
   /* @tone-tokens:end */
 
   /* ── Mesh backdrop — blooms bright enough for the glass to refract ── */
-  --fs-mesh-1: hsl(233, 90%, 46%, 0.60);            /* indigo, top-left */
-  --fs-mesh-2: hsl(268, 88%, 48%, 0.52);            /* violet, bottom-right */
-  --fs-mesh-3: hsl(182, 84%, 40%, 0.42);            /* teal, mid-right */
-  --fs-mesh-4: hsl(322, 82%, 44%, 0.30);            /* magenta, bottom-left */
-  --fs-mesh-grain-opacity: 0.06;                    /* how much film grain sits over the blobs */
+  --fs-mesh-1: hsl(233, 90%, 46%, 0.42);            /* indigo, top-left */
+  --fs-mesh-2: hsl(268, 88%, 48%, 0.36);            /* violet, bottom-right */
+  --fs-mesh-3: hsl(182, 84%, 40%, 0.29);            /* teal, mid-right */
+  --fs-mesh-4: hsl(322, 82%, 44%, 0.21);            /* magenta, bottom-left */
+  --fs-mesh-grain-opacity: 0.03;                    /* how much film grain sits over the blobs */
+}
+
+/* ─────────────────────────────────────────────
+   11b. LIQUID GLASS — THE LANDING MESH
+   The marketing pages are the one place where a
+   visitor has not asked to be here yet, so the
+   background has to lose. One soft indigo bloom
+   behind the hero card, a whisper top-left and a
+   faint tint low on the page; no pink, no amber.
+   Same geometry as the app, different paint.
+   ───────────────────────────────────────────── */
+.fs-mesh-backdrop[data-variant='landing'] {
+  --fs-mesh-1: hsl(233, 60%, 66%, 0.34);            /* whisper behind the headline */
+  --fs-mesh-2: hsl(248, 42%, 70%, 0.22);            /* faint tint, low on the page */
+  --fs-mesh-3: hsl(233, 62%, 64%, 0.58);            /* the one bloom, behind the hero card */
+  --fs-mesh-4: transparent;                         /* no amber on marketing */
+  --fs-mesh-grain-opacity: 0.02;                    /* barely there, just enough to stop banding */
+}
+
+.dark .fs-mesh-backdrop[data-variant='landing'] {
+  --fs-mesh-1: hsl(233, 62%, 44%, 0.57);            /* whisper behind the headline */
+  --fs-mesh-2: hsl(248, 48%, 42%, 0.33);            /* faint tint, low on the page */
+  --fs-mesh-3: hsl(233, 60%, 46%, 0.73);            /* the one bloom, behind the hero card */
+  --fs-mesh-4: transparent;                         /* no magenta on marketing */
+  --fs-mesh-grain-opacity: 0.02;                    /* barely there, just enough to stop banding */
 }
 
 /* ─────────────────────────────────────────────

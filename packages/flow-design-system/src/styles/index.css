@@ -214,11 +214,20 @@
 }
 
 /* ── Tone-tinted tile ───────────────────────────────────────────────────────
-   Pair with .fs-glass. The tone wash is a gradient, not a flat fill, so the
-   tile reads as tinted glass rather than a coloured box. It fades out towards
-   the bottom-right, which is where the least important text sits. */
+   Pair with .fs-glass.
+
+   A row of five tiles, each one filled with its own colour, is a chart of the
+   palette rather than a dashboard: everything shouts, so nothing is heard. The
+   default tile is therefore neutral glass. The tone survives in three quiet
+   places — the value ink, the icon chip and a thin rim — and the wash is a
+   whisper that fades out within the first corner.
+
+   One tile at a time is allowed to be loud, through `--emphasis`. That is the
+   tile with something the client has to do, and it is the only one that gets
+   the full wash and the bloom underneath. */
 .fs-glass-tile {
   --fs-tile-wash: transparent;
+  --fs-tile-wash-strong: transparent;
   --fs-tile-edge: var(--fs-glass-edge);
   --fs-tile-glow: transparent;
   --fs-tile-ink: var(--fs-ink);
@@ -229,26 +238,43 @@
   border-radius: var(--fs-radius-glass-inner);
   padding: var(--fs-space-4);
   text-align: left;
-  box-shadow:
-    var(--fs-glass-shadow),
-    0 12px 32px -6px var(--fs-tile-glow);
+  box-shadow: var(--fs-glass-shadow);
 
   /* The value sizes itself against the tile, not the viewport: the same tile
      is 170px wide four-up on a desktop and full width on a phone. */
   container-type: inline-size;
 }
 
-/* The wash runs corner to corner: full strength at the top-left, gone by the
-   bottom-right, where the note sits. That diagonal is what makes a tile read as
-   tinted glass rather than a coloured box. */
+/* The one loud tile. `data-tone="attention"` gets it without asking, because
+   "there is something for you to do" is exactly the case emphasis is for and
+   the client dashboard should not have to remember to pass the prop. */
+.fs-glass-tile--emphasis,
+.fs-glass-tile[data-tone='attention'] {
+  box-shadow:
+    var(--fs-glass-shadow),
+    0 12px 32px -6px var(--fs-tile-glow);
+}
+
+/* The default wash only ever touches the top-left corner and is gone by 40%,
+   so it reads as light catching the edge of the glass rather than as a fill. */
 .fs-glass-tile::before,
 .fs-glass--toned::before {
   background:
+    linear-gradient(146deg, var(--fs-tile-wash) 0%, transparent 40%),
+    linear-gradient(to bottom, var(--fs-glass-specular) 0 1px, transparent 1px),
+    linear-gradient(135deg, var(--fs-glass-highlight) 0%, transparent 46%);
+}
+
+/* Emphasis: the wash carries across the whole tile, the way every tile used to.
+   It earns that by being the only one on the page doing it. */
+.fs-glass-tile--emphasis::before,
+.fs-glass-tile[data-tone='attention']::before {
+  background:
     linear-gradient(
       146deg,
-      var(--fs-tile-wash) 0%,
-      var(--fs-tile-wash) 16%,
-      transparent 92%
+      var(--fs-tile-wash-strong) 0%,
+      var(--fs-tile-wash-strong) 14%,
+      transparent 88%
     ),
     linear-gradient(to bottom, var(--fs-glass-specular) 0 1px, transparent 1px),
     linear-gradient(135deg, var(--fs-glass-highlight) 0%, transparent 46%);
@@ -275,6 +301,7 @@
 .fs-glass-tile[data-tone='accent'],
 .fs-glass--toned[data-tone='accent'] {
   --fs-tile-wash: var(--fs-tone-accent-soft);
+  --fs-tile-wash-strong: var(--fs-tone-accent-emphasis);
   --fs-tile-edge: var(--fs-tone-accent-edge);
   --fs-tile-glow: var(--fs-tone-accent-glow);
   --fs-tile-ink: var(--fs-tone-accent);
@@ -283,6 +310,7 @@
 .fs-glass-tile[data-tone='ok'],
 .fs-glass--toned[data-tone='ok'] {
   --fs-tile-wash: var(--fs-tone-ok-soft);
+  --fs-tile-wash-strong: var(--fs-tone-ok-emphasis);
   --fs-tile-edge: var(--fs-tone-ok-edge);
   --fs-tile-glow: var(--fs-tone-ok-glow);
   --fs-tile-ink: var(--fs-tone-ok);
@@ -291,6 +319,7 @@
 .fs-glass-tile[data-tone='info'],
 .fs-glass--toned[data-tone='info'] {
   --fs-tile-wash: var(--fs-tone-info-soft);
+  --fs-tile-wash-strong: var(--fs-tone-info-emphasis);
   --fs-tile-edge: var(--fs-tone-info-edge);
   --fs-tile-glow: var(--fs-tone-info-glow);
   --fs-tile-ink: var(--fs-tone-info);
@@ -299,6 +328,7 @@
 .fs-glass-tile[data-tone='warn'],
 .fs-glass--toned[data-tone='warn'] {
   --fs-tile-wash: var(--fs-tone-warn-soft);
+  --fs-tile-wash-strong: var(--fs-tone-warn-emphasis);
   --fs-tile-edge: var(--fs-tone-warn-edge);
   --fs-tile-glow: var(--fs-tone-warn-glow);
   --fs-tile-ink: var(--fs-tone-warn);
@@ -307,6 +337,7 @@
 .fs-glass-tile[data-tone='danger'],
 .fs-glass--toned[data-tone='danger'] {
   --fs-tile-wash: var(--fs-tone-danger-soft);
+  --fs-tile-wash-strong: var(--fs-tone-danger-emphasis);
   --fs-tile-edge: var(--fs-tone-danger-edge);
   --fs-tile-glow: var(--fs-tone-danger-glow);
   --fs-tile-ink: var(--fs-tone-danger);
@@ -315,6 +346,7 @@
 .fs-glass-tile[data-tone='violet'],
 .fs-glass--toned[data-tone='violet'] {
   --fs-tile-wash: var(--fs-tone-violet-soft);
+  --fs-tile-wash-strong: var(--fs-tone-violet-emphasis);
   --fs-tile-edge: var(--fs-tone-violet-edge);
   --fs-tile-glow: var(--fs-tone-violet-glow);
   --fs-tile-ink: var(--fs-tone-violet);
@@ -323,6 +355,7 @@
 .fs-glass-tile[data-tone='pink'],
 .fs-glass--toned[data-tone='pink'] {
   --fs-tile-wash: var(--fs-tone-pink-soft);
+  --fs-tile-wash-strong: var(--fs-tone-pink-emphasis);
   --fs-tile-edge: var(--fs-tone-pink-edge);
   --fs-tile-glow: var(--fs-tone-pink-glow);
   --fs-tile-ink: var(--fs-tone-pink);
@@ -331,6 +364,7 @@
 .fs-glass-tile[data-tone='teal'],
 .fs-glass--toned[data-tone='teal'] {
   --fs-tile-wash: var(--fs-tone-teal-soft);
+  --fs-tile-wash-strong: var(--fs-tone-teal-emphasis);
   --fs-tile-edge: var(--fs-tone-teal-edge);
   --fs-tile-glow: var(--fs-tone-teal-glow);
   --fs-tile-ink: var(--fs-tone-teal);
@@ -339,6 +373,7 @@
 .fs-glass-tile[data-tone='neutral'],
 .fs-glass--toned[data-tone='neutral'] {
   --fs-tile-wash: var(--fs-tone-neutral-soft);
+  --fs-tile-wash-strong: var(--fs-tone-neutral-emphasis);
   --fs-tile-edge: var(--fs-tone-neutral-edge);
   --fs-tile-glow: var(--fs-tone-neutral-glow);
   --fs-tile-ink: var(--fs-tone-neutral);
@@ -347,6 +382,7 @@
 .fs-glass-tile[data-palette='accent'],
 .fs-glass--toned[data-palette='accent'] {
   --fs-tile-wash: var(--fs-tone-accent-soft);
+  --fs-tile-wash-strong: var(--fs-tone-accent-emphasis);
   --fs-tile-edge: var(--fs-tone-accent-edge);
   --fs-tile-glow: var(--fs-tone-accent-glow);
   --fs-tile-ink: var(--fs-tone-accent);
@@ -355,6 +391,7 @@
 .fs-glass-tile[data-palette='ok'],
 .fs-glass--toned[data-palette='ok'] {
   --fs-tile-wash: var(--fs-tone-ok-soft);
+  --fs-tile-wash-strong: var(--fs-tone-ok-emphasis);
   --fs-tile-edge: var(--fs-tone-ok-edge);
   --fs-tile-glow: var(--fs-tone-ok-glow);
   --fs-tile-ink: var(--fs-tone-ok);
@@ -363,6 +400,7 @@
 .fs-glass-tile[data-palette='info'],
 .fs-glass--toned[data-palette='info'] {
   --fs-tile-wash: var(--fs-tone-info-soft);
+  --fs-tile-wash-strong: var(--fs-tone-info-emphasis);
   --fs-tile-edge: var(--fs-tone-info-edge);
   --fs-tile-glow: var(--fs-tone-info-glow);
   --fs-tile-ink: var(--fs-tone-info);
@@ -371,6 +409,7 @@
 .fs-glass-tile[data-palette='warn'],
 .fs-glass--toned[data-palette='warn'] {
   --fs-tile-wash: var(--fs-tone-warn-soft);
+  --fs-tile-wash-strong: var(--fs-tone-warn-emphasis);
   --fs-tile-edge: var(--fs-tone-warn-edge);
   --fs-tile-glow: var(--fs-tone-warn-glow);
   --fs-tile-ink: var(--fs-tone-warn);
@@ -379,6 +418,7 @@
 .fs-glass-tile[data-palette='danger'],
 .fs-glass--toned[data-palette='danger'] {
   --fs-tile-wash: var(--fs-tone-danger-soft);
+  --fs-tile-wash-strong: var(--fs-tone-danger-emphasis);
   --fs-tile-edge: var(--fs-tone-danger-edge);
   --fs-tile-glow: var(--fs-tone-danger-glow);
   --fs-tile-ink: var(--fs-tone-danger);
@@ -387,6 +427,7 @@
 .fs-glass-tile[data-palette='violet'],
 .fs-glass--toned[data-palette='violet'] {
   --fs-tile-wash: var(--fs-tone-violet-soft);
+  --fs-tile-wash-strong: var(--fs-tone-violet-emphasis);
   --fs-tile-edge: var(--fs-tone-violet-edge);
   --fs-tile-glow: var(--fs-tone-violet-glow);
   --fs-tile-ink: var(--fs-tone-violet);
@@ -395,6 +436,7 @@
 .fs-glass-tile[data-palette='pink'],
 .fs-glass--toned[data-palette='pink'] {
   --fs-tile-wash: var(--fs-tone-pink-soft);
+  --fs-tile-wash-strong: var(--fs-tone-pink-emphasis);
   --fs-tile-edge: var(--fs-tone-pink-edge);
   --fs-tile-glow: var(--fs-tone-pink-glow);
   --fs-tile-ink: var(--fs-tone-pink);
@@ -403,6 +445,7 @@
 .fs-glass-tile[data-palette='teal'],
 .fs-glass--toned[data-palette='teal'] {
   --fs-tile-wash: var(--fs-tone-teal-soft);
+  --fs-tile-wash-strong: var(--fs-tone-teal-emphasis);
   --fs-tile-edge: var(--fs-tone-teal-edge);
   --fs-tile-glow: var(--fs-tone-teal-glow);
   --fs-tile-ink: var(--fs-tone-teal);
@@ -411,6 +454,7 @@
 .fs-glass-tile[data-palette='neutral'],
 .fs-glass--toned[data-palette='neutral'] {
   --fs-tile-wash: var(--fs-tone-neutral-soft);
+  --fs-tile-wash-strong: var(--fs-tone-neutral-emphasis);
   --fs-tile-edge: var(--fs-tone-neutral-edge);
   --fs-tile-glow: var(--fs-tone-neutral-glow);
   --fs-tile-ink: var(--fs-tone-neutral);
@@ -444,7 +488,9 @@
   width: 32px;
   height: 32px;
   border-radius: 999px;
-  background: var(--fs-tile-wash);
+  /* The chip keeps the fuller colour: it is 32px, so a whisper at that size
+     would be invisible, and it is one of the three places the tone survives. */
+  background: var(--fs-tile-wash-strong);
   box-shadow:
     inset 0 0 0 1px var(--fs-tile-edge),
     inset 0 1px 0 0 var(--fs-glass-specular);
@@ -553,15 +599,18 @@ a.fs-glass-tile {
   opacity: var(--fs-mesh-grain-opacity);
 }
 
-/* Variants change how loud the atmosphere is, never what colours it uses.
-   The app is where someone works for an hour, so it is the quiet one — but
-   still loud enough to be a gradient rather than a tint. */
+/* Variants change how loud the atmosphere is. Landing is the quietest of the
+   three: it is the one page where the visitor has not asked to be here, so the
+   headline and the hero card have to win before the background gets a turn.
+   The app can be livelier, because by then someone has chosen to be looking at
+   it. Note this multiplies the variant's own blob alphas in brand.css — both
+   dials are real, and the product of the two is what you see. */
 .fs-mesh-backdrop[data-variant='app']::before {
   opacity: calc(var(--fs-mesh-opacity) * 0.88);
 }
 
 .fs-mesh-backdrop[data-variant='landing']::before {
-  opacity: var(--fs-mesh-opacity);
+  opacity: calc(var(--fs-mesh-opacity) * 0.45);
 }
 
 .fs-mesh-backdrop[data-variant='editor']::before {

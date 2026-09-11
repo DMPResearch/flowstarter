@@ -14,6 +14,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import { Check } from 'lucide-react';
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
 import { cn } from '@/lib/utils';
 import { PROJECT_STAGES, currentStage, stageStatus } from './project-progress';
@@ -85,24 +86,30 @@ export function ProjectStateStepper({
               data-status={status}
               aria-current={status === 'current' ? 'step' : undefined}
               className={cn(
-                'shrink-0 snap-start rounded-[var(--fs-radius-glass-inner)] border px-3 py-2.5',
+                'flex shrink-0 items-center justify-center gap-1.5',
+                'snap-start rounded-[var(--fs-radius-glass-inner)] border px-3 py-2.5',
                 'text-center text-xs font-semibold transition-colors',
                 'sm:flex-1 sm:shrink',
-                // Three tones, one vocabulary with the tiles above: accent is
-                // "you are here", ok is "done", neutral is "not yet". The pill
-                // used to borrow the landing page's button gradient, which tied
-                // a progress indicator to a marketing CTA and put white text on
-                // a light fill in dark mode.
-                // The live step carries a second edge and a glow so it still
-                // wins the row when five done steps are sitting next to it.
+                // Only one pill is filled, and it is the one the client is on.
+                // Five green pills next to it made the row read as a wall of
+                // colour where every step was shouting equally; a finished step
+                // does not need a fill to say it is finished, it needs a tick.
                 status === 'current' &&
-                  'border-[var(--fs-tone-accent-edge)] bg-[var(--fs-tone-accent-soft)] text-[var(--fs-tone-accent)] shadow-[0_0_0_1px_var(--fs-tone-accent-edge),0_14px_32px_-14px_var(--fs-tone-accent-glow)]',
+                  'border-[var(--fs-tone-accent-edge)] bg-[var(--fs-tone-accent-emphasis)] text-[var(--fs-tone-accent)] shadow-[0_0_0_1px_var(--fs-tone-accent-edge),0_14px_32px_-14px_var(--fs-tone-accent-glow)]',
                 status === 'done' &&
-                  'border-[var(--fs-tone-ok-edge)] bg-[var(--fs-tone-ok-soft)] text-[var(--fs-tone-ok)]',
+                  'border-[var(--fs-glass-edge)] bg-[var(--fs-tone-neutral-soft)] text-[var(--fs-ink)]',
                 status === 'upcoming' &&
                   'border-[var(--fs-tone-neutral-edge)] bg-[var(--fs-tone-neutral-soft)] text-[var(--fs-tone-neutral)]'
               )}
             >
+              {status === 'done' && (
+                <Check
+                  size={14}
+                  strokeWidth={3}
+                  aria-hidden="true"
+                  className="shrink-0 text-[var(--fs-tone-ok)]"
+                />
+              )}
               {stage.label}
             </li>
           );

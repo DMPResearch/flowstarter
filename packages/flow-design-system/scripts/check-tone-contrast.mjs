@@ -23,6 +23,10 @@
  *   - the value, in the tone ink
  *   - the label and note, in `--fs-glass-ink-dim`
  *
+ * and it checks each of those on both washes, because a tile wears the whisper
+ * `-soft` by default and the much stronger `-emphasis` when it is the one thing
+ * on the page that needs acting on.
+ *
  * Run: node packages/flow-design-system/scripts/check-tone-contrast.mjs
  * Exits non-zero if any pair falls under 4.5:1.
  */
@@ -42,15 +46,19 @@ function tonesFor(mode) {
   if (start < 0) throw new Error(`no @tone-tokens:${mode} marker in brand.css`);
   const block = css.slice(start, css.indexOf('/* @tone-tokens:end */', start));
 
+  // Both washes matter. `-soft` is what nearly every tile wears, `-emphasis`
+  // is the loud one, and a tone that only reads on one of them is not safe.
+  const KINDS = { '-soft': 'soft', '-emphasis': 'emphasis' };
+
   const tones = {};
   for (const [, name, value] of block.matchAll(
     /--fs-tone-([a-z-]+)\s*:\s*([^;]+);/g,
   )) {
-    const soft = name.endsWith('-soft');
-    if (!soft && name.includes('-')) continue; // -edge and -glow are not text
-    const tone = soft ? name.slice(0, -'-soft'.length) : name;
+    const suffix = Object.keys(KINDS).find((k) => name.endsWith(k));
+    if (!suffix && name.includes('-')) continue; // -edge and -glow are not text
+    const tone = suffix ? name.slice(0, -suffix.length) : name;
     tones[tone] ??= {};
-    tones[tone][soft ? 'soft' : 'ink'] = value.trim();
+    tones[tone][suffix ? KINDS[suffix] : 'ink'] = value.trim();
   }
   return tones;
 }
@@ -65,16 +73,25 @@ for (const mode of ['light', 'dark']) {
   const dim = parseColor(token('--fs-glass-ink-dim', mode));
   const surfaces = extremes(mode);
 
-  for (const [tone, { ink, soft }] of Object.entries(tonesFor(mode))) {
+  for (const [tone, { ink, soft, emphasis }] of Object.entries(
+    tonesFor(mode),
+  )) {
     let worst = null;
 
     for (const surface of surfaces) {
-      // tone wash over the glass over the mesh over the page.
-      const tile = over(parseColor(soft), over(glass, surface.rgb));
-      const value = ratio(parseColor(ink), tile);
-      const note = ratio(over(dim, tile), tile);
-      const low = Math.min(value, note);
-      if (!worst || low < worst.low) worst = { ...surface, value, note, low };
+      for (const [wash, which] of [
+        [soft, 'default'],
+        [emphasis, 'emphasis'],
+      ]) {
+        // tone wash over the glass over the mesh over the page.
+        const tile = over(parseColor(wash), over(glass, surface.rgb));
+        const value = ratio(parseColor(ink), tile);
+        const note = ratio(over(dim, tile), tile);
+        const low = Math.min(value, note);
+        if (!worst || low < worst.low) {
+          worst = { ...surface, value, note, low, which };
+        }
+      }
     }
 
     if (worst.low < AA) failed = true;
@@ -84,6 +101,7 @@ for (const mode of ['light', 'dark']) {
       value: worst.value.toFixed(2),
       note: worst.note.toFixed(2),
       on: worst.name,
+      wash: worst.which,
       ok: worst.low >= AA ? 'pass' : 'FAIL',
     });
   }
@@ -92,11 +110,11 @@ for (const mode of ['light', 'dark']) {
 const width = Math.max(...rows.map((r) => r.tone.length));
 for (const r of rows) {
   console.log(
-    `${r.mode.padEnd(5)}  ${r.tone.padEnd(width)}  value ${r.value.padStart(5)}:1   label/note ${r.note.padStart(5)}:1   worst where the mesh is ${r.on.padEnd(9)}  ${r.ok}`,
+    `${r.mode.padEnd(5)}  ${r.tone.padEnd(width)}  value ${r.value.padStart(5)}:1   label/note ${r.note.padStart(5)}:1   worst on the ${r.wash.padEnd(8)} wash where the mesh is ${r.on.padEnd(9)}  ${r.ok}`,
   );
 }
 console.log(
-  `\n${rows.length} tones checked against ${AA}:1, each over the brightest and the darkest point of the mesh.`,
+  `\n${rows.length} tones checked against ${AA}:1, on both washes, each over the brightest and the darkest point of the mesh.`,
 );
 
 if (failed) {

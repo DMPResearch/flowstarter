@@ -49,10 +49,24 @@ legible rather than muddy.
 needs more weight than the same text on the flat page behind it. Use it for
 labels and notes inside glass; use `--fs-ink-dim` everywhere else.
 
-Nine tones, each with four tokens: `--fs-tone-T` (ink), `--fs-tone-T-soft`
-(tint wash), `--fs-tone-T-edge` and `--fs-tone-T-glow`. The tones are `accent`
-(233), `ok` (152), `info` (205), `warn` (36), `danger` (356), `violet` (268),
-`pink` (330), `teal` (182) and `neutral`.
+Nine tones, each with five tokens: `--fs-tone-T` (ink), `--fs-tone-T-soft`
+(the default wash), `--fs-tone-T-emphasis` (the loud wash), `--fs-tone-T-edge`
+and `--fs-tone-T-glow`. The tones are `accent` (233), `ok` (152), `info` (205),
+`warn` (36), `danger` (356), `violet` (268), `pink` (330), `teal` (182) and
+`neutral`.
+
+**A grid of tiles is not a colour chart.** Five tiles each filled with their own
+colour is a picture of the palette, not a dashboard: everything shouts, so
+nothing is heard. The default tile is therefore neutral glass, and the tone
+survives in three quiet places — the value ink, the icon chip and a thin rim at
+0.35 alpha. `--fs-tone-T-soft` is a whisper (0.10 light, 0.12 dark) that fades
+out within the first corner.
+
+One tile at a time may be loud. `<StatTile emphasis>` and the
+`.fs-glass-tile--emphasis` class swap in `--fs-tone-T-emphasis` across the whole
+tile and add the bloom underneath. `data-tone="attention"` gets the same
+treatment without asking. Use it for the thing the reader has to act on; a page
+where every tile asks for emphasis has none.
 
 Ink lightness is set per mode so that the value on a tile clears 4.5:1 against
 its own wash, composited over the glass, the mesh and the page. Run
@@ -73,7 +87,16 @@ Mesh: `--fs-mesh-1` to `--fs-mesh-4`, the composed `--fs-mesh` radial stack,
 `--fs-mesh-opacity`, and `--fs-mesh-grain` with `--fs-mesh-grain-opacity`.
 Four large overlapping blobs, each wide enough to cross most of the viewport:
 indigo, pink, teal and warm amber in light; indigo, violet, teal and magenta in
-dark. The grain is a tiny SVG noise tile laid over the top, which is what stops
+dark.
+
+The landing variant overrides `--fs-mesh-1..4` on
+`.fs-mesh-backdrop[data-variant='landing']`: one soft indigo bloom behind the
+hero card, a whisper top-left, a faint tint low on the page, and no pink or
+amber at all. Marketing is the one place a visitor has not asked to be, so the
+headline and the hero card have to win before the background gets a turn. Note
+that the variant dimmer in index.css multiplies these alphas — landing runs at
+0.45 of the master and the app at 0.88, so the product of the two dials is what
+you actually see. The grain is a tiny SVG noise tile laid over the top, which is what stops
 gradients this wide from banding on an 8-bit display.
 
 Radii: `--fs-radius-glass` (22px) and `--fs-radius-glass-inner`.

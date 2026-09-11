@@ -2,9 +2,10 @@
  * One number, said once.
  *
  * A tile is an eyebrow label, a big tabular number and a line of plain English
- * under it, on tinted glass. The tone is the only thing that changes between
- * tiles, and it colours the value rather than the whole box, so a grid of them
- * reads as one surface with a few accents instead of a bag of coloured cards.
+ * under it, on glass. The tone colours the value, the icon chip and a thin rim,
+ * and leaves the tile itself alone, so a grid of them reads as one surface with
+ * a few accents instead of a bag of coloured cards. `emphasis` is the exception
+ * and is meant to be used once per page.
  *
  * The link and the static tile render the same children, in the same order,
  * with the same classes. Only the wrapper element differs, so a test that
@@ -31,8 +32,14 @@ export interface StatTileProps
   value: ReactNode;
   /** One line of plain English under the value. */
   note?: ReactNode;
-  /** Tints the value and the edge. Defaults to neutral. */
+  /** Tints the value, the icon chip and the edge. Defaults to neutral. */
   tone?: Tone;
+  /**
+   * Turns the whisper wash up to the full tone and adds the bloom under the
+   * tile. Meant for one tile on a page: the thing the reader has to act on.
+   * A grid where every tile asks for emphasis is a grid with none.
+   */
+  emphasis?: boolean;
   /** A Lucide icon, sized by the caller. Decorative only. */
   icon?: ReactNode;
   /** When set the tile becomes a link and picks up the hover lift. */
@@ -51,6 +58,7 @@ export const StatTile = forwardRef<HTMLElement, StatTileProps>(
       value,
       note,
       tone = 'neutral',
+      emphasis = false,
       icon,
       href,
       linkComponent,
@@ -64,6 +72,7 @@ export const StatTile = forwardRef<HTMLElement, StatTileProps>(
       'fs-glass-tile',
       'fs-glass-ring',
       href ? 'fs-glass--interactive' : '',
+      emphasis ? 'fs-glass-tile--emphasis' : '',
       className,
     ]
       .filter(Boolean)
