@@ -462,6 +462,31 @@ export async function deploySite(opts: {
     })
     .eq('id', workspace.id);
 
+  // Tell the client, once per version. Imported here rather than at the top of
+  // the file for two reasons: `site-live-email` reaches back through
+  // `site-urls` into this module for `previewDomainForSlug`, and it pulls in
+  // the `server-only` mailer, which nothing that merely wants a site URL
+  // should have to carry. It cannot throw (see `notifyClientOnce`), and the
+  // catch is only for the import itself.
+  try {
+    const { notifySiteLive } = await import('./site-live-email');
+    await notifySiteLive({
+      supabase: opts.supabase,
+      workspaceId: workspace.id,
+      version: nextVersion,
+      slug: siteSlug,
+      primaryDomain,
+      deploymentId: deploy.id,
+    });
+  } catch (e) {
+    // A deploy that worked is not allowed to be reported as failed because an
+    // email did not go out.
+    console.error(
+      '[deploySite] site-live email could not be attempted:',
+      e instanceof Error ? e.message : e
+    );
+  }
+
   return {
     deploymentId: deploy.id,
     version: nextVersion,

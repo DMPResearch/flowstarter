@@ -5,6 +5,8 @@ import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import { loadFunnelPreview } from '@/lib/hosting/funnel-previews';
 import type { Json } from '@/lib/database.types';
+import { depositReceivedEmail } from '@/lib/email-templates/client-notices';
+import { notifyClientOnce } from './client-notifications';
 import { depositBuildPayload, derivePreviewIntent } from './preview-intent';
 
 const UUID =
@@ -37,7 +39,38 @@ export async function enqueueFullBuildFromDeposit(
   if (!workspaceId || !UUID.test(workspaceId))
     throw new Error('Deposit is missing a valid workspaceId');
 
-  return verifyDepositAndEnqueue(event, paymentIntent, workspaceId);
+  const enqueued = await verifyDepositAndEnqueue(
+    event,
+    paymentIntent,
+    workspaceId
+  );
+  await notifyDepositPaid(workspaceId);
+  return enqueued;
+}
+
+/**
+ * "Your deposit is in and your build has started", to the client.
+ *
+ * It lives on the two concierge entry points rather than in the shared
+ * `enqueueBuildAndAdvance` below on purpose: the guest-checkout path goes
+ * through that same function and sends its own, richer welcome (it has to
+ * carry credentials for an account that did not exist a second ago). Hanging
+ * this off the shared helper would mail a guest twice.
+ *
+ * Never throws, by `notifyClientOnce`'s contract, so a mail problem cannot
+ * fail a webhook whose money side has already succeeded.
+ */
+async function notifyDepositPaid(workspaceId: string): Promise<void> {
+  await notifyClientOnce({
+    workspaceId,
+    notification: 'deposit_paid',
+    render: (client) =>
+      depositReceivedEmail({
+        dashboardUrl: client.dashboardUrl,
+        clientName: client.clientName,
+        businessName: client.businessName,
+      }),
+  });
 }
 
 /**
@@ -168,13 +201,15 @@ export async function enqueueFullBuildFromDepositInvoice(
     throw new Error('Deposit invoice reports no amount paid');
   }
 
-  return enqueueBuildAndAdvance({
+  const enqueued = await enqueueBuildAndAdvance({
     supabase,
     workspaceId,
     eventId: event.id,
     source: 'deposit_invoice',
     workspaceUpdate: {},
   });
+  await notifyDepositPaid(workspaceId);
+  return enqueued;
 }
 
 type SupabaseServiceClient = ReturnType<typeof createSupabaseServiceRoleClient>;

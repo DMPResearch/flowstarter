@@ -27,6 +27,7 @@ import { missingGenerationPrerequisites } from '@/lib/discovery/generation-avail
 import { createJob, getJob, updateJob } from '@/lib/discovery/live-jobs';
 import { isTransientPipelineFailure } from '@/lib/discovery/preview-failure';
 import { previewUrlForClient } from '@/lib/discovery/local-preview-frame';
+import { sendPreviewReadyEmail } from '@/lib/discovery/preview-ready-email';
 import { readPreviewWorkspaceFiles } from '@/lib/discovery/preview-workspace';
 import { createRenderedPreviewAudit } from '@/lib/discovery/rendered-preview-audit';
 import { rememberClaimablePreview } from '@/lib/flowstarter/claim';
@@ -51,6 +52,16 @@ export const dynamic = 'force-dynamic';
 const SpecSchema = z.object({
   businessName: z.string().max(200).optional().default(''),
   fullName: z.string().max(200).optional().default(''),
+  /**
+   * Where to send "your preview is ready". The intake has asked for this in
+   * as many words since the wizard existed; it was simply never forwarded to
+   * the route that knows when the preview is ready.
+   *
+   * Not `.email()`: a typo in one field must cost the email, not the whole
+   * preview. `sendPreviewReadyEmail` declines to send to anything that does
+   * not look like an address.
+   */
+  email: z.string().max(320).optional().default(''),
   description: z.string().min(1).max(5000),
   industry: z.string().max(200).optional().default(''),
   targetAudience: z.string().max(500).optional().default(''),
@@ -453,6 +464,17 @@ export async function POST(req: NextRequest) {
   const ip = clientIp(req);
   const spec = parsed.data;
 
+  // Parked on the job, not passed down through the generator: the pipeline has
+  // no business knowing the visitor's address, and the only thing that needs
+  // it is the notification fired when this job turns ready.
+  updateJob(demoId, {
+    ...(spec.email.trim() ? { leadEmail: spec.email.trim() } : {}),
+    ...(spec.fullName.trim() ? { leadName: spec.fullName.trim() } : {}),
+    ...(spec.businessName.trim()
+      ? { businessName: spec.businessName.trim() }
+      : {}),
+  });
+
   // A generation that never settles is as bad as one that fails outright —
   // the wizard just polls a 'building' status forever. Imagery-enabled runs
   // have taken ~13-14 min; this gives real headroom before declaring one
@@ -846,6 +868,16 @@ export async function POST(req: NextRequest) {
         personalized: true,
         phase: 'Done, your site is ready',
       });
+      // The visitor was asked where to send this. Awaited rather than detached
+      // so the outcome is in the same log line ordering as the rest of the
+      // job; it cannot throw and it cannot fail the preview.
+      const previewEmail = await sendPreviewReadyEmail(demoId);
+      if (previewEmail !== 'sent' && previewEmail !== 'no_email') {
+        console.warn(
+          `[Flowstarter] preview ${demoId} is ready but the visitor was not ` +
+            `emailed: ${previewEmail}`
+        );
+      }
       logPreviewOutcome(demoId, 'ready', {
         tokensUsed: agents.tokensUsed,
         template: result.template?.slug,

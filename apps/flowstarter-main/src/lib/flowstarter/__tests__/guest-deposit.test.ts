@@ -459,6 +459,11 @@ describe('guest deposit provisioning', () => {
 
     await provisionGuestDeposit(event(), guestIntent());
 
+    // Exactly one, and this count is load-bearing: the concierge deposit paths
+    // now send their own "your deposit is in" through `notifyClientOnce`, and
+    // a guest goes through the same `verifyDepositAndEnqueue` they do. If that
+    // notice ever moved down into the shared enqueue, a guest would get this
+    // email plus a second one that tells them less.
     expect(emailMock).toHaveBeenCalledTimes(1);
     const sent = emailMock.mock.calls[0][0];
     expect(sent.to).toBe('ada@example.com');

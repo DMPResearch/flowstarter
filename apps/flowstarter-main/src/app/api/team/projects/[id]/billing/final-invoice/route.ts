@@ -12,6 +12,7 @@ import {
   resolveAmountMinor,
   sanitizeDaysUntilDue,
 } from '@/lib/billing/route-helpers';
+import { notifyBalanceInvoiceReady } from '@/lib/billing/balance-invoice-email';
 
 /**
  * POST /api/team/projects/[id]/billing/final-invoice
@@ -134,6 +135,19 @@ export async function POST(
     );
   }
 
+  // After the persist, never before: the client is told about an invoice the
+  // dashboard can also show them. Never throws, so an unreachable mailer
+  // cannot turn a created invoice into a 500 the operator retries.
+  const emailed = await notifyBalanceInvoiceReady({
+    workspaceId,
+    invoiceId: invoice.invoiceId,
+    hostedUrl: invoice.hostedUrl,
+    amountMinor,
+    currency: billing.currency,
+    daysUntilDue,
+    stripeEmailed: invoice.stripeEmailed,
+  });
+
   return NextResponse.json({
     invoice: {
       id: invoice.invoiceId,
@@ -141,6 +155,8 @@ export async function POST(
       status: invoice.status,
       amountMinor,
       currency: billing.currency,
+      stripeEmailed: invoice.stripeEmailed,
+      clientEmailed: emailed,
     },
   });
 }

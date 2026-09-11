@@ -179,9 +179,46 @@ describe('site link', () => {
       slug: 'acme',
       deployStatus: 'live',
       hosts: [],
+      env: { NODE_ENV: 'production' },
     });
     expect(link?.kind).toBe('preview');
     expect(link?.hostname.startsWith('acme.preview.')).toBe(true);
+  });
+
+  it('points at the local deploy agent when there is no preview host', () => {
+    // A full end-to-end run on one machine published the site to the local
+    // deploy agent and the dashboard still offered
+    // `<slug>.preview.flowstarter.dev`, a name that resolves nowhere. The one
+    // link the client was given was the only thing in the flow that did not
+    // work. `deployedSiteUrl` is what the deploy itself resolves, so the two
+    // can no longer disagree.
+    const link = resolveSiteLink({
+      slug: 'acme',
+      deployStatus: 'live',
+      hosts: [],
+      env: {
+        NODE_ENV: 'development',
+        FLOWSTARTER_LOCAL_SITE_BASE_URL: 'http://127.0.0.1:8842',
+      },
+    });
+    expect(link).toMatchObject({
+      kind: 'preview',
+      href: 'http://127.0.0.1:8842/acme/',
+      hostname: '127.0.0.1:8842/acme',
+    });
+  });
+
+  it('still prefers a real custom domain over the local agent', () => {
+    const link = resolveSiteLink({
+      slug: 'acme',
+      deployStatus: 'live',
+      hosts: [{ hostname: 'acmedental.ie', is_primary: true }],
+      env: {
+        NODE_ENV: 'development',
+        FLOWSTARTER_LOCAL_SITE_BASE_URL: 'http://127.0.0.1:8842',
+      },
+    });
+    expect(link).toMatchObject({ kind: 'live', href: 'https://acmedental.ie' });
   });
 
   it('offers nothing when there is no slug to derive from', () => {

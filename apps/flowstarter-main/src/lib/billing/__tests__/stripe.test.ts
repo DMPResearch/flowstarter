@@ -90,6 +90,11 @@ describe('StripeBilling.createDepositInvoice', () => {
         hosted_invoice_url: 'https://invoice.stripe.com/abc',
         status: 'open',
       })),
+      sendInvoice: vi.fn(async () => ({
+        id: 'in_final',
+        hosted_invoice_url: 'https://invoice.stripe.com/abc',
+        status: 'open',
+      })),
     };
     const invoiceItems = { create: vi.fn(async () => ({})) };
     const billing = new StripeBilling({
@@ -103,6 +108,7 @@ describe('StripeBilling.createDepositInvoice', () => {
     expect(out.invoiceId).toBe('in_final');
     expect(out.hostedUrl).toBe('https://invoice.stripe.com/abc');
     expect(out.status).toBe('open');
+    expect(out.stripeEmailed).toBe(true);
 
     const draftArg = (invoices.create as AnyMock).mock.calls[0]?.[0];
     expect(draftArg).toMatchObject({
@@ -122,12 +128,52 @@ describe('StripeBilling.createDepositInvoice', () => {
     });
 
     expect(invoices.finalizeInvoice).toHaveBeenCalledWith('in_draft');
+    // sendInvoice is what actually hands the finalized invoice to Stripe's
+    // own delivery; finalizing alone leaves it created but never mailed.
+    expect(invoices.sendInvoice).toHaveBeenCalledWith('in_final');
+  });
+
+  it('prefers the sent invoice hostedUrl/status over the finalized one', async () => {
+    // Stripe can update hosted_invoice_url/status as a side effect of
+    // sendInvoice (e.g. draft -> open), so the sent invoice is the source of
+    // truth for what the caller shows an operator.
+    const invoices = {
+      create: vi.fn(async () => ({ id: 'in_draft' })),
+      finalizeInvoice: vi.fn(async () => ({
+        id: 'in_final',
+        hosted_invoice_url: 'https://invoice.stripe.com/finalized-url',
+        status: 'draft',
+      })),
+      sendInvoice: vi.fn(async () => ({
+        id: 'in_final',
+        hosted_invoice_url: 'https://invoice.stripe.com/sent-url',
+        status: 'open',
+      })),
+    };
+    const billing = new StripeBilling({
+      client: fakeStripe({
+        invoices,
+        invoiceItems: { create: vi.fn(async () => ({})) },
+      }),
+    });
+    const out = await billing.createDepositInvoice({
+      project: baseProject({ stripe_customer_id: 'cus_1' }),
+      customerId: 'cus_1',
+      amountMinor: 39950,
+    });
+    expect(out.hostedUrl).toBe('https://invoice.stripe.com/sent-url');
+    expect(out.status).toBe('open');
+    expect(out.stripeEmailed).toBe(true);
   });
 
   it('rejects non-positive amounts', async () => {
     const billing = new StripeBilling({
       client: fakeStripe({
-        invoices: { create: vi.fn(), finalizeInvoice: vi.fn() },
+        invoices: {
+          create: vi.fn(),
+          finalizeInvoice: vi.fn(),
+          sendInvoice: vi.fn(),
+        },
         invoiceItems: { create: vi.fn() },
       }),
     });
@@ -157,6 +203,11 @@ describe('StripeBilling.createFinalInvoice', () => {
         hosted_invoice_url: 'https://invoice.stripe.com/x',
         status: 'open',
       })),
+      sendInvoice: vi.fn(async () => ({
+        id: 'in_final',
+        hosted_invoice_url: 'https://invoice.stripe.com/x',
+        status: 'open',
+      })),
     };
     const billing = new StripeBilling({
       client: fakeStripe({
@@ -172,6 +223,49 @@ describe('StripeBilling.createFinalInvoice', () => {
     expect((invoices.create as AnyMock).mock.calls[0]?.[0]).toMatchObject({
       metadata: { workspaceId: 'ws_1', invoiceType: 'final' },
     });
+    // Same delivery path as the deposit invoice: the final invoice must also
+    // reach the client, not just exist on Stripe.
+    expect(invoices.sendInvoice).toHaveBeenCalledWith('in_final');
+  });
+
+  it('resolves (does not throw) when sendInvoice rejects, using the finalized invoice as fallback', async () => {
+    // The invoice is already created and payable at its hosted URL by this
+    // point. A delivery failure must not read as "it did not work" and send
+    // the operator to retry, which would mint a second invoice for the same
+    // money.
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    const invoices = {
+      create: vi.fn(async () => ({ id: 'in_draft' })),
+      finalizeInvoice: vi.fn(async () => ({
+        id: 'in_final',
+        hosted_invoice_url: 'https://invoice.stripe.com/final-hosted',
+        status: 'open',
+      })),
+      sendInvoice: vi.fn(async () => {
+        throw new Error('Stripe would not send this invoice');
+      }),
+    };
+    const billing = new StripeBilling({
+      client: fakeStripe({
+        invoices,
+        invoiceItems: { create: vi.fn(async () => ({})) },
+      }),
+    });
+    try {
+      const out = await billing.createFinalInvoice({
+        project: baseProject({ stripe_customer_id: 'cus_1' }),
+        customerId: 'cus_1',
+        amountMinor: 39950,
+      });
+      expect(out.invoiceId).toBe('in_final');
+      expect(out.hostedUrl).toBe('https://invoice.stripe.com/final-hosted');
+      expect(out.status).toBe('open');
+      expect(out.stripeEmailed).toBe(false);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });
 
