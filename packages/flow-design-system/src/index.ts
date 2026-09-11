@@ -77,6 +77,11 @@ export {
   type Tone,
 } from './components/surfaces/GlassSurface';
 export { StatTile, type StatTileProps } from './components/surfaces/StatTile';
+export {
+  Pill,
+  type PillProps,
+  type PillSize,
+} from './components/surfaces/Pill';
 
 // Components - Layout
 export {

@@ -86,7 +86,12 @@ export function SiteOverview({
         <ProjectStateStepper state={state} />
       </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {/* Five subjects into four columns left the fifth tile stranded on a row
+          of its own, next to an empty half of the panel. Auto-fit asks for as
+          many equal columns as will fit at a readable width instead of naming
+          a number, so the row fills out whatever the client happens to have
+          switched on and never orphans the last one. */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:[grid-template-columns:repeat(auto-fit,minmax(10.5rem,1fr))]">
         {tiles.map((tile) => (
           <Tile key={tile.key} tile={tile} />
         ))}

@@ -27,18 +27,45 @@ component that will drift out of the system the next time the brand moves.
 
 Material, in `:root` and again under `.dark`:
 
-| Token                   | What it is                                      |
-| ----------------------- | ----------------------------------------------- |
-| `--fs-glass-bg`         | the standard translucent fill, 0.52 / 0.42      |
-| `--fs-glass-bg-strong`  | denser fill, for content over a busy mesh       |
-| `--fs-glass-edge`       | the untinted edge colour                        |
-| `--fs-glass-highlight`  | the diagonal specular catch-light               |
-| `--fs-glass-specular`   | the 1px light line along the top inside edge    |
-| `--fs-glass-ink-dim`    | label and note ink on a tinted tile             |
-| `--fs-glass-shadow`     | the drop the material casts, tinted indigo      |
-| `--fs-glass-blur`       | backdrop blur radius, 28px product-wide         |
-| `--fs-glass-saturate`   | backdrop saturation, 180%                       |
-| `--fs-glass-refraction` | the gradient the 1px inner border is drawn from |
+| Token                   | What it is                                        |
+| ----------------------- | ------------------------------------------------- |
+| `--fs-glass-bg`         | the standard translucent fill, 0.52 / 0.42        |
+| `--fs-glass-bg-strong`  | denser fill, for content over a busy mesh         |
+| `--fs-glass-edge`       | the untinted edge colour                          |
+| `--fs-glass-highlight`  | the diagonal specular catch-light                 |
+| `--fs-glass-specular`   | the 1px light line along the top inside edge      |
+| `--fs-glass-ink-dim`    | label and note ink on a tinted tile               |
+| `--fs-glass-shadow`     | the drop the material casts, tinted indigo        |
+| `--fs-glass-blur`       | backdrop blur radius, set per level by the ladder |
+| `--fs-glass-saturate`   | backdrop saturation, 180% light / 172% dark       |
+| `--fs-glass-brightness` | 1.03 light, 0.86 dark: frosted versus smoked      |
+| `--fs-glass-refraction` | the gradient the 1px inner border is drawn from   |
+
+**The elevation ladder.** One material at five thicknesses. A 44px pill and a
+600px modal cannot share a blur radius: at 28px the blur reaches further than
+the pill is tall, so it averages to flat frosted plastic, while the modal needs
+more than 28px to cut the page off rather than sit on it. Blur, fill and drop
+all scale with the surface, and a level is chosen with a variant, never by hand.
+
+| Level     | blur | fill                    | drop    | for                        |
+| --------- | ---- | ----------------------- | ------- | -------------------------- |
+| `control` | 12px | `--fs-glass-bg-control` | none    | a button or a pill         |
+| `chrome`  | 18px | `--fs-chrome-bg`        | a rule  | a header or a sidebar      |
+| `card`    | 24px | `--fs-glass-bg`         | card    | a single object            |
+| `panel`   | 30px | `--fs-glass-bg-panel`   | panel   | a container for cards      |
+| `overlay` | 44px | `--fs-glass-bg-overlay` | overlay | a modal, a banner, a toast |
+
+The panel is the one inversion worth knowing: it is the thickest blur and the
+_thinnest_ fill. That is deliberate. It makes a card laid on a panel the
+brighter of the two, so the stack reads as depth instead of as two rectangles
+in the same paint.
+
+Dark glass is smoked, not grey. A pane that only darkens its fill reads as a
+grey card, so `--fs-glass-brightness` pulls the backdrop down while the
+saturation stays up; drop the saturation as well and the pane goes muddy, which
+is the grey card again by another route. The rim and the catch-light are both
+brighter in dark than in light, because with the fill that thin the lit edge is
+most of what tells you a pane is there.
 
 The fill is deliberately thin. Glass that you cannot see the mesh through is
 just a white box, so `--fs-glass-bg` lets roughly half the gradient come back
@@ -99,25 +126,51 @@ that the variant dimmer in index.css multiplies these alphas — landing runs at
 you actually see. The grain is a tiny SVG noise tile laid over the top, which is what stops
 gradients this wide from banding on an 8-bit display.
 
-Radii: `--fs-radius-glass` (22px) and `--fs-radius-glass-inner`.
+Radii: `--fs-radius-glass` (22px), then one 8px step in per level of nesting.
+The rule is one subtraction: a child's radius is its parent's radius minus the
+gap between the two edges. `--fs-radius-glass-inner` (14px) is a tile 8px inside
+a panel; `--fs-radius-glass-flush` (6px) is a strip or a chip 8px inside that
+tile. A free-standing control is nested in nothing, so it takes
+`--fs-radius-control` (12px) or `--fs-radius-control-sm` (8px) instead.
+
+**Controls: one height, one ring.** A button, a text field and a pill on the
+same row are the same object doing different jobs, so they share a height, a
+radius and a focus ring. They had drifted to five heights (52, 48, 40, 38 and
+32px) with three different focus mechanisms at widths 1, 2 and 3px. Everything
+now reads `--fs-control-h` (44px), `--fs-control-h-sm` (36px) and
+`--fs-control-h-xs` (28px), and the one ring is `--fs-focus-ring-width` /
+`-offset` / `-color`. `--fs-btn-h` and `--fs-input-h` are aliases of
+`--fs-control-h`, which is why a send button now matches the field beside it.
+
+Put `.fs-control` on anything a reader clicks or types into to get that box;
+`.fs-control--sm`, `--xs`, `--square` and `--field` are the variations. The
+material, if the control wants one, is a separate `.fs-glass .fs-glass--control`
+alongside.
+
+`.fs-numeric` is tabular figures, for any number a reader compares against
+another number or watches tick.
 
 ### Classes
 
-| Class                                  | What it does                                                             |
-| -------------------------------------- | ------------------------------------------------------------------------ |
-| `.fs-glass`                            | the material: fill, blur, specular, refractive edge                      |
-| `.fs-glass--strong`                    | swaps in the denser fill                                                 |
-| `.fs-glass--overlay`                   | near-opaque fill for banners and toasts floating over unblurred content  |
-| `.fs-glass--card` / `.fs-glass--panel` | the two content paddings                                                 |
-| `.fs-glass--chrome`                    | square, opaque-leaning, for a header or sidebar                          |
-| `.fs-glass--interactive`               | hover lift and edge brighten, on the spring easing                       |
-| `.fs-glass--toned`                     | lets a surface take a tone wash                                          |
-| `.fs-glass--plain`                     | keeps the tone in the rim and the ink, drops the wash                    |
-| `.fs-glass--control`                   | the material at a button's radius, with no drop of its own               |
-| `.fs-glass-tile`                       | a toned tile, with `__label`, `__value`, `__note`, `__icon`              |
-| `.fs-tone-text`                        | tone-coloured text outside a tile                                        |
-| `.fs-glass-ring`                       | the focus-visible ring                                                   |
-| `.fs-mesh-backdrop`                    | the fixed full-bleed mesh, `data-variant`, one of app, landing or editor |
+| Class                                  | What it does                                                                            |
+| -------------------------------------- | --------------------------------------------------------------------------------------- |
+| `.fs-glass`                            | the material: fill, blur, specular, refractive edge                                     |
+| `.fs-glass--strong`                    | swaps in the denser fill                                                                |
+| `.fs-glass--overlay`                   | near-opaque fill for banners and toasts floating over unblurred content                 |
+| `.fs-glass--card` / `.fs-glass--panel` | the two content levels: blur, fill, drop and padding                                    |
+| `.fs-glass--chrome`                    | square, opaque-leaning, for a header or sidebar                                         |
+| `.fs-control`                          | the shared control box: height, padding, radius (`--sm`, `--xs`, `--square`, `--field`) |
+| `.fs-focus-ring`                       | the one focus-visible ring, for anything that is not a glass surface                    |
+| `.fs-numeric`                          | tabular figures                                                                         |
+| `.fs-pill`                             | the tinted status shape, with `__dot` and `__icon`                                      |
+| `.fs-glass--interactive`               | hover lift and edge brighten, on the spring easing                                      |
+| `.fs-glass--toned`                     | lets a surface take a tone wash                                                         |
+| `.fs-glass--plain`                     | keeps the tone in the rim and the ink, drops the wash                                   |
+| `.fs-glass--control`                   | the material at a button's radius, with no drop of its own                              |
+| `.fs-glass-tile`                       | a toned tile, with `__label`, `__value`, `__note`, `__icon`                             |
+| `.fs-tone-text`                        | tone-coloured text outside a tile                                                       |
+| `.fs-glass-ring`                       | the focus-visible ring                                                                  |
+| `.fs-mesh-backdrop`                    | the fixed full-bleed mesh, `data-variant`, one of app, landing or editor                |
 
 A toned surface reads its tone from `data-tone`, or from `data-palette` when
 the caller needs `data-tone` for a meaning of its own. When both are present,
@@ -128,8 +181,15 @@ call sites keep working; do not use it in new code.
 
 ### Components
 
-- `GlassSurface`: `{ variant: 'card' | 'panel' | 'chrome', tone, interactive, as, className }`.
-  The base for every translucent surface.
+- `GlassSurface`: `{ variant: 'control' | 'chrome' | 'card' | 'panel' | 'overlay', tone, interactive, as, className }`.
+  The base for every translucent surface. The variant is the rung of the
+  elevation ladder; the blur, fill and drop that go with it are decided once, in
+  the tokens. There is deliberately no `blur` or `background` prop.
+- `Pill`: `{ tone, size, emphasis, dot, icon, as }`. The small tinted shape that
+  labels a row. Same discipline as the tiles: tone-coloured ink on a whisper of
+  wash inside a thin rim, never a block of solid colour, so a table with a pill
+  on every row stays a table rather than becoming a bar chart. `dot` is off by
+  default, because a coloured dot in front of a coloured word says it twice.
 - `StatTile`: `{ label, value, note, tone, icon, href, linkComponent }`. One
   number on tinted glass: an eyebrow label, a large tabular-nums value and a
   line of plain English. `linkComponent` takes the app's own router link, so

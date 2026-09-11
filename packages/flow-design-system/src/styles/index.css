@@ -94,14 +94,48 @@
   isolation: isolate;
   border-radius: var(--fs-radius-glass);
   background: var(--fs-glass-bg);
-  backdrop-filter: blur(var(--fs-glass-blur)) saturate(var(--fs-glass-saturate));
+  /* The brightness term is what separates frosted from smoked: in light it
+     lifts the mesh behind the pane, in dark it pulls it down, so dark glass
+     stops reading as a grey card. */
+  backdrop-filter: blur(var(--fs-glass-blur)) saturate(var(--fs-glass-saturate))
+    brightness(var(--fs-glass-brightness));
   -webkit-backdrop-filter: blur(var(--fs-glass-blur))
-    saturate(var(--fs-glass-saturate));
+    saturate(var(--fs-glass-saturate)) brightness(var(--fs-glass-brightness));
   box-shadow: var(--fs-glass-shadow);
   color: var(--fs-ink);
   transition:
     transform var(--fs-dur-micro) var(--fs-ease-spring),
     box-shadow var(--fs-dur-standard) var(--fs-ease-spring);
+}
+
+/* ── The elevation ladder ───────────────────────────────────────────────────
+   Each level sets the three variables the material reads, so a surface says
+   which level it is and the material does the rest. The order matters: these
+   sit immediately after .fs-glass so a level can be overridden by a modifier
+   further down (--strong, --overlay) at the same specificity.
+
+   Levels, thinnest pane to thickest: control, chrome, card, panel, overlay. */
+.fs-glass--control {
+  --fs-glass-blur: var(--fs-glass-blur-control);
+  --fs-glass-bg: var(--fs-glass-bg-control);
+}
+
+.fs-glass--chrome {
+  --fs-glass-blur: var(--fs-glass-blur-chrome);
+}
+
+.fs-glass--card {
+  --fs-glass-blur: var(--fs-glass-blur-card);
+  --fs-glass-shadow: var(--fs-glass-shadow-card);
+}
+
+/* A panel is the recessed level: thicker blur, thinner fill. That inversion is
+   deliberate. It makes a card laid on a panel the brighter of the two, so the
+   stack reads as depth instead of as two rectangles in the same paint. */
+.fs-glass--panel {
+  --fs-glass-blur: var(--fs-glass-blur-panel);
+  --fs-glass-bg: var(--fs-glass-bg-panel);
+  --fs-glass-shadow: var(--fs-glass-shadow-panel);
 }
 
 /* Specular highlight. The light source is top-left, so the diagonal sheen is
@@ -174,7 +208,9 @@
    the text beneath must not read through, so this is glass in name only, with
    the material's edge and blur but a near-opaque fill. */
 .fs-glass--overlay {
+  --fs-glass-blur: var(--fs-glass-blur-overlay);
   background: var(--fs-glass-bg-overlay);
+  box-shadow: var(--fs-glass-shadow-overlay);
 }
 
 /* Header and sidebar: square, opaque-leaning, and it casts a rule not a drop. */
@@ -203,21 +239,40 @@
   filter: brightness(1.35);
 }
 
+/* Press. Returning to translateY(0) only cancels the lift, which reads as the
+   surface going dead under the finger. Settling a hair below the resting plane
+   and pulling the drop in reads as the pane taking the weight. */
 .fs-glass--interactive:active {
-  transform: translateY(0);
+  transform: translateY(1px) scale(0.994);
+  box-shadow: var(--fs-glass-shadow);
+  transition-duration: 90ms;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .fs-glass--interactive:hover {
+  .fs-glass--interactive:hover,
+  .fs-glass--interactive:active {
     transform: none;
   }
 }
 
 /* ── Focus ring ─────────────────────────────────────────────────────────────
-   Outside the surface, so it never fights the refractive edge. */
+   One ring for the whole product, drawn as an outline so it sits outside the
+   surface and never fights the refractive edge. Widths of 1, 2 and 3px at
+   offsets of 0, 2 and 3px were all in use at once; this is the one.
+   `.fs-glass-ring` stays as the name glass surfaces already use. */
+.fs-focus-ring:focus-visible,
 .fs-glass-ring:focus-visible {
-  outline: 2px solid var(--fs-accent);
-  outline-offset: 3px;
+  outline: var(--fs-focus-ring-width) solid var(--fs-focus-ring-color);
+  outline-offset: var(--fs-focus-ring-offset);
+}
+
+/* ── Figures ────────────────────────────────────────────────────────────────
+   Any number a reader compares against another number, in a column or across
+   a row of tiles, or that ticks while they watch it. Proportional digits make
+   a changing figure jitter and a column of them ragged. */
+.fs-numeric {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
 }
 
 /* ── Tone-tinted tile ───────────────────────────────────────────────────────
@@ -528,6 +583,127 @@ a.fs-glass-tile {
   text-decoration: none;
 }
 
+/* ── Pill ───────────────────────────────────────────────────────────────────
+   The small tinted shape that labels a row. Same discipline as the tiles: the
+   tone lives in the ink and a thin rim over a whisper of wash, so a table with
+   a pill on every row stays a table instead of turning into a bar chart.
+
+   It is a fully rounded shape on purpose. That is the one place the product
+   breaks from the concentric radii, because a pill reads as a pill at any
+   size, and matching it to its parent's corner would make it look like a
+   clipped rectangle at these heights. */
+.fs-pill {
+  --fs-tile-wash: transparent;
+  --fs-tile-wash-strong: transparent;
+  --fs-tile-edge: var(--fs-glass-edge);
+  --fs-tile-ink: var(--fs-ink);
+
+  display: inline-flex;
+  align-items: center;
+  gap: var(--fs-space-2);
+  box-sizing: border-box;
+  block-size: var(--fs-control-h-xs);
+  padding-inline: var(--fs-space-3);
+  border-radius: var(--fs-radius-full);
+  background: var(--fs-tile-wash);
+  box-shadow: inset 0 0 0 1px var(--fs-tile-edge);
+  color: var(--fs-tile-ink);
+  font-size: var(--fs-text-caption);
+  font-weight: var(--fs-weight-medium);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.fs-pill--sm {
+  block-size: 22px;
+  padding-inline: var(--fs-space-2);
+  font-size: var(--fs-text-overline);
+}
+
+/* The loud one. Same rule as the tiles: one per view. */
+.fs-pill--emphasis {
+  background: var(--fs-tile-wash-strong);
+}
+
+.fs-pill__dot {
+  inline-size: 6px;
+  block-size: 6px;
+  flex: none;
+  border-radius: var(--fs-radius-full);
+  background: currentcolor;
+}
+
+.fs-pill__icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
+
+/* A pill reads its tone from the same blocks the tiles do, so a tone only ever
+   has to be defined once. */
+.fs-pill[data-tone='accent'] {
+  --fs-tile-wash: var(--fs-tone-accent-soft);
+  --fs-tile-wash-strong: var(--fs-tone-accent-emphasis);
+  --fs-tile-edge: var(--fs-tone-accent-edge);
+  --fs-tile-ink: var(--fs-tone-accent);
+}
+
+.fs-pill[data-tone='ok'] {
+  --fs-tile-wash: var(--fs-tone-ok-soft);
+  --fs-tile-wash-strong: var(--fs-tone-ok-emphasis);
+  --fs-tile-edge: var(--fs-tone-ok-edge);
+  --fs-tile-ink: var(--fs-tone-ok);
+}
+
+.fs-pill[data-tone='info'] {
+  --fs-tile-wash: var(--fs-tone-info-soft);
+  --fs-tile-wash-strong: var(--fs-tone-info-emphasis);
+  --fs-tile-edge: var(--fs-tone-info-edge);
+  --fs-tile-ink: var(--fs-tone-info);
+}
+
+.fs-pill[data-tone='warn'] {
+  --fs-tile-wash: var(--fs-tone-warn-soft);
+  --fs-tile-wash-strong: var(--fs-tone-warn-emphasis);
+  --fs-tile-edge: var(--fs-tone-warn-edge);
+  --fs-tile-ink: var(--fs-tone-warn);
+}
+
+.fs-pill[data-tone='danger'] {
+  --fs-tile-wash: var(--fs-tone-danger-soft);
+  --fs-tile-wash-strong: var(--fs-tone-danger-emphasis);
+  --fs-tile-edge: var(--fs-tone-danger-edge);
+  --fs-tile-ink: var(--fs-tone-danger);
+}
+
+.fs-pill[data-tone='violet'] {
+  --fs-tile-wash: var(--fs-tone-violet-soft);
+  --fs-tile-wash-strong: var(--fs-tone-violet-emphasis);
+  --fs-tile-edge: var(--fs-tone-violet-edge);
+  --fs-tile-ink: var(--fs-tone-violet);
+}
+
+.fs-pill[data-tone='pink'] {
+  --fs-tile-wash: var(--fs-tone-pink-soft);
+  --fs-tile-wash-strong: var(--fs-tone-pink-emphasis);
+  --fs-tile-edge: var(--fs-tone-pink-edge);
+  --fs-tile-ink: var(--fs-tone-pink);
+}
+
+.fs-pill[data-tone='teal'] {
+  --fs-tile-wash: var(--fs-tone-teal-soft);
+  --fs-tile-wash-strong: var(--fs-tone-teal-emphasis);
+  --fs-tile-edge: var(--fs-tone-teal-edge);
+  --fs-tile-ink: var(--fs-tone-teal);
+}
+
+.fs-pill[data-tone='neutral'] {
+  --fs-tile-wash: var(--fs-tone-neutral-soft);
+  --fs-tile-wash-strong: var(--fs-tone-neutral-emphasis);
+  --fs-tile-edge: var(--fs-tone-neutral-edge);
+  --fs-tile-ink: var(--fs-tone-neutral);
+}
+
 /* ── Tone text ──────────────────────────────────────────────────────────────
    For a number or a word that carries a tone outside a tile. */
 .fs-tone-text[data-tone='accent'] {
@@ -655,6 +831,75 @@ a.fs-glass-tile {
 
 .fs-glass--control.fs-glass--interactive:hover {
   box-shadow: 0 0 0 1px var(--fs-accent-ring);
+}
+
+/* A control does not gain a drop on the way down, so the press is the inset
+   and the settle, without the card's shadow coming back. */
+.fs-glass--control.fs-glass--interactive:active {
+  box-shadow: none;
+}
+
+/* ── The control box ────────────────────────────────────────────────────────
+   Height, padding, radius and the ring, for anything a reader clicks or types
+   into. Put it on a button, an input, a select or a pill and it lines up with
+   everything else on the row; the material, if it wants one, is a separate
+   `.fs-glass .fs-glass--control` alongside.
+
+   The point is the agreement, not the number: a send button and the field it
+   sits beside were 52px and 48px, so they never lined up. */
+.fs-control {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--fs-control-gap);
+  box-sizing: border-box;
+  block-size: var(--fs-control-h);
+  padding-inline: var(--fs-control-px);
+  border-radius: var(--fs-radius-control);
+  font-size: var(--fs-text-body-sm);
+  font-weight: var(--fs-weight-medium);
+  line-height: 1;
+  white-space: nowrap;
+  transition:
+    transform var(--fs-dur-micro) var(--fs-ease-spring),
+    background-color var(--fs-dur-micro) var(--fs-ease-spring),
+    box-shadow var(--fs-dur-micro) var(--fs-ease-spring);
+}
+
+.fs-control--sm {
+  block-size: var(--fs-control-h-sm);
+  padding-inline: var(--fs-control-px-sm);
+  border-radius: var(--fs-radius-control-sm);
+}
+
+.fs-control--xs {
+  block-size: var(--fs-control-h-xs);
+  padding-inline: var(--fs-space-2);
+  border-radius: var(--fs-radius-control-sm);
+  font-size: var(--fs-text-caption);
+}
+
+/* A control that is exactly as wide as it is tall: an icon button. */
+.fs-control--square {
+  justify-content: center;
+  inline-size: var(--fs-control-h);
+  padding-inline: 0;
+}
+
+.fs-control--sm.fs-control--square {
+  inline-size: var(--fs-control-h-sm);
+}
+
+.fs-control--xs.fs-control--square {
+  inline-size: var(--fs-control-h-xs);
+}
+
+/* A text field is a control that happens to hold a caret, so it takes the same
+   box and only turns off the parts that belong to a button. */
+.fs-control--field {
+  display: flex;
+  inline-size: 100%;
+  font-weight: var(--fs-weight-regular);
+  white-space: normal;
 }
 
 /* ── A tone without the wash ────────────────────────────────────────────────

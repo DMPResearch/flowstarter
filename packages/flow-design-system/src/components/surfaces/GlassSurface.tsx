@@ -34,10 +34,28 @@ export const TONES = [
 
 export type Tone = (typeof TONES)[number];
 
-export type GlassSurfaceVariant = 'card' | 'panel' | 'chrome';
+/**
+ * The elevation ladder, thinnest pane to thickest. The variant is the only
+ * thing a caller chooses; the blur, the fill and the drop that go with it are
+ * decided once, in the tokens.
+ */
+export type GlassSurfaceVariant =
+  | 'control'
+  | 'chrome'
+  | 'card'
+  | 'panel'
+  | 'overlay';
 
 export interface GlassSurfaceProps extends HTMLAttributes<HTMLElement> {
-  /** card: a single object. panel: a container for cards. chrome: header/sidebar. */
+  /**
+   * Which rung of the elevation ladder this surface is on.
+   * - `control`: a button or a pill. Thinnest blur, densest fill, no drop.
+   * - `chrome`: a header or a sidebar. Square, and content stays readable through it.
+   * - `card`: a single object.
+   * - `panel`: a container for cards. Thicker blur, thinner fill, so the cards on it read as nearer.
+   * - `overlay`: a modal, a banner or a toast floating over unblurred page
+   *   content. Near-opaque, because the text underneath must not read through.
+   */
   variant?: GlassSurfaceVariant;
   /** Tints the surface and its edge. Leave unset for plain glass. */
   tone?: Tone;
@@ -50,9 +68,11 @@ export interface GlassSurfaceProps extends HTMLAttributes<HTMLElement> {
 }
 
 const VARIANT_CLASS: Record<GlassSurfaceVariant, string> = {
+  control: 'fs-glass--control',
+  chrome: 'fs-glass--chrome',
   card: 'fs-glass--card',
   panel: 'fs-glass--panel',
-  chrome: 'fs-glass--chrome',
+  overlay: 'fs-glass--overlay',
 };
 
 export const GlassSurface = forwardRef<HTMLElement, GlassSurfaceProps>(
