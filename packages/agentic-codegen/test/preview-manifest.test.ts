@@ -235,7 +235,7 @@ describe('phrasesFromFiles', () => {
         'src/content/site-labels.md',
         `siteMeta:\n  title: "Darius Mihai Popescu, product builder"\n` +
           `  description: "An AI-driven website studio for service businesses"\n` +
-          `hero:\n  title: "${HEADLINE}"\n`
+          `hero:\n  title: "${HEADLINE}"\n`,
       ),
     ];
 
@@ -243,11 +243,11 @@ describe('phrasesFromFiles', () => {
       phrasesFromFiles(labels, {
         limit: 8,
         instruction: `Make the hero headline say ${HEADLINE}`,
-      })[0]
+      })[0],
     ).toBe(HEADLINE);
     // Without the instruction it is still found, just not first.
     expect(phrasesFromFiles(labels, { limit: 8 })[0]).toBe(
-      'Darius Mihai Popescu, product builder'
+      'Darius Mihai Popescu, product builder',
     );
   });
 
