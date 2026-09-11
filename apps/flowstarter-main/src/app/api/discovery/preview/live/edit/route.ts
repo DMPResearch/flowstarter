@@ -12,6 +12,8 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { recordGenerationCost } from '@/lib/ai/funnel-cost';
 import { getJob, updateJob, LIVE_EDIT_CAP } from '@/lib/discovery/live-jobs';
+import { readPreviewWorkspaceFiles } from '@/lib/discovery/preview-workspace';
+import { recordClaimablePreviewEdit } from '@/lib/flowstarter/claim';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -28,6 +30,34 @@ function clientIp(req: NextRequest): string {
     req.headers.get('x-real-ip') ||
     'unknown'
   );
+}
+
+/**
+ * Re-capture the edited preview workspace as the manifest of record.
+ *
+ * Only the local-preview path can do this today: the Daytona path's files live
+ * inside the sandbox and there is no read-back seam here to pull them through.
+ * That is not a silent gap — a sandbox preview's edits still reach the build,
+ * because the edit is recorded on the build payload as `previewIntent` and the
+ * worker both instructs its agent to preserve it and fails the job when the
+ * built output has dropped it. Seeding is the stronger of the two and is used
+ * wherever the code allows it; the instruction-plus-check is the floor.
+ */
+async function captureFreeEditIntoManifest(
+  demoId: string,
+  localRoot: string | undefined,
+  instruction: string
+): Promise<void> {
+  if (!localRoot) return;
+  try {
+    const files = await readPreviewWorkspaceFiles(localRoot);
+    await recordClaimablePreviewEdit({ previewId: demoId, instruction, files });
+  } catch (error) {
+    console.warn(
+      `[Flowstarter] preview ${demoId} could not be re-captured after an edit:`,
+      error instanceof Error ? error.message : error
+    );
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -164,6 +194,14 @@ export async function POST(req: NextRequest) {
       }).catch(() => {});
 
       if (r.ok) {
+        // The change is on disk and the visitor can see it. It is not yet on
+        // the *record*: the claimable manifest still holds the files the
+        // generator first wrote, and that manifest is what a claim copies into
+        // the artifacts row the paid build seeds its worktree from. Re-read the
+        // workspace and re-stash it, so "the site I approved" and "the site the
+        // build starts from" are the same bytes. Best effort by construction —
+        // a failure here must not tell the visitor their applied edit failed.
+        await captureFreeEditIntoManifest(demoId, job.localRoot, instruction);
         const cur = getJob(demoId);
         updateJob(demoId, {
           editStatus: 'done',

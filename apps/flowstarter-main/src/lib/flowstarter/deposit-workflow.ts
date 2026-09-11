@@ -3,7 +3,9 @@ import { dispatchAgentJob, DispatchError } from './pipeline/dispatch';
 import { depositAmountMinor } from '@flowstarter/agentic-codegen/src/flowstarter/state-machine';
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
+import { loadFunnelPreview } from '@/lib/hosting/funnel-previews';
 import type { Json } from '@/lib/database.types';
+import { depositBuildPayload, derivePreviewIntent } from './preview-intent';
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -178,6 +180,67 @@ export async function enqueueFullBuildFromDepositInvoice(
 type SupabaseServiceClient = ReturnType<typeof createSupabaseServiceRoleClient>;
 
 /**
+ * What the client approved, for the build that is about to start.
+ *
+ * The deposit is the moment the preview stops being a demo and becomes the
+ * thing somebody paid for, so it is the right place to freeze what "approved"
+ * meant. `workspaces.claimed_preview_id` is written by the claim and is the
+ * only link between an owned workspace and the preview behind it; everything
+ * else is read from the preview's own row, never from Stripe metadata or a
+ * request body.
+ *
+ * `includeExpired` is true on purpose. A claimed preview is never expired by
+ * `isExpired`, but the flag also covers the case where the TTL sweep has
+ * already been through: the visitor has now paid, and the record of what they
+ * were sold must not depend on how long the site stayed hosted.
+ *
+ * Never throws, and returns nothing for an operator-created workspace with no
+ * claimed preview. A deposit that has already been taken must not be failed
+ * over a missing provenance record — the payload simply omits the keys and the
+ * worker behaves exactly as it did before they existed.
+ */
+async function approvedPreviewForWorkspace(
+  supabase: SupabaseServiceClient,
+  workspaceId: string
+): Promise<{
+  claimedPreviewId: string | null;
+  previewIntent: ReturnType<typeof derivePreviewIntent>;
+}> {
+  try {
+    const { data, error } = await supabase
+      .from('workspaces')
+      .select('claimed_preview_id')
+      .eq('id', workspaceId)
+      .maybeSingle();
+    if (error) throw error;
+    const claimedPreviewId = data?.claimed_preview_id ?? null;
+    if (!claimedPreviewId)
+      return { claimedPreviewId: null, previewIntent: null };
+
+    const row = await loadFunnelPreview(claimedPreviewId, {
+      includeExpired: true,
+    });
+    if (!row) return { claimedPreviewId, previewIntent: null };
+    return {
+      claimedPreviewId,
+      previewIntent: derivePreviewIntent({
+        previewId: row.previewId,
+        manifest: row.manifest,
+        artifactPath: row.artifactPath,
+        templateSlug: row.templateSlug,
+      }),
+    };
+  } catch (error) {
+    console.warn(
+      `[Flowstarter] deposit for ${workspaceId} could not read the approved ` +
+        'preview; the build payload will not carry it: ' +
+        (error instanceof Error ? error.message : 'unknown error')
+    );
+    return { claimedPreviewId: null, previewIntent: null };
+  }
+}
+
+/**
  * The shared, idempotent half of both deposit paths: enqueue exactly one
  * FULL_SITE_BUILD, advance the workspace, and dispatch to the build worker.
  *
@@ -196,6 +259,8 @@ async function enqueueBuildAndAdvance(input: {
   const { supabase, workspaceId } = input;
   const now = new Date().toISOString();
 
+  const approved = await approvedPreviewForWorkspace(supabase, workspaceId);
+
   const insert = await supabase
     .from('flowstarter_agent_jobs')
     .insert({
@@ -204,12 +269,11 @@ async function enqueueBuildAndAdvance(input: {
       status: 'queued',
       stripe_event_id: input.eventId,
       stripe_payment_intent_id: input.paymentIntentId ?? null,
-      payload: {
-        trigger: 'deposit_paid',
+      payload: depositBuildPayload({
         source: input.source,
-        depositPercent: 20,
-        balancePercent: 80,
-      },
+        claimedPreviewId: approved.claimedPreviewId,
+        previewIntent: approved.previewIntent,
+      }) as unknown as Json,
       updated_at: now,
     })
     .select('id, status')

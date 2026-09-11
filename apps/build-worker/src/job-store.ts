@@ -17,7 +17,9 @@ import {
   type FullSiteBuildJob,
   type FullSiteBuildJobStore,
   type GitWorktree,
+  type ApprovedPreviewEdit,
   type OperatorNote,
+  type PreviewIntent,
   type TemplateScaffoldFile,
 } from '@flowstarter/agentic-codegen';
 import { withTenant } from './tenancy';
@@ -100,8 +102,145 @@ export function parseApprovedPreviewFiles(
         `preview_manifest.files[${index}].content must be a string`,
       );
     }
-    return { path, content, type: 'file' } satisfies TemplateScaffoldFile;
+    // `encoding` used to be dropped here, which silently turned every image,
+    // font and other binary asset in the approved preview into a file holding
+    // its own base64 text. `materializeScaffold` already decodes the flag; the
+    // only thing missing was carrying it this far.
+    const encoding = file['encoding'];
+    if (encoding !== undefined && encoding !== 'base64') {
+      throw new JobArtifactError(
+        `preview_manifest.files[${index}].encoding must be 'base64' when present`,
+      );
+    }
+    return {
+      path,
+      content,
+      ...(encoding === 'base64' ? { encoding } : {}),
+      type: 'file',
+    } satisfies TemplateScaffoldFile;
   });
+}
+
+/** Longest instruction/phrase the worker will carry out of an untrusted payload. */
+const INTENT_TEXT_MAX = 2_000;
+const INTENT_PHRASE_MAX = 200;
+const INTENT_MAX_EDITS = 8;
+const INTENT_MAX_PHRASES = 8;
+const INTENT_MAX_PATHS = 20;
+
+function intentStrings(value: unknown, cap: number, chars: number): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(
+      (entry): entry is string =>
+        typeof entry === 'string' && entry.trim().length > 0,
+    )
+    .map((entry) => entry.slice(0, chars))
+    .slice(0, cap);
+}
+
+function parseApprovedEdits(raw: unknown): ApprovedPreviewEdit[] {
+  if (!Array.isArray(raw)) return [];
+  const edits: ApprovedPreviewEdit[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const instruction =
+      typeof record['instruction'] === 'string'
+        ? record['instruction'].trim().slice(0, INTENT_TEXT_MAX)
+        : '';
+    if (!instruction) continue;
+    edits.push({
+      index:
+        typeof record['index'] === 'number' && Number.isInteger(record['index'])
+          ? record['index']
+          : edits.length + 1,
+      instruction,
+      changedPaths: intentStrings(
+        record['changedPaths'],
+        INTENT_MAX_PATHS,
+        INTENT_PHRASE_MAX,
+      ),
+      addedPhrases: intentStrings(
+        record['addedPhrases'],
+        INTENT_MAX_PHRASES,
+        INTENT_PHRASE_MAX,
+      ),
+      appliedAt:
+        typeof record['appliedAt'] === 'string' ? record['appliedAt'] : '',
+    });
+    if (edits.length >= INTENT_MAX_EDITS) break;
+  }
+  return edits;
+}
+
+/**
+ * What the client approved, off the job payload.
+ *
+ * The payload is written by flowstarter-main's deposit webhook and is the only
+ * thing on the ledger row that describes the free changes a visitor made to
+ * their preview before paying. It is still parsed defensively: `payload` is a
+ * jsonb column, an operator can edit a row, and a malformed intent must
+ * degrade to "nothing was approved" rather than reach the prompt or the
+ * dropped-edit check as junk.
+ *
+ * Returns null for a workspace with no claimed preview — an operator-created
+ * project — which is the case that must keep working untouched.
+ */
+export function parsePreviewIntent(payload: unknown): PreviewIntent | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload))
+    return null;
+  const raw = (payload as Record<string, unknown>)['previewIntent'];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const previewId = record['previewId'];
+  if (typeof previewId !== 'string' || !UUID.test(previewId)) return null;
+
+  const manifest =
+    record['manifest'] && typeof record['manifest'] === 'object'
+      ? (record['manifest'] as Record<string, unknown>)
+      : {};
+  const brief =
+    record['brief'] && typeof record['brief'] === 'object'
+      ? (record['brief'] as Record<string, unknown>)
+      : {};
+  const text = (value: unknown): string =>
+    typeof value === 'string' ? value.slice(0, INTENT_TEXT_MAX) : '';
+  const optional = (value: unknown): string | null =>
+    typeof value === 'string' && value.length > 0
+      ? value.slice(0, INTENT_TEXT_MAX)
+      : null;
+
+  return {
+    previewId,
+    manifest: {
+      ref: text(manifest['ref']) || `funnel_previews:${previewId}`,
+      artifactPath: optional(manifest['artifactPath']),
+      templateSlug: optional(manifest['templateSlug']),
+      fileCount:
+        typeof manifest['fileCount'] === 'number' &&
+        Number.isFinite(manifest['fileCount'])
+          ? manifest['fileCount']
+          : 0,
+    },
+    edits: parseApprovedEdits(record['edits']),
+    brief: {
+      businessName: text(brief['businessName']),
+      niche: text(brief['niche']),
+      location: text(brief['location']),
+      ...(optional(brief['description'])
+        ? { description: text(brief['description']) }
+        : {}),
+      ...(optional(brief['targetAudience'])
+        ? { targetAudience: text(brief['targetAudience']) }
+        : {}),
+      ...(optional(brief['primaryGoal'])
+        ? { primaryGoal: text(brief['primaryGoal']) }
+        : {}),
+      ...(optional(brief['locale']) ? { locale: text(brief['locale']) } : {}),
+    },
+    capturedAt: text(record['capturedAt']),
+  };
 }
 
 /**
@@ -180,6 +319,7 @@ export function buildJobFromRows(input: {
     input.artifacts.preview_manifest,
   );
   const calComUrl = parseCalComUrl(input.calComUrl);
+  const previewIntent = parsePreviewIntent(input.job.payload);
   if (calComUrl && !requiredIntegrations.some((slug) => slug === CAL_COM)) {
     requiredIntegrations.push(CAL_COM);
   }
@@ -200,6 +340,7 @@ export function buildJobFromRows(input: {
     ),
     requiredIntegrations,
     ...(calComUrl ? { calComUrl } : {}),
+    ...(previewIntent ? { previewIntent } : {}),
   };
 }
 

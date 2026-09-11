@@ -16,10 +16,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { cp, mkdir, readdir, readFile, rm, symlink } from 'node:fs/promises';
+import { cp, mkdir, rm, symlink } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join, relative, resolve, sep } from 'node:path';
+import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import { funnelBudgetState, recordGenerationCost } from '@/lib/ai/funnel-cost';
 import { llmActionConfig, recordLlmUsage } from '@/lib/ai/llm';
@@ -27,6 +27,7 @@ import { missingGenerationPrerequisites } from '@/lib/discovery/generation-avail
 import { createJob, getJob, updateJob } from '@/lib/discovery/live-jobs';
 import { isTransientPipelineFailure } from '@/lib/discovery/preview-failure';
 import { previewUrlForClient } from '@/lib/discovery/local-preview-frame';
+import { readPreviewWorkspaceFiles } from '@/lib/discovery/preview-workspace';
 import { createRenderedPreviewAudit } from '@/lib/discovery/rendered-preview-audit';
 import { rememberClaimablePreview } from '@/lib/flowstarter/claim';
 import {
@@ -239,73 +240,6 @@ function buildPiEvidence(
     images: [],
   };
   return { intake, corpus };
-}
-
-/**
- * Files that must never be read as text. Reading a JPEG as UTF-8 yields NUL
- * bytes, which Postgres jsonb refuses ("unsupported Unicode escape
- * sequence") — one image in the manifest lost the whole funnel_previews row,
- * and the tarball packed the same mangled bytes as the site's images.
- */
-const BINARY_PREVIEW_EXTENSIONS = new Set([
-  '.jpg',
-  '.jpeg',
-  '.png',
-  '.gif',
-  '.webp',
-  '.avif',
-  '.ico',
-  '.bmp',
-  '.woff',
-  '.woff2',
-  '.ttf',
-  '.otf',
-  '.eot',
-  '.pdf',
-  '.mp4',
-  '.webm',
-  '.mp3',
-  '.zip',
-  '.gz',
-]);
-
-function isBinaryPreviewPath(path: string): boolean {
-  const dot = path.lastIndexOf('.');
-  return (
-    dot >= 0 && BINARY_PREVIEW_EXTENSIONS.has(path.slice(dot).toLowerCase())
-  );
-}
-
-async function readPreviewFiles(root: string): Promise<TemplateScaffoldFile[]> {
-  const files: TemplateScaffoldFile[] = [];
-  async function walk(directory: string): Promise<void> {
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (entry.name === 'node_modules' || entry.name.startsWith('.git'))
-        continue;
-      const absolute = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        await walk(absolute);
-      } else if (entry.isFile()) {
-        const path = relative(root, absolute).split(sep).join('/');
-        if (isBinaryPreviewPath(path)) {
-          files.push({
-            path,
-            content: (await readFile(absolute)).toString('base64'),
-            encoding: 'base64',
-            type: 'file',
-          });
-        } else {
-          files.push({
-            path,
-            content: await readFile(absolute, 'utf8'),
-            type: 'file',
-          });
-        }
-      }
-    }
-  }
-  await walk(root);
-  return files;
 }
 
 /**
@@ -667,7 +601,7 @@ export async function POST(req: NextRequest) {
         validate: async (workspaceRoot, phase) => {
           if (phase !== 'preview')
             throw new Error('Unexpected validation phase');
-          const files = await readPreviewFiles(workspaceRoot);
+          const files = await readPreviewWorkspaceFiles(workspaceRoot);
           const paths = new Set(files.map((file) => file.path));
           if (!paths.has('package.json'))
             throw new Error('Selected template has no package manifest');
@@ -691,7 +625,7 @@ export async function POST(req: NextRequest) {
 
       const publisher: PreviewPublisher = {
         publish: async (input) => {
-          const files = await readPreviewFiles(input.workspaceRoot);
+          const files = await readPreviewWorkspaceFiles(input.workspaceRoot);
           const preview = await previewInSandbox(input.workspaceRoot, {
             projectId: input.projectId,
             env: { DAYTONA_API_KEY: process.env.DAYTONA_API_KEY },
