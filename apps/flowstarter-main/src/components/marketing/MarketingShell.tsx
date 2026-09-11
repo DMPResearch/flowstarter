@@ -1,7 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { MeshBackdrop } from '@flowstarter/flow-design-system/components/backgrounds/MeshBackdrop';
+import { FlowBackground } from '@flowstarter/flow-design-system';
 import { SiteHeader } from '@/components/SiteHeader';
 import Footer from '@/components/Footer';
 import { CookieConsent } from '@/components/CookieConsent';
@@ -22,7 +22,7 @@ interface MarketingShellProps {
    */
   withBookingModal?: boolean;
   /**
-   * Whether to render the gradient mesh. Defaults to true. Set to false
+   * Whether to render the FlowBackground. Defaults to true. Set to false
    * when the parent layout already paints a background (e.g. pages inside
    * the (main-pages) route group).
    */
@@ -31,15 +31,10 @@ interface MarketingShellProps {
 
 /**
  * Shared shell for every non-landing public marketing page. Provides the
- * same chrome as the landing — the gradient mesh, SiteHeader (public mode),
+ * same chrome as the landing — FlowBackground, SiteHeader (public mode),
  * Footer, CookieConsent, and the booking-modal provider so the header CTA
  * works everywhere. Wraps children in `ls-scope` so the editorial design
  * tokens apply to anything inside.
- *
- * The background is MeshBackdrop rather than FlowBackground: the glass this
- * page is built from needs a gradient to refract, and FlowBackground paints an
- * opaque base that would hide it. Marketing and the client dashboard now sit
- * on the same field.
  */
 export function MarketingShell({
   children,
@@ -48,7 +43,12 @@ export function MarketingShell({
 }: MarketingShellProps) {
   return (
     <div className="relative flex min-h-screen flex-col font-display text-[var(--fs-ink)]">
-      {withBackground && <MeshBackdrop variant="landing" />}
+      {withBackground && (
+        <FlowBackground
+          variant="landing"
+          style={{ position: 'fixed', inset: 0, zIndex: 0 }}
+        />
+      )}
       <SiteHeader mode="public" />
       <div className="ls-scope relative z-10 flex flex-1 flex-col">
         {children}

@@ -23,7 +23,6 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
   const { t: tLanding } = useI18n();
   const {
     isLoaded: headerLoaded,
-    scrolled,
     mobileMenuOpen,
     setMobileMenuOpen,
     activeSection,
@@ -65,17 +64,9 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
           />
         )}
 
-        {/* The header is the product's chrome material once it has something
-            to sit on: transparent over the hero, then `.fs-glass--chrome` —
-            the same translucent, blurred, hairline-edged surface the app
-            sidebar wears — as soon as content scrolls under it. */}
         <header
-          className={`ls-theme fixed top-0 left-0 right-0 z-50 transition-all duration-500 ${
+          className={`ls-theme fixed top-0 left-0 right-0 z-50 border-b border-transparent bg-[var(--fs-bg-base)] shadow-none transition-opacity duration-500 ${
             headerLoaded ? 'opacity-100' : 'opacity-0'
-          } ${
-            scrolled || mobileMenuOpen
-              ? 'fs-glass fs-glass--chrome'
-              : 'bg-transparent shadow-none'
           }`}
         >
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-12">
@@ -365,7 +356,7 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
 
   return (
     <header
-      className={`ls-theme fs-glass fs-glass--chrome fixed top-0 left-0 right-0 z-50 transition-opacity duration-500 ${
+      className={`fixed top-0 left-0 right-0 z-50 border-b border-transparent bg-[var(--fs-bg-base)] shadow-none transition-opacity duration-500 ${
         headerLoaded ? 'opacity-100' : 'opacity-0'
       }`}
     >

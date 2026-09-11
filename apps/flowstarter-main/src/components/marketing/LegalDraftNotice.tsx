@@ -6,7 +6,7 @@
  */
 export function LegalDraftNotice() {
   return (
-    <div className="ls-callout fs-glass" role="note" aria-label="Draft notice">
+    <div className="ls-callout" role="note" aria-label="Draft notice">
       <p
         style={{
           fontFamily: 'var(--ls-mono)',

@@ -52,11 +52,35 @@ export function FinalCTASection() {
       />
 
       <div className="ls-container">
-        {/* The card is `.fs-glass`, so the specular line along its top lip and
-            the refractive rim are the material's. The hand-rolled shine bar
-            and inner bloom that used to sit here were a second, slightly
-            different reading of the same idea. */}
-        <div className="ls-cta-card fs-glass">
+        {/* Glass card */}
+        <div className="ls-cta-card">
+          {/* Top shine line — 3D effect */}
+          <div
+            aria-hidden
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: '15%',
+              right: '15%',
+              height: '1px',
+              background:
+                'linear-gradient(90deg, transparent, rgba(255,255,255,0.5) 40%, rgba(255,255,255,0.5) 60%, transparent)',
+              borderRadius: '1px',
+            }}
+          />
+
+          {/* Inner bloom — centered behind content */}
+          <div
+            aria-hidden
+            style={{
+              position: 'absolute',
+              inset: 0,
+              pointerEvents: 'none',
+              background:
+                'radial-gradient(ellipse 80% 60% at 50% -10%, rgba(88,106,240,0.14) 0%, transparent 70%)',
+            }}
+          />
+
           <div style={{ position: 'relative', zIndex: 1, textAlign: 'center' }}>
             {/* Eyebrow */}
             <div className="ls-eyebrow inline-flex items-center justify-center gap-3 mx-auto">
