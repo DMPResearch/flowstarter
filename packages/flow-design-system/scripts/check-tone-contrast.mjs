@@ -1,17 +1,27 @@
 #!/usr/bin/env node
 /**
- * Does every liquid-glass tone still clear AA on its own wash?
+ * Does every liquid-glass tone still clear AA, anywhere on the mesh?
  *
  * The tone inks in brand.css are not decorative: a StatTile prints its value in
  * `--fs-tone-T` on a tile whose background is `--fs-tone-T-soft` laid over
- * `--fs-glass-bg` laid over `--fs-bg-base`. That is three alpha composites deep,
- * so no one can eyeball whether the result is readable. This script does the
- * compositing and reports the ratio, for both modes, from the token values
- * themselves rather than from a copy of them.
+ * `--fs-glass-bg` laid over the mesh laid over `--fs-bg-base`. That is four
+ * alpha composites deep, so no one can eyeball whether the result is readable.
+ *
+ * The mesh is why this script has to do real work. The glass is only 52%
+ * opaque in light mode and 42% in dark, so about half of whatever the mesh is
+ * doing shows through the tile, and the mesh is four big saturated blobs that
+ * make the page much lighter in some places than others. A single "average
+ * background" number would hide the worst corner.
+ *
+ * So the script evaluates the `--fs-mesh` gradient stack itself: it parses the
+ * radial-gradient layers out of the token, samples them across a 1440x900
+ * viewport, and takes the lightest and darkest points it finds as the two
+ * backdrops every tone has to survive. Nothing here is a guess about where the
+ * blobs land — move a blob in brand.css and these numbers move with it.
  *
  * It checks two texts per tone, because both appear on a tinted tile:
  *   - the value, in the tone ink
- *   - the label and note, in `--fs-ink-dim`
+ *   - the label and note, in `--fs-glass-ink-dim`
  *
  * Run: node packages/flow-design-system/scripts/check-tone-contrast.mjs
  * Exits non-zero if any pair falls under 4.5:1.
@@ -21,25 +31,40 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const AA = 4.5;
+const VIEWPORT = { w: 1440, h: 900 };
+/** `.fs-mesh-backdrop::before` is inset by this much, so it is oversized. */
+const MESH_INSET = -0.2;
 const here = dirname(fileURLToPath(import.meta.url));
 const css = readFileSync(
   join(here, '..', 'src', 'styles', 'brand.css'),
   'utf8',
 );
 
-/** The surfaces a tone wash is laid over, per mode. Taken from brand.css. */
-const MODE = {
-  light: {
-    base: '#fbf7ef',
-    glass: 'rgba(255, 255, 255, 0.68)',
-    dim: 'rgba(18, 10, 34, 0.62)',
-  },
-  dark: {
-    base: '#040308',
-    glass: 'rgba(22, 28, 45, 0.64)',
-    dim: 'rgba(244, 238, 228, 0.72)',
-  },
-};
+// ── reading tokens out of the stylesheet ────────────────────────────────────
+
+/**
+ * Every declaration of `--name`, in document order. Light mode is the first
+ * (it lives in `:root`), dark is the second (in `.dark`); a token declared once
+ * is shared by both modes.
+ */
+function declarations(name) {
+  const found = [
+    ...css.matchAll(new RegExp(`^\\s*${name}\\s*:\\s*([\\s\\S]*?);`, 'gm')),
+  ].map((m) => m[1].trim());
+  if (found.length === 0) throw new Error(`no ${name} in brand.css`);
+  return found;
+}
+
+function token(name, mode) {
+  const all = declarations(name);
+  return all[mode === 'dark' ? Math.min(1, all.length - 1) : 0];
+}
+
+/** Follows one level of `var(--x)`, which is all brand.css uses for the bases. */
+function resolve(value, mode) {
+  const ref = value.match(/^var\(\s*(--[\w-]+)\s*\)$/);
+  return ref ? token(ref[1], mode) : value;
+}
 
 // ── colour maths ────────────────────────────────────────────────────────────
 
@@ -84,7 +109,8 @@ function parseColor(value) {
   return [parts[0], parts[1], parts[2], parts[3] ?? 1];
 }
 
-const composite = (fg, bg) =>
+/** Lays `fg` over `bg`. `bg` is opaque by the time it reaches here. */
+const over = (fg, bg) =>
   [0, 1, 2].map((i) => fg[i] * fg[3] + bg[i] * (1 - fg[3]));
 
 function luminance([r, g, b]) {
@@ -100,14 +126,82 @@ function ratio(a, b) {
   return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
 }
 
-// ── token extraction ────────────────────────────────────────────────────────
+// ── evaluating the mesh ─────────────────────────────────────────────────────
+
+const LAYER =
+  /radial-gradient\(\s*([\d.-]+)vw\s+([\d.-]+)vw\s+at\s+([\d.-]+)%\s+([\d.-]+)%\s*,\s*var\(\s*(--[\w-]+)\s*\)\s*0%\s*,\s*transparent\s+([\d.]+)%\s*\)/g;
+
+/**
+ * The `--fs-mesh` stack, as something that can be evaluated at a point. CSS
+ * paints the first background layer on top, so the list is kept in that order
+ * and composited back to front later.
+ */
+function meshLayers(mode) {
+  // The gradient box is the oversized pseudo-element, not the viewport: `vw`
+  // still resolves against the viewport, but a `%` position resolves against
+  // the box. Getting this wrong would move every blob by 20% of the screen.
+  const box = {
+    w: VIEWPORT.w * (1 - 2 * MESH_INSET),
+    h: VIEWPORT.h * (1 - 2 * MESH_INSET),
+    x: VIEWPORT.w * MESH_INSET,
+    y: VIEWPORT.h * MESH_INSET,
+  };
+
+  const layers = [...token('--fs-mesh', mode).matchAll(LAYER)].map((m) => ({
+    rx: parseFloat(m[1]) * 0.01 * VIEWPORT.w,
+    ry: parseFloat(m[2]) * 0.01 * VIEWPORT.w,
+    cx: box.x + parseFloat(m[3]) * 0.01 * box.w,
+    cy: box.y + parseFloat(m[4]) * 0.01 * box.h,
+    color: parseColor(token(m[5], mode)),
+    end: parseFloat(m[6]) / 100,
+  }));
+  if (layers.length === 0) throw new Error('could not parse --fs-mesh');
+  return layers;
+}
+
+/**
+ * The mesh colour at one point, composited onto the page. A radial-gradient
+ * from a colour at 0% to `transparent` at E% interpolates in premultiplied
+ * alpha, which for these two stops means the hue stays put and the alpha ramps
+ * linearly to zero at E% of the gradient ray.
+ */
+function meshAt(layers, base, x, y) {
+  return layers.reduceRight((under, layer) => {
+    const d = Math.hypot((x - layer.cx) / layer.rx, (y - layer.cy) / layer.ry);
+    const t = Math.min(1, d / layer.end);
+    const [r, g, b, a] = layer.color;
+    return over([r, g, b, a * (1 - t)], under);
+  }, base);
+}
+
+/** The lightest and the darkest the page gets, sampled across the viewport. */
+function extremes(mode) {
+  const base = parseColor(resolve(token('--fs-bg-base', mode), mode));
+  const layers = meshLayers(mode);
+
+  let lightest = null;
+  let darkest = null;
+  for (let i = 0; i <= 48; i++) {
+    for (let j = 0; j <= 30; j++) {
+      const rgb = meshAt(
+        layers,
+        base,
+        (i / 48) * VIEWPORT.w,
+        (j / 30) * VIEWPORT.h,
+      );
+      const l = luminance(rgb);
+      if (!lightest || l > lightest.l) lightest = { rgb, l, name: 'brightest' };
+      if (!darkest || l < darkest.l) darkest = { rgb, l, name: 'darkest' };
+    }
+  }
+  return [lightest, darkest];
+}
 
 /** Pulls the `--fs-tone-*` declarations out of one marked block of brand.css. */
 function tonesFor(mode) {
   const start = css.indexOf(`/* @tone-tokens:${mode} */`);
   if (start < 0) throw new Error(`no @tone-tokens:${mode} marker in brand.css`);
-  const end = css.indexOf('/* @tone-tokens:end */', start);
-  const block = css.slice(start, end);
+  const block = css.slice(start, css.indexOf('/* @tone-tokens:end */', start));
 
   const tones = {};
   for (const [, name, value] of block.matchAll(
@@ -128,22 +222,30 @@ let failed = false;
 const rows = [];
 
 for (const mode of ['light', 'dark']) {
-  const { base, glass, dim } = MODE[mode];
-  const glassOverBase = composite(parseColor(glass), parseColor(base));
+  const glass = parseColor(token('--fs-glass-bg', mode));
+  const dim = parseColor(token('--fs-glass-ink-dim', mode));
+  const surfaces = extremes(mode);
 
   for (const [tone, { ink, soft }] of Object.entries(tonesFor(mode))) {
-    // The tile: tone wash over the glass over the page.
-    const tile = composite(parseColor(soft), glassOverBase);
-    const valueRatio = ratio(parseColor(ink), tile);
-    const noteRatio = ratio(composite(parseColor(dim), tile), tile);
+    let worst = null;
 
-    if (valueRatio < AA || noteRatio < AA) failed = true;
+    for (const surface of surfaces) {
+      // tone wash over the glass over the mesh over the page.
+      const tile = over(parseColor(soft), over(glass, surface.rgb));
+      const value = ratio(parseColor(ink), tile);
+      const note = ratio(over(dim, tile), tile);
+      const low = Math.min(value, note);
+      if (!worst || low < worst.low) worst = { ...surface, value, note, low };
+    }
+
+    if (worst.low < AA) failed = true;
     rows.push({
       mode,
       tone,
-      value: valueRatio.toFixed(2),
-      note: noteRatio.toFixed(2),
-      ok: valueRatio >= AA && noteRatio >= AA ? 'pass' : 'FAIL',
+      value: worst.value.toFixed(2),
+      note: worst.note.toFixed(2),
+      on: worst.name,
+      ok: worst.low >= AA ? 'pass' : 'FAIL',
     });
   }
 }
@@ -151,10 +253,12 @@ for (const mode of ['light', 'dark']) {
 const width = Math.max(...rows.map((r) => r.tone.length));
 for (const r of rows) {
   console.log(
-    `${r.mode.padEnd(5)}  ${r.tone.padEnd(width)}  value ${r.value.padStart(5)}:1   label/note ${r.note.padStart(5)}:1   ${r.ok}`,
+    `${r.mode.padEnd(5)}  ${r.tone.padEnd(width)}  value ${r.value.padStart(5)}:1   label/note ${r.note.padStart(5)}:1   worst where the mesh is ${r.on.padEnd(9)}  ${r.ok}`,
   );
 }
-console.log(`\n${rows.length} pairs checked against ${AA}:1.`);
+console.log(
+  `\n${rows.length} tones checked against ${AA}:1, each over the brightest and the darkest point of the mesh.`,
+);
 
 if (failed) {
   console.error(

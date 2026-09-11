@@ -29,14 +29,25 @@ Material, in `:root` and again under `.dark`:
 
 | Token                   | What it is                                      |
 | ----------------------- | ----------------------------------------------- |
-| `--fs-glass-bg`         | the standard translucent fill                   |
+| `--fs-glass-bg`         | the standard translucent fill, 0.52 / 0.42      |
 | `--fs-glass-bg-strong`  | denser fill, for content over a busy mesh       |
 | `--fs-glass-edge`       | the untinted edge colour                        |
-| `--fs-glass-highlight`  | the specular catch-light                        |
-| `--fs-glass-shadow`     | the drop the material casts on the mesh         |
-| `--fs-glass-blur`       | backdrop blur radius, 24px product-wide         |
-| `--fs-glass-saturate`   | backdrop saturation, 160%                       |
+| `--fs-glass-highlight`  | the diagonal specular catch-light               |
+| `--fs-glass-specular`   | the 1px light line along the top inside edge    |
+| `--fs-glass-ink-dim`    | label and note ink on a tinted tile             |
+| `--fs-glass-shadow`     | the drop the material casts, tinted indigo      |
+| `--fs-glass-blur`       | backdrop blur radius, 28px product-wide         |
+| `--fs-glass-saturate`   | backdrop saturation, 180%                       |
 | `--fs-glass-refraction` | the gradient the 1px inner border is drawn from |
+
+The fill is deliberately thin. Glass that you cannot see the mesh through is
+just a white box, so `--fs-glass-bg` lets roughly half the gradient come back
+up through the panel, and the blur and the saturation are what keep the result
+legible rather than muddy.
+
+`--fs-glass-ink-dim` exists because text on a tinted, half-transparent tile
+needs more weight than the same text on the flat page behind it. Use it for
+labels and notes inside glass; use `--fs-ink-dim` everywhere else.
 
 Nine tones, each with four tokens: `--fs-tone-T` (ink), `--fs-tone-T-soft`
 (tint wash), `--fs-tone-T-edge` and `--fs-tone-T-glow`. The tones are `accent`
@@ -44,13 +55,19 @@ Nine tones, each with four tokens: `--fs-tone-T` (ink), `--fs-tone-T-soft`
 `pink` (330), `teal` (182) and `neutral`.
 
 Ink lightness is set per mode so that the value on a tile clears 4.5:1 against
-its own wash, composited over the glass and the page. Run
-`node scripts/check-tone-contrast.mjs` after changing any tone; it does the
-compositing from the token values and exits non-zero below AA.
+its own wash, composited over the glass, the mesh and the page. Run
+`node scripts/check-tone-contrast.mjs` after changing any tone or moving any
+blob. It parses the `--fs-mesh` gradient stack, samples it across a 1440x900
+viewport, and checks every tone over both the brightest and the darkest point
+it finds, because the glass is thin enough that where a tile sits on the
+gradient changes how readable it is. It exits non-zero below AA.
 
-Mesh: `--fs-mesh-1` to `--fs-mesh-4`, the composed `--fs-mesh` radial stack and
-`--fs-mesh-opacity`. Warm cream and indigo with a whisper of pink and teal in
-light, deep indigo with a violet and teal bloom in dark.
+Mesh: `--fs-mesh-1` to `--fs-mesh-4`, the composed `--fs-mesh` radial stack,
+`--fs-mesh-opacity`, and `--fs-mesh-grain` with `--fs-mesh-grain-opacity`.
+Four large overlapping blobs, each wide enough to cross most of the viewport:
+indigo, pink, teal and warm amber in light; indigo, violet, teal and magenta in
+dark. The grain is a tiny SVG noise tile laid over the top, which is what stops
+gradients this wide from banding on an 8-bit display.
 
 Radii: `--fs-radius-glass` (22px) and `--fs-radius-glass-inner`.
 

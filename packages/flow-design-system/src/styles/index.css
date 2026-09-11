@@ -104,7 +104,10 @@
     box-shadow var(--fs-dur-standard) var(--fs-ease-spring);
 }
 
-/* Specular highlight: the light source is top-left, so the sheen is too. */
+/* Specular highlight. The light source is top-left, so the diagonal sheen is
+   too, and a 1px line runs along the top inside edge the way it does on a
+   polished lip. Both are layers on one pseudo-element, which already clips to
+   the surface's radius. */
 .fs-glass::before,
 .glass-liquid::before {
   content: '';
@@ -113,11 +116,9 @@
   z-index: -1;
   border-radius: inherit;
   pointer-events: none;
-  background: linear-gradient(
-    135deg,
-    var(--fs-glass-highlight) 0%,
-    transparent 44%
-  );
+  background:
+    linear-gradient(to bottom, var(--fs-glass-specular) 0 1px, transparent 1px),
+    linear-gradient(135deg, var(--fs-glass-highlight) 0%, transparent 46%);
 }
 
 /* Refractive edge: a gradient border drawn by masking out the middle, so the
@@ -230,22 +231,38 @@
   text-align: left;
   box-shadow:
     var(--fs-glass-shadow),
-    0 12px 32px -14px var(--fs-tile-glow);
+    0 12px 32px -6px var(--fs-tile-glow);
+
+  /* The value sizes itself against the tile, not the viewport: the same tile
+     is 170px wide four-up on a desktop and full width on a phone. */
+  container-type: inline-size;
 }
 
+/* The wash runs corner to corner: full strength at the top-left, gone by the
+   bottom-right, where the note sits. That diagonal is what makes a tile read as
+   tinted glass rather than a coloured box. */
 .fs-glass-tile::before,
 .fs-glass--toned::before {
   background:
-    linear-gradient(158deg, var(--fs-tile-wash) 0%, transparent 82%),
-    linear-gradient(135deg, var(--fs-glass-highlight) 0%, transparent 44%);
+    linear-gradient(
+      146deg,
+      var(--fs-tile-wash) 0%,
+      var(--fs-tile-wash) 16%,
+      transparent 92%
+    ),
+    linear-gradient(to bottom, var(--fs-glass-specular) 0 1px, transparent 1px),
+    linear-gradient(135deg, var(--fs-glass-highlight) 0%, transparent 46%);
 }
 
+/* The rim is the tone's, not the material's, so nine tiles in a row are told
+   apart by their edges as well as their numbers. */
 .fs-glass-tile::after,
 .fs-glass--toned::after {
   background: linear-gradient(
     135deg,
-    var(--fs-glass-highlight) 0%,
-    var(--fs-tile-edge) 38%,
+    var(--fs-glass-specular) 0%,
+    var(--fs-tile-edge) 30%,
+    var(--fs-tile-edge) 70%,
     transparent 100%
   );
 }
@@ -414,19 +431,32 @@
   font-weight: var(--fs-weight-semibold);
   letter-spacing: var(--fs-ls-label);
   text-transform: uppercase;
-  color: var(--fs-ink-dim);
+  color: var(--fs-glass-ink-dim);
 }
 
+/* The icon sits in its own little piece of glass, tinted with the tile's tone.
+   A bare glyph on a washed tile reads as debris; a chip reads as a control. */
 .fs-glass-tile__icon {
   display: inline-flex;
+  flex: none;
   align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--fs-tile-wash);
+  box-shadow:
+    inset 0 0 0 1px var(--fs-tile-edge),
+    inset 0 1px 0 0 var(--fs-glass-specular);
   color: var(--fs-tile-ink);
-  opacity: 0.85;
 }
 
 .fs-glass-tile__value {
-  font-size: 1.6rem;
-  font-weight: var(--fs-weight-bold);
+  /* 2.25rem is the ceiling, for a tile with room for it. A four-up tile gets
+     about 1.5rem, which is what "Connected" needs to stay on one line. */
+  font-size: clamp(1.5rem, 0.55rem + 6.5cqi, 2.25rem);
+  font-weight: 700;
+  overflow-wrap: break-word;
   line-height: var(--fs-lh-tight);
   letter-spacing: var(--fs-ls-heading);
   font-variant-numeric: tabular-nums;
@@ -437,7 +467,7 @@
 .fs-glass-tile__note {
   font-size: var(--fs-text-caption);
   line-height: var(--fs-lh-normal);
-  color: var(--fs-ink-dim);
+  color: var(--fs-glass-ink-dim);
 }
 
 /* A link tile is still a tile: no underline, no colour change, just the lift. */
@@ -497,12 +527,28 @@ a.fs-glass-tile {
   background-image: var(--fs-mesh);
   opacity: var(--fs-mesh-opacity);
   will-change: transform;
-  animation: fs-mesh-drift 42s var(--fs-ease-in-out) infinite alternate;
+  animation: fs-mesh-drift 30s var(--fs-ease-in-out) infinite alternate;
 }
 
-/* Variants change how loud the atmosphere is, never what colours it uses. */
+/* Film grain. Four gradients this wide will band on an 8-bit display, and a
+   little noise is what stops that; it also keeps the page from looking like a
+   flat vector fill. It does not drift with the blobs, so the grain stays put
+   while the colour moves underneath it. */
+.fs-mesh-backdrop::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: var(--fs-mesh-grain);
+  background-repeat: repeat;
+  background-size: 140px 140px;
+  opacity: var(--fs-mesh-grain-opacity);
+}
+
+/* Variants change how loud the atmosphere is, never what colours it uses.
+   The app is where someone works for an hour, so it is the quiet one — but
+   still loud enough to be a gradient rather than a tint. */
 .fs-mesh-backdrop[data-variant='app']::before {
-  opacity: calc(var(--fs-mesh-opacity) * 0.6);
+  opacity: calc(var(--fs-mesh-opacity) * 0.88);
 }
 
 .fs-mesh-backdrop[data-variant='landing']::before {
@@ -510,7 +556,7 @@ a.fs-glass-tile {
 }
 
 .fs-mesh-backdrop[data-variant='editor']::before {
-  opacity: calc(var(--fs-mesh-opacity) * 0.38);
+  opacity: calc(var(--fs-mesh-opacity) * 0.55);
 }
 
 @keyframes fs-mesh-drift {
