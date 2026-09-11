@@ -572,23 +572,48 @@
   --fs-tone-neutral-glow: hsl(233, 20%, 60%, 0.10);
   /* @tone-tokens:end */
 
-  /* ── Mesh backdrop ──
-     The gradient behind the glass, and the reason the material has anything to
-     refract. Four large overlapping blobs, each wide enough to cross most of
-     the viewport, so the page reads as one coloured field rather than four
-     corner stains. The grain on top stops the wide gradients from banding. */
-  --fs-mesh-1: hsl(233, 94%, 64%, 0.25);            /* indigo, top-left */
-  --fs-mesh-2: hsl(330, 92%, 70%, 0.24);            /* pink, bottom-right */
-  --fs-mesh-3: hsl(182, 88%, 56%, 0.23);            /* teal, mid-right */
-  --fs-mesh-4: hsl(36, 96%, 62%, 0.24);             /* warm amber, bottom-left */
-  --fs-mesh-opacity: 1;                             /* master dimmer for the whole mesh */
-  --fs-mesh-grain-opacity: 0.03;                   /* how much film grain sits over the blobs */
+  /* ── The field ──
+     What the glass sits on, and the reason the material has anything to
+     refract. It is not a picture hung behind the interface: it is the page's
+     own surface tone, modulated slowly enough that nobody registers a
+     gradient. Four saturated blobs made a coloured rectangle that announced
+     itself against the cream around it; a working surface should read as one
+     continuous material from the page edge to the panel.
+
+     Two layers, and the first one is the whole idea. `--fs-field-tint` is a
+     near neighbour of `--fs-bg-base`: 2.5 points lighter, six degrees of hue
+     toward the accent and eighteen points less saturated in light, and in dark
+     it is literally `--fs-bg-raised`, the next surface up. The wash is wide
+     enough that the visible part of it is a ramp rather than a blob, so the
+     top-left corner is lit and the bottom-right is the bare page, the same
+     direction the glass's own catch-light comes from.
+
+     `--fs-field-bloom` is the one piece of colour left: a single indigo radial
+     sitting high behind the header, 70vw across, whose alpha peaks under 0.05
+     anywhere it is actually painted. At that strength the eye reads it as a
+     temperature, not as a colour.
+
+     The token is still called `--fs-mesh` because the utility class and both
+     contrast scripts key off that name. What changed is what it paints.
+
+     A surface says how loud its field is with `--fs-mesh-opacity` and nothing
+     else. That was always the documented rule, and it is now the only one that
+     can work: a custom property containing `var()` is substituted where it is
+     *declared*, not where it is used, so `--fs-mesh` resolves its colours here
+     on `:root` and a variant that overrode only `--fs-mesh-1` never changed a
+     pixel. Both the app and the landing block had been doing exactly that, so
+     every signed-in surface had been quietly painting the four saturated blobs
+     this token used to hold, dimmed to half, and not the quiet colours either
+     block asked for. A variant that genuinely needs different colours has to
+     restate `--fs-mesh` itself; landing, below, is the one that does. */
+  --fs-field-tint: hsl(34, 42%, 98.6%);             /* --fs-bg-base is hsl(40, 60%, 96.1%) */
+  --fs-field-bloom: hsl(233, 58%, 60%, 0.055);      /* the one bloom, high behind the header */
+  --fs-mesh-opacity: 1;                             /* the one dial: how loud this surface is */
+  --fs-mesh-grain-opacity: 0.012;                   /* dither, not texture: invisible at 1x */
   --fs-mesh-grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
   --fs-mesh:
-    radial-gradient(104vw 96vw at 0% -10%, var(--fs-mesh-1) 0%, transparent 100%),
-    radial-gradient(98vw 92vw at 100% 106%, var(--fs-mesh-2) 0%, transparent 100%),
-    radial-gradient(84vw 86vw at 108% 42%, var(--fs-mesh-3) 0%, transparent 100%),
-    radial-gradient(92vw 92vw at -6% 100%, var(--fs-mesh-4) 0%, transparent 100%);
+    radial-gradient(70vw 40vw at 52% -8%, var(--fs-field-bloom) 0%, transparent 100%),
+    radial-gradient(120vw 100vw at -4% -12%, var(--fs-field-tint) 0%, transparent 100%);
 }
 
 .dark {
@@ -692,57 +717,66 @@
   --fs-tone-neutral-glow: hsl(233, 22%, 64%, 0.12);
   /* @tone-tokens:end */
 
-  /* ── Mesh backdrop — blooms bright enough for the glass to refract ── */
-  --fs-mesh-1: hsl(233, 90%, 46%, 0.42);            /* indigo, top-left */
-  --fs-mesh-2: hsl(268, 88%, 48%, 0.36);            /* violet, bottom-right */
-  --fs-mesh-3: hsl(182, 84%, 40%, 0.29);            /* teal, mid-right */
-  --fs-mesh-4: hsl(322, 82%, 44%, 0.21);            /* magenta, bottom-left */
-  --fs-mesh-grain-opacity: 0.03;                    /* how much film grain sits over the blobs */
+  /* ── The field, in dark ──
+     Same two layers, same restraint, and here the tint does not have to be
+     invented: `--fs-bg-raised` is already the next surface up from the base,
+     3.1 points of lightness away with nothing saturated in it. Deriving the
+     wash from the surface token is the point — the field and the panels are
+     steps on one ladder rather than two unrelated paints. */
+  --fs-field-tint: var(--fs-bg-raised);             /* #040308 base toward #0a0714 raised */
+  --fs-field-bloom: hsl(233, 64%, 56%, 0.06);       /* the one bloom, high behind the header */
+  --fs-mesh-grain-opacity: 0.012;                   /* dither, not texture: invisible at 1x */
 }
 
 /* ─────────────────────────────────────────────
-   11b. LIQUID GLASS — THE LANDING MESH
-   The marketing pages are the one place where a
-   visitor has not asked to be here yet, so the
-   background has to lose. One soft indigo bloom
-   behind the hero card, a whisper top-left and a
-   faint tint low on the page; no pink, no amber.
-   Same geometry as the app, different paint.
+   11b. LIQUID GLASS — THE FIELD, PER SURFACE
+   One field, at three volumes. A variant says how
+   loud it is with `--fs-mesh-opacity` and nothing
+   else — which is both the rule the system always
+   claimed and, per the note above, the only thing
+   a variant can change without restating the
+   whole gradient.
    ───────────────────────────────────────────── */
+
+/* The app: the client dashboard and admin. The longest-dwell surface in the
+   product, so it is the quietest of the two working surfaces. Darius, twice:
+   first the peach and teal blobs behind the dashboard read as distracting,
+   then — after a pass that was meant to replace them and silently did not —
+   the field still read as a coloured rectangle laid over a cream page. The
+   tiles and the rims carry the colour now; the field carries the surface. */
+.fs-mesh-backdrop[data-variant='app'] {
+  --fs-mesh-opacity: 0.8;
+}
+
+/* The editor: a canvas. Whatever the client is building has to be the loudest
+   thing on screen, so the field steps back another notch behind it. */
+.fs-mesh-backdrop[data-variant='editor'] {
+  --fs-mesh-opacity: 0.72;
+}
+
+/* Marketing kept the flat cream it was reverted to, so nothing mounts this
+   variant today. It is left whole rather than deleted, and it is the one
+   variant that restates `--fs-mesh`, both because its composition really is
+   different and so that changing the field above cannot quietly repaint a
+   marketing page if this is ever mounted again. Its dimmer moved out of
+   index.css and into `--fs-mesh-opacity` here, so there is one dial rather
+   than a pair to multiply. */
 .fs-mesh-backdrop[data-variant='landing'] {
   --fs-mesh-1: hsl(233, 60%, 66%, 0.34);            /* whisper behind the headline */
   --fs-mesh-2: hsl(248, 42%, 70%, 0.22);            /* faint tint, low on the page */
   --fs-mesh-3: hsl(233, 62%, 64%, 0.58);            /* the one bloom, behind the hero card */
-  --fs-mesh-4: transparent;                         /* no amber on marketing */
+  --fs-mesh-opacity: 0.45;                          /* marketing is the quietest of them all */
   --fs-mesh-grain-opacity: 0.02;                    /* barely there, just enough to stop banding */
+  --fs-mesh:
+    radial-gradient(104vw 96vw at 0% -10%, var(--fs-mesh-1) 0%, transparent 100%),
+    radial-gradient(98vw 92vw at 100% 106%, var(--fs-mesh-2) 0%, transparent 100%),
+    radial-gradient(84vw 86vw at 108% 42%, var(--fs-mesh-3) 0%, transparent 100%);
 }
 
 .dark .fs-mesh-backdrop[data-variant='landing'] {
   --fs-mesh-1: hsl(233, 62%, 44%, 0.57);            /* whisper behind the headline */
   --fs-mesh-2: hsl(248, 48%, 42%, 0.33);            /* faint tint, low on the page */
   --fs-mesh-3: hsl(233, 60%, 46%, 0.73);            /* the one bloom, behind the hero card */
-  --fs-mesh-4: transparent;                         /* no magenta on marketing */
-  --fs-mesh-grain-opacity: 0.02;                    /* barely there, just enough to stop banding */
-}
-
-/* The app (client dashboard, admin) mesh: the same discipline as landing.
-   One indigo bloom top-left, a faint cool tint low on the right, a trace of
-   teal mid-right for depth, and nothing warm. Darius: the peach and teal
-   blobs behind the dashboard read as distracting; the tiles carry the colour
-   now, so the field stays quiet. */
-.fs-mesh-backdrop[data-variant='app'] {
-  --fs-mesh-1: hsl(233, 58%, 66%, 0.36);            /* indigo bloom, top-left */
-  --fs-mesh-2: hsl(248, 40%, 72%, 0.20);            /* faint cool tint, bottom-right */
-  --fs-mesh-3: hsl(196, 44%, 66%, 0.18);            /* trace of teal, mid-right */
-  --fs-mesh-4: transparent;                         /* no amber on the app */
-  --fs-mesh-grain-opacity: 0.02;                    /* barely there, just enough to stop banding */
-}
-
-.dark .fs-mesh-backdrop[data-variant='app'] {
-  --fs-mesh-1: hsl(233, 60%, 46%, 0.56);            /* indigo bloom, top-left */
-  --fs-mesh-2: hsl(248, 46%, 44%, 0.30);            /* faint cool tint, bottom-right */
-  --fs-mesh-3: hsl(196, 50%, 38%, 0.24);            /* trace of teal, mid-right */
-  --fs-mesh-4: transparent;                         /* no magenta on the app */
   --fs-mesh-grain-opacity: 0.02;                    /* barely there, just enough to stop banding */
 }
 

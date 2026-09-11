@@ -1,23 +1,25 @@
 #!/usr/bin/env node
 /**
- * Does every liquid-glass tone still clear AA, anywhere on the mesh?
+ * Does every liquid-glass tone still clear AA, anywhere on the field?
  *
  * The tone inks in brand.css are not decorative: a StatTile prints its value in
  * `--fs-tone-T` on a tile whose background is `--fs-tone-T-soft` laid over
- * `--fs-glass-bg` laid over the mesh laid over `--fs-bg-base`. That is four
+ * `--fs-glass-bg` laid over the field laid over `--fs-bg-base`. That is four
  * alpha composites deep, so no one can eyeball whether the result is readable.
  *
- * The mesh is why this script has to do real work. The glass is only 52%
- * opaque in light mode and 42% in dark, so about half of whatever the mesh is
- * doing shows through the tile, and the mesh is four big saturated blobs that
- * make the page much lighter in some places than others. A single "average
+ * The field is why this script has to do real work. The glass is only 52%
+ * opaque in light mode and 42% in dark, so about half of whatever is behind a
+ * tile shows through it, and the field is not flat: it is a wash and a bloom
+ * that make one corner of the page lighter than another. A single "average
  * background" number would hide the worst corner.
  *
  * So the script evaluates the `--fs-mesh` gradient stack itself: it parses the
  * radial-gradient layers out of the token, samples them across a 1440x900
  * viewport, and takes the lightest and darkest points it finds as the two
- * backdrops every tone has to survive. Nothing here is a guess about where the
- * blobs land — move a blob in brand.css and these numbers move with it.
+ * backdrops every tone has to survive. It does that once per signed-in
+ * `data-variant`, because the app and the editor dim the field by different
+ * amounts and a tone has to clear AA on whichever is worse. Nothing here is a
+ * guess — change the field in brand.css and these numbers change with it.
  *
  * It checks two texts per tone, because both appear on a tinted tile:
  *   - the value, in the tone ink
@@ -65,13 +67,23 @@ function tonesFor(mode) {
 
 // ── report ──────────────────────────────────────────────────────────────────
 
+/** The `data-variant`s that render tiles. Marketing has its own script. */
+const SURFACES = ['app', 'editor'];
+
 let failed = false;
 const rows = [];
 
 for (const mode of ['light', 'dark']) {
   const glass = parseColor(token('--fs-glass-bg', mode));
   const dim = parseColor(token('--fs-glass-ink-dim', mode));
-  const surfaces = extremes(mode);
+  // Tiles live on the two signed-in surfaces, and each one dims the field by
+  // its own amount, so both are measured and the worse of the two is reported.
+  const surfaces = SURFACES.flatMap((variant) =>
+    extremes(mode, variant).map((s) => ({
+      ...s,
+      name: `${s.name} on ${variant}`,
+    })),
+  );
 
   for (const [tone, { ink, soft, emphasis }] of Object.entries(
     tonesFor(mode),
@@ -83,7 +95,7 @@ for (const mode of ['light', 'dark']) {
         [soft, 'default'],
         [emphasis, 'emphasis'],
       ]) {
-        // tone wash over the glass over the mesh over the page.
+        // tone wash over the glass over the field over the page.
         const tile = over(parseColor(wash), over(glass, surface.rgb));
         const value = ratio(parseColor(ink), tile);
         const note = ratio(over(dim, tile), tile);
@@ -110,11 +122,11 @@ for (const mode of ['light', 'dark']) {
 const width = Math.max(...rows.map((r) => r.tone.length));
 for (const r of rows) {
   console.log(
-    `${r.mode.padEnd(5)}  ${r.tone.padEnd(width)}  value ${r.value.padStart(5)}:1   label/note ${r.note.padStart(5)}:1   worst on the ${r.wash.padEnd(8)} wash where the mesh is ${r.on.padEnd(9)}  ${r.ok}`,
+    `${r.mode.padEnd(5)}  ${r.tone.padEnd(width)}  value ${r.value.padStart(5)}:1   label/note ${r.note.padStart(5)}:1   worst on the ${r.wash.padEnd(8)} wash where the field is ${r.on.padEnd(19)}  ${r.ok}`,
   );
 }
 console.log(
-  `\n${rows.length} tones checked against ${AA}:1, on both washes, each over the brightest and the darkest point of the mesh.`,
+  `\n${rows.length} tones checked against ${AA}:1, on both washes, each over the brightest and\nthe darkest point of the field on every signed-in surface.`,
 );
 
 if (failed) {

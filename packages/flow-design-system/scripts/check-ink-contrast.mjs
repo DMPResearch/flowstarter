@@ -1,18 +1,23 @@
 #!/usr/bin/env node
 /**
- * Is the marketing copy still readable now that it sits on the mesh?
+ * Is the marketing copy still readable on the backdrop it would sit on?
  *
  * `check-tone-contrast.mjs` covers the tone inks on a tinted tile. This covers
  * the other, much larger case: the plain body and heading copy on the landing
  * and marketing pages, which has no card under it at all. A paragraph in the
- * middle of a section is `--ls-ink-dim` straight over the gradient, and the
- * gradient is four saturated blobs that make one corner of the page a lot
- * lighter than another.
+ * middle of a section is `--ls-ink-dim` straight over the backdrop, with
+ * nothing in between to guarantee it a contrast ratio.
  *
- * Two backdrops are checked per ink, the brightest and the darkest point the
- * mesh reaches across a 1440x900 viewport, and each ink is checked twice: bare
- * on the mesh, and again through `--fs-glass-bg`, which is what a paragraph
- * inside a `.ls-card` sits on.
+ * It measures the `landing` variant specifically, not whatever the field
+ * declares by default. Marketing currently renders the flat `--fs-bg-base` it
+ * was reverted to and mounts no backdrop at all, so the landing variant's own
+ * blobs are the loudest thing these inks could ever be asked to sit on: hold
+ * the line there and the flat page is covered for free.
+ *
+ * Two backdrops are checked per ink, the brightest and the darkest point that
+ * variant reaches across a 1440x900 viewport, and each ink is checked twice:
+ * bare, and again through `--fs-glass-bg`, which is what a paragraph inside a
+ * `.ls-card` sits on.
  *
  * The bars are WCAG's, not invented here: 4.5:1 for body copy, and 3:1 for the
  * ink that is only ever used at display sizes (`--ls-accent`, the second line
@@ -59,12 +64,15 @@ function ink(name, mode) {
   return all[mode === 'dark' ? 1 : 0];
 }
 
+/** The `data-variant` the marketing pages would mount. */
+const LANDING = 'landing';
+
 let failed = false;
 const rows = [];
 
 for (const mode of ['light', 'dark']) {
   const glass = parseColor(token('--fs-glass-bg', mode));
-  const surfaces = extremes(mode);
+  const surfaces = extremes(mode, LANDING);
 
   for (const { name, bar, what } of INKS) {
     const fg = parseColor(ink(name, mode));
@@ -101,13 +109,13 @@ const whatWidth = Math.max(...rows.map((r) => r.what.length));
 for (const r of rows) {
   console.log(
     `${r.mode.padEnd(5)}  ${r.name.padEnd(nameWidth)}  ${r.what.padEnd(whatWidth)}  ` +
-      `on mesh ${r.mesh.padStart(5)}:1   on glass ${r.glass.padStart(5)}:1   ` +
+      `bare ${r.mesh.padStart(5)}:1   on glass ${r.glass.padStart(5)}:1   ` +
       `needs ${String(r.bar).padStart(3)}:1  ${r.ok}`,
   );
 }
 console.log(
-  `\n${rows.length} inks checked, each over the brightest and the darkest point of the mesh,` +
-    `\nbare and through the glass.`,
+  `\n${rows.length} inks checked, each over the brightest and the darkest point of the` +
+    `\nlanding backdrop, bare and through the glass.`,
 );
 
 if (failed) {

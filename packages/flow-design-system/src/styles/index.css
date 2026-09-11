@@ -743,11 +743,17 @@ a.fs-glass-tile {
   background: var(--fs-glass-bg-strong);
 }
 
-/* ── Mesh backdrop ──────────────────────────────────────────────────────────
-   The living gradient the glass refracts. Fixed and full-bleed, painted at
-   z-index 0 so a layout can put its content at z-index 10 above it. The drift
-   is slow enough to be felt rather than seen, and it stops entirely for anyone
-   who asked for less motion. */
+/* ── The field ──────────────────────────────────────────────────────────────
+   The ground the glass refracts. Fixed and full-bleed, painted at z-index 0 so
+   a layout can put its content at z-index 10 above it.
+
+   It is still, and that is the change. The field used to drift on a 30 second
+   loop, which is charming on a page you scroll past once and wrong under a
+   dashboard someone works in: a surface that is never quite the same twice is
+   a surface you keep re-reading. Still also means the pseudo-element is no
+   longer oversized against a transform it no longer has, so `%` positions in
+   `--fs-mesh` resolve against the viewport and the geometry can be reasoned
+   about directly. */
 .fs-mesh-backdrop {
   position: fixed;
   inset: 0;
@@ -760,18 +766,15 @@ a.fs-glass-tile {
 .fs-mesh-backdrop::before {
   content: '';
   position: absolute;
-  /* Oversized so the drift never exposes an edge. */
-  inset: -20%;
+  inset: 0;
   background-image: var(--fs-mesh);
   opacity: var(--fs-mesh-opacity);
-  will-change: transform;
-  animation: fs-mesh-drift 30s var(--fs-ease-in-out) infinite alternate;
 }
 
-/* Film grain. Four gradients this wide will band on an 8-bit display, and a
-   little noise is what stops that; it also keeps the page from looking like a
-   flat vector fill. It does not drift with the blobs, so the grain stays put
-   while the colour moves underneath it. */
+/* Dither, not texture. A wash this wide and this shallow is exactly the case
+   an 8-bit display bands on — a few levels of lightness spread over seventeen
+   hundred pixels — and a whisper of noise is what breaks the steps up. At this
+   opacity it is doing that job and nothing else: at 1x you cannot see it. */
 .fs-mesh-backdrop::after {
   content: '';
   position: absolute;
@@ -782,41 +785,11 @@ a.fs-glass-tile {
   opacity: var(--fs-mesh-grain-opacity);
 }
 
-/* Variants change how loud the atmosphere is. Landing is the quietest of the
-   three: it is the one page where the visitor has not asked to be here, so the
-   headline and the hero card have to win before the background gets a turn.
-   The app can be livelier, because by then someone has chosen to be looking at
-   it. Note this multiplies the variant's own blob alphas in brand.css — both
-   dials are real, and the product of the two is what you see. */
-.fs-mesh-backdrop[data-variant='app']::before {
-  opacity: calc(var(--fs-mesh-opacity) * 0.5);
-}
-
-.fs-mesh-backdrop[data-variant='landing']::before {
-  opacity: calc(var(--fs-mesh-opacity) * 0.45);
-}
-
-.fs-mesh-backdrop[data-variant='editor']::before {
-  opacity: calc(var(--fs-mesh-opacity) * 0.55);
-}
-
-@keyframes fs-mesh-drift {
-  0% {
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-  50% {
-    transform: translate3d(-2.5%, 2%, 0) scale(1.06);
-  }
-  100% {
-    transform: translate3d(2%, -2.5%, 0) scale(1.03);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .fs-mesh-backdrop::before {
-    animation: none;
-  }
-}
+/* There used to be a rule per variant here, each multiplying the token above
+   by a second number. Both dials were real, so knowing what a surface looked
+   like meant holding their product in your head — which is part of how the
+   field ended up louder than anyone had signed off. There is one dial now, and
+   every variant turns it in brand.css beside the colours it applies to. */
 
 /* ── Glass as a control ─────────────────────────────────────────────────────
    A secondary button is the same material as a card and none of its
