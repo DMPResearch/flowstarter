@@ -1,6 +1,6 @@
 'use client';
 
-import './landing-design.css';
+import '@flowstarter/flow-design-system/styles/landing.css';
 import Footer from '@/components/Footer';
 import { FlowBackground } from '@flowstarter/flow-design-system';
 import { usePathname } from 'next/navigation';

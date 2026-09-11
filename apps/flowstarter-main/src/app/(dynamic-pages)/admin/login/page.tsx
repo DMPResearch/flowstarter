@@ -1,6 +1,6 @@
 'use client';
 
-import '../../(main-pages)/landing-design.css';
+import '@flowstarter/flow-design-system/styles/landing.css';
 import './admin-login-contrast.css';
 
 import AuthLayout from '@/components/auth/AuthLayout';

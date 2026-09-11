@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-const cssPath = path.resolve(__dirname, '..', 'landing-design.css');
+const cssPath = path.resolve(
+  __dirname,
+  '../../../../../../../packages/flow-design-system/src/styles/landing.css'
+);
 
 const css = readFileSync(cssPath, 'utf8');
 

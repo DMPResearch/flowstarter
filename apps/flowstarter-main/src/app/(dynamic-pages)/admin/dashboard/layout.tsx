@@ -1,6 +1,6 @@
 'use client';
 
-import '../../(main-pages)/landing-design.css';
+import '@flowstarter/flow-design-system/styles/landing.css';
 import { AdminDashboardSidebar } from '../components/AdminDashboardSidebar';
 import { DashboardBaseLayout } from '@/components/ui/dashboard-base-layout';
 
