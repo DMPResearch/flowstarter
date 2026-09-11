@@ -24,6 +24,7 @@ const state: {
   leads: Array<Record<string, unknown>>;
   events: Array<Record<string, unknown>>;
   products: Array<Record<string, unknown>>;
+  bookings: Array<Record<string, unknown>>;
   /** Status the access helper refuses with: 404 for a stranger, 401 signed out. */
   refusalStatus: number;
 } = {
@@ -34,6 +35,7 @@ const state: {
   leads: [],
   events: [],
   products: [],
+  bookings: [],
   refusalStatus: 404,
 };
 
@@ -45,6 +47,18 @@ function lead(overrides: Record<string, unknown> = {}) {
     id: `lead-${Math.random()}`,
     workspace_id: MINE,
     status: 'new',
+    created_at: NOW_ISO,
+    ...overrides,
+  };
+}
+
+function booking(overrides: Record<string, unknown> = {}) {
+  return {
+    id: `booking-${Math.random()}`,
+    workspace_id: MINE,
+    external_uid: `bk_${Math.random()}`,
+    status: 'booked',
+    start_at: NOW_ISO,
     created_at: NOW_ISO,
     ...overrides,
   };
@@ -112,6 +126,7 @@ function tableRows(table: string): Array<Record<string, unknown>> {
   if (table === 'leads') return state.leads;
   if (table === 'project_events') return state.events;
   if (table === 'commerce_products') return state.products;
+  if (table === 'workspace_bookings') return state.bookings;
   return [];
 }
 
@@ -204,6 +219,7 @@ beforeEach(() => {
   state.leads = [];
   state.events = [];
   state.products = [];
+  state.bookings = [];
   state.refusalStatus = 404;
 });
 
@@ -482,11 +498,45 @@ describe('the site overview', () => {
     );
   });
 
-  it('says the booking link is connected once one is set', async () => {
+  // A connected calendar with nothing on it is not the same fact as a
+  // calendar nobody has hooked up, and the tile has to say which.
+  it('says a connected calendar is empty rather than calling it set up', async () => {
     state.workspace = workspaceRow({ cal_com_url: 'https://cal.com/acme' });
     await renderPage(MINE);
-    expect(tile('bookings')).toHaveTextContent('Connected');
+    expect(tile('bookings')).toHaveTextContent(
+      'Nothing booked yet. Your calendar is connected and taking bookings.'
+    );
+    expect(tile('bookings')).toHaveAttribute('data-tone', 'muted');
+  });
+
+  it('counts the bookings in the table, and points at the list once there are any', async () => {
+    state.workspace = workspaceRow({ cal_com_url: 'https://cal.com/acme' });
+    const soon = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+    state.bookings = [
+      booking({ start_at: soon }),
+      booking({ start_at: soon }),
+      // Cancelled, so present in the table and absent from the count.
+      booking({ start_at: soon, status: 'cancelled' }),
+    ];
+    await renderPage(MINE);
+    expect(tile('bookings')).toHaveTextContent('2');
     expect(tile('bookings')).toHaveAttribute('data-tone', 'ok');
+    expect(tile('bookings')).toHaveAttribute(
+      'href',
+      `/dashboard/projects/${MINE}/booking/list`
+    );
+  });
+
+  // The numbers are read with the service role, which bypasses RLS, so the
+  // workspace filter is the whole of the isolation.
+  it('never counts another tenant’s bookings', async () => {
+    state.workspace = workspaceRow({ cal_com_url: 'https://cal.com/acme' });
+    const soon = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+    state.bookings = [booking({ workspace_id: THEIRS, start_at: soon })];
+    await renderPage(MINE);
+    expect(tile('bookings')).toHaveTextContent(
+      'Nothing booked yet. Your calendar is connected and taking bookings.'
+    );
   });
 
   it('treats a blank booking link as no booking link', async () => {

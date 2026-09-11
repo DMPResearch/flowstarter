@@ -371,6 +371,25 @@ export const TENANT_TABLES = [
     }),
     updatePatch: { status: 'accepted' },
   },
+  {
+    // Written only by the Cal.com webhook, with the service role, after the
+    // per-workspace signature has been checked. A member reads their own
+    // bookings; nobody signed in writes any. `external_uid` is unique per
+    // workspace, so the forged insert below carries its own run suffix and
+    // fails on the policy rather than on the index.
+    table: 'workspace_bookings',
+    tenantKey: 'workspace_id',
+    select: 'id,workspace_id,status,start_at',
+    seed: (workspaceId, run) => ({
+      workspace_id: workspaceId,
+      provider: 'cal.com',
+      external_uid: `cal-${run}`,
+      event_type_slug: 'intro',
+      title: 'Seeded by the RLS check',
+      status: 'booked',
+    }),
+    updatePatch: { status: 'cancelled' },
+  },
 ];
 
 // ─── Server-only tables ────────────────────────────────────────────────────

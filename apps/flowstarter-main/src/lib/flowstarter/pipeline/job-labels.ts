@@ -288,7 +288,7 @@ export interface ColumnToneStyle {
  */
 export function columnToneStyle(
   tone: ColumnTone,
-  emphasis = false,
+  emphasis = false
 ): ColumnToneStyle {
   const ink = isStageStep(tone)
     ? `var(--fs-${tone})`
@@ -365,6 +365,8 @@ const EVENT_KIND_LABELS: Readonly<Record<string, string>> = {
   change_request_declined: 'Change request declined',
   change_request_done: 'Change request marked done',
   booking_cal_updated: 'Booking link updated',
+  booking_cal_connected: 'Cal.com calendar connected',
+  booking_cal_disconnected: 'Cal.com calendar disconnected',
   preview_claimed: 'Preview claimed',
   preview_claim_membership_failed:
     'Client could not be given access after claiming',

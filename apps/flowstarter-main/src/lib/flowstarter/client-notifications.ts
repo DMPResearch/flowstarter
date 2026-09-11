@@ -46,7 +46,10 @@ export const CLIENT_EMAIL_EVENT = 'client_email_sent';
 export type ClientNotification =
   | 'deposit_paid'
   | 'balance_invoice'
-  | 'site_live';
+  | 'site_live'
+  // Keys on the Cal.com booking uid, so a client hears about each booking
+  // once and a redelivered webhook is silent.
+  | 'booking_created';
 
 export type ClientNotifySkipReason =
   | 'already_sent'

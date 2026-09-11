@@ -9,10 +9,10 @@
 import {
   injectCalCom,
   injectCalComPreviewDemo,
-  normalizeCalLink,
   type FileMap,
 } from '@flowstarter/agentic-codegen';
 import { extractCalComUrl } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/discovery.logic';
+import { parseCalLink } from './cal-link';
 
 export type CalComIntakeSource = {
   calComUrl?: string | null;
@@ -23,6 +23,11 @@ export type CalComIntakeSource = {
  * Prefer the dedicated intake field; fall back to a cal.com link buried in
  * the free-text integrations answer. Returns a normalized public URL
  * (`https://cal.com/...`) suitable for `workspaces.cal_com_url`, or null.
+ *
+ * The final gate is `parseCalLink`, the same rules the client's own booking
+ * page enforces. Intake and the dashboard used to hold slightly different
+ * opinions about what a Cal.com link is, which meant a value could be seeded
+ * that the page would then refuse to save back. One set of rules, one column.
  */
 export function resolveTenantCalComUrl(
   source: CalComIntakeSource
@@ -31,16 +36,15 @@ export function resolveTenantCalComUrl(
   const fromIntegrations = extractCalComUrl(source.customIntegrations ?? '');
   const raw = dedicated || fromIntegrations || '';
   if (!raw) return null;
-  const link = normalizeCalLink(raw);
-  if (!link) return null;
-  return `https://cal.com/${link}`;
+  const parsed = parseCalLink(raw);
+  return parsed.ok ? parsed.link.url : null;
 }
 
 /** True when the string is empty or a recognizable Cal.com URL/handle. */
 export function isValidCalComInput(raw: string): boolean {
   const trimmed = raw.trim();
   if (!trimmed) return true;
-  return normalizeCalLink(trimmed) !== null;
+  return parseCalLink(trimmed).ok;
 }
 
 function mapScaffoldFiles<T extends { path: string; content: string }>(

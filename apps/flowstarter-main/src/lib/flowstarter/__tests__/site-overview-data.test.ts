@@ -93,16 +93,23 @@ describe('loadSiteOverviewCounts', () => {
     const db = fakeSupabase(byShape);
     await loadSiteOverviewCounts(db.client, WORKSPACE, NOW);
 
-    expect(db.queries).toHaveLength(6);
+    expect(db.queries).toHaveLength(7);
     for (const query of db.queries) {
       expect(query.eq).toContainEqual(['workspace_id', WORKSPACE]);
     }
   });
 
-  it('counts rather than fetching them', async () => {
+  // Six of the seven are head-only counts. The seventh is the bookings read,
+  // which cannot be: the tile needs the time of the next booking, and a count
+  // has no time in it.
+  it('counts rather than fetching them, except where a time is needed', async () => {
     const db = fakeSupabase(byShape);
     await loadSiteOverviewCounts(db.client, WORKSPACE, NOW);
-    expect(db.queries.every((query) => query.head)).toBe(true);
+    const counting = db.queries.filter(
+      (query) => query.table !== 'workspace_bookings'
+    );
+    expect(counting).toHaveLength(6);
+    expect(counting.every((query) => query.head)).toBe(true);
   });
 
   it('reads the tables the tiles claim to read, and nothing else', async () => {
@@ -117,6 +124,7 @@ describe('loadSiteOverviewCounts', () => {
       'leads',
       'project_events',
       'project_events',
+      'workspace_bookings',
     ]);
   });
 
@@ -178,6 +186,7 @@ describe('loadSiteOverviewCounts', () => {
       enquiries: { total: 12, last30Days: 5, unread: 3 },
       edits: { appliedThisMonth: 6, proposedThisMonth: 9 },
       store: { products: 4 },
+      bookings: { upcoming: 0, nextAt: null, last30Days: 0, total: 0 },
     });
   });
 

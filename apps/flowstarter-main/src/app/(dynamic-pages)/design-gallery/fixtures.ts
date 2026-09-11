@@ -33,6 +33,9 @@ export const starterOverview: {
     booking: {
       connected: false,
       href: '/dashboard/projects/demo-starter/booking',
+      upcoming: 0,
+      nextAt: null,
+      last30Days: 0,
     },
     store: { products: 0 },
     editorHref: '/dashboard/projects/demo-starter/editor',
@@ -57,7 +60,10 @@ export const ecommerceOverview: {
     edits: { appliedThisMonth: 27 },
     booking: {
       connected: true,
-      href: '/dashboard/projects/demo-ecommerce/booking',
+      href: '/dashboard/projects/demo-ecommerce/booking/list',
+      upcoming: 3,
+      nextAt: '2026-09-15T09:30:00.000Z',
+      last30Days: 11,
     },
     store: { products: 42 },
     editorHref: '/dashboard/projects/demo-ecommerce/editor',

@@ -56,7 +56,18 @@ export interface SiteOverviewInput {
   credits: EditCreditPosition;
   enquiries: { total: number; last30Days: number; unread: number };
   edits: { appliedThisMonth: number };
-  booking: { connected: boolean; href: string };
+  /**
+   * `connected` is whether a Cal.com link is saved; the three numbers come
+   * from `workspace_bookings`, which only the signed Cal.com webhook writes.
+   * `nextAt` is the start of the soonest upcoming booking, ISO, or null.
+   */
+  booking: {
+    connected: boolean;
+    href: string;
+    upcoming: number;
+    nextAt: string | null;
+    last30Days: number;
+  };
   store: { products: number };
   editorHref: string;
 }
@@ -152,29 +163,92 @@ function enquiriesTile({
   };
 }
 
+/**
+ * The tile used to say "Connected" or "Not set up", because bookings happened
+ * inside Cal.com and this product knew nothing but whether a link was saved.
+ * Cal.com's webhook now writes each booking to `workspace_bookings`, so the
+ * tile can carry the number it always should have.
+ *
+ * Three states, and the middle one matters most. A connected calendar with
+ * nothing on it is not the same as a calendar nobody has hooked up, and a
+ * client who sees "0" with no explanation reads it as "the site is not
+ * working". Say which it is.
+ */
 function bookingsTile({ booking }: SiteOverviewInput): SiteOverviewTile {
-  // There is no booking data to report: bookings happen inside Cal.com, and
-  // the only thing this product knows is whether the link is set. So the tile
-  // reports exactly that, rather than a count it cannot have.
-  if (booking.connected) {
+  if (!booking.connected) {
     return {
       key: 'bookings',
       label: 'Bookings',
-      value: 'Connected',
-      note: 'Bookings go straight to your Cal.com calendar.',
+      value: 'Not set up',
+      note: 'Connect your booking link so visitors can book you.',
       href: booking.href,
-      tone: 'ok',
+      tone: 'attention',
+    };
+  }
+
+  if (booking.upcoming === 0) {
+    return {
+      key: 'bookings',
+      label: 'Bookings',
+      value: '0',
+      note:
+        booking.last30Days > 0
+          ? `Nothing coming up. ${plural(
+              booking.last30Days,
+              'booking',
+              'bookings'
+            )} in the last 30 days.`
+          : 'Nothing booked yet. Your calendar is connected and taking bookings.',
+      href: booking.href,
+      tone: 'muted',
     };
   }
 
   return {
     key: 'bookings',
     label: 'Bookings',
-    value: 'Not set up',
-    note: 'Connect your booking link so visitors can book you.',
+    value: String(booking.upcoming),
+    note: `Coming up. Next on ${formatBookingDay(booking.nextAt)}. ${plural(
+      booking.last30Days,
+      'booking',
+      'bookings'
+    )} in the last 30 days.`,
     href: booking.href,
-    tone: 'attention',
+    tone: 'ok',
   };
+}
+
+/**
+ * The day a booking falls on, written the same way on every machine.
+ *
+ * Spelled out rather than handed to `toLocaleDateString`, and fixed to UTC.
+ * Two reasons, and the second is the one that bit: this string is produced on
+ * the server, where there is no reader whose locale it could follow, and
+ * `Intl`'s abbreviations move with the ICU build, so the same code says "Sep"
+ * on one Node and "Sept" on the next. A tile whose copy depends on which
+ * runtime CI happened to pull is a tile whose copy cannot be asserted.
+ */
+const MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+
+function formatBookingDay(startAt: string | null): string {
+  if (!startAt) return 'a date we were not sent';
+  const parsed = Date.parse(startAt);
+  if (Number.isNaN(parsed)) return 'a date we were not sent';
+  const date = new Date(parsed);
+  return `${date.getUTCDate()} ${MONTHS[date.getUTCMonth()]}`;
 }
 
 function changesTile({

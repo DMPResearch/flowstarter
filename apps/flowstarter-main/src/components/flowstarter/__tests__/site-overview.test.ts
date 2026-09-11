@@ -28,7 +28,13 @@ function input(overrides: Partial<SiteOverviewInput> = {}): SiteOverviewInput {
     }),
     enquiries: { total: 12, last30Days: 5, unread: 3 },
     edits: { appliedThisMonth: 2 },
-    booking: { connected: true, href: BOOKING },
+    booking: {
+      connected: true,
+      href: BOOKING,
+      upcoming: 2,
+      nextAt: '2026-09-15T09:30:00.000Z',
+      last30Days: 6,
+    },
     store: { products: 0 },
     editorHref: EDITOR,
     ...overrides,
@@ -159,24 +165,120 @@ describe('the enquiries tile', () => {
 });
 
 describe('the bookings tile', () => {
-  it('reports the connection rather than a count it cannot have', () => {
+  it('counts what is coming up and says when the next one is', () => {
     expect(tile('bookings')).toMatchObject({
-      value: 'Connected',
-      note: 'Bookings go straight to your Cal.com calendar.',
+      value: '2',
+      note: 'Coming up. Next on 15 Sep. 6 bookings in the last 30 days.',
       href: BOOKING,
       tone: 'ok',
     });
   });
 
+  it('says one booking, not 1 bookings', () => {
+    expect(
+      tile('bookings', {
+        booking: {
+          connected: true,
+          href: BOOKING,
+          upcoming: 1,
+          nextAt: '2026-09-11T18:00:00.000Z',
+          last30Days: 1,
+        },
+      })
+    ).toMatchObject({
+      value: '1',
+      note: 'Coming up. Next on 11 Sep. 1 booking in the last 30 days.',
+    });
+  });
+
   it('asks the client to finish the setup when the link is missing', () => {
     expect(
-      tile('bookings', { booking: { connected: false, href: BOOKING } })
+      tile('bookings', {
+        booking: {
+          connected: false,
+          href: BOOKING,
+          upcoming: 0,
+          nextAt: null,
+          last30Days: 0,
+        },
+      })
     ).toMatchObject({
       value: 'Not set up',
       note: 'Connect your booking link so visitors can book you.',
       href: BOOKING,
       tone: 'attention',
     });
+  });
+
+  // The case the old tile could not tell apart: a calendar nobody has hooked
+  // up and a calendar nobody has booked are different facts about a business.
+  it('separates a connected but empty calendar from an unconnected one', () => {
+    expect(
+      tile('bookings', {
+        booking: {
+          connected: true,
+          href: BOOKING,
+          upcoming: 0,
+          nextAt: null,
+          last30Days: 0,
+        },
+      })
+    ).toMatchObject({
+      value: '0',
+      note: 'Nothing booked yet. Your calendar is connected and taking bookings.',
+      tone: 'muted',
+    });
+  });
+
+  it('still credits the last 30 days when the diary ahead is empty', () => {
+    expect(
+      tile('bookings', {
+        booking: {
+          connected: true,
+          href: BOOKING,
+          upcoming: 0,
+          nextAt: null,
+          last30Days: 4,
+        },
+      })
+    ).toMatchObject({
+      value: '0',
+      note: 'Nothing coming up. 4 bookings in the last 30 days.',
+      tone: 'muted',
+    });
+  });
+
+  // A start time we were not sent must never render as "Invalid Date".
+  it('does not print a broken date when the start time is missing', () => {
+    expect(
+      tile('bookings', {
+        booking: {
+          connected: true,
+          href: BOOKING,
+          upcoming: 1,
+          nextAt: null,
+          last30Days: 0,
+        },
+      })?.note
+    ).toBe(
+      'Coming up. Next on a date we were not sent. 0 bookings in the last 30 days.'
+    );
+  });
+
+  it('does not print a broken date when the start time is nonsense', () => {
+    expect(
+      tile('bookings', {
+        booking: {
+          connected: true,
+          href: BOOKING,
+          upcoming: 1,
+          nextAt: 'whenever',
+          last30Days: 0,
+        },
+      })?.note
+    ).toBe(
+      'Coming up. Next on a date we were not sent. 0 bookings in the last 30 days.'
+    );
   });
 });
 
