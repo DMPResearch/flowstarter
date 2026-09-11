@@ -13,6 +13,10 @@ import type {
   TemplateScaffoldFile,
   TemplateSelection,
 } from '@flowstarter/agentic-codegen';
+import {
+  describeAssetProblems,
+  findNonBinaryAssets,
+} from '@flowstarter/agentic-codegen';
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import type { Json } from '@/lib/database.types';
@@ -99,6 +103,16 @@ export async function savePreviewArtifacts(
     if (bytes > MAX_MANIFEST_BYTES) {
       throw new PreviewArtifactError('Preview manifest exceeds the size limit');
     }
+  }
+
+  // An image that lost its `encoding: 'base64'` flag is, in this row, a string
+  // of printable base64 behind a `.png` name. The worker materializes this
+  // manifest verbatim, so writing one is how a client ends up with a site
+  // whose every image is a broken icon. Caught here, at write time, like every
+  // other shape the worker asserts on.
+  const assetProblems = findNonBinaryAssets(input.files);
+  if (assetProblems.length > 0) {
+    throw new PreviewArtifactError(describeAssetProblems(assetProblems));
   }
 
   const supabase = createSupabaseServiceRoleClient();

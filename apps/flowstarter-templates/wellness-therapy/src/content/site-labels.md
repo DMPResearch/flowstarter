@@ -341,9 +341,9 @@ bookPage:
   note: "Prefer to write first? The contact page has a quiet form instead."
   noteHref: "/contact"
   noteLinkLabel: "Use the contact form"
-  embedNote: "Connect your Calendly or Cal.com link here, or point this button straight at your inbox."
+  embedNote: "A reply comes from a person, usually the same day."
   buttonLabel: "Email to arrange a call"
-  buttonHref: "mailto:hello@example.com?subject=Intro%20call"
+  buttonHref: "/contact"
 
 contactPage:
   titleLines:
@@ -364,7 +364,7 @@ contactPage:
     messageLabel: "What's bringing you here?"
     messagePlaceholder: "A sentence or two is plenty. You do not have to explain everything yet."
     submitLabel: "Send message"
-    successMessage: "Thank you. This will reach the practice once the form is connected to your email or booking tool."
+    successMessage: "Thank you. Your email app should now be open with this ready to send, and it will come straight to me."
   details:
     emailLabel: "Email"
     emailValue: "hello@example.com"

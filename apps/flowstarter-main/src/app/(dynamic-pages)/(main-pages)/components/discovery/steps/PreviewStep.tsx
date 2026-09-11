@@ -163,6 +163,9 @@ function previewPayload(data: DiscoveryData) {
     // every generated site with placeholder social links.
     instagramUrl: data.instagramUrl,
     linkedinUrl: data.linkedinUrl,
+    // The page-count answer decides how many pages the generator may build.
+    // Dropping it here is what gave a "Under 5" brief a seven-page site.
+    ...(data.pageCount ? { pageCount: data.pageCount } : {}),
     calComUrl: data.calComUrl,
     customIntegrations: data.customIntegrations,
   };

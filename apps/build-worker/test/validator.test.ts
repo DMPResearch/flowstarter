@@ -108,6 +108,89 @@ describe('CommandSiteValidator', () => {
     );
   });
 
+  it('fails the job when a built image is base64 text instead of bytes', async () => {
+    const root = await siteWorkspace();
+    const output: Array<{ command: string; lines: string[] }> = [];
+    const validator = new CommandSiteValidator({
+      commands: [
+        {
+          bin: 'node',
+          args: [
+            '-e',
+            'const fs=require("node:fs");fs.mkdirSync("dist/images",{recursive:true});' +
+              'fs.writeFileSync("dist/images/hero.png","iVBORw0KGgoAAAANSUhEUg==","utf8")',
+          ],
+        },
+      ],
+      timeoutMs: 30_000,
+      onOutput: (command, lines) => output.push({ command, lines }),
+    });
+
+    await expect(validator.validate(root, 'full')).rejects.toThrow(
+      /ASSET_NOT_BINARY: .*images\/hero\.png/s,
+    );
+    // The operator reads the job log, not the exception, so the gate's verdict
+    // has to arrive there too.
+    expect(
+      output.some(
+        (entry) =>
+          entry.command === 'asset-binary-gate' &&
+          entry.lines.join(' ').includes('ASSET_NOT_BINARY'),
+      ),
+    ).toBe(true);
+  });
+
+  it('passes a build whose images are real bytes', async () => {
+    const root = await siteWorkspace();
+    const validator = new CommandSiteValidator({
+      commands: [
+        {
+          bin: 'node',
+          args: [
+            '-e',
+            'const fs=require("node:fs");fs.mkdirSync("dist/images",{recursive:true});' +
+              'fs.writeFileSync("dist/images/hero.png",Buffer.from("iVBORw0KGgoAAAANSUhEUg==","base64"));' +
+              'fs.writeFileSync("dist/images/logo.svg","<svg></svg>","utf8")',
+          ],
+        },
+      ],
+      timeoutMs: 30_000,
+    });
+
+    await expect(validator.validate(root, 'full')).resolves.toBeUndefined();
+  });
+
+  it('fails a paid build whose output still carries the funnel preview teaser', async () => {
+    const root = await siteWorkspace();
+    const output: Array<{ command: string; lines: string[] }> = [];
+    const validator = new CommandSiteValidator({
+      commands: [
+        {
+          bin: 'node',
+          args: [
+            '-e',
+            'const fs=require("node:fs");fs.mkdirSync("dist",{recursive:true});' +
+              'fs.writeFileSync("dist/index.html",' +
+              '"<script defer src=\\"/flowstarter-preview-teaser.js\\"></script>","utf8")',
+          ],
+        },
+      ],
+      timeoutMs: 30_000,
+      onOutput: (command, lines) => output.push({ command, lines }),
+    });
+
+    await expect(validator.validate(root, 'full')).rejects.toThrow(
+      /TEASER_IN_PAID_BUILD/,
+    );
+    expect(
+      output.some(
+        (entry) =>
+          entry.command === 'preview-teaser-gate' &&
+          entry.lines.join(' ').includes('already paid for'),
+      ),
+    ).toBe(true);
+  });
+
   it('kills a command that hangs past the build timeout', async () => {
     const root = await siteWorkspace();
     const validator = new CommandSiteValidator({

@@ -26,10 +26,16 @@ import { isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { SiteValidator } from '@flowstarter/agentic-codegen';
 import {
+  describeAssetProblems,
+  describePreviewTeaserIssue,
+} from '@flowstarter/agentic-codegen';
+import {
   DOCKER_CONTAINER_PROGRAMS,
   type DockerValidationConfig,
   type ValidatorCommand,
 } from './config';
+import { findNonBinaryAssetsInDir } from './output-assets';
+import { findPreviewTeaserInDir } from './output-teaser';
 
 const execFileAsync = promisify(execFile);
 
@@ -423,10 +429,34 @@ export class CommandSiteValidator implements SiteValidator {
       }
     }
 
-    if (!(await isDirectory(join(workspaceRoot, this.outputDir)))) {
+    const output = join(workspaceRoot, this.outputDir);
+    if (!(await isDirectory(output))) {
       throw new SiteValidationError(
         `Build produced no ${this.outputDir}/ output directory`,
       );
+    }
+
+    // The build succeeding says nothing about whether its images are images.
+    // Base64 that lost its `encoding` flag lands on disk as an ASCII file
+    // named `.png`, and every step after this one — pack, deploy, serve — is
+    // happy to carry it. This is the last place the bytes are still on disk
+    // and the job can still be failed.
+    const problems = await findNonBinaryAssetsInDir(output);
+    if (problems.length > 0) {
+      const message = describeAssetProblems(problems);
+      this.options.onOutput?.('asset-binary-gate', [message]);
+      throw new SiteValidationError(message);
+    }
+
+    // This validator only ever runs the `full` phase, which is a paid build or
+    // a client rebuild. The funnel preview teaser blurs the lower half of
+    // every page and offers to sell the client a site they have already paid
+    // for; it shipped once, on all ten pages of a delivered portfolio.
+    const teaser = await findPreviewTeaserInDir(output);
+    if (teaser.length > 0) {
+      const message = describePreviewTeaserIssue(teaser);
+      this.options.onOutput?.('preview-teaser-gate', [message]);
+      throw new SiteValidationError(message);
     }
   }
 

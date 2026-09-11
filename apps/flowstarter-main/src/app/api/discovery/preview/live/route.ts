@@ -75,6 +75,16 @@ const SpecSchema = z.object({
   // malformed, so a bad paste costs the profile link, not the preview.
   instagramUrl: z.string().max(300).optional().default(''),
   linkedinUrl: z.string().max(300).optional().default(''),
+  /**
+   * The wizard's page-count answer. It reaches the generator as part of the
+   * intake and is the input to the page-set rule, which decides how many
+   * pages the site may have. Without it every brief got the template's own
+   * seven pages whatever it asked for.
+   */
+  pageCount: z
+    .enum(['lt-5', '5-7', '8-15', '15+', 'unsure'])
+    .optional()
+    .default('unsure'),
   /** Dedicated Cal.com booking link from intake (per tenant). */
   calComUrl: z.string().max(400).optional().default(''),
   /** Free-text integrations; may still contain a cal.com URL as fallback. */
@@ -216,6 +226,7 @@ function buildPiEvidence(
       description: spec.description.trim(),
       targetAudience: spec.targetAudience.trim() || undefined,
       primaryGoal: spec.goal.trim() || undefined,
+      pageCount: spec.pageCount,
     },
     socialMedia: targets,
     locale: 'en',
@@ -740,6 +751,16 @@ export async function POST(req: NextRequest) {
           // Soft budget threshold: the pipeline skips brief-generated imagery
           // (and any other optional spend) when the funnel is over it.
           budgetDegraded: budgetState === 'degrade',
+          // Rule 5 of the page set: a booking page exists only for a booking
+          // link that already passed `resolveTenantCalComUrl`. The same
+          // resolver the demo injection uses, so the page set and the embed
+          // can never disagree about whether this workspace books calls.
+          hasBookingLink: Boolean(
+            resolveTenantCalComUrl({
+              calComUrl: spec.calComUrl,
+              customIntegrations: spec.customIntegrations,
+            })
+          ),
           deadlineAt: runDeadlineAt,
           onPhase: (phase) => updateJob(demoId, { phase }),
         });

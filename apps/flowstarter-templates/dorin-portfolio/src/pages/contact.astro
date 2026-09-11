@@ -11,6 +11,7 @@ import { getContactPageData } from '../lib/site-data';
 
 const contactPage = getContactPageData();
 const defaultCountry = contactCountryCodes[0];
+const contactEmail = contactPage.details.emailHref.replace(/^mailto:/, '').split('?')[0];
 ---
 
 <Layout title="Let's Work Together — Contact">
@@ -19,7 +20,12 @@ const defaultCountry = contactCountryCodes[0];
     <ContactHeroSection titleLines={contactPage.titleLines} introText={contactPage.introText} />
 
     <section class="contact-page__content container">
-      <ContactFormPanel form={contactPage.form} countryCodes={contactCountryCodes} defaultCountry={defaultCountry} />
+      <ContactFormPanel
+        form={contactPage.form}
+        countryCodes={contactCountryCodes}
+        defaultCountry={defaultCountry}
+        contactEmail={contactEmail}
+      />
       <ContactDetailsPanel details={contactPage.details} />
     </section>
   </main>
@@ -73,10 +79,12 @@ const defaultCountry = contactCountryCodes[0];
   import { useFormSuccess } from '../scripts/hooks/useFormSuccess.js';
 
   const picker = useCountryPicker('[data-country-picker]');
+  const contactForm = document.querySelector('[data-contact-form]');
 
   useFormSuccess({
     formSelector: '[data-contact-form]',
     successSelector: '[data-contact-success]',
+    mailto: contactForm instanceof HTMLElement ? contactForm.dataset.contactEmail : undefined,
     onSuccess: () => picker?.reset(),
   });
 </script>

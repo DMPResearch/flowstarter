@@ -349,7 +349,7 @@ contactPage:
     messageLabel: "What are you working on?"
     messagePlaceholder: "Briefly describe the decision, the problem, or the situation you would like a senior view on."
     submitLabel: "Send message"
-    successMessage: "Thank you. Your message is ready to send once this form is connected to your preferred email or form endpoint."
+    successMessage: "Thank you. Your email application should now be open with your message ready to send."
   details:
     emailLabel: "Email"
     emailValue: "hello@haldenandroe.com"

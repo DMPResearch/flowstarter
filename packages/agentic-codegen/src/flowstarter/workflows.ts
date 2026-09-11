@@ -38,9 +38,28 @@ import type {
   BusinessIntakePayload,
   PreviewIntent,
   ScrapeCorpus,
+  TemplateScaffold,
   TemplateScaffoldFile,
   TemplateSelection,
 } from './types';
+import {
+  applyPageSetToScaffold,
+  derivePageSet,
+  describePageSet,
+  findPageBudgetIssue,
+  PAGE_BUDGET_EXCEEDED,
+  type PageSet,
+} from './page-set';
+import {
+  describePlaceholderFindings,
+  findPlaceholderCopyInFiles,
+  isEditableContentPath,
+  PLACEHOLDER_COPY_SHIPPED,
+} from './placeholder-copy';
+import {
+  stripPreviewTeaserFromFiles,
+  TEASER_IN_PAID_BUILD,
+} from './teaser-rule';
 import { applyIntegrationsToWorkspace } from '../integrations';
 
 export interface SiteValidator {
@@ -142,6 +161,13 @@ export class PreviewGenerationPipeline {
      */
     budgetDegraded?: boolean;
     /**
+     * True only when the workspace has a booking link that already passed
+     * validation. It is the whole of rule 5 in `page-set.ts`: with it false
+     * the booking page is never scaffolded, never linked, and every "book"
+     * call to action points at the contact page instead.
+     */
+    hasBookingLink?: boolean;
+    /**
      * Epoch ms by which the run must be published. Optional passes (the
      * quality sweep, the image and integrity repairs) are skipped once too
      * little of it is left for them to finish, so a slow first pass costs
@@ -203,7 +229,20 @@ export class PreviewGenerationPipeline {
         library: this.library,
       }));
     input.onPhase?.('Preparing your selected design');
-    const scaffold = await this.library.scaffold(template.slug);
+    // The page set is decided here, deterministically, before a model ever
+    // sees the workspace. A template ships seven pages and a booking page
+    // whatever the brief asked for; this is what keeps a four-page brief from
+    // becoming a seven-page site and what stops a `/book` page existing for a
+    // client who has no booking link.
+    const pageSet = derivePageSet({
+      pageCount: input.intake.business.pageCount ?? null,
+      businessType: `${input.intake.business.niche} ${input.intake.business.description ?? ''}`,
+      hasBookingLink: input.hasBookingLink ?? false,
+    });
+    const scaffold = prunedScaffold(
+      await this.library.scaffold(template.slug),
+      pageSet,
+    );
     const workspace = await createPreviewWorkspace(scaffold);
     try {
       const cachedAssets = [
@@ -332,6 +371,39 @@ export class PreviewGenerationPipeline {
         throw new Error(`Preview personalization failed: ${issue}`);
       }
 
+      // The honesty gate. The quality sweep above already *flags* leftover
+      // template copy and sends the agent back once; it never refused to ship
+      // what came back, which is how a contact page telling the visitor the
+      // form is not wired up reached a paying client. This one fails.
+      // Scoped to the files the preview agent may write, so it never fails a
+      // preview for markup the agent is barred from touching.
+      const editableFiles = async () =>
+        (await collectSiteTextFiles(workspace.root)).filter((file) =>
+          isEditableContentPath(file.path),
+        );
+      let placeholder = findPlaceholderCopyIssue(await editableFiles(), {
+        hasBookingLink: input.hasBookingLink ?? false,
+      });
+      if (placeholder && roomFor('placeholder copy repair')) {
+        input.onPhase?.('Removing placeholder copy');
+        const feedback = placeholder;
+        const repair = await optional('placeholder copy repair', () =>
+          personalize(feedback),
+        );
+        if (repair) {
+          build = {
+            ...repair,
+            changedPaths: Array.from(
+              new Set([...build.changedPaths, ...repair.changedPaths]),
+            ),
+          };
+        }
+        placeholder = findPlaceholderCopyIssue(await editableFiles(), {
+          hasBookingLink: input.hasBookingLink ?? false,
+        });
+      }
+      if (placeholder) throw new Error(placeholder);
+
       // Soft checks on image placement. Both run one repair pass at most and
       // never fail the pipeline: a stubborn image slot must not cost the
       // client their whole preview.
@@ -420,6 +492,11 @@ export class PreviewGenerationPipeline {
         );
         await this.validator.validate(workspace.root, 'preview');
       }
+      // The only place the teaser is ever injected, and it is inside
+      // PreviewGenerationPipeline: a funnel preview, by construction. The
+      // paid paths strip it back out of the seed they inherit and the
+      // worker's validator fails a build that still carries it. See
+      // `teaser-rule.ts` for the rule in full.
       if (this.options.teaser !== false && this.options.teaser !== undefined) {
         input.onPhase?.('Preparing the preview teaser');
         await injectPreviewTeaser(workspace.root, this.options.teaser);
@@ -862,6 +939,52 @@ async function restoreScaffoldFiles(
     if (!paths.includes(file.path) || file.encoding === 'base64') continue;
     await writeFile(join(workspaceRoot, file.path), file.content, 'utf8');
   }
+}
+
+/**
+ * The template scaffold, cut down to the pages this brief buys.
+ *
+ * Exported because it is the only thing standing between a "Under 5" answer
+ * and a seven-page site, and because it is what makes a `/book` page
+ * impossible without a booking link: the page never reaches the workspace, so
+ * no agent can personalize it and no build can emit it.
+ */
+export function prunedScaffold(
+  scaffold: TemplateScaffold,
+  pageSet: PageSet,
+): TemplateScaffold {
+  const pruned = applyPageSetToScaffold(scaffold.files, pageSet);
+  if (pruned.removedPaths.length > 0 || pruned.rewrittenPaths.length > 0) {
+    console.info(
+      `[page-set] ${pageSet.kind} brief, budget ${pageSet.budget}, keeps ` +
+        `${pageSet.allowed.join(', ')}; removed ${
+          pruned.removedPaths.join(', ') || 'nothing'
+        }; relinked ${pruned.rewrittenPaths.join(', ') || 'nothing'}`,
+    );
+  }
+  return { ...scaffold, files: pruned.files };
+}
+
+/**
+ * The placeholder-copy gate, over the files a site actually renders.
+ *
+ * The residue check next to it asks "did the agent rewrite the template's
+ * sample copy". This asks a narrower and harder question: does the site make
+ * a promise it cannot keep — a contact form that admits it is not wired, a
+ * booking page naming a calendar the client does not have. The sentinel list
+ * is in `placeholder-copy.ts`, hand-written and closed.
+ */
+export function findPlaceholderCopyIssue(
+  files: readonly { path: string; content: string }[],
+  options: { hasBookingLink?: boolean; editableOnly?: boolean } = {},
+): string | undefined {
+  const scanned = options.editableOnly
+    ? files.filter((file) => isEditableContentPath(file.path))
+    : files;
+  const findings = findPlaceholderCopyInFiles(scanned, {
+    hasBookingLink: options.hasBookingLink ?? false,
+  });
+  return findings.length > 0 ? describePlaceholderFindings(findings) : undefined;
 }
 
 /** Where a template keeps the copy the agent is meant to rewrite. */
@@ -1826,7 +1949,37 @@ export class FullSiteBuildWorker {
       const siteRoot = join(worktree.path, 'generated-sites', job.projectId);
       await mkdir(siteRoot, { recursive: true, mode: 0o700 });
       await phase('Materializing the approved preview');
-      await materializeScaffold(siteRoot, job.approvedPreviewFiles);
+      // The same rule the preview was scaffolded under, re-applied here. The
+      // preview is normally already pruned; this covers a preview taken
+      // before the rule existed, and a workspace whose booking link changed
+      // between the preview and the deposit.
+      const pageSet = derivePageSet({
+        pageCount: job.intake.business.pageCount ?? null,
+        businessType: `${job.intake.business.niche} ${job.intake.business.description ?? ''}`,
+        hasBookingLink: Boolean(job.calComUrl),
+      });
+      // The approved preview is the preview *after* the teaser was injected.
+      // A paid build seeded from it inherits the blur and the "Unlock the
+      // full site" chip, which is what shipped. The teaser belongs to the
+      // funnel and is taken back out here, before the agent ever sees it.
+      const seed = stripPreviewTeaserFromFiles(job.approvedPreviewFiles);
+      if (seed.removedPaths.length > 0 || seed.cleanedPaths.length > 0) {
+        await say(
+          'log',
+          'Removing the funnel preview teaser from the approved preview: ' +
+            `${[...seed.removedPaths, ...seed.cleanedPaths].join(', ')}. ` +
+            'This build is paid for, so nothing on it is blurred or locked.',
+        );
+      }
+      const approvedFiles = applyPageSetToScaffold(seed.files, pageSet);
+      if (approvedFiles.removedPaths.length > 0) {
+        await say(
+          'log',
+          `The brief buys ${pageSet.allowed.join(', ')}; dropping ` +
+            `${approvedFiles.removedPaths.join(', ')} before the agents start.`,
+        );
+      }
+      await materializeScaffold(siteRoot, approvedFiles.files);
       // The client's free changes are in those files already. Say so on the
       // board: the operator watching this build should be able to read what
       // was promised without opening the preview, and a build that later drops
@@ -1869,6 +2022,7 @@ export class FullSiteBuildWorker {
           intake: job.intake,
           brandConfig: job.brandConfig,
           requiredIntegrations: job.requiredIntegrations,
+          pageSet: describePageSet(pageSet),
           ...(feedback ? { feedback } : {}),
           ...(onTrace ? { onTrace } : {}),
         });
@@ -1974,6 +2128,49 @@ export class FullSiteBuildWorker {
           );
         }
       }
+
+      // Two gates on what the build actually emitted, in the order a client
+      // would notice them. Both get one repair pass and then fail the job:
+      // the alternative is handing QA a site that is bigger than the brief or
+      // that promises a calendar nobody owns, which is what shipped before.
+      await phase('Checking the site matches the brief');
+      const builtPaths = async () =>
+        (await collectBuiltSiteText(siteRoot)).map((file) =>
+          file.path.replace(/^dist\//, ''),
+        );
+      let pageIssue = findPageBudgetIssue(await builtPaths(), pageSet);
+      if (pageIssue) {
+        await say('log', pageIssue);
+        await pass('Cutting the site back to the brief', withApproved(pageIssue));
+        await check();
+        pageIssue = findPageBudgetIssue(await builtPaths(), pageSet);
+      }
+      if (pageIssue) {
+        throw new FullSiteBuildFailure(PAGE_BUDGET_EXCEEDED, pageIssue);
+      }
+
+      await phase('Checking for placeholder copy');
+      const placeholderOptions = { hasBookingLink: Boolean(job.calComUrl) };
+      let placeholderIssue = findPlaceholderCopyIssue(
+        await collectBuiltSiteText(siteRoot),
+        placeholderOptions,
+      );
+      if (placeholderIssue) {
+        await say('log', placeholderIssue);
+        await pass('Removing placeholder copy', withApproved(placeholderIssue));
+        await check();
+        placeholderIssue = findPlaceholderCopyIssue(
+          await collectBuiltSiteText(siteRoot),
+          placeholderOptions,
+        );
+      }
+      if (placeholderIssue) {
+        throw new FullSiteBuildFailure(
+          PLACEHOLDER_COPY_SHIPPED,
+          placeholderIssue,
+        );
+      }
+
       await phase('Committing the site');
       const commitSha = await this.worktrees.commit(
         worktree,
@@ -2061,7 +2258,12 @@ export class FullSiteBuildWorker {
       const siteRoot = join(worktree.path, 'generated-sites', job.projectId);
       await mkdir(siteRoot, { recursive: true, mode: 0o700 });
       await phase('Materializing the published edit');
-      await materializeScaffold(siteRoot, job.approvedPreviewFiles);
+      // A client rebuild is as paid-for as the first build; the teaser has no
+      // business in it either, whatever the stored manifest still carries.
+      await materializeScaffold(
+        siteRoot,
+        stripPreviewTeaserFromFiles(job.approvedPreviewFiles).files,
+      );
       if (job.calComUrl) {
         await applyIntegrationsToWorkspace(siteRoot, {
           booking: { provider: 'cal.com', url: job.calComUrl },

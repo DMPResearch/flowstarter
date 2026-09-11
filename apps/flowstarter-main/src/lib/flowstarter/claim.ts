@@ -645,7 +645,21 @@ export async function claimPreview(
         // The manifest was generated against the demo id. The build worker
         // cross-checks intake.projectId against the workspace and fails the
         // job when they disagree, so it is re-pointed at its new home.
-        intake: { ...preview.intake, projectId: workspaceId },
+        intake: {
+          ...preview.intake,
+          projectId: workspaceId,
+          business: {
+            ...preview.intake.business,
+            // The claim carries the wizard's own page-count answer even when
+            // the preview was generated without it. It is the input to the
+            // page-set rule the paid build is gated on, so a brief that says
+            // "Under 5" must not reach the build as "unsure".
+            ...(typeof input.intakeSummary?.['pageCount'] === 'string' &&
+            input.intakeSummary['pageCount']
+              ? { pageCount: input.intakeSummary['pageCount'] as string }
+              : {}),
+          },
+        },
         brandConfig: preview.brandConfig,
         template: preview.template,
         files,

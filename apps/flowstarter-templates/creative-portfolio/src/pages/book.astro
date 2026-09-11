@@ -17,15 +17,17 @@ import { pageTitle } from '../lib/site-data';
         </p>
       </div>
       <div class="book-page__calendar">
-        <!-- Replace the src below with your Calendly or Cal.com embed URL -->
-        <iframe
-          src="https://calendly.com/your-username/discovery-call"
-          width="100%"
-          height="700"
-          frameborder="0"
-          title="Book a discovery call"
-          loading="lazy"
-        ></iframe>
+        <!--
+          The trusted integration step replaces this block with the workspace's
+          own booking embed. It only runs when a validated booking link exists,
+          and with no link this page is never scaffolded at all, so what stands
+          here is a fallback rather than a promise: it sends the visitor to a
+          person instead of to a calendar that belongs to nobody.
+        -->
+        <p class="book-page__fallback">
+          Prefer to write first? <a href="/contact">Send a message</a> and you will
+          get a reply from a person, usually the same day.
+        </p>
       </div>
     </div>
   </main>
@@ -72,9 +74,11 @@ import { pageTitle } from '../lib/site-data';
     background: var(--surface-base);
   }
 
-  .book-page__calendar iframe {
-    display: block;
-    width: 100%;
+  .book-page__fallback {
+    margin: 0;
+    padding: 40px;
+    text-align: center;
+    line-height: 1.5;
   }
 
   @media (max-width: 768px) {
