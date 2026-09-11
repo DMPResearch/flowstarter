@@ -54,7 +54,7 @@ export function FAQSection() {
             return (
               <div
                 key={item.question}
-                className={`ls-faq-item fs-glass ${isOpen ? 'open' : ''}`}
+                className={`ls-faq-item ${isOpen ? 'open' : ''}`}
               >
                 <button
                   type="button"

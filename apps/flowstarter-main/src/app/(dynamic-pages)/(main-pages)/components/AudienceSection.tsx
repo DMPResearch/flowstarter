@@ -56,7 +56,7 @@ export function AudienceSection() {
           {audience.items.map((item, i) => (
             <div
               key={item.label}
-              className="ls-card fs-glass ls-audience-card"
+              className="ls-card ls-audience-card"
               style={{
                 padding: '1.25rem 1.25rem 1.4rem',
                 animation: `ls-reveal 800ms cubic-bezier(0.19,1,0.22,1) ${

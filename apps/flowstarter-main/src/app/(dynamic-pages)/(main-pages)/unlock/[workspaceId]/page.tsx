@@ -76,7 +76,7 @@ export default async function UnlockPage({
           </p>
 
           <ol className="ls-unlock__steps">
-            <li className="ls-card fs-glass ls-unlock__step">
+            <li className="ls-card ls-unlock__step">
               <span className="ls-unlock__step-n">01</span>
               <h2 className="ls-unlock__step-title">Book the call</h2>
               <p className="ls-unlock__step-body">
@@ -84,7 +84,7 @@ export default async function UnlockPage({
                 off your setup fee. Setup starts at {STARTER_SETUP_FROM}.
               </p>
             </li>
-            <li className="ls-card fs-glass ls-unlock__step">
+            <li className="ls-card ls-unlock__step">
               <span className="ls-unlock__step-n">02</span>
               <h2 className="ls-unlock__step-title">Agree the scope</h2>
               <p className="ls-unlock__step-body">
@@ -92,7 +92,7 @@ export default async function UnlockPage({
                 before anything else is due.
               </p>
             </li>
-            <li className="ls-card fs-glass ls-unlock__step">
+            <li className="ls-card ls-unlock__step">
               <span className="ls-unlock__step-n">03</span>
               <h2 className="ls-unlock__step-title">We build it</h2>
               <p className="ls-unlock__step-body">

@@ -15,13 +15,8 @@ const toneClasses: Record<UnifiedButtonTone, string> = {
   // navy-leaning mix with `--fs-accent-hot`.
   primary:
     'bg-[linear-gradient(135deg,var(--purple)_0%,color-mix(in_oklab,var(--purple)_82%,#0f0520)_100%)] text-white shadow-lg shadow-[var(--purple)]/30 hover:brightness-110 hover:shadow-xl hover:shadow-[var(--purple)]/50 hover:-translate-y-px',
-  // Secondary — the product's glass, at a control's size. It is the same
-  // material as every panel it sits on, so a ghost CTA over the marketing mesh
-  // refracts the gradient behind it instead of laying an opaque grey chip on
-  // top of it. `--control` drops the card radius and the drop shadow; the
-  // hover lift and the edge brighten still come from `--interactive`.
   secondary:
-    'fs-glass fs-glass--control fs-glass--interactive hover:text-[var(--purple)]',
+    'border border-[var(--fs-rule-strong)] bg-[color-mix(in_oklab,var(--fs-bg-elevated)_86%,transparent)] text-[var(--fs-ink)] hover:bg-[var(--fs-bg-elevated)] hover:border-[var(--purple)] hover:text-[var(--purple)] hover:shadow-md hover:shadow-[var(--purple)]/15 hover:-translate-y-px',
 };
 
 export const Button = forwardRef<HTMLButtonElement, UnifiedButtonProps>(

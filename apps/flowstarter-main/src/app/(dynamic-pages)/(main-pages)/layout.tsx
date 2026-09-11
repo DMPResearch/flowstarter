@@ -2,7 +2,7 @@
 
 import '@flowstarter/flow-design-system/styles/landing.css';
 import Footer from '@/components/Footer';
-import { MeshBackdrop } from '@flowstarter/flow-design-system/components/backgrounds/MeshBackdrop';
+import { FlowBackground } from '@flowstarter/flow-design-system';
 import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
 
@@ -30,11 +30,10 @@ export default function MainPagesLayout({ children }: { children: ReactNode }) {
         Skip to main content
       </a>
       <div className="relative flex min-h-screen flex-col">
-        {/* One field behind the whole marketing site, and the reason the glass
-            panels on it look like glass. It replaces FlowBackground here
-            rather than layering with it: FlowBackground paints an opaque base
-            of its own, so whichever of the two sat on top hid the other. */}
-        <MeshBackdrop variant="landing" />
+        <FlowBackground
+          variant="landing"
+          style={{ position: 'fixed', inset: 0, zIndex: 0 }}
+        />
         <div className="relative z-10 flex flex-1 flex-col">{children}</div>
       </div>
       {!hideFooter && <Footer />}

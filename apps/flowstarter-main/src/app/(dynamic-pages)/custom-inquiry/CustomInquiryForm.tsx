@@ -219,7 +219,7 @@ export function CustomInquiryForm() {
   if (status === 'success' || status === 'duplicate') {
     return (
       <div
-        className="ls-card fs-glass mx-auto max-w-2xl text-center"
+        className="ls-card mx-auto max-w-2xl text-center"
         style={{ padding: '2.5rem 1.75rem' }}
       >
         <span
@@ -266,7 +266,7 @@ export function CustomInquiryForm() {
   return (
     <form
       onSubmit={handleSubmit}
-      className="ls-card fs-glass mx-auto"
+      className="ls-card mx-auto"
       style={{
         maxWidth: '760px',
         padding: '2rem 1.75rem 1.75rem',
