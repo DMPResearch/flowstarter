@@ -5,7 +5,7 @@ import { RouterProvider } from "@tanstack/react-router";
 import { createBrowserHistory } from "@tanstack/react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ClerkProvider } from "@clerk/clerk-react";
-import { FlowBackground } from "@flowstarter/flow-design-system";
+import { MeshBackdrop } from "@flowstarter/flow-design-system";
 
 import "@xterm/xterm/css/xterm.css";
 import "./index.css";
@@ -74,35 +74,38 @@ function resolveClerkSignInUrl(): string {
 const clerkSignInUrl = resolveClerkSignInUrl();
 
 /**
- * FlowBackground — imported directly from the shared design-system
- * package so the editor inherits the EXACT atmospheric stack the admin
- * dashboard uses (`variant="dashboard"` — see the same call in
- * `apps/flowstarter-main/src/components/ui/dashboard-base-layout.tsx`).
- * The CSS that styles `.fs-bg__*` lives in `brand.css`, which the
- * editor already imports at the top of `index.css`.
+ * MeshBackdrop — imported directly from the shared design-system package,
+ * `variant="editor"`. This is the field every `.fs-glass` surface in the
+ * chrome/sidebar/panels/dialogs refracts (see index.css's liquid-glass
+ * signature rules); a blurred surface with nothing colourful behind it just
+ * reads as a grey box. The CSS lives in `index.css` (`.fs-mesh-backdrop`)
+ * in the package, imported at the top of this app's own `index.css`.
+ *
+ * Previously this portal rendered `<FlowBackground variant="landing" />`
+ * (the marketing-site orb treatment) — swapped for MeshBackdrop because
+ * FlowBackground paints its own opaque `.fs-bg__base` fill, which fully
+ * hides whatever is layered behind or in front of it, so the two can't
+ * usefully coexist as one backdrop. MeshBackdrop's `editor` variant is
+ * exactly the quieter, glass-refracting field the package ships for an
+ * app-like working surface (see MeshBackdrop's own doc comment) — the
+ * editor is somewhere you work for an hour, not a marketing hero.
  *
  * The layer is portaled into `#fs-flow-bg-mount` (sibling of `#root`
- * in `index.html`) so it sits under the full chrome stack — the React
- * component normally relies on `z-index: -1`, which doesn't escape a
- * stacking context, hence the portal to a body-level mount.
+ * in `index.html`) so it sits under the full chrome stack — the package
+ * component sets `z-index: 0` on a `position: fixed` element of its own,
+ * which needs to be outside `#root`'s stacking context to actually sit
+ * behind it, hence the portal to a body-level mount.
  */
 function FlowstarterFlowBgPortal() {
   if (typeof document === "undefined") return null;
   const mount = document.getElementById("fs-flow-bg-mount");
   const tree = (
     <>
-      {/* `landing` variant — same orbs the marketing site uses, with
-          enough intensity that they actually read through the chrome
-          glass. `dashboard` was too whisper-quiet for a workspace
-          surface; the editor wants character, not just whitespace. */}
-      <FlowBackground
-        variant="landing"
-        style={{ position: "absolute", inset: 0, zIndex: 0 }}
-      />
+      <MeshBackdrop variant="editor" />
       {/* Dual-tone editorial wash + film grain — direct port of the admin
           dashboard's `.dashboard-atmosphere-*` overlays (see
           apps/flowstarter-main/src/styles/globals.css). Layered above the
-          orbs and below the chrome glass so the cool-indigo / warm-rust
+          mesh and below the chrome glass so the cool-indigo / warm-rust
           horizon reads through the sidebar + chat surfaces. */}
       <div className="fs-dashboard-atmosphere-light" aria-hidden />
       <div className="fs-dashboard-atmosphere-dark" aria-hidden />
