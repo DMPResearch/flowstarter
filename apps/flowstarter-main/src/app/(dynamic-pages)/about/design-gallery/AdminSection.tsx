@@ -27,10 +27,12 @@ import { AdminDashboardSidebar } from '../../admin/components/AdminDashboardSide
 import { StatsStrip } from '../../admin/dashboard/components/StatsStrip';
 import { Panel } from '../../admin/dashboard/components/Panel';
 import { ProjectsTable } from '../../admin/dashboard/components/ProjectsTable';
+import { PipelineBoardColumn } from '../../admin/dashboard/pipeline/PipelineColumns';
 import {
   galleryStats,
   galleryClientCount,
   galleryProjectRows,
+  galleryPipelineColumns,
 } from './fixtures';
 
 function noop() {}
@@ -67,6 +69,32 @@ export function AdminGallerySection() {
                       onOpen={noop}
                     />
                   </Panel>
+
+                  {/* Not wrapped in `Panel`: `PipelineBoardColumn` is already
+                      its own `GlassSurface` panel, and a panel nested inside
+                      a panel loses the card-on-panel brightness inversion
+                      that makes the stack read as depth. A plain heading is
+                      enough to label the section, the same way the pipeline
+                      board itself sits under `TeamDashboardShell` with no
+                      extra panel around its grid of columns. */}
+                  <div className="flex flex-col gap-3">
+                    <h3 className="text-sm font-semibold text-[var(--fs-ink-dim)]">
+                      Pipeline
+                    </h3>
+                    <div
+                      data-testid="design-gallery-pipeline-board"
+                      className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"
+                    >
+                      {galleryPipelineColumns.map((column) => (
+                        <PipelineBoardColumn
+                          key={column.state}
+                          state={column.state}
+                          cards={column.cards}
+                          stalledCount={column.stalledCount}
+                        />
+                      ))}
+                    </div>
+                  </div>
 
                   {/* `data-testid` scopes the gallery's own assertions past
                       the table's stage/tier badges, which reuse some of the

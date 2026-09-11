@@ -11,6 +11,7 @@ import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types
 import { editCreditPosition } from '@/lib/flowstarter/edit-credits';
 import type { SiteOverviewInput } from '@/components/flowstarter/site-overview';
 import type { TeamDashboardStatsPayload } from '@/lib/team-dashboard/team-dashboard-stats';
+import type { PipelineBoard } from '@/hooks/usePipeline';
 import type { ProjectRow } from '../../admin/dashboard/components/ProjectsTable';
 
 /**
@@ -92,6 +93,128 @@ export const galleryStats: TeamDashboardStatsPayload = {
 
 /** Fixture count for the admin `StatsStrip`'s clients cell. */
 export const galleryClientCount = 19;
+
+/**
+ * Four columns of the cross-project pipeline board, one of them stalled, so
+ * a screenshot here shows every column tone at once — including the louder
+ * emphasis wash a stalled column wears — without signing in.
+ */
+export const galleryPipelineColumns: PipelineBoard['columns'] = [
+  {
+    state: ProjectState.INTAKE,
+    stalledCount: 0,
+    cards: [
+      {
+        workspaceId: 'demo-pipeline-intake',
+        name: 'northside-bakery',
+        businessName: 'Northside Bakery',
+        clientEmail: 'owner@northsidebakery.example.com',
+        projectState: ProjectState.INTAKE,
+        quoteMinor: 59900,
+        currency: 'eur',
+        depositStatus: 'none',
+        depositPaidAt: null,
+        stateSince: '2026-09-10T09:00:00.000Z',
+        timeInStateMs: 5_400_000,
+        latestJob: null,
+        stalled: false,
+        stallReasons: [],
+        createdAt: '2026-09-10T09:00:00.000Z',
+      },
+    ],
+  },
+  {
+    state: ProjectState.AGENTS_WORKING,
+    stalledCount: 1,
+    cards: [
+      {
+        workspaceId: 'demo-pipeline-agents-working',
+        name: 'harbour-fitness',
+        businessName: 'Harbour Fitness Studio',
+        clientEmail: 'hello@harbourfitness.example.com',
+        projectState: ProjectState.AGENTS_WORKING,
+        quoteMinor: 129900,
+        currency: 'eur',
+        depositStatus: 'paid',
+        depositPaidAt: '2026-09-08T14:00:00.000Z',
+        stateSince: '2026-09-09T11:00:00.000Z',
+        timeInStateMs: 21_600_000,
+        latestJob: {
+          id: 'demo-job-agents-working',
+          kind: 'FULL_SITE_BUILD',
+          status: 'failed',
+          attemptCount: 3,
+          maxAttempts: 3,
+          createdAt: '2026-09-09T11:00:00.000Z',
+          startedAt: '2026-09-09T11:02:00.000Z',
+          finishedAt: '2026-09-09T11:40:00.000Z',
+          errorCode: 'FULL_SITE_BUILD_FAILED',
+          ageMs: 21_600_000,
+        },
+        stalled: true,
+        stallReasons: ['The site build failed 3 times in a row.'],
+        createdAt: '2026-09-05T08:00:00.000Z',
+      },
+    ],
+  },
+  {
+    state: ProjectState.HUMAN_QA,
+    stalledCount: 0,
+    cards: [
+      {
+        workspaceId: 'demo-pipeline-human-qa',
+        name: 'riverside-vets',
+        businessName: 'Riverside Veterinary Clinic',
+        clientEmail: 'tom@riversidevets.example.com',
+        projectState: ProjectState.HUMAN_QA,
+        quoteMinor: 89900,
+        currency: 'eur',
+        depositStatus: 'paid',
+        depositPaidAt: '2026-08-30T10:00:00.000Z',
+        stateSince: '2026-09-11T08:00:00.000Z',
+        timeInStateMs: 3_600_000,
+        latestJob: {
+          id: 'demo-job-human-qa',
+          kind: 'FULL_SITE_BUILD',
+          status: 'succeeded',
+          attemptCount: 1,
+          maxAttempts: 3,
+          createdAt: '2026-09-11T07:00:00.000Z',
+          startedAt: '2026-09-11T07:01:00.000Z',
+          finishedAt: '2026-09-11T07:38:00.000Z',
+          errorCode: null,
+          ageMs: 3_600_000,
+        },
+        stalled: false,
+        stallReasons: [],
+        createdAt: '2026-08-25T09:00:00.000Z',
+      },
+    ],
+  },
+  {
+    state: ProjectState.LIVE_SUBSCRIPTION,
+    stalledCount: 0,
+    cards: [
+      {
+        workspaceId: 'demo-pipeline-live',
+        name: 'blue-anchor-cafe',
+        businessName: 'Blue Anchor Cafe',
+        clientEmail: 'maria@blueanchorcafe.example.com',
+        projectState: ProjectState.LIVE_SUBSCRIPTION,
+        quoteMinor: 149900,
+        currency: 'eur',
+        depositStatus: 'paid',
+        depositPaidAt: '2026-07-05T10:00:00.000Z',
+        stateSince: '2026-07-10T10:00:00.000Z',
+        timeInStateMs: 5_270_400_000,
+        latestJob: null,
+        stalled: false,
+        stallReasons: [],
+        createdAt: '2026-07-02T10:00:00.000Z',
+      },
+    ],
+  },
+];
 
 /** Four fixture rows for the admin `ProjectsTable`. */
 export const galleryProjectRows: ProjectRow[] = [

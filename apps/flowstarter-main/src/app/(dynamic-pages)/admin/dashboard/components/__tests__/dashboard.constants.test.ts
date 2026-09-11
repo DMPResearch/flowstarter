@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { stageTone, stageDotStyle } from '../dashboard.constants';
+import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
+import {
+  stageTone,
+  stageDotStyle,
+  PROJECT_STATE_TONE,
+  projectStateTone,
+} from '../dashboard.constants';
 
 describe('stageTone', () => {
   it('reads intake as neutral, before anything has started', () => {
@@ -33,5 +39,46 @@ describe('stageDotStyle', () => {
     expect(stageDotStyle('build')).toEqual({
       backgroundColor: 'var(--fs-tone-warn)',
     });
+  });
+});
+
+describe('PROJECT_STATE_TONE', () => {
+  it('gives every ProjectState a tone', () => {
+    for (const state of Object.values(ProjectState)) {
+      expect(PROJECT_STATE_TONE[state]).toBeDefined();
+    }
+  });
+
+  it('reads as progress, in the order the state machine allows', () => {
+    // Object.keys on string-keyed object preserves insertion order, so this
+    // also pins the table to stay written in state-machine order rather than
+    // being reshuffled alphabetically or by tone.
+    expect(Object.keys(PROJECT_STATE_TONE)).toEqual([
+      ProjectState.INTAKE,
+      ProjectState.PREVIEW_READY,
+      ProjectState.DEPOSIT_PAID,
+      ProjectState.AGENTS_WORKING,
+      ProjectState.HUMAN_QA,
+      ProjectState.LIVE_SUBSCRIPTION,
+    ]);
+    expect(Object.values(PROJECT_STATE_TONE)).toEqual([
+      'accent',
+      'info',
+      'violet',
+      'teal',
+      'warn',
+      'ok',
+    ]);
+  });
+
+  it('reserves ok for live and warn for the state an operator has to act on', () => {
+    expect(projectStateTone(ProjectState.LIVE_SUBSCRIPTION)).toBe('ok');
+    expect(projectStateTone(ProjectState.HUMAN_QA)).toBe('warn');
+  });
+
+  it('reads the same table projectStateTone does', () => {
+    expect(projectStateTone(ProjectState.INTAKE)).toBe(
+      PROJECT_STATE_TONE[ProjectState.INTAKE]
+    );
   });
 });

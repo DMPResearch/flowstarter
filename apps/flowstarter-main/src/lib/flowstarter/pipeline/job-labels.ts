@@ -11,6 +11,7 @@
  * mapping lives next to the labels rather than inside a component.
  */
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
+import type { Tone } from '@flowstarter/flow-design-system';
 
 /** Kinds the queue actually runs today. Anything else falls back to sentence case. */
 const KIND_LABELS: Readonly<Record<string, string>> = {
@@ -183,6 +184,63 @@ const PHASE_COLUMN: Readonly<Record<string, BoardColumnId>> = {
   committing: 'publishing',
   publishing: 'publishing',
 };
+
+/**
+ * The build board's columns in colour, left to right in the order work
+ * actually moves. Companion to `PROJECT_STATE_TONE` in `dashboard.constants.ts`
+ * — that table colours the cross-project pipeline board's `ProjectState`
+ * columns, this one colours a single project's build-job columns, which are
+ * not project states and so need their own tone.
+ *
+ * `waiting` reads `neutral`: nothing has been picked up, which is the tone's
+ * own meaning ("not switched on yet"). `building` is `accent`, the brand's
+ * own hue, for the primary work. `checking` is `warn`, the same tone
+ * `STAGE_TONE.build`/`internal_review` already use for "work an operator
+ * owns" — checking and repairing a build is exactly that. `publishing` is
+ * `info`, a plain factual last step. `done` is `ok`. `attention` — failed or
+ * cancelled jobs waiting on a human decision — is `danger`, the tone the rest
+ * of the system reserves for a real failure.
+ */
+export const BOARD_COLUMN_TONE: Readonly<Record<BoardColumnId, Tone>> = {
+  waiting: 'neutral',
+  building: 'accent',
+  checking: 'warn',
+  publishing: 'info',
+  done: 'ok',
+  attention: 'danger',
+};
+
+export function columnTone(id: BoardColumnId): Tone {
+  return BOARD_COLUMN_TONE[id];
+}
+
+/** What `columnToneStyle` hands back: the two inline styles every kanban
+ * column on the pipeline and build boards paints with. */
+export interface ColumnToneStyle {
+  /** The 3px rule along the top of the column panel. */
+  rule: { background: string };
+  /** The whisper wash on the column body, tone-soft fading to transparent. */
+  wash: { background: string };
+}
+
+/**
+ * The one recipe every kanban-shaped column shares, on both boards: a thin
+ * tone rule along the panel's top edge, and a wash on the body that fades
+ * from the tone to nothing — the same `-soft` alpha a quiet stat tile wears,
+ * so this never invents a new one for `check-tone-contrast.mjs` to miss.
+ *
+ * `emphasis` swaps the whisper `-soft` wash for the louder `-emphasis` one,
+ * the same swap `data-tone="attention"` makes on a stat tile, for the one
+ * column that needs the eye to land on it: the build board's own `attention`
+ * column, or a pipeline column currently holding a stalled card.
+ */
+export function columnToneStyle(tone: Tone, emphasis = false): ColumnToneStyle {
+  const wash = `var(--fs-tone-${tone}-${emphasis ? 'emphasis' : 'soft'})`;
+  return {
+    rule: { background: `var(--fs-tone-${tone})` },
+    wash: { background: `linear-gradient(to bottom, ${wash}, transparent)` },
+  };
+}
 
 /**
  * Where a job sits on the build board.

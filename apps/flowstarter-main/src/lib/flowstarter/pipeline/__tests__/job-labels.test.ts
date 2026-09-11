@@ -10,8 +10,11 @@ import { describe, expect, it } from 'vitest';
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
 import {
   BOARD_COLUMNS,
+  BOARD_COLUMN_TONE,
   actorLabel,
   boardColumnFor,
+  columnTone,
+  columnToneStyle,
   errorCodeLabel,
   eventKindLabel,
   eventSummary,
@@ -313,6 +316,54 @@ describe('placing a job on the board', () => {
     expect(boardColumnFor({ status: 'sleeping', latestPhase: null })).toBe(
       'attention'
     );
+  });
+});
+
+describe('BOARD_COLUMN_TONE', () => {
+  it('gives every board column a tone, in the same order the board renders', () => {
+    // Object.keys on a string-keyed object preserves insertion order, so this
+    // also pins the table to the board's own left-to-right order.
+    expect(Object.keys(BOARD_COLUMN_TONE)).toEqual(
+      BOARD_COLUMNS.map((c) => c.id)
+    );
+    for (const column of BOARD_COLUMNS) {
+      expect(BOARD_COLUMN_TONE[column.id]).toBeDefined();
+    }
+  });
+
+  it('reserves danger for the column a failed or cancelled job lands in', () => {
+    expect(BOARD_COLUMN_TONE.attention).toBe('danger');
+  });
+
+  it('reads waiting as neutral — nothing has been picked up yet', () => {
+    expect(BOARD_COLUMN_TONE.waiting).toBe('neutral');
+  });
+
+  it('columnTone reads the same table', () => {
+    expect(columnTone('waiting')).toBe(BOARD_COLUMN_TONE.waiting);
+    expect(columnTone('done')).toBe(BOARD_COLUMN_TONE.done);
+  });
+});
+
+describe('columnToneStyle', () => {
+  it('rules the panel top in the plain tone', () => {
+    expect(columnToneStyle('accent').rule).toEqual({
+      background: 'var(--fs-tone-accent)',
+    });
+  });
+
+  it('washes the body in the same -soft alpha a quiet stat tile wears', () => {
+    expect(columnToneStyle('accent').wash).toEqual({
+      background:
+        'linear-gradient(to bottom, var(--fs-tone-accent-soft), transparent)',
+    });
+  });
+
+  it('swaps in the emphasis wash for a stalled or failed column', () => {
+    expect(columnToneStyle('danger', true).wash).toEqual({
+      background:
+        'linear-gradient(to bottom, var(--fs-tone-danger-emphasis), transparent)',
+    });
   });
 });
 

@@ -29,6 +29,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
+import { Pill } from '@flowstarter/flow-design-system';
 import { ShellCard } from '../../../components/TeamDashboardShell';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -51,6 +52,8 @@ import {
   BOARD_COLUMNS,
   actorLabel,
   boardColumnFor,
+  columnTone,
+  columnToneStyle,
   errorCodeLabel,
   eventKindLabel,
   eventSummary,
@@ -645,37 +648,59 @@ export function PipelineTab({ project }: { project: Project }) {
           >
             {BOARD_COLUMNS.map((column) => {
               const columnJobs = byColumn.get(column.id) ?? [];
+              // `attention` is always the failed-or-cancelled column, so it
+              // always wears the louder wash — the same swap a stalled
+              // pipeline column makes when it currently holds a stall.
+              const tone = columnTone(column.id);
+              const { rule, wash } = columnToneStyle(
+                tone,
+                column.id === 'attention'
+              );
               return (
                 <section
                   key={column.id}
                   aria-label={column.title}
-                  className="flex min-h-[9rem] flex-col rounded-xl border border-[var(--fs-rule)] bg-[var(--fs-glass-bg)]/40 p-2"
+                  className="relative flex min-h-[9rem] flex-col overflow-hidden rounded-xl border border-[var(--fs-rule)] bg-[var(--fs-glass-bg)]/40 p-2"
                 >
+                  <span
+                    aria-hidden
+                    className="absolute inset-x-0 top-0 h-[3px]"
+                    style={rule}
+                  />
+
                   <header className="mb-2 flex items-center justify-between gap-1.5 border-b border-[var(--fs-rule)] pb-2">
-                    <h4 className="truncate text-[11px] font-semibold uppercase tracking-wide text-[var(--fs-ink-dim)]">
+                    <h4
+                      className="fs-tone-text truncate text-[11px] font-semibold uppercase tracking-wide"
+                      data-tone={tone}
+                    >
                       {column.title}
                     </h4>
-                    <span className="shrink-0 font-mono text-[11px] text-[var(--fs-ink-faint)]">
+                    <Pill tone={tone} className="font-mono">
                       {columnJobs.length}
-                    </span>
+                    </Pill>
                   </header>
 
-                  {columnJobs.length === 0 ? (
-                    <p className="px-1 py-1 text-[11px] leading-snug text-[var(--fs-ink-faint)]">
-                      {column.hint}
-                    </p>
-                  ) : (
-                    <div className="space-y-2">
-                      {columnJobs.map((job) => (
-                        <BuildCard
-                          key={job.id}
-                          job={job}
-                          projectId={project.id}
-                          onOpen={() => setOpenJobId(job.id)}
-                        />
-                      ))}
-                    </div>
-                  )}
+                  <div
+                    className="-mx-2 -mb-2 flex flex-1 flex-col px-2 pb-2"
+                    style={wash}
+                  >
+                    {columnJobs.length === 0 ? (
+                      <p className="px-1 py-1 text-[11px] leading-snug text-[var(--fs-ink-faint)]">
+                        {column.hint}
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {columnJobs.map((job) => (
+                          <BuildCard
+                            key={job.id}
+                            job={job}
+                            projectId={project.id}
+                            onOpen={() => setOpenJobId(job.id)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </section>
               );
             })}
