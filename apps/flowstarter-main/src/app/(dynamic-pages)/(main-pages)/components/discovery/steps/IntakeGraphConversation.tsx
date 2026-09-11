@@ -43,14 +43,19 @@ import {
 } from './ConciergePanes';
 import { RecommendationStep } from './RecommendationStep';
 import { SubscriptionStep } from './SubscriptionStep';
+import { useAutosizeTextarea } from '../useAutosizeTextarea';
 import type {
   IntakeGraphAsk,
   IntakeGraphResume,
   IntakeGraphTurnResult,
 } from '@/lib/flowstarter/intake-graph/types';
 
+/** See `IntakeConversation`'s own copy of this constant for why `min-h-11`. */
 const composerClass =
-  'w-full flex-1 resize-none rounded-xl border border-[var(--fs-rule)] bg-white px-3.5 py-2.5 text-sm text-[var(--fs-ink)] outline-none transition-[box-shadow,border-color] duration-150 placeholder:text-[var(--fs-ink-faint)] hover:border-[var(--purple-primary)]/30 focus:border-[var(--purple-primary)]/40 focus:shadow-[0_0_0_4px_var(--purple-primary-lightest)] dark:bg-white/[0.03]';
+  'min-h-11 w-full flex-1 resize-none rounded-xl border border-[var(--fs-rule)] bg-white px-3.5 py-2.5 text-sm text-[var(--fs-ink)] outline-none transition-[box-shadow,border-color] duration-150 placeholder:text-[var(--fs-ink-faint)] hover:border-[var(--purple-primary)]/30 focus:border-[var(--purple-primary)]/40 focus:shadow-[0_0_0_4px_var(--purple-primary-lightest)] dark:bg-white/[0.03]';
+
+/** Send shares the field's height, radius and horizontal padding — see `composerClass`. */
+const composerSendClass = 'h-11 shrink-0 rounded-xl px-3.5';
 
 const chipClass =
   'rounded-full border px-3 py-1.5 text-sm font-semibold transition-all border-[var(--fs-rule)] text-[var(--fs-ink)] hover:border-[var(--purple-primary)]/50 hover:bg-[var(--purple-primary)]/[0.06]';
@@ -435,7 +440,6 @@ function Composer({
           setDraft={setDraft}
           onSubmit={onSubmit}
           composerRef={composerRef}
-          rows={1}
           t={t}
         />
       </div>
@@ -450,7 +454,6 @@ function Composer({
         setDraft={setDraft}
         onSubmit={onSubmit}
         composerRef={composerRef}
-        rows={question.kind === 'longtext' ? 3 : 1}
         t={t}
       />
       {!question.required && <div className="flex gap-2">{skipChip}</div>}
@@ -464,7 +467,6 @@ function TypedAnswer({
   setDraft,
   onSubmit,
   composerRef,
-  rows,
   t,
 }: {
   question: IntakeQuestion;
@@ -472,11 +474,15 @@ function TypedAnswer({
   setDraft: (value: string) => void;
   onSubmit: (raw: string) => void;
   composerRef: RefObject<HTMLTextAreaElement | null>;
-  rows: number;
   t: (key: string) => string;
 }) {
+  // One line at rest for every question kind — `longtext` used to start at
+  // three rows; now it grows into the room it needs instead of claiming it
+  // up front.
+  useAutosizeTextarea(composerRef, draft);
+
   return (
-    <div className="flex flex-col gap-2 sm:flex-row">
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
       <textarea
         ref={composerRef}
         value={draft}
@@ -487,7 +493,7 @@ function TypedAnswer({
             onSubmit(draft);
           }
         }}
-        rows={rows}
+        rows={1}
         aria-label={t('landing.discovery.chat.composerLabel')}
         placeholder={
           question.placeholderKey
@@ -501,6 +507,7 @@ function TypedAnswer({
         size="sm"
         onClick={() => onSubmit(draft)}
         disabled={question.required && draft.trim().length === 0}
+        className={composerSendClass}
       >
         {t('landing.discovery.chat.send')}
       </Button>

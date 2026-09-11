@@ -313,6 +313,99 @@ describe('answering resumes the thread', () => {
     expect(await screen.findByText('And your email?')).toBeInTheDocument();
   });
 
+  it('sends on Enter, the same as clicking Send', async () => {
+    const user = userEvent.setup();
+    let call = 0;
+    global.fetch = vi.fn(async (_input, init) => {
+      call += 1;
+      if (call === 1) {
+        return {
+          ok: true,
+          json: async () =>
+            ({
+              threadId: 't-enter',
+              status: 'ask',
+              ask: {
+                type: 'ask',
+                questionId: 'fullName',
+                kind: 'text',
+                prompt: 'What should I call you?',
+                required: true,
+              },
+              data: EMPTY_DISCOVERY,
+              answered: [],
+              progress: { done: 0, total: 16 },
+            } satisfies IntakeGraphTurnResult),
+        } as Response;
+      }
+      const parsed = JSON.parse(String(init?.body ?? '{}'));
+      expect(parsed.resume).toEqual({ kind: 'text', text: 'Maria Ionescu' });
+      return {
+        ok: true,
+        json: async () =>
+          ({
+            threadId: 't-enter',
+            status: 'ask',
+            ask: {
+              type: 'ask',
+              questionId: 'email',
+              kind: 'text',
+              prompt: 'And your email?',
+              required: true,
+            },
+            data: { ...EMPTY_DISCOVERY, fullName: 'Maria Ionescu' },
+            answered: ['fullName'],
+            progress: { done: 1, total: 16 },
+          } satisfies IntakeGraphTurnResult),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    renderConversation();
+    await screen.findByText('What should I call you?');
+
+    const composer = screen.getByLabelText(
+      t('landing.discovery.chat.composerLabel')
+    );
+    await user.type(composer, 'Maria Ionescu{Enter}');
+
+    expect(await screen.findByText('And your email?')).toBeInTheDocument();
+  });
+
+  it('breaks the line on Shift+Enter instead of sending', async () => {
+    const user = userEvent.setup();
+    global.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () =>
+        ({
+          threadId: 't-shift-enter',
+          status: 'ask',
+          ask: {
+            type: 'ask',
+            questionId: 'fullName',
+            kind: 'text',
+            prompt: 'What should I call you?',
+            required: true,
+          },
+          data: EMPTY_DISCOVERY,
+          answered: [],
+          progress: { done: 0, total: 16 },
+        } satisfies IntakeGraphTurnResult),
+    })) as unknown as typeof fetch;
+
+    renderConversation();
+    await screen.findByText('What should I call you?');
+
+    const composer = screen.getByLabelText(
+      t('landing.discovery.chat.composerLabel')
+    );
+    await user.type(composer, 'Maria{Shift>}{Enter}{/Shift}Ionescu');
+
+    // No second call to the route — Shift+Enter never submitted.
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(composer).toHaveValue('Maria\nIonescu');
+    expect(screen.getByText('What should I call you?')).toBeInTheDocument();
+  });
+
   it('skips an optional question with the dashed chip', async () => {
     const user = userEvent.setup();
     let call = 0;

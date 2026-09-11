@@ -83,6 +83,7 @@ import {
 } from './ConciergePanes';
 import { RecommendationStep } from './RecommendationStep';
 import { SubscriptionStep } from './SubscriptionStep';
+import { useAutosizeTextarea } from '../useAutosizeTextarea';
 
 /** The beat before a new question. Long enough to read as a reply, short enough never to feel like waiting. */
 export const DEFAULT_PACE_MS = 550;
@@ -90,8 +91,18 @@ export const DEFAULT_PACE_MS = 550;
 /** Up to this many quick replies are a lettered list; more become a chip cloud. */
 const MAX_LETTERED = 6;
 
+/**
+ * `min-h-11` (44px) is the composer's one height token: the field rests at
+ * exactly that height (an auto-growing textarea's own `rows={1}` renders a
+ * hair short of it, so the floor is what actually sets the resting height),
+ * and `Composer` below passes the same `h-11` to the Send button so neither
+ * control looks like it wandered in from a different row.
+ */
 const composerClass =
-  'w-full flex-1 resize-none rounded-xl border border-[var(--fs-rule)] bg-white px-3.5 py-2.5 text-sm text-[var(--fs-ink)] outline-none transition-[box-shadow,border-color] duration-150 placeholder:text-[var(--fs-ink-faint)] hover:border-[var(--purple-primary)]/30 focus:border-[var(--purple-primary)]/40 focus:shadow-[0_0_0_4px_var(--purple-primary-lightest)] dark:bg-white/[0.03]';
+  'min-h-11 w-full flex-1 resize-none rounded-xl border border-[var(--fs-rule)] bg-white px-3.5 py-2.5 text-sm text-[var(--fs-ink)] outline-none transition-[box-shadow,border-color] duration-150 placeholder:text-[var(--fs-ink-faint)] hover:border-[var(--purple-primary)]/30 focus:border-[var(--purple-primary)]/40 focus:shadow-[0_0_0_4px_var(--purple-primary-lightest)] dark:bg-white/[0.03]';
+
+/** Send shares the field's height, radius and horizontal padding — see `composerClass`. */
+const composerSendClass = 'h-11 shrink-0 rounded-xl px-3.5';
 
 const rowClass =
   'flex w-full items-center gap-2.5 rounded-lg border px-2.5 py-2 text-left text-[13px] font-medium transition-colors';
@@ -741,8 +752,13 @@ function Composer({
     ? t(question.placeholderKey)
     : t('landing.discovery.chat.typeInstead');
 
+  // One line at rest, however long the question — `longtext` used to start
+  // at three rows; now every question's composer grows into the room it
+  // needs instead of claiming it up front.
+  useAutosizeTextarea(composerRef, value);
+
   return (
-    <div className="flex flex-col gap-2 sm:flex-row">
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
       <textarea
         ref={composerRef}
         value={value}
@@ -755,7 +771,7 @@ function Composer({
             send();
           }
         }}
-        rows={question.kind === 'longtext' ? 3 : 1}
+        rows={1}
         aria-label={t('landing.discovery.chat.composerLabel')}
         placeholder={placeholder}
         className={composerClass}
@@ -765,6 +781,7 @@ function Composer({
         size="sm"
         onClick={send}
         disabled={question.required && isWords && value.trim().length === 0}
+        className={composerSendClass}
       >
         {t('landing.discovery.chat.send')}
       </Button>

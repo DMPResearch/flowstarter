@@ -423,7 +423,14 @@ export function ChatBubble({
           ? 'border-[var(--purple-primary)]/30 bg-[var(--purple-primary)]/[0.06] text-[var(--fs-ink)]'
           : tone === 'alert'
           ? 'border-amber-500/40 bg-amber-500/[0.08] text-[var(--fs-ink)]'
-          : 'border-[color-mix(in_oklab,var(--purple-primary)_22%,var(--fs-bg-elevated))] bg-[color-mix(in_oklab,var(--purple-primary)_7%,var(--fs-bg-elevated))] text-[var(--fs-ink)]',
+          : // The default (agent) tone: the same fill, edge and blur tokens
+            // `.fs-glass--card` paints with, so the bubble reads as glass
+            // sitting inside the now-glass modal — not the class itself,
+            // because `.fs-glass` also sets its own uniform border-radius,
+            // which would overwrite the per-position corner classes above
+            // (`bubbleCornerClass`) that give a run of agent bubbles its
+            // rounded-outside/squared-seam shape.
+            'border-[var(--fs-glass-edge)] bg-[var(--fs-glass-bg)] text-[var(--fs-ink)] backdrop-blur-[var(--fs-glass-blur)]',
         fitWidth ? 'w-fit max-w-[78%]' : '',
         enterClass,
       ].join(' ')}
