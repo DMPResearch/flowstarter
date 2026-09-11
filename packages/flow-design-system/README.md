@@ -23,6 +23,10 @@ the inner radius so the two curves stay parallel.
 `MeshBackdrop`. A component that writes its own `rgba()` and `blur()` is a
 component that will drift out of the system the next time the brand moves.
 
+To see the client dashboard and admin surfaces rendered on fixture data
+(useful for screenshots without a signed-in session), run `flowstarter-main`
+in development and visit `/about/design-gallery`.
+
 ### Tokens
 
 Material, in `:root` and again under `.dark`:
