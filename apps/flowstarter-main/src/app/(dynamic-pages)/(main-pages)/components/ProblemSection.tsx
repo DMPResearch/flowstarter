@@ -56,7 +56,7 @@ export function ProblemSection() {
           {problem.pains.map((pain, i) => (
             <div
               key={pain.title}
-              className="ls-card ls-problem-card"
+              className="ls-card fs-glass ls-problem-card"
               style={{
                 animation: `ls-reveal 900ms cubic-bezier(0.19,1,0.22,1) ${
                   i * 100

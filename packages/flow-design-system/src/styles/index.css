@@ -576,3 +576,29 @@ a.fs-glass-tile {
     animation: none;
   }
 }
+
+/* ── Glass as a control ─────────────────────────────────────────────────────
+   A secondary button is the same material as a card and none of its
+   proportions: it wears a control's radius, and it does not cast a drop,
+   because a row of buttons that each float is a row that reads as five cards.
+   Pair with `.fs-glass`; the hover lift still comes from
+   `.fs-glass--interactive`. */
+.fs-glass--control {
+  border-radius: var(--fs-btn-radius);
+  box-shadow: none;
+}
+
+.fs-glass--control.fs-glass--interactive:hover {
+  box-shadow: 0 0 0 1px var(--fs-accent-ring);
+}
+
+/* ── A tone without the wash ────────────────────────────────────────────────
+   In a list of options where one is featured, the featured one gets the tinted
+   fill and the rest have to stay the same plain glass — otherwise every option
+   shouts and none of them is the answer. This keeps the tone in the rim and in
+   the ink and drops it from the fill. It comes after the tone blocks above at
+   the same weight, which is what lets it win. */
+.fs-glass--toned.fs-glass--plain,
+.fs-glass-tile.fs-glass--plain {
+  --fs-tile-wash: transparent;
+}

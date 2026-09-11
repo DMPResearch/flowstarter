@@ -24,7 +24,9 @@ export function ProcessSection() {
           <p className="ls-body ls-body--lead">{t('landing.process.sub')}</p>
         </div>
 
-        <div className="ls-process-grid">
+        {/* The four steps are read across, so they stay one ruled grid rather
+            than four floating cards; the grid itself is the glass. */}
+        <div className="ls-process-grid fs-glass">
           {process.steps.map((step) => (
             <div key={step.title} className="ls-process-card">
               <div className="ls-process-num">{step.number}</div>

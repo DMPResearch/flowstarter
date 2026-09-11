@@ -50,7 +50,7 @@ export default async function GuestWelcomePage({
         </p>
 
         <ol className="ls-unlock__steps">
-          <li className="ls-card ls-unlock__step">
+          <li className="ls-card fs-glass ls-unlock__step">
             <span className="ls-unlock__step-n">01</span>
             <div>
               <h2 className="ls-unlock__step-title">We emailed you a way in</h2>
@@ -61,7 +61,7 @@ export default async function GuestWelcomePage({
               </p>
             </div>
           </li>
-          <li className="ls-card ls-unlock__step">
+          <li className="ls-card fs-glass ls-unlock__step">
             <span className="ls-unlock__step-n">02</span>
             <div>
               <h2 className="ls-unlock__step-title">

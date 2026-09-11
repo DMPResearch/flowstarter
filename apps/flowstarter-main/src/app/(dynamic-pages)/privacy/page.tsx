@@ -256,7 +256,7 @@ export default function PrivacyPage() {
             this page always reflects the latest revision.
           </p>
 
-          <div className="ls-callout">
+          <div className="ls-callout fs-glass">
             <p>
               Questions about privacy? Write to{' '}
               <a href="mailto:privacy@flowstarter.net">

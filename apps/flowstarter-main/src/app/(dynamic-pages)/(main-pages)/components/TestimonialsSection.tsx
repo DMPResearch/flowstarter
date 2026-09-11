@@ -80,7 +80,7 @@ export function TestimonialsSection() {
               }}
             >
               <figure
-                className="ls-card flex h-full flex-col justify-between"
+                className="ls-card fs-glass flex h-full flex-col justify-between"
                 style={{ padding: '1.75rem 1.75rem 1.5rem', margin: 0 }}
               >
                 <blockquote

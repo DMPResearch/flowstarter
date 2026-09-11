@@ -67,7 +67,7 @@ export default function HelpPage() {
           <div className="ls-container">
             <div className="grid gap-5 sm:gap-6 md:grid-cols-3">
               {/* Card 1 — Book a discovery call */}
-              <div className="ls-card" style={quickActionCardStyle}>
+              <div className="ls-card fs-glass" style={quickActionCardStyle}>
                 <span style={quickActionIconStyle} aria-hidden="true">
                   <Calendar className="h-5 w-5" />
                 </span>
@@ -116,7 +116,7 @@ export default function HelpPage() {
               </div>
 
               {/* Card 2 — Email us */}
-              <div className="ls-card" style={quickActionCardStyle}>
+              <div className="ls-card fs-glass" style={quickActionCardStyle}>
                 <span style={quickActionIconStyle} aria-hidden="true">
                   <Mail className="h-5 w-5" />
                 </span>
@@ -154,7 +154,7 @@ export default function HelpPage() {
               </div>
 
               {/* Card 3 — Support bot */}
-              <div className="ls-card" style={quickActionCardStyle}>
+              <div className="ls-card fs-glass" style={quickActionCardStyle}>
                 <span style={quickActionIconStyle} aria-hidden="true">
                   <MessageCircle className="h-5 w-5" />
                 </span>
@@ -299,7 +299,7 @@ export default function HelpPage() {
 
             {/* Zone 4 — Still stuck? */}
             <div
-              className="ls-callout mx-auto mt-12 max-w-3xl"
+              className="ls-callout fs-glass mx-auto mt-12 max-w-3xl"
               style={{ textAlign: 'center' }}
             >
               <p
