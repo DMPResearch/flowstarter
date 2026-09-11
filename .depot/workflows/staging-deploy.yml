@@ -4,14 +4,25 @@
 # Push to main → build the Next image → SSH to Hetzner → deploy slot `main`
 # at https://staging.flowstarter.dev
 #
+# The staging database is the Supabase CLI stack running ON THE HETZNER HOST
+# itself, bound to 127.0.0.1:54321/:54322 (see deploy/hetzner-staging/README.md,
+# "Database"). This lane never reads the production NEXT_PUBLIC_SUPABASE_URL /
+# NEXT_PUBLIC_SUPABASE_ANON_KEY secrets and never falls back to them: the build
+# args come only from vars.STAGING_SUPABASE_URL / secrets.STAGING_SUPABASE_ANON_KEY,
+# validated below to be a loopback/docker-internal host, never a hosted
+# supabase.co project. Before the SSH deploy, the repo's supabase/ directory
+# is synced to the host so deploy-slot.sh / supabase-stack.sh can apply
+# migrations against it.
+#
 # Production Netlify is NOT updated here. That happens only from release.yml
 # via `netlify deploy --prod` on a release tag (15 credits per publish).
 #
 # Secrets (Depot):
 #   STAGING_SSH_HOST, STAGING_SSH_USER, STAGING_SSH_KEY
-#   (optional) NEXT_PUBLIC_* build args if not using defaults from secrets below
+#   STAGING_SUPABASE_ANON_KEY   Supabase CLI stack's demo anon key
 # Vars:
-#   STAGING_URL  default https://staging.flowstarter.dev
+#   STAGING_URL           default https://staging.flowstarter.dev
+#   STAGING_SUPABASE_URL  default http://127.0.0.1:54321
 ##############################################################################
 
 name: Staging deploy (main)
@@ -49,13 +60,49 @@ jobs:
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Staging must never build against a hosted Supabase project. This
+      # gate warns and skips the rest of the job (green, not red) when the
+      # anon key is not configured yet, and fails hard, before anything is
+      # built, if the URL is not the local stack.
+      - name: Check staging Supabase config
+        id: supabase
+        env:
+          STAGING_SUPABASE_URL: ${{ vars.STAGING_SUPABASE_URL }}
+          STAGING_SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+          url="${STAGING_SUPABASE_URL:-http://127.0.0.1:54321}"
+          if [ -z "${STAGING_SUPABASE_ANON_KEY:-}" ]; then
+            echo "::warning::STAGING_SUPABASE_ANON_KEY is not set; skipping the rest of this job. See docs/ci/secrets.md."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$url" in
+            *supabase.co*)
+              echo "::error::STAGING_SUPABASE_URL ($url) points at a hosted supabase.co project. Staging must build against the local Supabase CLI stack on the Hetzner host, never production."
+              exit 1
+              ;;
+          esac
+          host="$(printf '%s' "$url" | sed -E 's#^[a-zA-Z]+://##; s#[/:].*$##')"
+          case "$host" in
+            127.0.0.1 | localhost | ::1 | host.docker.internal) ;;
+            *)
+              echo "::error::STAGING_SUPABASE_URL ($url) does not resolve to a loopback or docker-internal host (got '$host')."
+              exit 1
+              ;;
+          esac
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "present=true" >> "$GITHUB_OUTPUT"
+
       - name: Lowercase image name
+        if: steps.supabase.outputs.present == 'true'
         id: image
         run: |
           owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
           echo "name=ghcr.io/${owner}/flowstarter-main" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
+        if: steps.supabase.outputs.present == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -66,9 +113,11 @@ jobs:
           password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Set up Docker Buildx
+        if: steps.supabase.outputs.present == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Build and push image
+        if: steps.supabase.outputs.present == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -78,23 +127,39 @@ jobs:
             ${{ steps.image.outputs.name }}:${{ github.sha }}
             ${{ steps.image.outputs.name }}:main
           build-args: |
-            NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_SUPABASE_URL=${{ steps.supabase.outputs.url }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.STAGING_SUPABASE_ANON_KEY }}
             NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
             NEXT_PUBLIC_SITE_URL=https://staging.flowstarter.dev
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Resolve staging URL
-        if: steps.ssh.outputs.present == 'true'
+        if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
         id: staging_url
         env:
           STAGING_URL: ${{ vars.STAGING_URL }}
         run: |
           echo "url=${STAGING_URL:-https://staging.flowstarter.dev}" >> "$GITHUB_OUTPUT"
 
+      # deploy-slot.sh (main) applies migrations against this checkout of
+      # supabase/, so the schema always matches the code being deployed.
+      - name: Sync supabase/ to the host
+        if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
+        env:
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          USER: ${{ secrets.STAGING_SSH_USER }}
+          KEY: ${{ secrets.STAGING_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 600 /dev/null "$RUNNER_TEMP/staging_key"
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/staging_key"
+          SSH=(ssh -i "$RUNNER_TEMP/staging_key" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
+          tar -C . -cf - supabase | "${SSH[@]}" "${USER}@${HOST}" \
+            "sudo mkdir -p /opt/flowstarter/staging/repo && sudo tar -C /opt/flowstarter/staging/repo -xf - --overwrite"
+
       - name: Deploy slot main over SSH
-        if: steps.ssh.outputs.present == 'true'
+        if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
         env:
           HOST: ${{ secrets.STAGING_SSH_HOST }}
           USER: ${{ secrets.STAGING_SSH_USER }}
@@ -112,18 +177,20 @@ jobs:
             "echo $(printf %q "$GHCR_TOKEN") | docker login ghcr.io -u $(printf %q "$GHCR_USERNAME") --password-stdin && sudo /opt/flowstarter/staging/deploy-slot.sh main $(printf %q "$IMAGE") 3000"
 
       - name: Smoke health URL
-        if: steps.ssh.outputs.present == 'true'
+        if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
         env:
           STAGING_URL: ${{ steps.staging_url.outputs.url }}
         run: |
           set -euo pipefail
           url="${STAGING_URL%/}"
           for i in $(seq 1 30); do
-            if curl -fsS "$url/api/health" | grep -q '"ok"'; then
-              echo "Healthy: $url/api/health"
+            body="$(curl -fsS "$url/api/health" || true)"
+            if printf '%s' "$body" | grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' &&
+              printf '%s' "$body" | grep -Eq '"target"[[:space:]]*:[[:space:]]*"local"'; then
+              echo "Healthy and local: $url/api/health"
               exit 0
             fi
             sleep 5
           done
-          echo "::error::Staging health check failed at $url/api/health"
+          echo "::error::Staging health check failed at $url/api/health (need both \"ok\":true and \"target\":\"local\")"
           exit 1

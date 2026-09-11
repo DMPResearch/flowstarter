@@ -1,5 +1,14 @@
 # Platform staging for flowstarter-main on the Hetzner Caddy host.
-# Client sites stay under /var/www/sites via deploy-agent — do not mix them.
+# Client sites stay under /var/www/sites via deploy-agent, do not mix them.
+#
+# network_mode: host on purpose. Every staging slot (main and pr-N) talks to
+# the Supabase CLI stack that runs directly on the host, bound to loopback
+# (http://127.0.0.1:54321 / :54322, see scripts/supabase-stack.sh). Host
+# networking is what makes that loopback address the same loopback inside the
+# container, with no published port and no bridge hop; the same reasoning
+# gives the container a path to the deploy-agents on 127.0.0.1:8443/8444.
+# There is no `ports:` section: nothing here is published, staging is reached
+# only through Caddy on the host, which proxies to 127.0.0.1:${FLOWSTARTER_HOST_PORT}.
 #
 # Install once on the box:
 #   sudo mkdir -p /opt/flowstarter/staging /etc/flowstarter /etc/caddy/platform
@@ -9,28 +18,29 @@
 #   # Add `import /etc/caddy/platform/*.caddy` to /etc/caddy/Caddyfile
 #   sudo touch /etc/flowstarter/staging.env   # secrets; mode 600
 #
-# CI calls deploy-slot.sh / destroy-slot.sh over SSH.
+# CI calls deploy-slot.sh / destroy-slot.sh over SSH. deploy-slot.sh runs
+# supabase-stack.sh ensure/migrate/write-env before `docker compose up`.
 
 services:
   flowstarter-staging:
     image: ${FLOWSTARTER_IMAGE:-ghcr.io/dmpresearch/flowstarter-main:main}
     container_name: ${FLOWSTARTER_CONTAINER:-flowstarter-staging-main}
     restart: unless-stopped
+    network_mode: host
     env_file:
       - ${FLOWSTARTER_ENV_FILE:-/etc/flowstarter/staging.env}
     environment:
       NODE_ENV: production
-      PORT: "3000"
-      HOSTNAME: 0.0.0.0
-    ports:
-      - "127.0.0.1:${FLOWSTARTER_HOST_PORT:-3000}:3000"
+      PORT: '${FLOWSTARTER_HOST_PORT:-3000}'
+      HOSTNAME: 127.0.0.1
+      FLOWSTARTER_ENV: staging
     healthcheck:
       test:
         [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+          'CMD',
+          'node',
+          '-e',
+          'fetch(`http://127.0.0.1:${process.env.PORT}/api/health`).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))',
         ]
       interval: 30s
       timeout: 10s

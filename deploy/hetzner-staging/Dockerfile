@@ -35,6 +35,13 @@ COPY packages ./packages
 # to keep CI images cheaper. Public/preview can be empty.
 WORKDIR /app
 ENV NODE_ENV=production
+# NEXT_PUBLIC_* are inlined into the client bundle at build time, so these
+# ARGs must always carry the STAGING Supabase CLI stack's values: the
+# loopback URL (http://127.0.0.1:54321) and the CLI's demo anon key. They
+# must never carry the production project's values. staging-deploy.yml and
+# staging-pr-deploy.yml pass them from vars.STAGING_SUPABASE_URL and
+# secrets.STAGING_SUPABASE_ANON_KEY, and refuse to fall back to the
+# production NEXT_PUBLIC_SUPABASE_* secrets.
 ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
@@ -59,7 +66,10 @@ COPY --from=builder /app/apps/flowstarter-main/public ./apps/flowstarter-main/pu
 
 WORKDIR /app/apps/flowstarter-main
 EXPOSE 3000
+# $PORT is overridden per slot by docker-compose.yml (network_mode: host, one
+# port per slot on the shared host network namespace), so the healthcheck
+# must read it at run time rather than assume 3000.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:' + process.env.PORT + '/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["node", "server.js"]

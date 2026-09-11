@@ -106,9 +106,17 @@ Local Supabase:
 
 ```sh
 pnpm db:start                # starts the local stack
+pnpm db:env                  # points flowstarter-main's dev server at it
 pnpm db:stop
 pnpm db:reset
 ```
+
+`pnpm db:env` reads `supabase status` and writes
+`apps/flowstarter-main/.env.development.local` (gitignored, regenerated
+every time you run it) with the local stack's URL and keys. `pnpm
+dev:supabase` runs both in order. Development refuses to start against a
+hosted Supabase project: `src/lib/supabase-target.ts` throws unless the
+target is local, or `FLOWSTARTER_ALLOW_REMOTE_SUPABASE=1` is set explicitly.
 
 Common Nx targets work per project too: `npx nx build <project>`,
 `npx nx typecheck <project>`, `npx nx test <project>`.
