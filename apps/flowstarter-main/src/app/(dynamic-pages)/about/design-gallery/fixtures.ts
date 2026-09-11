@@ -95,9 +95,12 @@ export const galleryStats: TeamDashboardStatsPayload = {
 export const galleryClientCount = 19;
 
 /**
- * Four columns of the cross-project pipeline board, one of them stalled, so
- * a screenshot here shows every column tone at once — including the louder
- * emphasis wash a stalled column wears — without signing in.
+ * Four columns of the cross-project pipeline board, each with two or three
+ * cards so it reads as a populated board rather than a placeholder, and one
+ * card stalled, so a screenshot here shows every column tone at once —
+ * including the louder emphasis wash a stalled column wears — without
+ * signing in. "Riverside Veterinary Clinic" is deliberately the longest name
+ * in the set: it is the one a truncated title would clip first.
  */
 export const galleryPipelineColumns: PipelineBoard['columns'] = [
   {
@@ -105,7 +108,7 @@ export const galleryPipelineColumns: PipelineBoard['columns'] = [
     stalledCount: 0,
     cards: [
       {
-        workspaceId: 'demo-pipeline-intake',
+        workspaceId: 'demo-pipeline-intake-1',
         name: 'northside-bakery',
         businessName: 'Northside Bakery',
         clientEmail: 'owner@northsidebakery.example.com',
@@ -121,6 +124,23 @@ export const galleryPipelineColumns: PipelineBoard['columns'] = [
         stallReasons: [],
         createdAt: '2026-09-10T09:00:00.000Z',
       },
+      {
+        workspaceId: 'demo-pipeline-intake-2',
+        name: 'fernbank-law',
+        businessName: 'Fernbank Law Partners',
+        clientEmail: 'hello@fernbanklaw.example.com',
+        projectState: ProjectState.INTAKE,
+        quoteMinor: 0,
+        currency: 'eur',
+        depositStatus: 'none',
+        depositPaidAt: null,
+        stateSince: '2026-09-11T07:20:00.000Z',
+        timeInStateMs: 900_000,
+        latestJob: null,
+        stalled: false,
+        stallReasons: [],
+        createdAt: '2026-09-11T07:20:00.000Z',
+      },
     ],
   },
   {
@@ -128,7 +148,7 @@ export const galleryPipelineColumns: PipelineBoard['columns'] = [
     stalledCount: 1,
     cards: [
       {
-        workspaceId: 'demo-pipeline-agents-working',
+        workspaceId: 'demo-pipeline-agents-working-1',
         name: 'harbour-fitness',
         businessName: 'Harbour Fitness Studio',
         clientEmail: 'hello@harbourfitness.example.com',
@@ -140,7 +160,7 @@ export const galleryPipelineColumns: PipelineBoard['columns'] = [
         stateSince: '2026-09-09T11:00:00.000Z',
         timeInStateMs: 21_600_000,
         latestJob: {
-          id: 'demo-job-agents-working',
+          id: 'demo-job-agents-working-1',
           kind: 'FULL_SITE_BUILD',
           status: 'failed',
           attemptCount: 3,
@@ -155,6 +175,34 @@ export const galleryPipelineColumns: PipelineBoard['columns'] = [
         stallReasons: ['The site build failed 3 times in a row.'],
         createdAt: '2026-09-05T08:00:00.000Z',
       },
+      {
+        workspaceId: 'demo-pipeline-agents-working-2',
+        name: 'pinehill-dental',
+        businessName: 'Pinehill Dental Studio',
+        clientEmail: 'hello@pinehilldental.example.com',
+        projectState: ProjectState.AGENTS_WORKING,
+        quoteMinor: 79900,
+        currency: 'eur',
+        depositStatus: 'paid',
+        depositPaidAt: '2026-09-10T09:00:00.000Z',
+        stateSince: '2026-09-10T09:30:00.000Z',
+        timeInStateMs: 3_600_000,
+        latestJob: {
+          id: 'demo-job-agents-working-2',
+          kind: 'FULL_SITE_BUILD',
+          status: 'running',
+          attemptCount: 1,
+          maxAttempts: 3,
+          createdAt: '2026-09-10T09:30:00.000Z',
+          startedAt: '2026-09-10T09:31:00.000Z',
+          finishedAt: null,
+          errorCode: null,
+          ageMs: 3_600_000,
+        },
+        stalled: false,
+        stallReasons: [],
+        createdAt: '2026-09-10T09:00:00.000Z',
+      },
     ],
   },
   {
@@ -162,7 +210,7 @@ export const galleryPipelineColumns: PipelineBoard['columns'] = [
     stalledCount: 0,
     cards: [
       {
-        workspaceId: 'demo-pipeline-human-qa',
+        workspaceId: 'demo-pipeline-human-qa-1',
         name: 'riverside-vets',
         businessName: 'Riverside Veterinary Clinic',
         clientEmail: 'tom@riversidevets.example.com',
@@ -174,7 +222,7 @@ export const galleryPipelineColumns: PipelineBoard['columns'] = [
         stateSince: '2026-09-11T08:00:00.000Z',
         timeInStateMs: 3_600_000,
         latestJob: {
-          id: 'demo-job-human-qa',
+          id: 'demo-job-human-qa-1',
           kind: 'FULL_SITE_BUILD',
           status: 'succeeded',
           attemptCount: 1,
@@ -189,6 +237,34 @@ export const galleryPipelineColumns: PipelineBoard['columns'] = [
         stallReasons: [],
         createdAt: '2026-08-25T09:00:00.000Z',
       },
+      {
+        workspaceId: 'demo-pipeline-human-qa-2',
+        name: 'maple-street-dentistry',
+        businessName: 'Maple Street Dentistry',
+        clientEmail: 'reception@maplestreetdental.example.com',
+        projectState: ProjectState.HUMAN_QA,
+        quoteMinor: 99900,
+        currency: 'eur',
+        depositStatus: 'paid',
+        depositPaidAt: '2026-08-28T10:00:00.000Z',
+        stateSince: '2026-09-10T14:00:00.000Z',
+        timeInStateMs: 68_400_000,
+        latestJob: {
+          id: 'demo-job-human-qa-2',
+          kind: 'FULL_SITE_BUILD',
+          status: 'succeeded',
+          attemptCount: 2,
+          maxAttempts: 3,
+          createdAt: '2026-09-10T13:00:00.000Z',
+          startedAt: '2026-09-10T13:01:00.000Z',
+          finishedAt: '2026-09-10T13:42:00.000Z',
+          errorCode: null,
+          ageMs: 68_400_000,
+        },
+        stalled: false,
+        stallReasons: [],
+        createdAt: '2026-08-20T09:00:00.000Z',
+      },
     ],
   },
   {
@@ -196,10 +272,10 @@ export const galleryPipelineColumns: PipelineBoard['columns'] = [
     stalledCount: 0,
     cards: [
       {
-        workspaceId: 'demo-pipeline-live',
-        name: 'blue-anchor-cafe',
-        businessName: 'Blue Anchor Cafe',
-        clientEmail: 'maria@blueanchorcafe.example.com',
+        workspaceId: 'demo-pipeline-live-1',
+        name: 'salt-and-anchor',
+        businessName: 'Salt & Anchor Bistro',
+        clientEmail: 'maria@saltandanchor.example.com',
         projectState: ProjectState.LIVE_SUBSCRIPTION,
         quoteMinor: 149900,
         currency: 'eur',
@@ -211,6 +287,40 @@ export const galleryPipelineColumns: PipelineBoard['columns'] = [
         stalled: false,
         stallReasons: [],
         createdAt: '2026-07-02T10:00:00.000Z',
+      },
+      {
+        workspaceId: 'demo-pipeline-live-2',
+        name: 'riverside-dental',
+        businessName: 'Riverside Dental',
+        clientEmail: 'owner@riversidedental.example.com',
+        projectState: ProjectState.LIVE_SUBSCRIPTION,
+        quoteMinor: 79900,
+        currency: 'eur',
+        depositStatus: 'paid',
+        depositPaidAt: '2026-05-01T10:00:00.000Z',
+        stateSince: '2026-05-06T10:00:00.000Z',
+        timeInStateMs: 10_713_600_000,
+        latestJob: null,
+        stalled: false,
+        stallReasons: [],
+        createdAt: '2026-04-28T10:00:00.000Z',
+      },
+      {
+        workspaceId: 'demo-pipeline-live-3',
+        name: 'harbourview-realty',
+        businessName: 'Harbourview Realty Group',
+        clientEmail: 'info@harbourviewrealty.example.com',
+        projectState: ProjectState.LIVE_SUBSCRIPTION,
+        quoteMinor: 199900,
+        currency: 'eur',
+        depositStatus: 'paid',
+        depositPaidAt: '2026-03-01T10:00:00.000Z',
+        stateSince: '2026-03-06T10:00:00.000Z',
+        timeInStateMs: 15_552_000_000,
+        latestJob: null,
+        stalled: false,
+        stallReasons: [],
+        createdAt: '2026-02-25T10:00:00.000Z',
       },
     ],
   },

@@ -91,14 +91,36 @@ describe('the design gallery gate', () => {
 
     render(<DesignGalleryPage />);
 
-    expect(screen.getByText('Acme Dental')).toBeInTheDocument();
-    expect(screen.getByText('Riverside Vets')).toBeInTheDocument();
-    expect(screen.getByText('Blue Anchor Cafe')).toBeInTheDocument();
-    expect(screen.getByText('Whitmore Legal')).toBeInTheDocument();
+    // Scoped to the projects table itself: the Pipeline board underneath it
+    // has its own fixture cards, deliberately different businesses, but nothing
+    // stops a future edit to either fixture list from picking the same name —
+    // an unscoped `getByText` would then throw on finding it twice rather than
+    // proving this table rendered.
+    const table = within(screen.getByTestId('design-gallery-projects-table'));
+    expect(table.getByText('Acme Dental')).toBeInTheDocument();
+    expect(table.getByText('Riverside Vets')).toBeInTheDocument();
+    expect(table.getByText('Blue Anchor Cafe')).toBeInTheDocument();
+    expect(table.getByText('Whitmore Legal')).toBeInTheDocument();
 
     const badges = within(screen.getByTestId('design-gallery-badges'));
     expect(badges.getByText('All good')).toBeInTheDocument();
     expect(badges.getByText('Needs attention')).toBeInTheDocument();
     expect(badges.getByText('Not started')).toBeInTheDocument();
+  });
+
+  it('renders the pipeline board with populated columns, one stalled', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+
+    render(<DesignGalleryPage />);
+
+    const board = within(screen.getByTestId('design-gallery-pipeline-board'));
+    expect(board.getByRole('heading', { name: 'Intake' })).toBeInTheDocument();
+    expect(
+      board.getByRole('heading', { name: 'Agents working' })
+    ).toBeInTheDocument();
+    expect(board.getByText('1 stalled')).toBeInTheDocument();
+    // The longest business name in the fixture set reads in full, not
+    // clipped to an ellipsis.
+    expect(board.getByText('Riverside Veterinary Clinic')).toBeInTheDocument();
   });
 });

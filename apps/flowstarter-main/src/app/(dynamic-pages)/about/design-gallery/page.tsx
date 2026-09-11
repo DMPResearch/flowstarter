@@ -80,9 +80,14 @@ export default function DesignGalleryPage() {
             paint over this page's own header and h2, which are earlier in
             the DOM but non-positioned, so they lose to a fixed element in
             paint order. The transform gives it a containing block sized to
-            this div instead of the viewport. */}
+            this div instead of the viewport.
+            No `min-h-screen`: the mesh fills whatever height this box
+            actually has, driven by its own two `SiteOverview` panels. Forcing
+            a full viewport's worth of height here left several hundred
+            pixels of bare mesh between this section and "Admin" below it —
+            a section is framed tight, not padded out to the fold. */}
         <div
-          className="relative min-h-screen overflow-hidden rounded-2xl"
+          className="relative overflow-hidden rounded-2xl"
           style={{ transform: 'translateZ(0)' }}
         >
           <MeshBackdrop variant="app" />

@@ -644,7 +644,11 @@ export function PipelineTab({ project }: { project: Project }) {
         ) : (
           <div
             data-testid="build-board"
-            className="-mx-1 grid grid-flow-col auto-cols-[15rem] gap-3 overflow-x-auto px-1 pb-2 xl:auto-cols-auto xl:grid-flow-row xl:grid-cols-6 xl:overflow-visible xl:pb-0"
+            // `minmax(240px,1fr)` is the same floor the pipeline board uses,
+            // so six columns that do not fit scroll horizontally instead of
+            // squeezing narrower than a card can read at, and `items-start`
+            // keeps one column's own content height from stretching the rest.
+            className="-mx-1 grid grid-flow-col auto-cols-[minmax(15rem,1fr)] items-start gap-3 overflow-x-auto px-1 pb-2"
           >
             {BOARD_COLUMNS.map((column) => {
               const columnJobs = byColumn.get(column.id) ?? [];
@@ -670,7 +674,7 @@ export function PipelineTab({ project }: { project: Project }) {
 
                   <header className="mb-2 flex items-center justify-between gap-1.5 border-b border-[var(--fs-rule)] pb-2">
                     <h4
-                      className="fs-tone-text truncate text-[11px] font-semibold uppercase tracking-wide"
+                      className="fs-tone-text text-[11px] font-semibold uppercase tracking-wide"
                       data-tone={tone}
                     >
                       {column.title}

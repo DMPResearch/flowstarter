@@ -141,7 +141,11 @@ export function PipelineCard({ card }: { card: PipelineCardData }) {
       }`}
     >
       <div className="flex items-start justify-between gap-2">
-        <span className="truncate text-sm font-semibold text-[var(--ls-ink)]">
+        {/* Two lines, not one truncated to an ellipsis: "Riverside
+            Veterinary Clinic" has to read in full, and a column narrow
+            enough to need more than that is a column that should scroll
+            rather than clip a name. */}
+        <span className="line-clamp-2 min-w-0 break-words text-sm font-semibold text-[var(--ls-ink)]">
           {card.businessName}
         </span>
         {card.stalled && (

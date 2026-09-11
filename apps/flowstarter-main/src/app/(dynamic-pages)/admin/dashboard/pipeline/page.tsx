@@ -89,7 +89,14 @@ export default function PipelineBoardPage() {
           ))}
         </div>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        // `auto-cols-[minmax(240px,1fr)]` is the floor a business name needs
+        // to read on two lines without the column itself going narrower than
+        // is sensible; six of those plus gutters is wider than most screens,
+        // so the row scrolls horizontally rather than wrapping into a second
+        // one. `items-start` keeps a column's height its own — a column with
+        // a stalled card's extra reasons box should not stretch every quiet
+        // column beside it into a tall, mostly empty panel.
+        <div className="-mx-1 grid grid-flow-col auto-cols-[minmax(240px,1fr)] items-start gap-4 overflow-x-auto px-1 pb-2">
           {columns.map((column) => (
             <PipelineBoardColumn
               key={column.state}

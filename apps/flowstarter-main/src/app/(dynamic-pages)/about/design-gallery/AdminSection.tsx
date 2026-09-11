@@ -52,7 +52,7 @@ export function AdminGallerySection() {
               className="relative isolate overflow-hidden rounded-2xl border border-[var(--fs-glass-edge)]"
               style={{ transform: 'translateZ(0)' }}
             >
-              <DashboardBaseLayout sidebar={<AdminDashboardSidebar />}>
+              <DashboardBaseLayout sidebar={<AdminDashboardSidebar />} embedded>
                 <div className="ls-scope ls-admin-dashboard flex flex-col gap-6 px-4 pb-16 pt-8 sm:px-6 lg:px-8">
                   <StatsStrip
                     stats={galleryStats}
@@ -62,13 +62,20 @@ export function AdminGallerySection() {
                     clientsLoading={false}
                   />
 
-                  <Panel eyebrow="Pipeline" title="Projects" flush>
-                    <ProjectsTable
-                      rows={galleryProjectRows}
-                      loading={false}
-                      onOpen={noop}
-                    />
-                  </Panel>
+                  {/* `data-testid` scopes the gallery's own assertions to
+                      this table's rows, past the Pipeline board below, whose
+                      fixture cards are deliberately different businesses but
+                      would otherwise risk sharing a name with one of these
+                      rows and turning a `getByText` ambiguous. */}
+                  <div data-testid="design-gallery-projects-table">
+                    <Panel eyebrow="Pipeline" title="Projects" flush>
+                      <ProjectsTable
+                        rows={galleryProjectRows}
+                        loading={false}
+                        onOpen={noop}
+                      />
+                    </Panel>
+                  </div>
 
                   {/* Not wrapped in `Panel`: `PipelineBoardColumn` is already
                       its own `GlassSurface` panel, and a panel nested inside
@@ -77,13 +84,16 @@ export function AdminGallerySection() {
                       enough to label the section, the same way the pipeline
                       board itself sits under `TeamDashboardShell` with no
                       extra panel around its grid of columns. */}
-                  <div className="flex flex-col gap-3">
+                  <div
+                    data-testid="design-gallery-pipeline-section"
+                    className="flex flex-col gap-3"
+                  >
                     <h3 className="text-sm font-semibold text-[var(--fs-ink-dim)]">
                       Pipeline
                     </h3>
                     <div
                       data-testid="design-gallery-pipeline-board"
-                      className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"
+                      className="-mx-1 grid grid-flow-col auto-cols-[minmax(240px,1fr)] items-start gap-4 overflow-x-auto px-1 pb-2"
                     >
                       {galleryPipelineColumns.map((column) => (
                         <PipelineBoardColumn
