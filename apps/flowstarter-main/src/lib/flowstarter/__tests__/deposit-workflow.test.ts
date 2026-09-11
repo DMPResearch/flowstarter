@@ -22,6 +22,8 @@ interface ClientScript {
   stateUpdate?: { data: unknown; error: unknown };
   /** How the best-effort `project_events` insert resolves, or throws. */
   eventInsert?: { error: unknown } | 'throw';
+  /** Makes reading the ledger fail, which is how the notifier gives up safely. */
+  eventSelectFails?: boolean;
 }
 
 const script: ClientScript = {};
@@ -73,6 +75,16 @@ function builderFor(table: string) {
           reject
         );
       }
+      // Reading the audit trail back is not decoration here: the "tell the
+      // client once" guard is a select over `project_events`, so a fake that
+      // always answers empty would make a redelivery test prove nothing.
+      if (table === 'project_events' && builder._mode === 'select') {
+        return Promise.resolve(
+          script.eventSelectFails
+            ? { data: null, error: { message: 'project_events unavailable' } }
+            : { data: captured.events, error: null }
+        ).then(resolve, reject);
+      }
       return Promise.resolve(
         table === 'project_events'
           ? script.eventInsert ?? { error: null }
@@ -116,6 +128,11 @@ vi.mock('@/lib/hosting/funnel-previews', () => ({
     if (previewScript.throws) throw new Error('funnel_previews is unreachable');
     return previewScript.row ?? null;
   },
+}));
+
+const sendEmail = vi.fn();
+vi.mock('@/lib/email', () => ({
+  sendEmail: (...args: unknown[]) => sendEmail(...args),
 }));
 
 const WORKSPACE_ID = '0f4e1088-8d8f-4f18-83b1-406cc292b23c';
@@ -206,10 +223,13 @@ beforeEach(() => {
   delete script.existingJob;
   delete script.stateUpdate;
   delete script.eventInsert;
+  delete script.eventSelectFails;
   captured.insert = undefined;
   captured.update = undefined;
   captured.events = [];
   captured.tables = [];
+  sendEmail.mockReset();
+  sendEmail.mockResolvedValue({ success: true, id: 'em_1' });
 });
 
 describe('deposit paid by operator invoice', () => {
@@ -695,6 +715,126 @@ describe('losing the dispatch-failure note', () => {
     } finally {
       vi.restoreAllMocks();
     }
+  });
+});
+
+/**
+ * The email the concierge path never sent.
+ *
+ * The deposit block that was supposed to say "your deposit is in and your
+ * build has started" lived inside the booking-deposit handler and returned
+ * before reaching the send for every concierge payment, so a client who paid
+ * a real deposit heard nothing at all. These cases pin the four things that
+ * have to be true of the replacement: it fires on both concierge entry
+ * points, it fires once, it fires at the client rather than at us, and it
+ * cannot take the deposit down with it.
+ */
+describe('telling the client their deposit landed', () => {
+  function paidIntent(): Stripe.PaymentIntent {
+    return {
+      id: 'pi_1',
+      status: 'succeeded',
+      currency: 'eur',
+      amount_received: 15_980,
+      metadata: { kind: 'flowstarter_deposit', workspaceId: WORKSPACE_ID },
+    } as unknown as Stripe.PaymentIntent;
+  }
+
+  function withClient(overrides: Record<string, unknown> = {}) {
+    return workspaceRow({
+      client_email: 'client@example.com',
+      client_name: 'Darius',
+      client_business_name: 'Acme Dental',
+      name: 'Acme workspace',
+      ...overrides,
+    });
+  }
+
+  function mail(): { to: string; subject: string; html: string } {
+    return sendEmail.mock.calls[0]![0] as {
+      to: string;
+      subject: string;
+      html: string;
+    };
+  }
+
+  it('emails the client on the Checkout deposit path', async () => {
+    script.workspace = withClient();
+
+    await enqueueFullBuildFromDeposit(event(), paidIntent());
+
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    // The old handler mailed hello@flowstarter.net. This one mails the person
+    // who paid.
+    expect(mail().to).toBe('client@example.com');
+    expect(mail().subject).toBe(
+      'Your deposit is in and your build has started'
+    );
+    expect(mail().html).toContain(`/dashboard/projects/${WORKSPACE_ID}`);
+    expect(mail().html).toContain('Acme Dental');
+  });
+
+  it('emails the client on the operator invoice path too', async () => {
+    script.workspace = withClient();
+
+    await enqueueFullBuildFromDepositInvoice(event(), depositInvoice());
+
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(mail().to).toBe('client@example.com');
+  });
+
+  it('records the send so a redelivered event does not repeat it', async () => {
+    script.workspace = withClient();
+
+    await enqueueFullBuildFromDeposit(event(), paidIntent());
+    const ledger = captured.events.find(
+      (row) => row.kind === 'client_email_sent'
+    );
+    expect(ledger).toMatchObject({
+      workspace_id: WORKSPACE_ID,
+      actor: 'system:client_email',
+    });
+    expect(ledger?.payload).toMatchObject({ notification: 'deposit_paid' });
+
+    // Stripe redelivers. The build gate is already idempotent; the mail has to
+    // be too, because a second copy is what makes a client stop reading them.
+    await enqueueFullBuildFromDeposit(event(), paidIntent());
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends nothing when the workspace has no client address', async () => {
+    script.workspace = workspaceRow({ client_email: null });
+
+    const result = await enqueueFullBuildFromDeposit(event(), paidIntent());
+
+    expect(result).toMatchObject({ jobId: 'job-1' });
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('still queues the build when the mailer is unreachable', async () => {
+    script.workspace = withClient();
+    sendEmail.mockRejectedValue(new Error('socket hang up'));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // A throw here would fail the webhook after the money is recorded and the
+    // job is queued, and Stripe would retry for days over a mail server.
+    await expect(
+      enqueueFullBuildFromDeposit(event(), paidIntent())
+    ).resolves.toMatchObject({ jobId: 'job-1', duplicate: false });
+    expect(errors).toHaveBeenCalled();
+    errors.mockRestore();
+  });
+
+  it('still queues the build when the ledger cannot be read', async () => {
+    script.workspace = withClient();
+    script.eventSelectFails = true;
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      enqueueFullBuildFromDepositInvoice(event(), depositInvoice())
+    ).resolves.toMatchObject({ jobId: 'job-1' });
+    expect(sendEmail).not.toHaveBeenCalled();
+    errors.mockRestore();
   });
 });
 

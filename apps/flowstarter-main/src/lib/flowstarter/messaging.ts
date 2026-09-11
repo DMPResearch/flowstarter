@@ -27,6 +27,7 @@ import type { ScrapedTextDocument } from '@flowstarter/agentic-codegen/src/flows
 import type { Json } from '@/lib/database.types';
 import { sendEmail } from '@/lib/email';
 import { withTenant } from '@/lib/tenancy';
+import { clientDashboardUrl } from './client-notifications';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import type {
   MissingItem,
@@ -114,14 +115,14 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-/** The client interface lives here; another agent builds the page itself. */
+/**
+ * The client interface lives here; another agent builds the page itself.
+ *
+ * Now one definition shared with every other client-facing email, so a change
+ * of origin cannot move some of the links in an inbox and not the others.
+ */
 export function projectDeepLink(workspaceId: string): string {
-  const base = (
-    process.env.NEXT_PUBLIC_SITE_URL?.trim() ||
-    process.env.NEXT_PUBLIC_APP_URL?.trim() ||
-    'https://flowstarter.net'
-  ).replace(/\/+$/, '');
-  return `${base}/dashboard/projects/${workspaceId}`;
+  return clientDashboardUrl(workspaceId);
 }
 
 function rowToMessage(row: {

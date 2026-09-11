@@ -150,6 +150,10 @@ function previewPayload(data: DiscoveryData) {
   return {
     businessName: data.businessName,
     fullName: data.fullName,
+    // The intake asks "Where should I send your preview once it's ready?" and
+    // this is the request that knows when it is ready. Dropping it here is
+    // what made that question a lie.
+    email: data.email,
     description: describeWithIntakeAnswers(data),
     industry: data.industry,
     targetAudience: data.targetAudience,

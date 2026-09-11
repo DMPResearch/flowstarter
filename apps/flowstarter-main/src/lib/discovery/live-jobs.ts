@@ -70,6 +70,23 @@ export interface LiveJob {
   editError?: string;
   createdAt: number;
   teardown?: () => Promise<void>;
+  /**
+   * The address the intake asked for with "Where should I send your preview
+   * once it's ready?". Collected by the wizard since forever and, until the
+   * preview-ready email existed, never used to send anything.
+   */
+  leadEmail?: string;
+  /** The name to greet, and the business the preview is of. */
+  leadName?: string;
+  businessName?: string;
+  /**
+   * Set the instant the preview-ready email is attempted, so a second pass
+   * over a job that is already `ready` cannot mail the visitor twice. The job
+   * store is process-local, which is exactly the scope that matters here: the
+   * ready transition happens once, in one process, in the detached generator
+   * that owns the job.
+   */
+  readyEmailAt?: number;
 }
 
 // Anchored on globalThis, not module scope: in `next dev` every route handler

@@ -26,7 +26,7 @@ const state = vi.hoisted(() => ({
 // ─── Stripe SDK mock ────────────────────────────────────────────────────────
 const stripeMock = {
   customers: { create: vi.fn() },
-  invoices: { create: vi.fn(), finalizeInvoice: vi.fn() },
+  invoices: { create: vi.fn(), finalizeInvoice: vi.fn(), sendInvoice: vi.fn() },
   invoiceItems: { create: vi.fn() },
   subscriptions: {
     create: vi.fn(),
@@ -50,6 +50,17 @@ vi.mock('stripe', () => {
     },
   };
 });
+
+// ─── Client-notification mock ──────────────────────────────────────────────
+// Only `notifyClientOnce` is swapped; `notifyBalanceInvoiceReady` (which
+// calls it) runs for real so the route -> email-notify wiring is exercised.
+const clientNotifyMock = vi.hoisted(() => ({
+  notifyClientOnce: vi.fn(),
+}));
+
+vi.mock('@/lib/flowstarter/client-notifications', () => ({
+  notifyClientOnce: clientNotifyMock.notifyClientOnce,
+}));
 
 // ─── Supabase mock ──────────────────────────────────────────────────────────
 type SbBuilder = {
@@ -232,6 +243,11 @@ beforeEach(() => {
   state.stripeCtorError = null;
   state.authOverride = null;
   process.env.STRIPE_SECRET_KEY = 'sk_test_dummy';
+  // Default: the client was told. Tests that care about a failed notify
+  // override this per-test; everything else just needs the final-invoice
+  // route to not blow up on the call it makes after every successful persist.
+  clientNotifyMock.notifyClientOnce.mockReset();
+  clientNotifyMock.notifyClientOnce.mockResolvedValue({ sent: true });
 });
 
 // ─── Auth gate, shared by all five endpoints ────────────────────────────────
@@ -758,6 +774,79 @@ describe('POST /api/team/projects/[id]/billing/final-invoice', () => {
     const body = await res.json();
     expect(body.error).toMatch(/in_final2/);
     expect(body.invoice.invoiceId).toBe('in_final2');
+  });
+
+  it('notifies the client exactly once with the hosted invoice URL', async () => {
+    setupProjectFetchAndUpdate({
+      ...baseProject,
+      stripe_customer_id: 'cus_existing',
+      deposit_status: 'paid',
+    });
+    stripeMock.invoices.create.mockResolvedValue({ id: 'in_draft2' });
+    stripeMock.invoiceItems.create.mockResolvedValue({});
+    stripeMock.invoices.finalizeInvoice.mockResolvedValue({
+      id: 'in_final2',
+      hosted_invoice_url: 'https://invoice.stripe.com/def',
+      status: 'open',
+    });
+    const { POST } = await import('../../../[id]/billing/final-invoice/route');
+    const res = await POST(makeReq({}), {
+      params: Promise.resolve({ id: 'proj_1' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.invoice.clientEmailed).toBe(true);
+
+    expect(clientNotifyMock.notifyClientOnce).toHaveBeenCalledTimes(1);
+    const call = clientNotifyMock.notifyClientOnce.mock.calls[0]?.[0];
+    // Keys on the invoice id, not the workspace: a re-pressed final invoice
+    // later (a new invoice id) must be able to notify again.
+    expect(call).toMatchObject({
+      workspaceId: 'proj_1',
+      notification: 'balance_invoice',
+      dedupeKey: 'in_final2',
+    });
+
+    // The mock stands in for notifyClientOnce, so the render callback it was
+    // handed is never actually invoked. Calling it here proves the hosted
+    // URL flows all the way from the Stripe response into the email body.
+    const rendered = call.render({
+      workspaceId: 'proj_1',
+      email: 'client@example.com',
+      clientName: 'Ana Pop',
+      businessName: 'Acme Coaching',
+      dashboardUrl: 'https://flowstarter.net/dashboard/projects/proj_1',
+    });
+    expect(rendered.html).toContain('https://invoice.stripe.com/def');
+  });
+
+  it('still returns 200 when the client notification does not send', async () => {
+    // A missing client_email or an unreachable mailer must not turn an
+    // already-created, already-persisted invoice into an operator-facing
+    // error.
+    clientNotifyMock.notifyClientOnce.mockResolvedValue({
+      sent: false,
+      reason: 'no_recipient',
+    });
+    setupProjectFetchAndUpdate({
+      ...baseProject,
+      stripe_customer_id: 'cus_existing',
+      deposit_status: 'paid',
+    });
+    stripeMock.invoices.create.mockResolvedValue({ id: 'in_draft2' });
+    stripeMock.invoiceItems.create.mockResolvedValue({});
+    stripeMock.invoices.finalizeInvoice.mockResolvedValue({
+      id: 'in_final2',
+      hosted_invoice_url: 'https://invoice.stripe.com/def',
+      status: 'open',
+    });
+    const { POST } = await import('../../../[id]/billing/final-invoice/route');
+    const res = await POST(makeReq({}), {
+      params: Promise.resolve({ id: 'proj_1' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.invoice.clientEmailed).toBe(false);
   });
 });
 

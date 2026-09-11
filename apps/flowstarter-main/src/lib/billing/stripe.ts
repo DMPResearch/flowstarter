@@ -137,6 +137,8 @@ export class StripeBilling {
     invoiceId: string;
     hostedUrl: string | null;
     status: Stripe.Invoice.Status;
+    /** Whether Stripe accepted the invoice for its own hosted email. */
+    stripeEmailed: boolean;
   }> {
     return this.createConciergeInvoice({
       ...opts,
@@ -159,6 +161,8 @@ export class StripeBilling {
     invoiceId: string;
     hostedUrl: string | null;
     status: Stripe.Invoice.Status;
+    /** Whether Stripe accepted the invoice for its own hosted email. */
+    stripeEmailed: boolean;
   }> {
     return this.createConciergeInvoice({
       ...opts,
@@ -319,6 +323,8 @@ export class StripeBilling {
     invoiceId: string;
     hostedUrl: string | null;
     status: Stripe.Invoice.Status;
+    /** Whether Stripe accepted the invoice for its own hosted email. */
+    stripeEmailed: boolean;
   }> {
     const {
       project,
@@ -372,11 +378,47 @@ export class StripeBilling {
       );
     }
 
+    // `collection_method: 'send_invoice'` with `auto_advance: false` means
+    // Stripe finalizes the invoice and then does nothing: no email, no
+    // reminders. That is how a real client ended up with a finalized, payable
+    // balance invoice that nobody ever told him about. `sendInvoice` is the
+    // call that actually hands it to Stripe's own delivery.
+    //
+    // What it does in test mode is worth stating plainly, because it is not
+    // "nothing" and it is not "the client gets it": Stripe delivers test-mode
+    // invoice emails only to the email addresses on the Stripe account itself,
+    // and only when invoice emails are enabled in the dashboard. A test-mode
+    // customer address never receives one. That is exactly why the caller also
+    // sends our own mail with the hosted link, which is the path that is
+    // reliable in every mode.
+    const sent = await this.sendInvoiceEmail(finalized.id);
+
     return {
       invoiceId: finalized.id,
-      hostedUrl: finalized.hosted_invoice_url ?? null,
-      status: finalized.status ?? 'draft',
+      hostedUrl: (sent ?? finalized).hosted_invoice_url ?? null,
+      status: (sent ?? finalized).status ?? 'draft',
+      stripeEmailed: sent !== null,
     };
+  }
+
+  /**
+   * Best effort by contract. The invoice exists and is payable at its hosted
+   * URL whatever Stripe's mailer does, so a delivery problem must not turn a
+   * created invoice into an HTTP error the operator reads as "it did not
+   * work" and retries, minting a second invoice for the same money.
+   */
+  private async sendInvoiceEmail(
+    invoiceId: string
+  ): Promise<Stripe.Invoice | null> {
+    try {
+      return await this.stripe.invoices.sendInvoice(invoiceId);
+    } catch (e) {
+      console.error(
+        `[billing] invoice ${invoiceId} was finalized but Stripe would not send it: ` +
+          (e instanceof Error ? e.message : 'unknown error')
+      );
+      return null;
+    }
   }
 }
 
