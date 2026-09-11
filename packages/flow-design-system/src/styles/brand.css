@@ -13,8 +13,9 @@
  *   8. Motion tokens
  *   9. Density tokens (comfortable / compact)
  *  10. Backward-compat aliases (old token names → new --fs-* tokens)
- *  11. Liquid glass — material, tones, mesh backdrop
+ *  11. Liquid glass — material, elevation ladder, tones, mesh backdrop
  *  12. Liquid glass — radii
+ *  13. Controls — one height, one ring
  */
 
 /* ─────────────────────────────────────────────
@@ -335,23 +336,28 @@
    Apply data-density="comfortable|compact" on
    a wrapper element (body, layout shell, etc.)
    ───────────────────────────────────────────── */
+/* The button and the input used to be 52px and 48px, which is why a send
+   button never lined up with the field beside it. Both now read the one
+   control height from section 13; density changes that height, not the
+   agreement between the two. */
 :root,
 [data-density="comfortable"] {
-  --fs-btn-h:      52px;
+  --fs-btn-h:      var(--fs-control-h);
   --fs-btn-px:     1.65rem;
   --fs-btn-fs:     1.05rem;
-  --fs-btn-radius: var(--fs-radius-md);
-  --fs-input-h:    48px;
+  --fs-btn-radius: var(--fs-radius-control);
+  --fs-input-h:    var(--fs-control-h);
   --fs-input-px:   1rem;
   --fs-card-p:     2rem 1.75rem;
 }
 
 [data-density="compact"] {
-  --fs-btn-h:      40px;
+  --fs-control-h:  var(--fs-control-h-sm);
+  --fs-btn-h:      var(--fs-control-h-sm);
   --fs-btn-px:     1.15rem;
   --fs-btn-fs:     0.9rem;
-  --fs-btn-radius: var(--fs-radius-sm);
-  --fs-input-h:    36px;
+  --fs-btn-radius: var(--fs-radius-control-sm);
+  --fs-input-h:    var(--fs-control-h-sm);
   --fs-input-px:   0.75rem;
   --fs-card-p:     1.25rem 1.25rem;
 }
@@ -442,8 +448,41 @@
   --fs-glass-highlight: rgba(255, 255, 255, 0.75);  /* diagonal catch-light, fades to transparent */
   --fs-glass-specular: rgba(255, 255, 255, 0.92);   /* 1px light line along the top inside edge */
   --fs-glass-ink-dim: rgba(18, 10, 34, 0.74);       /* label and note ink on a tinted tile */
-  --fs-glass-blur: 28px;                            /* backdrop blur radius, one value product-wide */
+  --fs-glass-blur: 28px;                            /* the default blur; the ladder below overrides it per level */
   --fs-glass-saturate: 180%;                        /* backdrop saturation, so the mesh stays vivid through the glass */
+  --fs-glass-brightness: 1.03;                      /* light mode lifts what is behind the pane, the way frosted glass does */
+
+  /* ── The elevation ladder ──
+     One material at five thicknesses. A 44px pill and a 600px modal cannot
+     share a blur radius: at 28px the blur reaches further than the pill is
+     tall, so it averages to flat frosted plastic, while the modal needs more
+     than 28px to actually cut off the page it covers rather than sit on it.
+     Blur, fill and the drop it casts therefore all scale with the surface.
+     A level sets these three on itself and .fs-glass reads them, so there is
+     still exactly one place the material is described. */
+  --fs-glass-blur-control: 12px;                    /* a pill or a button */
+  --fs-glass-blur-chrome: 18px;                     /* a header or sidebar: content has to stay readable through it */
+  --fs-glass-blur-card: 24px;                       /* a single object */
+  --fs-glass-blur-panel: 30px;                      /* a container for cards */
+  --fs-glass-blur-overlay: 44px;                    /* a modal or a banner: it has to separate from the page under it */
+
+  /* The panel is the thinnest fill of the three content levels, so a card
+     laid on a panel is the brighter of the two and the stack reads as depth
+     rather than as two rectangles of the same paint. */
+  --fs-glass-bg-panel: rgba(255, 255, 255, 0.40);   /* recessed: the container a card sits in */
+  --fs-glass-bg-control: rgba(255, 255, 255, 0.66); /* a control has to read as solid enough to press */
+
+  /* The drop per level. A control casts none, because a row of buttons that
+     each float is a row that reads as five cards. */
+  --fs-glass-shadow-card:
+    0 12px 32px -12px hsl(233, 58%, 30%, 0.20),
+    0 3px 10px -5px hsl(233, 48%, 26%, 0.13);
+  --fs-glass-shadow-panel:
+    0 32px 80px -22px hsl(233, 58%, 30%, 0.26),
+    0 10px 28px -12px hsl(233, 48%, 26%, 0.16);
+  --fs-glass-shadow-overlay:
+    0 48px 110px -24px hsl(233, 60%, 22%, 0.40),
+    0 16px 44px -16px hsl(233, 50%, 20%, 0.24);
 
   /* The drop the material casts. Tinted with the mesh's indigo rather than
      neutral grey, so a panel looks lit by the gradient behind it. */
@@ -556,21 +595,45 @@
   /* @liquid-glass:dark */
   --fs-glass-bg-strong: rgba(26, 32, 54, 0.62);     /* denser fill for content over a busy mesh */
   --fs-glass-bg-overlay: rgba(26, 32, 54, 0.9);     /* banners and toasts that float over unblurred page content */
-  --fs-glass-highlight: rgba(255, 255, 255, 0.14);  /* diagonal catch-light, fades to transparent */
-  --fs-glass-specular: rgba(255, 255, 255, 0.38);   /* 1px light line along the top inside edge */
+  --fs-glass-highlight: rgba(255, 255, 255, 0.17);  /* diagonal catch-light, fades to transparent */
+  --fs-glass-specular: rgba(255, 255, 255, 0.52);   /* 1px light line along the top inside edge */
   --fs-glass-ink-dim: rgba(244, 238, 228, 0.84);    /* label and note ink on a tinted tile */
+
+  /* Smoked, not grey. Dark glass that only darkens its fill reads as a grey
+     card. Real smoked glass dims what is behind it without draining the colour
+     out of it, so the brightness comes down while the saturation stays up; take
+     the saturation down as well and the pane goes muddy, which is the grey card
+     again by another route. The rim and the catch-light then do the work of
+     saying "there is a pane here", which is why both are brighter below. */
+  --fs-glass-brightness: 0.86;
+  --fs-glass-saturate: 172%;
+
+  --fs-glass-bg-panel: rgba(18, 23, 40, 0.34);      /* recessed: the container a card sits in */
+  --fs-glass-bg-control: rgba(30, 37, 60, 0.58);    /* a control has to read as solid enough to press */
 
   --fs-glass-shadow:
     0 26px 70px -18px hsl(233, 76%, 4%, 0.76),
     0 8px 24px -10px hsl(233, 60%, 3%, 0.56);
 
+  --fs-glass-shadow-card:
+    0 14px 36px -14px hsl(233, 76%, 3%, 0.66),
+    0 3px 10px -5px hsl(233, 60%, 2%, 0.50);
+  --fs-glass-shadow-panel:
+    0 34px 86px -24px hsl(233, 78%, 3%, 0.78),
+    0 10px 30px -14px hsl(233, 62%, 2%, 0.56);
+  --fs-glass-shadow-overlay:
+    0 54px 130px -26px hsl(233, 80%, 2%, 0.86),
+    0 18px 50px -18px hsl(233, 64%, 2%, 0.64);
+
+  /* The rim carries more of the load in dark than it does in light: with the
+     fill this thin, the lit edge is most of what tells you a pane is there. */
   --fs-glass-refraction:
     linear-gradient(
       135deg,
-      rgba(255, 255, 255, 0.35) 0%,
-      rgba(255, 255, 255, 0.18) 24%,
-      rgba(255, 255, 255, 0.10) 60%,
-      rgba(255, 255, 255, 0.06) 100%
+      rgba(255, 255, 255, 0.50) 0%,
+      rgba(255, 255, 255, 0.24) 24%,
+      rgba(255, 255, 255, 0.12) 60%,
+      rgba(255, 255, 255, 0.07) 100%
     );
 
   /* @tone-tokens:dark */
@@ -692,7 +755,43 @@
    ───────────────────────────────────────────── */
 :root {
   --fs-radius-glass: 22px;                          /* outer radius of any glass surface */
-  --fs-radius-glass-inner: calc(var(--fs-radius-glass) - var(--fs-space-2));
+
+  /* The rule is one subtraction: a child's radius is its parent's radius minus
+     the gap between the two edges. Follow it and the curves stay parallel; break
+     it and the inner corner either cuts across the outer one or floats inside a
+     fat crescent of parent. Each step below is one 8px gap further in. */
+  --fs-radius-glass-inner: calc(var(--fs-radius-glass) - var(--fs-space-2));        /* 14px: a tile 8px inside a panel */
+  --fs-radius-glass-flush: calc(var(--fs-radius-glass-inner) - var(--fs-space-2));  /*  6px: a strip or chip 8px inside a tile */
+
+  /* A free-standing control is not nested in anything, so it does not take a
+     concentric radius; it takes the control radius wherever it appears. */
+  --fs-radius-control: var(--fs-radius-md);         /* 12px */
+  --fs-radius-control-sm: var(--fs-radius-sm);      /*  8px */
+}
+
+/* ─────────────────────────────────────────────
+   13. CONTROLS — ONE HEIGHT, ONE RING
+   A button, a text field and a pill that sit on
+   the same row are the same object at different
+   jobs, so they share a height, a radius and a
+   focus ring. They drifted to five different
+   heights across the product; these are the one
+   set everything now reads from.
+   ───────────────────────────────────────────── */
+:root {
+  --fs-control-h: 44px;                             /* buttons, inputs, selects and pills, on one baseline */
+  --fs-control-h-sm: 36px;                          /* dense rows: table actions, toolbar buttons */
+  --fs-control-h-xs: 28px;                          /* badges and status pills */
+  --fs-control-px: var(--fs-space-4);
+  --fs-control-px-sm: var(--fs-space-3);
+  --fs-control-gap: var(--fs-space-2);              /* icon to label inside a control */
+
+  /* One focus ring, drawn as an outline so it sits outside the surface and
+     never fights the refractive edge. Widths of 1, 2 and 3px with offsets of
+     0, 2 and 3px were all in use at once. */
+  --fs-focus-ring-width: 2px;
+  --fs-focus-ring-offset: 2px;
+  --fs-focus-ring-color: var(--fs-accent);
 }
 
 /* ─────────────────────────────────────────────
