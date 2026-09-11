@@ -249,6 +249,44 @@ describe('the intake conversation', () => {
   });
 });
 
+describe('the composer', () => {
+  it('sends on Enter, the way every chat the visitor already uses does', async () => {
+    const { user } = renderWizard();
+    const composer = screen.getByLabelText(
+      t('landing.discovery.chat.composerLabel')
+    );
+
+    await user.type(composer, 'Maria Ionescu{Enter}');
+
+    // The next question is up, and the answer landed in the transcript —
+    // same outcome as clicking Send, this time from the keyboard alone.
+    expect(
+      await screen.findByText(t('landing.discovery.chat.q.email.prompt'))
+    ).toBeInTheDocument();
+    const log = screen.getByRole('log');
+    expect(within(log).getByText('Maria Ionescu')).toBeInTheDocument();
+  });
+
+  it('breaks the line on Shift+Enter instead of sending', async () => {
+    const { user } = renderWizard();
+    const composer = screen.getByLabelText(
+      t('landing.discovery.chat.composerLabel')
+    );
+
+    await user.type(composer, 'Maria{Shift>}{Enter}{/Shift}Ionescu');
+
+    // Still on the same question — Shift+Enter did not submit.
+    expect(
+      screen.getByText(t('landing.discovery.chat.q.fullName.prompt'))
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(t('landing.discovery.chat.q.email.prompt'))
+    ).toBeNull();
+    // And the newline really is in the value, not swallowed.
+    expect(composer).toHaveValue('Maria\nIonescu');
+  });
+});
+
 describe('what makes it a conversation', () => {
   it('reacts to a pick with the consequence of that pick, chosen by rule', async () => {
     const { user } = renderWizard();
