@@ -117,7 +117,7 @@ export function PreQualModal({
           under `.dark`) plus enough blur that the mesh and page keep their
           shape through it. */}
       <div
-        className="bg-[color-mix(in_oklab,var(--fs-primitive-ink-dark)_38%,transparent)] backdrop-blur-[8px]"
+        className="bg-[color-mix(in_oklab,var(--fs-primitive-ink-dark)_42%,transparent)] backdrop-blur-[18px]"
         style={{
           position: 'fixed',
           top: 0,
@@ -151,7 +151,7 @@ export function PreQualModal({
         <div
           className={[
             // The dialog surface itself: the shared liquid glass material
-            // (`.fs-glass`) on its denser `--strong` fill, per the design
+            // (`.fs-glass`) on its near-opaque `--overlay` fill, per the design
             // system's own guidance for content sitting over a busy mesh —
             // see packages/flow-design-system/README.md's "Liquid glass".
             // `GlassSurface`'s `panel` variant was the first reach, but it
@@ -163,7 +163,7 @@ export function PreQualModal({
             // `.fs-glass` supplies its own background, radius, blur and
             // refractive edge, so the old flat white/dark fill, border and
             // shadow are dropped rather than layered underneath it.
-            'fs-glass fs-glass--strong relative w-full my-auto p-6 sm:p-8 transition-all duration-300',
+            'fs-glass fs-glass--overlay relative w-full my-auto p-6 sm:p-8 transition-all duration-300',
             step === 'calendar'
               ? 'max-w-3xl'
               : step === 'discovery'
