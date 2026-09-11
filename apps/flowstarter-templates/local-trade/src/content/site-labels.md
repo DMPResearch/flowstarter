@@ -343,7 +343,7 @@ contactPage:
     messageLabel: "About the job"
     messagePlaceholder: "Roughly what you are after, where you are, and any timing you have in mind — a kitchen, a staircase, a few doors, anything."
     submitLabel: "Send enquiry"
-    successMessage: "Thanks — your enquiry is ready to send once this form is connected to your preferred email or form service. We normally reply within a working day."
+    successMessage: "Thanks. Your email app should now be open with your enquiry ready to send. We normally reply within a working day."
   details:
     emailLabel: "Email us"
     emailValue: "hello@example.com"

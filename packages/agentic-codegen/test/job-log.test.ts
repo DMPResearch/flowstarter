@@ -321,6 +321,8 @@ describe('a full build reports the agents running work', () => {
       'Materializing the approved preview',
       'Agents expanding the site',
       'Checking the build',
+      'Checking the site matches the brief',
+      'Checking for placeholder copy',
       'Committing the site',
       'Publishing for review',
       'Handed to human QA',

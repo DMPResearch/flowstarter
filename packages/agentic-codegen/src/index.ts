@@ -61,6 +61,18 @@ export type {
   IntegrationsConfig,
 } from './integrations';
 
+export {
+  ASSET_NOT_BINARY,
+  ASSET_SNIFF_BYTES,
+  RASTER_EXTENSIONS,
+  describeAssetProblems,
+  findNonBinaryAssets,
+  inspectRasterAsset,
+  isPrintableAscii,
+  rasterExtension,
+} from './binary-assets';
+export type { AssetProblem, EncodedAssetFile } from './binary-assets';
+
 export * from './flowstarter/types';
 export * from './flowstarter/state-machine';
 export * from './flowstarter/brand-config';
@@ -77,3 +89,6 @@ export * from './flowstarter/preview-teaser';
 export * from './flowstarter/site-media';
 export * from './flowstarter/generated-assets';
 export * from './flowstarter/site-tarball';
+export * from './flowstarter/page-set';
+export * from './flowstarter/teaser-rule';
+export * from './flowstarter/placeholder-copy';

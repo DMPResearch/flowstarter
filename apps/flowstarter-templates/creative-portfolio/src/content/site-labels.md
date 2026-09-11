@@ -344,7 +344,7 @@ contactPage:
     messageLabel: "Project"
     messagePlaceholder: "What are you making, who is it for, and roughly when does it need to exist?"
     submitLabel: "Send it over"
-    successMessage: "Thanks — your message is ready to send once you connect this form to your email or form endpoint."
+    successMessage: "Thanks. Your email app should now be open with the message ready to send our way."
   details:
     emailLabel: "Email"
     emailValue: "studio@atelierverso.com"

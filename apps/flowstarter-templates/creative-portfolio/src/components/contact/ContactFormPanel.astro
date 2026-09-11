@@ -21,13 +21,19 @@ interface Props {
   };
   countryCodes: CountryCodeOption[];
   defaultCountry: CountryCodeOption;
+  contactEmail?: string;
 }
 
-const { form, countryCodes, defaultCountry } = Astro.props;
+const { form, countryCodes, defaultCountry, contactEmail } = Astro.props;
 ---
 
 <div class="contact-form-panel">
-  <form class="contact-form-panel__form" data-contact-form novalidate>
+  <form
+    class="contact-form-panel__form"
+    data-contact-form
+    data-contact-email={contactEmail}
+    novalidate
+  >
     <TextField label={form.fullNameLabel} name="fullName" placeholder={form.fullNamePlaceholder} required={true} />
     <TextField label={form.emailLabel} name="email" type="email" placeholder={form.emailPlaceholder} required={true} />
 

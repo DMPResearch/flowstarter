@@ -26,6 +26,11 @@ import 'server-only';
  */
 import { NextRequest, NextResponse } from 'next/server';
 import {
+  ASSET_NOT_BINARY,
+  describeAssetProblems,
+  findNonBinaryAssets,
+} from '@flowstarter/agentic-codegen';
+import {
   markVersionPublished,
   recordSiteEditorEvent,
   saveSiteVersion,
@@ -69,6 +74,30 @@ export async function POST(
     'inline_content_agent'
   );
   if (refusal) return refusal;
+
+  // The manifest this publish would build from is the last place the bytes
+  // are still ours to refuse. An image whose `encoding: 'base64'` flag was
+  // dropped somewhere upstream is, in this manifest, a string of printable
+  // base64 behind a `.png` name, and every step after this one is happy to
+  // carry it all the way to a client's live site. The worker runs the same
+  // check on its build output; this one runs before a job is even queued, so
+  // a broken manifest fails loudly instead of costing a build.
+  const assetProblems = findNonBinaryAssets(context.site.files);
+  if (assetProblems.length > 0) {
+    console.error(
+      `[site-publish] ${workspaceId}: ${describeAssetProblems(assetProblems)}`
+    );
+    return NextResponse.json(
+      {
+        error:
+          'This site cannot be published: some of its images are not image ' +
+          'files. The build team has been given the details.',
+        code: ASSET_NOT_BINARY,
+        paths: assetProblems.map((problem) => problem.path).slice(0, 20),
+      },
+      { status: 422 }
+    );
+  }
 
   try {
     // A site that has never been edited has no snapshot yet; publishing it

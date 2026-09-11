@@ -127,10 +127,17 @@ export function buildFullSiteTask(input: {
   intake: BusinessIntakePayload;
   brandConfig: BrandConfig;
   requiredIntegrations: string[];
+  /**
+   * The page set this brief buys, already decided by `page-set.ts`. The rule
+   * is mechanical and the scaffold has already been cut to match it; this
+   * sentence exists so the agent does not put back what the rule removed.
+   */
+  pageSet?: string;
   /** Build/validation output from a failed previous pass, for one repair. */
   feedback?: string;
 }): string {
-  return `Build the production-ready multi-page Flowstarter site in the current isolated worktree.\n\nBUILD_SPEC_JSON\n${JSON.stringify(input)}\nEND_BUILD_SPEC_JSON\n\nCompletion requirements: preserve the selected component system; implement accessible pages, SEO metadata, semantic sitemap, and only the listed integrations; format the repository; finish without requesting shell access.`;
+  const pageRule = input.pageSet ? `\n\nPAGE SET (trusted, decided by rule, not negotiable)\n${input.pageSet}` : '';
+  return `Build the production-ready multi-page Flowstarter site in the current isolated worktree.\n\nBUILD_SPEC_JSON\n${JSON.stringify(input)}\nEND_BUILD_SPEC_JSON${pageRule}\n\nCompletion requirements: preserve the selected component system; implement accessible pages, SEO metadata, semantic sitemap, and only the listed integrations; create no page outside the stated page set; format the repository; finish without requesting shell access.`;
 }
 
 export const FULL_SITE_CODING_SYSTEM_PROMPT = `You are Flowstarter's production site build agent operating inside one pre-created, isolated git worktree.

@@ -22,6 +22,11 @@ const captured: { update?: Record<string, unknown>; stateFilter?: unknown } =
 /** Tables whose next query comes back as a Postgrest error. */
 const failing = new Set<string>();
 
+/** A real PNG signature, base64. Anything else behind a `.png` is a defect. */
+const PNG_BASE64 = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+]).toString('base64');
+
 function builderFor(table: string) {
   const store = table === 'workspaces' ? rows.workspaces : rows.artifacts;
   let mode: 'select' | 'upsert' | 'update' = 'select';
@@ -262,7 +267,7 @@ describe('what savePreviewArtifacts refuses to write', () => {
     await savePreviewArtifacts(
       validInput({
         files: [
-          { path: 'public/logo.png', content: 'AAAA', encoding: 'base64' },
+          { path: 'public/logo.png', content: PNG_BASE64, encoding: 'base64' },
           { path: 'src/content/site.md', content: 'plain' },
         ],
       })
@@ -270,10 +275,53 @@ describe('what savePreviewArtifacts refuses to write', () => {
 
     expect(rows.artifacts[0]!.preview_manifest).toEqual({
       files: [
-        { path: 'public/logo.png', content: 'AAAA', encoding: 'base64' },
+        { path: 'public/logo.png', content: PNG_BASE64, encoding: 'base64' },
         { path: 'src/content/site.md', content: 'plain' },
       ],
     });
+  });
+
+  // The 2026-09-11 portfolio shipped with every PNG and WebP on the site
+  // written as an ASCII file holding its own base64, because one hop dropped
+  // the `encoding` flag. The flag is carried again; this is the gate that
+  // refuses the manifest either way, so the class cannot ship a second time.
+  it('refuses a manifest whose image lost its base64 flag', async () => {
+    await expect(
+      savePreviewArtifacts(
+        validInput({
+          files: [
+            { path: 'public/logo.png', content: PNG_BASE64 },
+            { path: 'src/content/site.md', content: 'plain' },
+          ],
+        })
+      )
+    ).rejects.toThrow(/ASSET_NOT_BINARY/);
+    expect(rows.artifacts).toHaveLength(0);
+  });
+
+  it('names every broken image, not only the first', async () => {
+    await expect(
+      savePreviewArtifacts(
+        validInput({
+          files: [
+            { path: 'public/a.png', content: PNG_BASE64 },
+            { path: 'public/b.webp', content: PNG_BASE64 },
+          ],
+        })
+      )
+    ).rejects.toThrow(/public\/a\.png[\s\S]*public\/b\.webp/);
+  });
+
+  it('leaves an SVG alone, which is text and is meant to be', async () => {
+    await savePreviewArtifacts(
+      validInput({
+        files: [
+          { path: 'public/logo.svg', content: '<svg></svg>' },
+          { path: 'src/content/site.md', content: 'plain' },
+        ],
+      })
+    );
+    expect(rows.artifacts).toHaveLength(1);
   });
 
   it('stores nothing rather than half of a preview when a query fails', async () => {

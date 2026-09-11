@@ -135,7 +135,11 @@ const inlineEdit = {
   usage: null as AgentUsage | null,
 };
 
-vi.mock('@flowstarter/agentic-codegen', () => ({
+// Partial mock: only the Pi agent is faked. The binary-asset gate the publish
+// route now runs is pure, deterministic and part of what these cases assert,
+// so it keeps its real implementation.
+vi.mock('@flowstarter/agentic-codegen', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@flowstarter/agentic-codegen')>()),
   PiSdkFlowstarterAgents: class {
     constructor(
       readonly options: { usageSink?: (usage: AgentUsage) => void }
@@ -1009,6 +1013,52 @@ describe('publishing', () => {
         .rows('project_events')
         .some((row) => row.kind === 'site_publish_requested')
     ).toBe(true);
+  });
+
+  /**
+   * The 2026-09-11 portfolio published with every PNG and WebP written as an
+   * ASCII file holding its own base64, because one hop dropped the `encoding`
+   * flag. The manifest this route would build from is the last place those
+   * bytes are ours to refuse.
+   */
+  function withAnImageThatIsNotAnImage(): void {
+    const artifact = db
+      .rows('flowstarter_project_artifacts')
+      .find((row) => row.workspace_id === WORKSPACE_A);
+    (artifact?.['preview_manifest'] as { files: Row[] }).files.push({
+      path: 'public/hero.png',
+      // Real PNG bytes, but carried as text: no `encoding: 'base64'`.
+      content: 'iVBORw0KGgoAAAANSUhEUg==',
+    });
+  }
+
+  it('refuses to publish a manifest whose images are not image files', async () => {
+    hostThePublishedSite();
+    withAnImageThatIsNotAnImage();
+
+    const response = await PUBLISH(post('/x'), params(WORKSPACE_A));
+    expect(response.status).toBe(422);
+    const body = await response.json();
+    expect(body.code).toBe('ASSET_NOT_BINARY');
+    expect(body.paths).toEqual(['public/hero.png']);
+    // Nothing is stamped and no build is queued: the publish never happened.
+    expect(db.rows('flowstarter_agent_jobs')).toEqual([]);
+    expect(dispatched).toEqual([]);
+  });
+
+  it('publishes a manifest whose images carry their base64 flag', async () => {
+    hostThePublishedSite();
+    const artifact = db
+      .rows('flowstarter_project_artifacts')
+      .find((row) => row.workspace_id === WORKSPACE_A);
+    (artifact?.['preview_manifest'] as { files: Row[] }).files.push({
+      path: 'public/hero.png',
+      content: 'iVBORw0KGgoAAAANSUhEUg==',
+      encoding: 'base64',
+    });
+
+    const response = await PUBLISH(post('/x'), params(WORKSPACE_A));
+    expect(response.status).toBe(200);
   });
 
   it('queues the rebuild that puts the edit live, and nudges the worker', async () => {

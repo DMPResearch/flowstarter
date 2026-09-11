@@ -33,6 +33,13 @@ export interface BusinessIntakePayload {
     targetAudience?: string;
     primaryGoal?: string;
     existingWebsiteUrl?: string;
+    /**
+     * The intake's page-count answer, verbatim: 'lt-5' | '5-7' | '8-15' |
+     * '15+' | 'unsure'. It is the input to the page-set rule in
+     * `page-set.ts`, which decides how many pages the build may emit. Absent
+     * on briefs taken before the rule existed; those fall back to 'unsure'.
+     */
+    pageCount?: string;
   };
   socialMedia: SocialMediaTarget[];
   locale: string;

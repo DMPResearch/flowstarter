@@ -4,7 +4,7 @@ siteMeta:
   description: "Portfolio — User-first designer and developer"
 
 header:
-  logo: "NAME HERE?"
+  logo: "DORIN MOLDOVAN"
   menuAriaLabel: "Toggle menu"
   navLinks:
     - label: "Home"
@@ -337,7 +337,7 @@ contactPage:
     messageLabel: "Message"
     messagePlaceholder: "Tell me about the project, the product problem, or the decision you need help moving forward."
     submitLabel: "Send message"
-    successMessage: "Thanks. Your message is ready for delivery once you connect this form to your preferred email or form endpoint."
+    successMessage: "Thanks. Your email app should now be open with the message ready to send to me."
   details:
     emailLabel: "Email address"
     emailValue: "hello@example.com"
@@ -417,7 +417,7 @@ testimonials:
     authorImage: "https://i.pravatar.cc/96?img=25"
 
 footer:
-  logo: "NAME HERE?"
+  logo: "DORIN MOLDOVAN"
   tagline: "Creating user-centered digital experiences that make a difference."
   columns:
     - heading: "Navigation"
