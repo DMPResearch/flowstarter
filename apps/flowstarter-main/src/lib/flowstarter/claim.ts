@@ -27,7 +27,10 @@ import type {
   TemplateScaffoldFile,
   TemplateSelection,
 } from '@flowstarter/agentic-codegen';
-import type { ScrapedTextDocument } from '@flowstarter/agentic-codegen/src/flowstarter/types';
+import type {
+  ApprovedPreviewEdit,
+  ScrapedTextDocument,
+} from '@flowstarter/agentic-codegen/src/flowstarter/types';
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import {
@@ -49,6 +52,11 @@ import {
   injectCalComPreviewDemoIntoScaffoldFiles,
   resolveTenantCalComUrl,
 } from './cal-com';
+import {
+  appliedPreviewEdit,
+  MAX_CARRIED_EDITS,
+  parseAppliedEdits,
+} from './preview-intent';
 import { parseQuoteInputToMinor } from './quote';
 import type { RoutingResult } from './routing-rules';
 
@@ -86,6 +94,13 @@ export interface ClaimablePreview {
   /** `daytona://<sandbox>` or `local://<path>` — provenance, not a promise. */
   previewArtifactUrl?: string;
   previewUrl?: string;
+  /**
+   * The free changes the visitor made to this preview, oldest first, with the
+   * text each one introduced. `files` above is already the edited set — this
+   * is the record of *why* it differs from what the generator first produced,
+   * and it is what the paid build is told to preserve and checked against.
+   */
+  appliedEdits?: ApprovedPreviewEdit[];
   capturedAt: number;
 }
 
@@ -130,6 +145,9 @@ export async function rememberClaimablePreview(
       manifest: {
         files: preview.files,
         intake: preview.intake,
+        ...(preview.appliedEdits?.length
+          ? { appliedEdits: preview.appliedEdits }
+          : {}),
         ...(preview.calComUrl ? { calComUrl: preview.calComUrl } : {}),
         ...(preview.previewArtifactUrl
           ? { previewArtifactUrl: preview.previewArtifactUrl }
@@ -168,11 +186,13 @@ export async function getClaimablePreview(
   const manifest = (row.manifest ?? {}) as {
     files?: readonly TemplateScaffoldFile[];
     intake?: BusinessIntakePayload;
+    appliedEdits?: unknown;
     calComUrl?: string;
     previewArtifactUrl?: string;
     previewUrl?: string;
   };
   if (!manifest.files?.length || !manifest.intake) return undefined;
+  const appliedEdits = parseAppliedEdits(manifest.appliedEdits);
 
   return {
     previewId: row.previewId,
@@ -188,8 +208,70 @@ export async function getClaimablePreview(
       ? { previewArtifactUrl: manifest.previewArtifactUrl }
       : {}),
     ...(manifest.previewUrl ? { previewUrl: manifest.previewUrl } : {}),
+    ...(appliedEdits.length > 0 ? { appliedEdits } : {}),
     capturedAt: Date.parse(row.createdAt) || Date.now(),
   };
+}
+
+/**
+ * Re-captures a preview after one of the visitor's free changes landed.
+ *
+ * This is the fix for the whole class of "the change I watched land is not on
+ * the site I paid for". `rememberClaimablePreview` runs once, when the
+ * generator finishes, and until now nothing ran afterwards: the edit runner
+ * rewrote the live workspace, the visitor saw the change, and the manifest of
+ * record still held the pre-edit files. The claim copied *that* into
+ * `flowstarter_project_artifacts.preview_manifest`, and the build worker seeds
+ * its worktree from exactly that column — so the paid build began from a site
+ * the client had already rejected, and no amount of prompting downstream could
+ * recover text nobody had kept.
+ *
+ * Calling this with the re-read workspace makes the edited files the manifest
+ * of record, which is the strongest possible fix: the existing seeding spine
+ * carries the change with no new mechanism at all. The returned edit record is
+ * the audit trail on top of that, and it is what the build is later checked
+ * against.
+ *
+ * Never throws. A preview we could not re-capture is a degraded build, not a
+ * reason to tell a visitor their successful edit failed.
+ */
+export async function recordClaimablePreviewEdit(input: {
+  previewId: string;
+  instruction: string;
+  /** The workspace as it is now, re-read after the edit runner finished. */
+  files: readonly TemplateScaffoldFile[];
+  appliedAt?: string;
+}): Promise<ApprovedPreviewEdit | null> {
+  if (!UUID.test(input.previewId)) return null;
+  if (input.files.length === 0) return null;
+  try {
+    const previous = await getClaimablePreview(input.previewId);
+    if (!previous) return null;
+    const edit = appliedPreviewEdit({
+      index: (previous.appliedEdits?.length ?? 0) + 1,
+      instruction: input.instruction,
+      before: previous.files,
+      after: input.files,
+      ...(input.appliedAt ? { appliedAt: input.appliedAt } : {}),
+    });
+    const appliedEdits = [...(previous.appliedEdits ?? []), edit].slice(
+      -MAX_CARRIED_EDITS
+    );
+    const { capturedAt: _captured, ...carried } = previous;
+    await rememberClaimablePreview({
+      ...carried,
+      files: input.files,
+      appliedEdits,
+    });
+    return edit;
+  } catch (error) {
+    console.warn(
+      `[Flowstarter] preview ${input.previewId} edit could not be re-captured; ` +
+        'the paid build will not carry it: ' +
+        (error instanceof Error ? error.message : 'unknown error')
+    );
+    return null;
+  }
 }
 
 /** Test seam: the stash is module state, so suites must be able to reset it. */

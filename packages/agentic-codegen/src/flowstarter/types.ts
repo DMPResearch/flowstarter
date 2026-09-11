@@ -223,3 +223,66 @@ export interface MaintenanceRequest {
   status: 'queued' | 'in_review' | 'completed' | 'declined';
   createdAt: string;
 }
+
+/**
+ * One free change the client made to their preview before they paid, as the
+ * preview's edit runner actually applied it.
+ *
+ * `instruction` is the client's own sentence. `addedPhrases` is the machine's
+ * answer to it: the concrete lines of text the runner introduced, computed by
+ * diffing the preview workspace before and after the edit. The instruction is
+ * what the build agent is told to preserve; the phrases are what the build is
+ * checked against, because a phrase is a fact about the files and a sentence
+ * is an intention.
+ */
+export interface ApprovedPreviewEdit {
+  /** 1-based position in the order the client asked for them. */
+  index: number;
+  /** Verbatim, as the client phrased it. */
+  instruction: string;
+  /** Preview-workspace-relative paths the edit runner changed. */
+  changedPaths: string[];
+  /** Text the edit introduced, verbatim, for the build to preserve. */
+  addedPhrases: string[];
+  /** ISO timestamp the edit was applied. */
+  appliedAt: string;
+}
+
+/** The few brief facts a build needs to recognise the site it is continuing. */
+export interface PreviewBriefSnapshot {
+  businessName: string;
+  niche: string;
+  location: string;
+  description?: string;
+  targetAudience?: string;
+  primaryGoal?: string;
+  locale?: string;
+}
+
+/**
+ * What the client approved, carried from the preview into the paid build.
+ *
+ * The build already seeds its worktree from the preview manifest, so this is
+ * not the mechanism by which the edits arrive — it is the record of what the
+ * client was promised, so the build agent can be told about it and the built
+ * output can be checked for it. Without this a build can silently regenerate
+ * a page and drop a change the client watched land.
+ */
+export interface PreviewIntent {
+  /** `funnel_previews.preview_id` of the preview the workspace claimed. */
+  previewId: string;
+  /** Where the approved manifest lives, as a reference rather than a copy. */
+  manifest: {
+    /** Stable id form, e.g. `funnel_previews:<previewId>`. */
+    ref: string;
+    /** Storage path of the packaged preview, when one was uploaded. */
+    artifactPath: string | null;
+    templateSlug: string | null;
+    fileCount: number;
+  };
+  /** The free edits, oldest first. Empty when the client changed nothing. */
+  edits: ApprovedPreviewEdit[];
+  brief: PreviewBriefSnapshot;
+  /** ISO timestamp the intent was derived. */
+  capturedAt: string;
+}

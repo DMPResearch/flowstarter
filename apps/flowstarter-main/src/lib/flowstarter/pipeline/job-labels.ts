@@ -112,6 +112,7 @@ export function projectStateLabel(state: string): string {
  */
 const ERROR_CODE_LABELS: Readonly<Record<string, string>> = {
   FULL_SITE_BUILD_FAILED: 'The site build failed',
+  APPROVED_EDIT_DROPPED: 'The build dropped a change the client approved',
   SITE_REBUILD_FAILED: 'Publishing the client edit failed',
   INVALID_PROJECT_STATE:
     'The project was not in a state that allows this build',

@@ -21,6 +21,16 @@ import 'server-only';
  * milliseconds apart would both read "none queued", and the index is what
  * decides which of them gets the row. The read is only there so the common
  * case does not spend an insert to learn it.
+ *
+ * This payload deliberately does not carry the `previewIntent` a
+ * FULL_SITE_BUILD gets. The two are solving opposite halves of the same
+ * problem: a full build seeds from the approved preview and then lets agents
+ * expand it, so it needs a record of what must survive that expansion. A
+ * rebuild seeds from the manifest the client's own editor just saved and
+ * publishes it with no agent pass at all, so "what the client approved" and
+ * "what is being built" are the same bytes by construction. Adding an intent
+ * here would add a check that can only ever fail a client for editing their
+ * own site.
  */
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 

@@ -1,5 +1,5 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { join, relative, sep } from 'node:path';
 import {
   PiSdkFlowstarterAgents,
   PiSessionAttemptError,
@@ -33,8 +33,10 @@ import {
 } from './worktree';
 import { ProjectState } from './types';
 import type {
+  ApprovedPreviewEdit,
   BrandConfig,
   BusinessIntakePayload,
+  PreviewIntent,
   ScrapeCorpus,
   TemplateScaffoldFile,
   TemplateSelection,
@@ -1178,6 +1180,16 @@ export interface FullSiteBuildJob {
    * blurred demo.
    */
   calComUrl?: string | null;
+  /**
+   * What the client approved in their preview before they paid, off the job
+   * payload. Absent for an operator-created project, which has no preview.
+   *
+   * The worktree is already seeded from the approved manifest, so this is not
+   * how the client's free changes arrive — it is how the build is held to
+   * them: the agent is told to preserve each change verbatim, and the built
+   * output is checked for the text each change introduced.
+   */
+  previewIntent?: PreviewIntent | null;
 }
 
 /** What the worker tells the operator board while a build is in flight. */
@@ -1336,6 +1348,305 @@ export function replyExcerpt(summary: string): string {
   return tail;
 }
 
+// ─── The client's approved free changes ────────────────────────────────────
+//
+// A visitor gets two free changes to their preview before the deposit is
+// offered, and those changes are the last thing they see before they pay. The
+// build seeds its worktree from the approved manifest, so the changes are
+// already in the files the agent starts from; what follows exists because the
+// agent then *expands* that site, and an expansion that rewrites a hero
+// section can silently undo the one line the client asked for. Naming the
+// changes in the prompt is the instruction; checking the built output for the
+// text they introduced is the guarantee.
+
+/** How many approved edits are ever folded into one prompt. */
+export const APPROVED_EDITS_PER_PROMPT = 8;
+/** Per-file read cap for the dropped-edit check; content files are far smaller. */
+const APPROVED_CHECK_FILE_MAX_BYTES = 2 * 1024 * 1024;
+/** Total text the dropped-edit check will read out of a built site. */
+const APPROVED_CHECK_TOTAL_MAX_BYTES = 48 * 1024 * 1024;
+
+/** Directories that hold no authored site text and cost a lot to walk. */
+const APPROVED_CHECK_SKIP_DIRS = new Set([
+  'node_modules',
+  '.git',
+  '.astro',
+  '.cache',
+  '.vercel',
+  '.netlify',
+]);
+
+/** Extensions whose bytes are not text and can never match a phrase. */
+const APPROVED_CHECK_BINARY = new Set([
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.gif',
+  '.webp',
+  '.avif',
+  '.ico',
+  '.bmp',
+  '.woff',
+  '.woff2',
+  '.ttf',
+  '.otf',
+  '.eot',
+  '.pdf',
+  '.mp4',
+  '.webm',
+  '.mp3',
+  '.zip',
+  '.gz',
+  '.map',
+]);
+
+/**
+ * The comparison form for every phrase check: whitespace collapsed and case
+ * folded.
+ *
+ * Deliberately forgiving. A build that re-wraps a sentence across two lines,
+ * re-indents it into a component, or title-cases a heading has kept the
+ * client's change; failing a paid build over a line break would be the check
+ * doing more harm than the bug it exists to catch. What it will not forgive is
+ * the words being gone.
+ */
+export function normalizeApprovedPhrase(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/**
+ * The client's approved changes as the trusted feedback paragraph the build
+ * agent receives, alongside any operator notes.
+ *
+ * The client's own sentence is quoted verbatim — it is the thing they were
+ * promised — and the exact strings the preview's edit runner produced are
+ * listed under it, because "preserve this" is only enforceable against text.
+ */
+export function approvedPreviewFeedback(
+  edits: readonly ApprovedPreviewEdit[],
+): string {
+  const listed = edits.slice(0, APPROVED_EDITS_PER_PROMPT);
+  if (listed.length === 0) return '';
+  const lines = listed.map((edit, index) => {
+    const asked = `${index + 1}. The client asked: "${edit.instruction
+      .replace(/\s+/g, ' ')
+      .trim()}"`;
+    if (edit.addedPhrases.length === 0) return asked;
+    const phrases = edit.addedPhrases
+      .map((phrase) => `     - ${phrase.replace(/\s+/g, ' ').trim()}`)
+      .join('\n');
+    return `${asked}\n   The preview now contains this exact text, which must survive:\n${phrases}`;
+  });
+  return (
+    'APPROVED PREVIEW CHANGES, trusted. The client made these changes to the ' +
+    'preview and approved the result before paying; the files in this ' +
+    'worktree already contain them:\n' +
+    lines.join('\n') +
+    '\nPreserve every quoted string above exactly as it is. You may move it ' +
+    'into a different component or page, but you may not reword, shorten or ' +
+    'drop it, and you may not replace it with generated copy.'
+  );
+}
+
+/**
+ * The line the operator's build conversation gets, so the changes the client
+ * paid to keep are visible in the same place the build is watched.
+ */
+export function carriedApprovedEditsSummary(intent: PreviewIntent): string {
+  if (intent.edits.length === 0) {
+    return (
+      `Building from approved preview ${intent.manifest.ref}. The client made ` +
+      'no free changes to it.'
+    );
+  }
+  const lines = intent.edits
+    .slice(0, APPROVED_EDITS_PER_PROMPT)
+    .map(
+      (edit) =>
+        `${edit.index}. "${edit.instruction.replace(/\s+/g, ' ').trim()}"` +
+        (edit.changedPaths.length > 0
+          ? ` (changed ${edit.changedPaths.join(', ')})`
+          : ''),
+    );
+  return (
+    `Building from approved preview ${intent.manifest.ref}, carrying ` +
+    `${intent.edits.length} free change${
+      intent.edits.length === 1 ? '' : 's'
+    } the client made and approved:\n${lines.join('\n')}`
+  );
+}
+
+/** One approved change the built site no longer contains. */
+export interface DroppedApprovedEdit {
+  index: number;
+  instruction: string;
+  missingPhrases: string[];
+}
+
+/**
+ * Approved changes whose text is not in the built site.
+ *
+ * Pure, and deliberately an AND over phrases rather than an OR: an edit is
+ * dropped only when *every* phrase it introduced is gone. One phrase of a
+ * multi-line change being reworded is normal editorial work by the expanding
+ * agent; all of them disappearing is the change having been regenerated away,
+ * which is the failure this exists to catch. `missingPhrases` still lists them
+ * all, so the repair brief and the operator's error both name the specific
+ * words that went missing.
+ *
+ * An edit with no captured phrases is never reported: there is nothing to
+ * check it against, and a check that cannot be evaluated must not fail a build
+ * somebody paid for.
+ */
+export function findDroppedApprovedEdits(
+  files: ReadonlyArray<{ path: string; content: string }>,
+  edits: readonly ApprovedPreviewEdit[],
+): DroppedApprovedEdit[] {
+  const haystack = files
+    .map((file) => normalizeApprovedPhrase(file.content))
+    .join('\n');
+  const dropped: DroppedApprovedEdit[] = [];
+  for (const edit of edits) {
+    if (edit.addedPhrases.length === 0) continue;
+    const missing = edit.addedPhrases.filter((phrase) => {
+      const needle = normalizeApprovedPhrase(phrase);
+      return needle.length > 0 && !haystack.includes(needle);
+    });
+    if (missing.length > 0 && missing.length === edit.addedPhrases.length) {
+      dropped.push({
+        index: edit.index,
+        instruction: edit.instruction,
+        missingPhrases: missing,
+      });
+    }
+  }
+  return dropped;
+}
+
+/** The repair brief for a build that dropped the client's approved change. */
+export function droppedApprovedEditsFeedback(
+  dropped: readonly DroppedApprovedEdit[],
+): string {
+  const lines = dropped.map(
+    (entry) =>
+      `${entry.index}. The client asked: "${entry.instruction
+        .replace(/\s+/g, ' ')
+        .trim()}" — this text is no longer anywhere in the site and must be ` +
+      `put back verbatim:\n${entry.missingPhrases
+        .map((phrase) => `     - ${phrase.replace(/\s+/g, ' ').trim()}`)
+        .join('\n')}`,
+  );
+  return (
+    'DROPPED CLIENT CHANGES, trusted. Your expansion removed text the client ' +
+    'approved and paid to keep:\n' +
+    lines.join('\n') +
+    '\nRestore each string exactly, in the place on the site where it belongs, ' +
+    'and change nothing else.'
+  );
+}
+
+/** The error a build fails with when it could not keep an approved change. */
+export const APPROVED_EDIT_DROPPED = 'APPROVED_EDIT_DROPPED';
+
+/**
+ * A failure that names its own operator-facing error code.
+ *
+ * Everything the build throws lands on the ledger as FULL_SITE_BUILD_FAILED,
+ * which tells an operator only that something went wrong. A dropped client
+ * change is a specific, actionable failure with a specific remedy, so it gets
+ * its own code rather than being buried in a detail string.
+ */
+export class FullSiteBuildFailure extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'FullSiteBuildFailure';
+  }
+}
+
+/**
+ * Every text file under a directory, bounded.
+ *
+ * Bounded on both file and total size: this runs after a successful build, and
+ * an unbounded read of a generated tree is how a check becomes the reason a
+ * build fails.
+ */
+export async function collectSiteTextFiles(
+  siteRoot: string,
+): Promise<Array<{ path: string; content: string }>> {
+  const files: Array<{ path: string; content: string }> = [];
+  let total = 0;
+  const walk = async (directory: string): Promise<void> => {
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (total > APPROVED_CHECK_TOTAL_MAX_BYTES) return;
+      const absolute = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (APPROVED_CHECK_SKIP_DIRS.has(entry.name)) continue;
+        await walk(absolute);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const dot = entry.name.lastIndexOf('.');
+      if (
+        dot >= 0 &&
+        APPROVED_CHECK_BINARY.has(entry.name.slice(dot).toLowerCase())
+      )
+        continue;
+      try {
+        const content = await readFile(absolute, 'utf8');
+        if (content.length > APPROVED_CHECK_FILE_MAX_BYTES) continue;
+        total += content.length;
+        files.push({
+          path: relative(siteRoot, absolute).split(sep).join('/'),
+          content,
+        });
+      } catch {
+        // An unreadable file cannot hold the client's words either way.
+      }
+    }
+  };
+  await walk(siteRoot);
+  return files;
+}
+
+/**
+ * What the build produced, for the dropped-edit check.
+ *
+ * The compiled output is the only honest place to ask whether the client's
+ * words reached their site. Checking the worktree instead would pass every
+ * time: the tree is *seeded* from the approved manifest, so the content file
+ * carrying the client's headline is sitting there untouched even when the
+ * agent has rewritten the page that used to read it. `dist/` is what a visitor
+ * would be served, and `CommandSiteValidator` refuses a build that did not
+ * produce one, so by the time this runs on a real job the directory is there.
+ *
+ * The fallback to the whole tree exists for the local stub-agent mode, which
+ * compiles nothing. It is a weaker check — it catches a change that was
+ * deleted outright, not one that was orphaned — and it is deliberately never
+ * the path a paying build takes.
+ */
+export async function collectBuiltSiteText(
+  siteRoot: string,
+  outputDir = 'dist',
+): Promise<Array<{ path: string; content: string }>> {
+  const built = await collectSiteTextFiles(join(siteRoot, outputDir));
+  if (built.length > 0) {
+    return built.map((file) => ({
+      path: `${outputDir}/${file.path}`,
+      content: file.content,
+    }));
+  }
+  return collectSiteTextFiles(siteRoot);
+}
+
 /** The most notes folded into one pass; a longer backlog waits for the next. */
 export const OPERATOR_NOTES_PER_PASS = 8;
 
@@ -1466,6 +1777,13 @@ export class FullSiteBuildWorker {
       await say('phase', body);
     };
 
+    // A rebuild deliberately carries no `previewIntent` and runs no
+    // dropped-edit check. It seeds from the same manifest column, but that
+    // manifest is the one the client's own editor just wrote, and no agent
+    // pass runs between seeding it and publishing it — there is nothing that
+    // could drop a change, and a check would only be able to fail a publish
+    // over text the client themselves removed. The continuity guarantee for
+    // that path is the absence of an agent, not an assertion about one.
     if (job.kind === 'SITE_REBUILD') {
       await this.rebuild(job, say, log);
       return;
@@ -1509,6 +1827,19 @@ export class FullSiteBuildWorker {
       await mkdir(siteRoot, { recursive: true, mode: 0o700 });
       await phase('Materializing the approved preview');
       await materializeScaffold(siteRoot, job.approvedPreviewFiles);
+      // The client's free changes are in those files already. Say so on the
+      // board: the operator watching this build should be able to read what
+      // was promised without opening the preview, and a build that later drops
+      // one of them fails against a line that is already in the conversation.
+      const approvedEdits = job.previewIntent?.edits ?? [];
+      if (job.previewIntent) {
+        await say('log', carriedApprovedEditsSummary(job.previewIntent), {
+          previewId: job.previewIntent.previewId,
+          manifestRef: job.previewIntent.manifest.ref,
+          carriedEdits: approvedEdits.length,
+          instructions: approvedEdits.map((edit) => edit.instruction),
+        });
+      }
       // Preview artifacts carry a blurred Cal demo only. Wire the live tenant
       // embed here, before the agent expands the site, so the full build has
       // a real calendar and the agent does not invent one.
@@ -1518,6 +1849,16 @@ export class FullSiteBuildWorker {
         });
       }
       await this.store.markAgentWorking(jobId, worktree);
+      // Every pass is given the approved changes, not only the first: the
+      // repair and late-note passes rewrite files too, and "preserve this" has
+      // to hold for those as much as for the expansion.
+      const approvedFeedback = approvedPreviewFeedback(approvedEdits);
+      const withApproved = (feedback?: string): string | undefined => {
+        if (!approvedFeedback) return feedback;
+        return feedback
+          ? `${approvedFeedback}\n\n${feedback}`
+          : approvedFeedback;
+      };
       const onTrace = log
         ? (entry: AgentTraceEntry) => log.write(traceLogLine(entry))
         : undefined;
@@ -1558,7 +1899,9 @@ export class FullSiteBuildWorker {
           await say('log', `The trusted build failed:\n${detail}`);
           await pass(
             'Repairing the build',
-            `The trusted build of your previous pass failed. Repair the files so it passes; the output was: ${detail}`,
+            withApproved(
+              `The trusted build of your previous pass failed. Repair the files so it passes; the output was: ${detail}`,
+            ),
           );
           await phase('Checking the repaired build');
           await this.validator.validate(siteRoot, 'full');
@@ -1572,7 +1915,9 @@ export class FullSiteBuildWorker {
               notes.length === 1 ? '' : 's'
             } from the team`
           : 'Agents expanding the site',
-        notes.length > 0 ? operatorNotesFeedback(notes) : undefined,
+        withApproved(
+          notes.length > 0 ? operatorNotesFeedback(notes) : undefined,
+        ),
       );
       if (build.changedPaths.length === 0) {
         throw new Error('Full-site agent finished without modifying any file');
@@ -1584,9 +1929,50 @@ export class FullSiteBuildWorker {
       if (late.length > 0) {
         await pass(
           `Applying ${late.length} note${late.length === 1 ? '' : 's'} from the team`,
-          operatorNotesFeedback(late),
+          withApproved(operatorNotesFeedback(late)),
         );
         await check();
+      }
+      // The last gate, and the only one that speaks for the client rather
+      // than for the compiler: the site builds, but does it still say what
+      // they were shown before they paid? One bounded repair pass, then the
+      // job fails rather than handing QA a site that quietly lost a change.
+      if (approvedEdits.length > 0) {
+        await phase("Checking the client's approved changes survived");
+        let dropped = findDroppedApprovedEdits(
+          await collectBuiltSiteText(siteRoot),
+          approvedEdits,
+        );
+        if (dropped.length > 0) {
+          await say(
+            'log',
+            `The build dropped ${dropped.length} change the client approved; ` +
+              'asking the agents to restore it.',
+            { dropped: dropped.map((entry) => entry.index) },
+          );
+          await pass(
+            "Restoring the client's approved changes",
+            withApproved(droppedApprovedEditsFeedback(dropped)),
+          );
+          await check();
+          dropped = findDroppedApprovedEdits(
+            await collectBuiltSiteText(siteRoot),
+            approvedEdits,
+          );
+        }
+        if (dropped.length > 0) {
+          throw new FullSiteBuildFailure(
+            APPROVED_EDIT_DROPPED,
+            `The built site is missing ${dropped.length} change the client ` +
+              'approved in their preview: ' +
+              dropped
+                .map(
+                  (entry) =>
+                    `#${entry.index} "${entry.instruction}" (missing: ${entry.missingPhrases.join(' | ')})`,
+                )
+                .join('; '),
+          );
+        }
       }
       await phase('Committing the site');
       const commitSha = await this.worktrees.commit(
@@ -1610,7 +1996,10 @@ export class FullSiteBuildWorker {
         `Build failed: ${error instanceof Error ? error.message : 'unknown'}`,
       );
       await this.store.markFailed(jobId, {
-        code: 'FULL_SITE_BUILD_FAILED',
+        code:
+          error instanceof FullSiteBuildFailure
+            ? error.code
+            : 'FULL_SITE_BUILD_FAILED',
         detail:
           error instanceof Error
             ? error.message.slice(0, 2_000)

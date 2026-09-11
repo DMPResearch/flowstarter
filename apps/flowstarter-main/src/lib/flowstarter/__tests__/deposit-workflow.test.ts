@@ -99,6 +99,25 @@ vi.mock('@/supabase-clients/server', () => ({
   createSupabaseServiceRoleClient: () => ({ from: builderFor }),
 }));
 
+/**
+ * The preview a workspace claimed. Scripted rather than faked through
+ * postgrest, because what is under test here is what reaches the job payload,
+ * not how the row is read.
+ */
+const previewScript: {
+  row?: unknown;
+  throws?: boolean;
+  requested: string[];
+} = { requested: [] };
+
+vi.mock('@/lib/hosting/funnel-previews', () => ({
+  loadFunnelPreview: async (previewId: string) => {
+    previewScript.requested.push(previewId);
+    if (previewScript.throws) throw new Error('funnel_previews is unreachable');
+    return previewScript.row ?? null;
+  },
+}));
+
 const WORKSPACE_ID = '0f4e1088-8d8f-4f18-83b1-406cc292b23c';
 
 function event(id = 'evt_1'): Stripe.Event {
@@ -132,7 +151,56 @@ function workspaceRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+const PREVIEW_ID = 'ccb48228-2fca-4cae-b1ed-7fcf9ce6a48a';
+const HEADLINE = 'I build websites with AI agents, supervised by people';
+
+/** A claimed preview row carrying one free change the client approved. */
+function previewRow(overrides: Record<string, unknown> = {}) {
+  return {
+    previewId: PREVIEW_ID,
+    templateSlug: 'creative-portfolio',
+    artifactPath: `funnel/${PREVIEW_ID}/site.tar.gz`,
+    manifest: {
+      files: [
+        {
+          path: 'src/content/site-labels.md',
+          content: `heroHeadline: "${HEADLINE}"`,
+          type: 'file',
+        },
+      ],
+      intake: {
+        projectId: WORKSPACE_ID,
+        business: {
+          name: 'Darius Mihai Popescu',
+          niche: 'Creative & design',
+          location: 'Remote',
+        },
+        socialMedia: [],
+        locale: 'en-GB',
+        submittedAt: '2026-09-11T18:00:00.000Z',
+        consent: {
+          publicProfileAnalysis: true,
+          acceptedAt: '2026-09-11T18:00:00.000Z',
+        },
+      },
+      appliedEdits: [
+        {
+          index: 1,
+          instruction: `Make the hero headline say ${HEADLINE}`,
+          changedPaths: ['src/content/site-labels.md'],
+          addedPhrases: [HEADLINE],
+          appliedAt: '2026-09-11T18:30:00.000Z',
+        },
+      ],
+    },
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
+  delete previewScript.row;
+  delete previewScript.throws;
+  previewScript.requested = [];
   delete script.workspace;
   delete script.insertResult;
   delete script.existingJob;
@@ -667,5 +735,117 @@ describe('when a site may be switched on for real', () => {
     expect(
       productionActivationAllowed({ ...ready, subscriptionStatus: null })
     ).toBe(false);
+  });
+});
+
+describe('the build payload carries what the client approved', () => {
+  function depositIntent(): Stripe.PaymentIntent {
+    return {
+      id: 'pi_1',
+      status: 'succeeded',
+      currency: 'eur',
+      amount_received: 15_980,
+      metadata: { kind: 'flowstarter_deposit', workspaceId: WORKSPACE_ID },
+    } as unknown as Stripe.PaymentIntent;
+  }
+
+  it('puts the claimed preview and its free changes on the FULL_SITE_BUILD', async () => {
+    script.workspace = workspaceRow({ claimed_preview_id: PREVIEW_ID });
+    previewScript.row = previewRow();
+
+    await enqueueFullBuildFromDeposit(event(), depositIntent());
+
+    expect(previewScript.requested).toEqual([PREVIEW_ID]);
+    const payload = captured.insert?.payload as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      trigger: 'deposit_paid',
+      source: 'payment_intent',
+      depositPercent: 20,
+      balancePercent: 80,
+      claimedPreviewId: PREVIEW_ID,
+    });
+    expect(payload['previewIntent']).toMatchObject({
+      previewId: PREVIEW_ID,
+      manifest: {
+        ref: `funnel_previews:${PREVIEW_ID}`,
+        artifactPath: `funnel/${PREVIEW_ID}/site.tar.gz`,
+        templateSlug: 'creative-portfolio',
+        fileCount: 1,
+      },
+      brief: { businessName: 'Darius Mihai Popescu' },
+    });
+    expect((payload['previewIntent'] as { edits: unknown[] }).edits).toEqual([
+      {
+        index: 1,
+        instruction: `Make the hero headline say ${HEADLINE}`,
+        changedPaths: ['src/content/site-labels.md'],
+        addedPhrases: [HEADLINE],
+        appliedAt: '2026-09-11T18:30:00.000Z',
+      },
+    ]);
+  });
+
+  it('leaves an operator-created project with the payload it always had', async () => {
+    // No claimed preview: the workspace was created by hand, there is no
+    // preview to be continuous with, and the build must be unaffected.
+    script.workspace = workspaceRow({ claimed_preview_id: null });
+
+    const result = await enqueueFullBuildFromDeposit(event(), depositIntent());
+
+    expect(result?.jobId).toBe('job-1');
+    expect(previewScript.requested).toEqual([]);
+    expect(captured.insert?.payload).toEqual({
+      trigger: 'deposit_paid',
+      source: 'payment_intent',
+      depositPercent: 20,
+      balancePercent: 80,
+    });
+  });
+
+  it('still takes the deposit when the preview row has gone', async () => {
+    script.workspace = workspaceRow({ claimed_preview_id: PREVIEW_ID });
+    previewScript.row = null;
+
+    const result = await enqueueFullBuildFromDeposit(event(), depositIntent());
+
+    expect(result?.jobId).toBe('job-1');
+    const payload = captured.insert?.payload as Record<string, unknown>;
+    expect(payload['claimedPreviewId']).toBe(PREVIEW_ID);
+    expect(payload).not.toHaveProperty('previewIntent');
+  });
+
+  it('never fails a paid deposit because the preview could not be read', async () => {
+    script.workspace = workspaceRow({ claimed_preview_id: PREVIEW_ID });
+    previewScript.throws = true;
+    const warnings = vi
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined);
+
+    try {
+      const result = await enqueueFullBuildFromDeposit(
+        event(),
+        depositIntent()
+      );
+
+      expect(result?.jobId).toBe('job-1');
+      expect(captured.insert?.payload).not.toHaveProperty('previewIntent');
+      expect(warnings.mock.calls[0]?.[0]).toContain(
+        'could not read the approved preview'
+      );
+    } finally {
+      warnings.mockRestore();
+    }
+  });
+
+  it('carries the preview through the operator-invoice deposit too', async () => {
+    script.workspace = workspaceRow({ claimed_preview_id: PREVIEW_ID });
+    previewScript.row = previewRow();
+
+    await enqueueFullBuildFromDepositInvoice(event(), depositInvoice());
+
+    const payload = captured.insert?.payload as Record<string, unknown>;
+    expect(payload['source']).toBe('deposit_invoice');
+    expect(payload['claimedPreviewId']).toBe(PREVIEW_ID);
+    expect(payload['previewIntent']).toBeTruthy();
   });
 });
