@@ -613,7 +613,7 @@ a.fs-glass-tile {
    it. Note this multiplies the variant's own blob alphas in brand.css — both
    dials are real, and the product of the two is what you see. */
 .fs-mesh-backdrop[data-variant='app']::before {
-  opacity: calc(var(--fs-mesh-opacity) * 0.88);
+  opacity: calc(var(--fs-mesh-opacity) * 0.5);
 }
 
 .fs-mesh-backdrop[data-variant='landing']::before {

@@ -662,6 +662,28 @@
   --fs-mesh-grain-opacity: 0.02;                    /* barely there, just enough to stop banding */
 }
 
+/* The app (client dashboard, admin) mesh: the same discipline as landing.
+   One indigo bloom top-left, a faint cool tint low on the right, a trace of
+   teal mid-right for depth, and nothing warm. Darius: the peach and teal
+   blobs behind the dashboard read as distracting; the tiles carry the colour
+   now, so the field stays quiet. */
+.fs-mesh-backdrop[data-variant='app'] {
+  --fs-mesh-1: hsl(233, 58%, 66%, 0.36);            /* indigo bloom, top-left */
+  --fs-mesh-2: hsl(248, 40%, 72%, 0.20);            /* faint cool tint, bottom-right */
+  --fs-mesh-3: hsl(196, 44%, 66%, 0.18);            /* trace of teal, mid-right */
+  --fs-mesh-4: transparent;                         /* no amber on the app */
+  --fs-mesh-grain-opacity: 0.02;                    /* barely there, just enough to stop banding */
+}
+
+.dark .fs-mesh-backdrop[data-variant='app'] {
+  --fs-mesh-1: hsl(233, 60%, 46%, 0.56);            /* indigo bloom, top-left */
+  --fs-mesh-2: hsl(248, 46%, 44%, 0.30);            /* faint cool tint, bottom-right */
+  --fs-mesh-3: hsl(196, 50%, 38%, 0.24);            /* trace of teal, mid-right */
+  --fs-mesh-4: transparent;                         /* no magenta on the app */
+  --fs-mesh-grain-opacity: 0.02;                    /* barely there, just enough to stop banding */
+}
+
+
 /* ─────────────────────────────────────────────
    12. LIQUID GLASS — RADII
    Concentric corners: a tile nested 8px inside a
