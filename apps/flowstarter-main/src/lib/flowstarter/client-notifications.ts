@@ -31,12 +31,22 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, Json } from '@/lib/database.types';
 import { sendEmail } from '@/lib/email';
 import type { RenderedEmail } from '@/lib/email-templates/client-notices';
+import { sendOpsAlert } from '@/lib/ops/send-ops-alert';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 
 type SupabaseServiceClient = SupabaseClient<Database>;
 
 /** One `project_events.kind` for all of them; the notice is in the payload. */
 export const CLIENT_EMAIL_EVENT = 'client_email_sent';
+
+/**
+ * A DIFFERENT kind from `CLIENT_EMAIL_EVENT` on purpose: `alreadySent` below
+ * only ever looks for `client_email_sent`, so a row written under this kind
+ * is history an operator can read, not a marker that would stop the next
+ * retry from actually sending. A workspace whose mailer was down for a week
+ * now has a week of these instead of nothing.
+ */
+export const CLIENT_EMAIL_FAILED_EVENT = 'client_email_failed';
 
 /**
  * Kept as a closed union rather than a free string so the ledger stays
@@ -196,12 +206,36 @@ export async function notifyClientOnce(input: {
 
     const result = await sendEmail({ to, subject, html });
     if (!result.success) {
-      // Not recorded: an unconfigured or briefly unavailable mailer must not
-      // be able to permanently consume this notice.
+      const failureDetail = result.error ?? 'unknown error';
+      // Not recorded under CLIENT_EMAIL_EVENT: an unconfigured or briefly
+      // unavailable mailer must not be able to permanently consume this
+      // notice. It IS recorded under CLIENT_EMAIL_FAILED_EVENT below, a
+      // different kind `alreadySent` never looks at, so a workspace whose
+      // mailer was down still has history even though the next retry can
+      // still send.
       console.error(
         `[client-email] ${label}: send failed for workspace ${workspaceId}: ` +
-          (result.error ?? 'unknown error')
+          failureDetail
       );
+      await recordFailed(supabase, {
+        workspaceId,
+        notification,
+        dedupeKey,
+        error: failureDetail,
+      });
+      await sendOpsAlert({
+        supabase,
+        event: 'client_email_failed',
+        discriminator: `${workspaceId}/${label}`,
+        title: `Client email failed: ${notification} for workspace ${workspaceId}`,
+        detail: {
+          workspaceId,
+          notification,
+          dedupeKey: dedupeKey ?? null,
+          error: failureDetail,
+        },
+        workspaceId,
+      });
       return { sent: false, reason: 'send_failed' };
     }
 
@@ -256,6 +290,43 @@ async function recordSent(
     console.error(
       `[client-email] sent ${row.notification} to workspace ${row.workspaceId} ` +
         'but could not record it; a retry may send it again: ' +
+        (error instanceof Error ? error.message : 'unknown error')
+    );
+  }
+}
+
+/**
+ * History for a send that did NOT go out, under `CLIENT_EMAIL_FAILED_EVENT`
+ * rather than `CLIENT_EMAIL_EVENT`, so `alreadySent` never sees it and a
+ * retry once the mailer is back up still sends. Best effort, same reasoning
+ * as `recordSent`: a workspace whose mailer was down for a week should have a
+ * week of these to read, but losing one is not worth failing the caller.
+ */
+async function recordFailed(
+  supabase: SupabaseServiceClient,
+  row: {
+    workspaceId: string;
+    notification: ClientNotification;
+    dedupeKey: string | undefined;
+    error: string;
+  }
+): Promise<void> {
+  try {
+    const { error } = await supabase.from('project_events').insert({
+      workspace_id: row.workspaceId,
+      kind: CLIENT_EMAIL_FAILED_EVENT,
+      actor: 'system:client_email',
+      payload: {
+        notification: row.notification,
+        dedupeKey: row.dedupeKey ?? null,
+        error: row.error,
+      } as Json,
+    });
+    if (error) throw error;
+  } catch (error) {
+    console.error(
+      `[client-email] could not record the failed send of ${row.notification} ` +
+        `for workspace ${row.workspaceId}: ` +
         (error instanceof Error ? error.message : 'unknown error')
     );
   }

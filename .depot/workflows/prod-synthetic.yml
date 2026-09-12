@@ -32,8 +32,15 @@
 # repository_dispatch client_payload, then the PROD_URL repository variable,
 # then https://flowstarter.net.
 #
-# Secrets: none. Everything checked here is reachable without a credential,
-# which is what makes it safe to run on a schedule.
+# Secrets: none of the checks need one. `GH_REVIEW_TOKEN`, if set, files the
+# alert issue under a stable identity, the same optional credential
+# daily-qa.yml uses for the same reason; absent, the workflow token does it.
+#
+# ON FAILURE: same shape as daily-qa.yml's verdict issue, not just the
+# `::error` annotation below. One open issue labelled `production-alert` is
+# created or updated (never a second one per six-hour run), so the site being
+# down is something a human finds without reading Actions history. It is
+# closed automatically the next time this lane passes.
 ##############################################################################
 
 name: Production Synthetic
@@ -54,10 +61,11 @@ concurrency:
   cancel-in-progress: true
 env:
   NODE_VERSION: '22'
-# Reads the repository to check it out and nothing else. It posts no comment,
-# no status and no commit.
+# Reads the repository to check it out; on failure it also files or updates
+# one issue (see "Open or update the production-alert issue" below).
 permissions:
   contents: read
+  issues: write
 jobs:
   synthetic:
     name: Synthetic - live site
@@ -110,3 +118,80 @@ jobs:
         run: |
           echo "::error title=Production synthetic failed::${TARGET} did not pass the post-deploy checks. Download the playwright-report-prod-synthetic artifact for the failing assertion."
           echo "Production synthetic failed against ${TARGET}." >> "$GITHUB_STEP_SUMMARY"
+      # A red check nobody is watching is the exact gap this lane exists to
+      # close (see docs/quality/mvp-readiness-2026-09-12.md, "Observability":
+      # a production 404 was invisible for hours because the only witness was
+      # an annotation on a run nobody opened). One open issue instead, same
+      # create-or-update shape as daily-qa.yml's verdict issue: a rerun that
+      # is still red updates the existing issue rather than filing a second
+      # one beside it.
+      - name: Open or update the production-alert issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GH_REVIEW_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
+          TARGET: ${{ steps.target.outputs.url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -u
+          title="Production synthetic failing: ${TARGET}"
+          body_file=$(mktemp)
+          # shellcheck disable=SC2016  # The backticks below are markdown code
+          # spans in the issue body, not command substitution.
+          {
+            printf '<!-- ai-agent-comment -->\n'
+            printf '**AI agent** - production synthetic - not a human reply\n\n'
+            printf '<!-- production-synthetic-alert -->\n'
+            printf '`%s` did not pass the post-deploy checks at %s (UTC).\n\n' "$TARGET" "$(date -u +"%Y-%m-%d %H:%M")"
+            printf -- '- [This run, with the Playwright HTML report, screenshots and traces](%s)\n' "$RUN_URL"
+            printf -- '- Artifact `playwright-report-prod-synthetic`\n\n'
+            printf 'This issue stays open and is updated, not duplicated, on every failing run until the lane passes again, when it is closed automatically.\n\n'
+            printf -- '---\n\n'
+            printf 'Filed by `.depot/workflows/prod-synthetic.yml`.\n'
+          } > "$body_file"
+
+          if ! gh label create production-alert --repo "$REPO" --color b60205 \
+              --description "A production check failed and needs a human" --force >/dev/null 2>&1; then
+            echo "::warning title=Production alert labels::could not create or update the 'production-alert' label; filing without it"
+          fi
+
+          existing=$(gh issue list --repo "$REPO" --state open --label production-alert \
+            --json number,title --jq "[.[] | select(.title == \"${title}\")][0].number" \
+            2>/dev/null || true)
+
+          if [ -n "${existing:-}" ] && [ "$existing" != "null" ]; then
+            if ! gh issue edit "$existing" --repo "$REPO" --body-file "$body_file" \
+                --add-label production-alert >/dev/null 2>&1; then
+              gh issue edit "$existing" --repo "$REPO" --body-file "$body_file" >/dev/null
+            fi
+            gh issue comment "$existing" --repo "$REPO" \
+              --body "Still failing as of $(date -u +"%Y-%m-%d %H:%M") UTC. [This run]($RUN_URL)." >/dev/null
+            echo "Updated issue #${existing}: ${title}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            if ! gh issue create --repo "$REPO" --title "$title" --body-file "$body_file" \
+                --label production-alert >/dev/null 2>&1; then
+              echo "::warning title=Production alert labels::could not file the alert with labels; filing without them"
+              gh issue create --repo "$REPO" --title "$title" --body-file "$body_file" >/dev/null
+            fi
+            echo "Filed a new issue: ${title}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # The other half of "one failure does not spam": once this lane passes
+      # again, the alert closes itself instead of sitting open until someone
+      # notices by hand.
+      - name: Close the production-alert issue
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GH_REVIEW_TOKEN || github.token }}
+          REPO: ${{ github.repository }}
+          TARGET: ${{ steps.target.outputs.url }}
+        run: |
+          set -u
+          existing=$(gh issue list --repo "$REPO" --state open --label production-alert \
+            --json number,title --jq "[.[] | select(.title == \"Production synthetic failing: ${TARGET}\")][0].number" \
+            2>/dev/null || true)
+          if [ -n "${existing:-}" ] && [ "$existing" != "null" ]; then
+            gh issue comment "$existing" --repo "$REPO" \
+              --body "Recovered: this passed again at $(date -u +"%Y-%m-%d %H:%M") UTC." >/dev/null
+            gh issue close "$existing" --repo "$REPO" >/dev/null
+            echo "Closed issue #${existing} (recovered)" >> "$GITHUB_STEP_SUMMARY"
+          fi

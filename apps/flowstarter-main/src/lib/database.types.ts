@@ -1353,6 +1353,59 @@ export type Database = {
           },
         ]
       }
+      ops_alerts: {
+        Row: {
+          created_at: string
+          dedupe_key: string
+          detail: Json
+          event: string
+          first_seen_at: string
+          id: string
+          last_sent_at: string
+          occurrence_count: number
+          severity: string
+          title: string
+          updated_at: string
+          workspace_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          dedupe_key: string
+          detail?: Json
+          event: string
+          first_seen_at?: string
+          id?: string
+          last_sent_at?: string
+          occurrence_count?: number
+          severity: string
+          title: string
+          updated_at?: string
+          workspace_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          dedupe_key?: string
+          detail?: Json
+          event?: string
+          first_seen_at?: string
+          id?: string
+          last_sent_at?: string
+          occurrence_count?: number
+          severity?: string
+          title?: string
+          updated_at?: string
+          workspace_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ops_alerts_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       profiles: {
         Row: {
           avatar_url: string | null

@@ -455,6 +455,12 @@ export const SERVER_ONLY_TABLES = [
   'selfserve_payments',
   'selfserve_leads',
   'selfserve_rate_limits',
+  // Operator alert dedupe ledger (src/lib/ops/alerts.ts). workspace_id is
+  // nullable and, when set, is the alert's subject rather than its owner: an
+  // alert about a workspace is something an operator reads, not something
+  // any member of that workspace should ever see. RLS on, zero policies,
+  // grants revoked from anon/authenticated the same as every table above.
+  'ops_alerts',
 ];
 
 // ─── Assertions ────────────────────────────────────────────────────────────

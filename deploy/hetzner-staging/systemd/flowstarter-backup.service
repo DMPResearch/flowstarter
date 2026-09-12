@@ -1,0 +1,21 @@
+[Unit]
+Description=Flowstarter host backup (databases, sites, /etc/flowstarter)
+# Docker must be up for the database dumps; the backup is best-effort beyond
+# that (it skips a database dump cleanly if no supabase_db_* container is
+# running, see backup.sh), so this only orders after docker, it does not
+# require it.
+After=docker.service
+
+[Service]
+Type=oneshot
+# backup.env holds every BACKUP_* override this host needs (retention
+# counts, encryption recipient/passphrase file, S3 upload target), the same
+# EnvironmentFile pattern flowstarter-deploy-agent.service uses in
+# apps/flowstarter-main/src/lib/hosting/cloud-init.ts. It does not exist
+# until installed with `install -m 600 /dev/null /etc/flowstarter/backup.env`,
+# see deploy/hetzner-staging/README.md, "One-time box setup".
+EnvironmentFile=/etc/flowstarter/backup.env
+ExecStart=/opt/flowstarter/staging/backup.sh
+
+[Install]
+WantedBy=multi-user.target

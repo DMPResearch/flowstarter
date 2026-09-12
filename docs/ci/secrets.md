@@ -135,7 +135,7 @@ staging, `PROD_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` (var) for production.
 | `staging-deploy.yml`    | `STAGING_SSH_*`, `GHCR_TOKEN` (+ var `GHCR_USERNAME`), `STAGING_SUPABASE_ANON_KEY` (+ var `STAGING_SUPABASE_URL`), Clerk publishable for image build |
 | `staging-pr-deploy.yml` | same as staging-deploy                                                                                                                  |
 | `release.yml`           | `PROD_NEXT_PUBLIC_SUPABASE_URL`, `PROD_NEXT_PUBLIC_SUPABASE_ANON_KEY`, `GHCR_TOKEN`, `STAGING_SSH_*`, optional Clerk operator secrets; vars `PROD_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `GHCR_USERNAME`, `PROD_URL`, `STAGING_URL` |
-| `prod-synthetic.yml`    | none; var `PROD_URL`                                                                                                                    |
+| `prod-synthetic.yml`    | optional `GH_REVIEW_TOKEN` (files the `production-alert` issue under a stable identity; absent, the workflow token does it); var `PROD_URL` |
 
 `staging-migrate.yml` is retired: the cloud staging Supabase project it applied
 migrations to no longer exists. Schema now moves with the `staging-deploy.yml`

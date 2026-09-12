@@ -493,9 +493,15 @@ describe('remindIfBriefIncomplete', () => {
         supabase: db.client,
       })
     ).resolves.toEqual({ sent: false, reason: 'send_failed' });
-    // Nothing on the ledger: an unconfigured mailer must not be able to
-    // permanently consume the one email this client is owed.
-    expect(db.rows('project_events')).toHaveLength(0);
+    // Nothing under the "sent" kind: an unconfigured mailer must not be able
+    // to permanently consume the one email this client is owed. (It IS
+    // recorded under the separate `client_email_failed` kind, so the
+    // workspace still has history; see client-notifications.test.ts.)
+    expect(
+      db
+        .rows('project_events')
+        .filter((row) => row.kind === 'client_email_sent')
+    ).toHaveLength(0);
     errors.mockRestore();
   });
 
