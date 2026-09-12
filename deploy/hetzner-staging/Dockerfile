@@ -29,11 +29,21 @@ RUN pnpm install --frozen-lockfile --filter flowstarter...
 
 # ── Library previews ────────────────────────────────────────────────────────
 # The /library pages iframe `/preview/<slug>/`, which is static Astro output
-# under apps/flowstarter-main/public/preview. Staging can live without it (the
-# iframes are the only thing that breaks), so the staging lanes leave
-# BUILD_LIBRARY_PREVIEWS false and keep their images cheap. Production cannot:
-# the library is part of the public marketing site, so release.yml passes
-# BUILD_LIBRARY_PREVIEWS=true.
+# under apps/flowstarter-main/public/preview. It is gitignored and exists only
+# when this stage builds it.
+#
+# ALL THREE LANES pass BUILD_LIBRARY_PREVIEWS=true: release.yml, and both
+# staging lanes. Staging used to leave it false to keep PR images cheap, on the
+# reasoning that "the iframes are the only thing that breaks". Two things were
+# wrong with that. A slot with empty iframes is not a rehearsal of production,
+# so the one environment meant to catch what production would show was the one
+# environment that could not show it. And `e2e/templates-audit.spec.ts` asserts
+# every template with `hasPreview: true` returns 2xx at `/preview/<slug>/`,
+# which no staging slot could ever satisfy — it only looked green while the
+# smoke lane was skipping for want of a healthy slot.
+#
+# The ARG still defaults to false so a bare `docker build` stays cheap; the
+# lanes are explicit about wanting previews.
 #
 # It is a stage of its own so the extra `pnpm install` cannot disturb the
 # node_modules the app build depends on; the builder copies only the finished

@@ -132,6 +132,7 @@ jobs:
             NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.STAGING_SUPABASE_ANON_KEY }}
             NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
             NEXT_PUBLIC_SITE_URL=https://staging.flowstarter.dev
+            BUILD_LIBRARY_PREVIEWS=true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
