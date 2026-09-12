@@ -68,6 +68,10 @@ export default function ContactPage() {
     email: '',
     subject: '',
     message: '',
+    // Honeypot — kept in state like every other field so a filled-in value
+    // travels through the same payload builder the route validates against,
+    // but real visitors never see this field (see the input below).
+    website: '',
   });
 
   const contactMutation = useContactForm();
@@ -80,10 +84,17 @@ export default function ContactPage() {
         email: formData.email,
         subject: formData.subject,
         message: formData.message,
+        website: formData.website,
       }),
       {
         onSuccess: () => {
-          setFormData({ name: '', email: '', subject: '', message: '' });
+          setFormData({
+            name: '',
+            email: '',
+            subject: '',
+            message: '',
+            website: '',
+          });
         },
       }
     );
@@ -206,6 +217,41 @@ export default function ContactPage() {
                       gap: '1rem',
                     }}
                   >
+                    {/* Honeypot — off-screen rather than `display:none` (some
+                        bots skip fields a screen reader would never reach,
+                        but not ones that only check computed visibility),
+                        `tabIndex={-1}` and `aria-hidden` so it is never in a
+                        real visitor's tab order or announced. A filled value
+                        makes `/api/contact` return its normal success shape
+                        without inserting or notifying (see route.ts). */}
+                    <div
+                      aria-hidden="true"
+                      style={{
+                        position: 'absolute',
+                        width: '1px',
+                        height: '1px',
+                        overflow: 'hidden',
+                        clip: 'rect(0,0,0,0)',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      <label htmlFor="contact-website">Website</label>
+                      <input
+                        id="contact-website"
+                        name="website"
+                        type="text"
+                        tabIndex={-1}
+                        autoComplete="off"
+                        value={formData.website}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            website: e.target.value,
+                          })
+                        }
+                      />
+                    </div>
+
                     <div>
                       <label htmlFor="contact-name" style={labelStyle}>
                         {t('contact.form.nameLabel')}

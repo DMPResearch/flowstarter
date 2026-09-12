@@ -10,6 +10,7 @@ export const adminKeys = {
   'admin.nav.accounts': 'Accounts',
   'admin.nav.leads': 'Leads',
   'admin.nav.inquiries': 'Custom inquiries',
+  'admin.nav.contactMessages': 'Contact messages',
   'admin.nav.hosting': 'Hosting',
   'admin.nav.analytics': 'Analytics',
   'admin.nav.aiUsage': 'AI usage',

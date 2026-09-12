@@ -12,6 +12,9 @@ export interface ContactFormFields {
   email: string;
   subject: string;
   message: string;
+  /** Honeypot — see `ContactFormData['website']`. Omitted fields default to
+   * empty, which is what a real visitor's untouched hidden input sends. */
+  website?: string;
 }
 
 export function buildContactPayload(
@@ -22,5 +25,6 @@ export function buildContactPayload(
     email: fields.email,
     subject: fields.subject,
     message: fields.message,
+    website: fields.website ?? '',
   };
 }

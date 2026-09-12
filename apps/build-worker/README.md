@@ -29,10 +29,10 @@ workspace back to `DEPOSIT_PAID` so the job can be re-dispatched (up to
 
 ## Endpoints
 
-| Method | Path              | Auth   | Response |
-|--------|-------------------|--------|----------|
+| Method | Path              | Auth   | Response                                                                 |
+| ------ | ----------------- | ------ | ------------------------------------------------------------------------ |
 | `POST` | `/jobs/full-site` | Bearer | `202` accepted (build runs detached), `400` bad job id, `503` queue full |
-| `GET`  | `/health`         | none   | `200 { ok, version, active, waiting }` |
+| `GET`  | `/health`         | none   | `200 { ok, version, active, waiting }`                                   |
 
 The caller times out after 8s, so `/jobs/full-site` always answers immediately
 and the build runs on the in-process queue behind it.
@@ -47,34 +47,50 @@ deploy-agent, or via `pnpm --dir apps/build-worker start`.
 
 Required:
 
-| Variable | Purpose |
-|----------|---------|
-| `FLOWSTARTER_BUILD_WORKER_SECRET` | Shared bearer secret; must match flowstarter-main. Minimum 32 chars. |
-| `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL. |
-| `SUPABASE_SERVICE_ROLE_KEY` | Service role — the ledger and artifact tables have no other grant. |
-| `PI_API_KEY` *(or `OPENROUTER_API_KEY`)* | Model credentials for the Pi session. |
-| `FLOWSTARTER_REPOSITORY_ROOT` | Absolute path to the client-sites git checkout. |
-| `FLOWSTARTER_WORKTREES_ROOT` | Absolute path where per-client worktrees are created. Must differ from the repo root. |
-| `FLOWSTARTER_SITES_REPO` | `owner/repo` for the PR. |
-| `FLOWSTARTER_SITES_GITHUB_TOKEN` | Token with `contents:write` + `pull_requests:write` on that repo. |
+| Variable                                 | Purpose                                                                               |
+| ---------------------------------------- | ------------------------------------------------------------------------------------- |
+| `FLOWSTARTER_BUILD_WORKER_SECRET`        | Shared bearer secret; must match flowstarter-main. Minimum 32 chars.                  |
+| `NEXT_PUBLIC_SUPABASE_URL`               | Supabase project URL.                                                                 |
+| `SUPABASE_SERVICE_ROLE_KEY`              | Service role — the ledger and artifact tables have no other grant.                    |
+| `PI_API_KEY` _(or `OPENROUTER_API_KEY`)_ | Model credentials for the Pi session.                                                 |
+| `FLOWSTARTER_REPOSITORY_ROOT`            | Absolute path to the client-sites git checkout.                                       |
+| `FLOWSTARTER_WORKTREES_ROOT`             | Absolute path where per-client worktrees are created. Must differ from the repo root. |
+| `FLOWSTARTER_SITES_REPO`                 | `owner/repo` for the PR.                                                              |
+| `FLOWSTARTER_SITES_GITHUB_TOKEN`         | Token with `contents:write` + `pull_requests:write` on that repo.                     |
 
 Optional:
 
-| Variable | Default |
-|----------|---------|
-| `FLOWSTARTER_BUILD_WORKER_PORT` | `8787` |
-| `FLOWSTARTER_BUILD_WORKER_HOST` | `0.0.0.0` |
-| `PI_PROVIDER` / `PI_MODEL` | `openrouter` / `z-ai/glm-5.2` |
-| `PI_THINKING_LEVEL` / `PI_TIMEOUT_MS` | `medium` / `1800000` |
-| `FLOWSTARTER_SITES_BASE_REF` / `FLOWSTARTER_SITES_REMOTE` | `main` / `origin` |
-| `FLOWSTARTER_STAGING_URL_TEMPLATE` | `https://{projectId}.staging.flowstarter.net` |
-| `FLOWSTARTER_BUILD_VALIDATE_COMMANDS` | `[["pnpm","install","--ignore-scripts","--prefer-offline"],["pnpm","run","build"]]` |
-| `FLOWSTARTER_BUILD_VALIDATE_ISOLATION` | `native` — see below |
-| `FLOWSTARTER_BUILD_TIMEOUT_MS` | `900000` (per command) |
-| `FLOWSTARTER_BUILD_MAX_ATTEMPTS` | `3` |
-| `FLOWSTARTER_BUILD_CONCURRENCY` / `FLOWSTARTER_BUILD_QUEUE_LIMIT` | `1` / `32` |
+| Variable                                                          | Default                                                                             |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `FLOWSTARTER_BUILD_WORKER_PORT`                                   | `8787`                                                                              |
+| `FLOWSTARTER_BUILD_WORKER_HOST`                                   | `0.0.0.0`                                                                           |
+| `PI_PROVIDER` / `PI_MODEL`                                        | `openrouter` / `z-ai/glm-5.2`                                                       |
+| `PI_THINKING_LEVEL` / `PI_TIMEOUT_MS`                             | `medium` / `1800000`                                                                |
+| `FLOWSTARTER_SITES_BASE_REF` / `FLOWSTARTER_SITES_REMOTE`         | `main` / `origin`                                                                   |
+| `FLOWSTARTER_STAGING_URL_TEMPLATE`                                | `https://{projectId}.staging.flowstarter.net`                                       |
+| `FLOWSTARTER_BUILD_VALIDATE_COMMANDS`                             | `[["pnpm","install","--ignore-scripts","--prefer-offline"],["pnpm","run","build"]]` |
+| `FLOWSTARTER_BUILD_VALIDATE_ISOLATION`                            | `native` — see below                                                                |
+| `FLOWSTARTER_BUILD_TIMEOUT_MS`                                    | `900000` (per command)                                                              |
+| `FLOWSTARTER_BUILD_MAX_ATTEMPTS`                                  | `3`                                                                                 |
+| `FLOWSTARTER_BUILD_CONCURRENCY` / `FLOWSTARTER_BUILD_QUEUE_LIMIT` | `1` / `32`                                                                          |
 
 The service refuses to start if any required value is missing or malformed.
+
+### Local publish mode (`pnpm run dev:local`)
+
+`FLOWSTARTER_BUILD_MODE=local` swaps the GitHub-PR publish path for a worker
+that writes straight to a local artifacts directory and posts its deploy
+callback to a running `flowstarter-main` — no GitHub token, no provisioned
+host, nothing else provisioned. It is what `pnpm run dev:local` sets.
+
+| Variable                                                     | Required?                                        | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------ | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `FLOWSTARTER_MAIN_URL`                                       | **Yes**, whenever `FLOWSTARTER_BUILD_MODE=local` | Where the worker posts its deploy callback. **No default.** It used to default silently to `http://127.0.0.1:3000`, which killed two separate builds (2026-09-11 and 2026-09-12) because nothing was listening there — see `docs/quality/mvp-readiness-2026-09-12.md`, "Build and delivery". Set it to wherever `flowstarter-main`'s dev server is actually running, e.g. `http://127.0.0.1:3067`. The process refuses to boot without it (outside the unit-test suite).                                                                                                             |
+| `FLOWSTARTER_BUILD_STUB_AGENT`                               | No — **opt-in only**                             | `true` swaps the real Pi coding session for a deterministic stub that copies a fixture site instead of generating one. It is never implied by `dev:local` itself — the script does not set it, so a plain `pnpm run dev:local` exercises the real agent. Set it yourself (shell or `.env.local`) when you want the fast, model-free loop. It never touches validation: `pnpm install && pnpm run build` still runs for real regardless of this flag. Only `FLOWSTARTER_BUILD_SKIP_VALIDATION` (unit-test-only, refused outside development) can swap that out — see `src/config.ts`. |
+| `FLOWSTARTER_BUILD_ARTIFACTS_ROOT`                           | No                                               | `/tmp/flowstarter-build-artifacts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `FLOWSTARTER_BUILD_ARTIFACT_BASE_URL`                        | No                                               | `http://127.0.0.1:<port>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `FLOWSTARTER_BUILD_OUTPUT_DIR`                               | No                                               | `dist`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `FLOWSTARTER_REPOSITORY_ROOT` / `FLOWSTARTER_WORKTREES_ROOT` | No, in local mode                                | `/tmp/flowstarter-local/repository` / `/tmp/flowstarter-local/worktrees`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 ## Validation isolation
 
@@ -109,15 +125,15 @@ start if something else is. The image must be public or already pulled: the
 Docker CLI is invoked with `PATH`, `HOME`, `DOCKER_HOST` and `DOCKER_CONTEXT`
 and no registry credentials.
 
-| Variable | Default |
-|----------|---------|
-| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_BIN` | `docker` (bare executable name) |
-| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_IMAGE` | `node:22-bookworm-slim` |
-| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_NETWORK` | `bridge` (`none` for a pre-populated workspace) |
-| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_MEMORY` | `4g` |
-| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_TMPFS_SIZE` | `2g` (holds `HOME` and the pnpm store) |
-| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_PIDS_LIMIT` | `1024` |
-| `FLOWSTARTER_BUILD_VALIDATE_PNPM_VERSION` | `10.29.2` |
+| Variable                                       | Default                                         |
+| ---------------------------------------------- | ----------------------------------------------- |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_BIN`        | `docker` (bare executable name)                 |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_IMAGE`      | `node:22-bookworm-slim`                         |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_NETWORK`    | `bridge` (`none` for a pre-populated workspace) |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_MEMORY`     | `4g`                                            |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_TMPFS_SIZE` | `2g` (holds `HOME` and the pnpm store)          |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_PIDS_LIMIT` | `1024`                                          |
+| `FLOWSTARTER_BUILD_VALIDATE_PNPM_VERSION`      | `10.29.2`                                       |
 
 Build output is logged the same way in both modes, and the `dist/` gate is still
 checked on the host — the bind mount is where the container wrote it.

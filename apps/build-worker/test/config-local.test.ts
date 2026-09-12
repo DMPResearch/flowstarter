@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { ConfigError, loadConfig } from '../src/config';
 
 /** The minimum a local-mode worker is allowed to need: no GitHub, no Pi key. */
@@ -83,9 +83,9 @@ describe('local publish mode', () => {
   });
 
   it('rejects an unknown publish mode rather than silently picking one', () => {
-    expect(() => loadConfig(localEnv({ FLOWSTARTER_BUILD_MODE: 'dry' }))).toThrow(
-      ConfigError,
-    );
+    expect(() =>
+      loadConfig(localEnv({ FLOWSTARTER_BUILD_MODE: 'dry' })),
+    ).toThrow(ConfigError);
   });
 
   it('rejects a non-http artifact base or main URL', () => {
@@ -97,5 +97,47 @@ describe('local publish mode', () => {
     expect(() =>
       loadConfig(localEnv({ FLOWSTARTER_MAIN_URL: 'not a url' })),
     ).toThrow(ConfigError);
+  });
+});
+
+describe('FLOWSTARTER_MAIN_URL — no silent default to port 3000', () => {
+  const originalVitest = process.env.VITEST;
+  const originalNodeEnv = process.env.NODE_ENV;
+
+  afterEach(() => {
+    process.env.VITEST = originalVitest;
+    process.env.NODE_ENV = originalNodeEnv;
+  });
+
+  it('fails at boot with a clear message when unset outside the test runtime', () => {
+    // `localEnv()` never sets FLOWSTARTER_MAIN_URL, and this suite normally
+    // benefits from Vitest's own `VITEST=true` keeping the old default alive
+    // for every other test in this file. Unset both of the test-runtime
+    // signals so this one case proves what a real `dev:local` boot without
+    // the variable actually does.
+    process.env.VITEST = undefined;
+    process.env.NODE_ENV = 'development';
+
+    expect(() => loadConfig(localEnv())).toThrow(ConfigError);
+    expect(() => loadConfig(localEnv())).toThrow(/FLOWSTARTER_MAIN_URL/);
+  });
+
+  it('still defaults to port 3000 inside the unit-test runtime, so the rest of this suite is unaffected', () => {
+    process.env.VITEST = 'true';
+
+    const config = loadConfig(localEnv());
+
+    expect(config.local?.flowstarterMainUrl).toBe('http://127.0.0.1:3000');
+  });
+
+  it('uses an explicit value in any runtime', () => {
+    process.env.VITEST = undefined;
+    process.env.NODE_ENV = 'development';
+
+    const config = loadConfig(
+      localEnv({ FLOWSTARTER_MAIN_URL: 'http://127.0.0.1:3067' }),
+    );
+
+    expect(config.local?.flowstarterMainUrl).toBe('http://127.0.0.1:3067');
   });
 });

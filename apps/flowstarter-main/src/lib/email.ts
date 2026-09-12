@@ -32,6 +32,37 @@ interface SendEmailResult {
 const DEFAULT_FROM = 'Flowstarter <hello@flowstarter.net>';
 const RESEND_API_URL = 'https://api.resend.com/emails';
 
+/** Same coarse check the other operator-notify call sites already trust
+ * (Resend itself validates the address for real on send). Kept local so
+ * this file has no dependency on `zod` for one string check. */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Where an operator notification goes when nothing more specific is asked
+ * for. `OPERATOR_NOTIFY_EMAIL` is the general-purpose variable; callers that
+ * already have a narrower one (e.g. `DISCOVERY_LEAD_NOTIFY_EMAIL`) should
+ * keep using it and pass it here as `existingFallback` so a bad
+ * `OPERATOR_NOTIFY_EMAIL` value falls back to a value that is already
+ * trusted elsewhere, not straight past it to the hardcoded address.
+ *
+ * Every candidate is validated — an unset or malformed env var is treated
+ * the same as absent — and the hardcoded `hello@flowstarter.net` is the
+ * last resort so a notification always has somewhere to go.
+ */
+export function resolveOperatorNotifyEmail(existingFallback?: string): string {
+  const candidates = [
+    process.env.OPERATOR_NOTIFY_EMAIL,
+    existingFallback,
+    process.env.DISCOVERY_LEAD_NOTIFY_EMAIL,
+    'hello@flowstarter.net',
+  ];
+  for (const candidate of candidates) {
+    const trimmed = candidate?.trim();
+    if (trimmed && EMAIL_RE.test(trimmed)) return trimmed;
+  }
+  return 'hello@flowstarter.net';
+}
+
 export async function sendEmail({
   to,
   subject,

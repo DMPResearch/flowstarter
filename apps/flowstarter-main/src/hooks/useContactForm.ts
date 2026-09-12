@@ -8,6 +8,10 @@ export interface ContactFormData {
   subject: string;
   company?: string;
   message: string;
+  /** Honeypot — a real visitor never sees or fills this (see the `contact`
+   * page's hidden input). A non-empty value is treated as a bot and the
+   * route returns its normal success shape without inserting or notifying. */
+  website?: string;
 }
 
 export function useContactForm() {

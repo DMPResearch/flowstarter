@@ -97,6 +97,32 @@ describe('DiscoveryStepper', () => {
     expect(items[3]).toHaveAttribute('data-state', 'upcoming');
   });
 
+  it(
+    'reads the same denominator as the questions-answered line while the ' +
+      "scripted conversation runs, instead of the wizard's own 6 stages " +
+      '(readiness review: "Step 1 of 6" next to "0 of 4 questions answered")',
+    () => {
+      render(
+        <DiscoveryStepper
+          steps={STEPS}
+          current={1}
+          data={EMPTY_DISCOVERY}
+          answered={[]}
+          t={t}
+        />
+      );
+
+      const { total } = conversationProgress(EMPTY_DISCOVERY, []);
+      expect(total).toBe(4);
+      expect(STEPS.length).not.toBe(total);
+
+      expect(
+        screen.getByText(`Step 1 of ${total}: Your name`)
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/Step 1 of 6/)).toBeNull();
+    }
+  );
+
   it.each([PREVIEW_STEP, DEPOSIT_STEP])(
     'hides the progress bar once the wizard is at step %i, past the scripted conversation, but keeps the stepper',
     (current) => {

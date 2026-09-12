@@ -33,13 +33,30 @@ const ContactSchema = z.object({
 
 // ── Mock Supabase ────────────────────────────────────────────────────────────
 let supabaseInsertError: { message: string } | null = null;
+let insertedRowId = 'row-1';
+const updateSpy = vi.fn();
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const mockSupabase = {
   from: vi.fn((_table: string) => ({
-    insert: vi.fn((_values: any) =>
-      Promise.resolve({ error: supabaseInsertError })
-    ),
+    // Thenable *and* chainable, the same shape the real Supabase query
+    // builder has: `simulateContact` below awaits the insert call directly
+    // (`const { error } = await ...insert(...)`), while the real route
+    // chains `.select('id').single()` off it before awaiting.
+    insert: vi.fn((_values: any) => ({
+      then: (resolve: (v: unknown) => void) =>
+        resolve({ error: supabaseInsertError }),
+      select: (_cols: string) => ({
+        single: async () => ({
+          data: supabaseInsertError ? null : { id: insertedRowId },
+          error: supabaseInsertError,
+        }),
+      }),
+    })),
+    update: vi.fn((values: any) => {
+      updateSpy(values);
+      return { eq: vi.fn(async () => ({ error: null })) };
+    }),
   })),
 } as any;
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -47,6 +64,23 @@ const mockSupabase = {
 vi.mock('@/supabase-clients/server', () => ({
   createSupabaseServiceRoleClient: () => mockSupabase,
 }));
+
+// Never let a real contact-form test reach Resend, even though
+// `apps/flowstarter-main/.env.local` carries a real `RESEND_API_KEY` for the
+// dev server — every call here must be observable and none may send mail.
+const sendEmail = vi.fn();
+vi.mock('@/lib/email', () => ({
+  sendEmail: (...args: unknown[]) => sendEmail(...args),
+  resolveOperatorNotifyEmail: () => 'hello@flowstarter.net',
+}));
+
+// File-wide default so every describe block below that drives the real POST
+// handler gets a mailer that "succeeds" unless a test overrides it — only
+// the notification tests below care about the failure paths.
+beforeEach(() => {
+  sendEmail.mockReset();
+  sendEmail.mockResolvedValue({ success: true, id: 'em_test' });
+});
 
 // Simulate the route handler logic
 async function simulateContact(body: unknown) {
@@ -249,11 +283,11 @@ describe('POST /api/contact — Supabase integration', () => {
 // imports the real `POST` handler (not a reimplementation) and the same
 // `buildContactPayload` the page component calls, so a future regression in
 // either side is caught here.
-function postRequest(body: unknown) {
+function postRequest(body: unknown, headers: Record<string, string> = {}) {
   return new NextRequest('http://localhost/api/contact', {
     method: 'POST',
     body: JSON.stringify(body),
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...headers },
   });
 }
 
@@ -293,5 +327,165 @@ describe('POST /api/contact — real route handler with the form payload', () =>
     expect(res.status).toBe(400);
     expect(json.error).toContain('Subject is required');
     expect(mockSupabase.from).not.toHaveBeenCalled();
+  });
+});
+
+// ── Lead capture: reaching a human ──────────────────────────────────────────
+// MVP readiness review, "Lead capture": "/contact is a dead letter box...
+// sends no notification of any kind." These cover the fix at the route.
+describe('POST /api/contact — operator notification', () => {
+  beforeEach(() => {
+    supabaseInsertError = null;
+    insertedRowId = 'row-notify';
+    vi.clearAllMocks();
+    sendEmail.mockReset();
+    sendEmail.mockResolvedValue({ success: true, id: 'em_test' });
+  });
+
+  const payload = () => ({
+    name: 'Elena Popescu',
+    email: 'elena@example.ro',
+    subject: 'Project',
+    message: 'Aș dori o programare pentru vineri.',
+  });
+
+  it('notifies the operator mailbox on a successful insert', async () => {
+    const res = await POST(
+      postRequest(payload(), { 'x-forwarded-for': '203.0.113.10' })
+    );
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.success).toBe(true);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    const mail = sendEmail.mock.calls[0]![0] as {
+      to: string;
+      subject: string;
+      replyTo: string;
+      html: string;
+    };
+    expect(mail.to).toBe('hello@flowstarter.net');
+    expect(mail.replyTo).toBe('elena@example.ro');
+    expect(mail.html).toContain('Elena Popescu');
+  });
+
+  it('still succeeds, and logs and records the row, when the mailer fails', async () => {
+    sendEmail.mockResolvedValue({ success: false, error: 'API key invalid' });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await POST(
+      postRequest(payload(), { 'x-forwarded-for': '203.0.113.11' })
+    );
+    const json = await res.json();
+
+    // The insert already happened — a dead mailer is not the visitor's problem.
+    expect(res.status).toBe(200);
+    expect(json.success).toBe(true);
+    // Logged...
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('operator notification failed'),
+      'row-notify',
+      'API key invalid'
+    );
+    // ...and recorded on the row itself, so it can be found from the list.
+    expect(updateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notes: expect.stringContaining('API key invalid'),
+      })
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('still succeeds, and logs, when the mailer throws', async () => {
+    sendEmail.mockRejectedValue(new Error('socket hang up'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await POST(
+      postRequest(payload(), { 'x-forwarded-for': '203.0.113.12' })
+    );
+
+    expect(res.status).toBe(200);
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+});
+
+describe('POST /api/contact — honeypot', () => {
+  beforeEach(() => {
+    supabaseInsertError = null;
+    vi.clearAllMocks();
+    sendEmail.mockReset();
+    sendEmail.mockResolvedValue({ success: true, id: 'em_test' });
+  });
+
+  it('returns the normal success shape without inserting or notifying when the honeypot is filled', async () => {
+    const res = await POST(
+      postRequest(
+        {
+          name: 'Bot',
+          email: 'bot@example.com',
+          subject: 'General',
+          message: 'buy now',
+          website: 'https://spam.example',
+        },
+        { 'x-forwarded-for': '203.0.113.20' }
+      )
+    );
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.success).toBe(true);
+    expect(mockSupabase.from).not.toHaveBeenCalled();
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('proceeds normally when the honeypot is left empty', async () => {
+    const res = await POST(
+      postRequest(
+        {
+          name: 'Elena Popescu',
+          email: 'elena@example.ro',
+          subject: 'Project',
+          message: 'Aș dori o programare pentru vineri.',
+          website: '',
+        },
+        { 'x-forwarded-for': '203.0.113.21' }
+      )
+    );
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.success).toBe(true);
+    expect(mockSupabase.from).toHaveBeenCalledWith('contact_submissions');
+  });
+});
+
+describe('POST /api/contact — per-IP rate limit', () => {
+  beforeEach(() => {
+    supabaseInsertError = null;
+    vi.clearAllMocks();
+    sendEmail.mockReset();
+    sendEmail.mockResolvedValue({ success: true, id: 'em_test' });
+  });
+
+  it('limits a single IP to the configured number of messages per minute', async () => {
+    const ip = '203.0.113.99';
+    const payload = {
+      name: 'Elena Popescu',
+      email: 'elena@example.ro',
+      subject: 'Project',
+      message: 'Aș dori o programare pentru vineri.',
+    };
+    const limit = 5; // matches contactRateLimiter's documented limit
+
+    for (let i = 0; i < limit; i += 1) {
+      const res = await POST(postRequest(payload, { 'x-forwarded-for': ip }));
+      expect(res.status).not.toBe(429);
+    }
+
+    const limited = await POST(postRequest(payload, { 'x-forwarded-for': ip }));
+    expect(limited.status).toBe(429);
+    const json = await limited.json();
+    expect(json.error).toMatch(/too many/i);
   });
 });

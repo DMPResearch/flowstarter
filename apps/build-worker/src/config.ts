@@ -409,6 +409,17 @@ const KNOWN_FLOWSTARTER_ENVS = new Set([
   'production',
 ]);
 
+/**
+ * Whether this process is the unit-test suite itself, not merely whether a
+ * fixture's own `env` object claims a `test`-shaped `NODE_ENV`. Vitest sets
+ * `VITEST=true` on the real process env regardless of what a test then hands
+ * `loadConfig` as its `env` argument, so this reads `process.env` directly
+ * rather than the `env` parameter threaded through the rest of this module.
+ */
+function isTestRuntime(): boolean {
+  return process.env.VITEST === 'true' || process.env.NODE_ENV === 'test';
+}
+
 function resolveWorkerFlowstarterEnv(env: NodeJS.ProcessEnv): string {
   const raw = env.FLOWSTARTER_ENV?.trim();
   if (raw && KNOWN_FLOWSTARTER_ENVS.has(raw)) return raw;
@@ -438,6 +449,28 @@ function parseSkipValidation(env: NodeJS.ProcessEnv): boolean {
     );
   }
   return true;
+}
+
+/**
+ * `FLOWSTARTER_MAIN_URL` is where this worker posts its deploy callback in
+ * local publish mode. It used to default silently to `http://127.0.0.1:3000`
+ * when unset, which killed two separate builds (the 2026-09-11 and
+ * 2026-09-12 runs — see the MVP readiness review, "Build and delivery")
+ * because nothing was listening on port 3000. Outside the unit-test suite
+ * this now fails at boot instead, so a missing value is a clear error
+ * message rather than a build that quietly posts to nothing.
+ */
+function resolveFlowstarterMainUrl(env: NodeJS.ProcessEnv): string {
+  const raw = env.FLOWSTARTER_MAIN_URL?.trim();
+  if (raw) return raw;
+  if (isTestRuntime()) return 'http://127.0.0.1:3000';
+  throw new ConfigError(
+    'FLOWSTARTER_MAIN_URL is required in local publish mode. The worker ' +
+      'posts its deploy callback there, and a silent default to port 3000 ' +
+      'has twice made a build fail against a port nothing was listening on. ' +
+      'Set it to wherever flowstarter-main is actually running, e.g. ' +
+      'http://127.0.0.1:3067.',
+  );
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
@@ -569,7 +602,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
               'FLOWSTARTER_BUILD_ARTIFACT_BASE_URL',
             ),
             flowstarterMainUrl: parseHttpUrl(
-              env.FLOWSTARTER_MAIN_URL?.trim() || 'http://127.0.0.1:3000',
+              resolveFlowstarterMainUrl(env),
               'FLOWSTARTER_MAIN_URL',
             ),
             outputDir: env.FLOWSTARTER_BUILD_OUTPUT_DIR?.trim() || 'dist',
