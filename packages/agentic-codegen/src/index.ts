@@ -100,3 +100,4 @@ export * from './flowstarter/placeholder-copy';
 export * from './flowstarter/placeholder-images';
 export * from './flowstarter/invented-project';
 export * from './flowstarter/theme-tokens';
+export * from './flowstarter/brief-input';

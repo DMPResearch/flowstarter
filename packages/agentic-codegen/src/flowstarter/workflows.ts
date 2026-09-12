@@ -60,6 +60,7 @@ import {
   describeInventedProjectFindings,
   findInventedProjects,
   INVENTED_PROJECT,
+  type InventedProjectOptions,
 } from './invented-project';
 import {
   describePlaceholderImageIssue,
@@ -67,6 +68,11 @@ import {
   isGatedPlaceholderImageRole,
   PLACEHOLDER_IMAGE_SHIPPED,
 } from './placeholder-images';
+import {
+  briefInputAssets,
+  describeBriefInput,
+  type BriefInput,
+} from './brief-input';
 import {
   stripPreviewTeaserFromFiles,
   TEASER_IN_PAID_BUILD,
@@ -1038,8 +1044,9 @@ export function findPlaceholderCopyIssue(
 export function findInventedProjectIssue(
   files: readonly { path: string; content: string }[],
   briefProjectNames: readonly string[],
+  options: InventedProjectOptions = {},
 ): string | undefined {
-  const findings = findInventedProjects(files, briefProjectNames);
+  const findings = findInventedProjects(files, briefProjectNames, options);
   return findings.length > 0
     ? describeInventedProjectFindings(findings, briefProjectNames)
     : undefined;
@@ -1409,6 +1416,20 @@ export interface FullSiteBuildJob {
    * than running an agent against a site with no instruction.
    */
   changeRequest?: ChangeRequestIntent | null;
+  /**
+   * The in-depth brief the client filled in after paying, off the job payload,
+   * with every asset the worker could not deliver already taken out.
+   *
+   * `intake` has already been merged with it by the job store, so the page-set
+   * rule and the invented-project gate read it from there. This field is kept
+   * separately for the one thing the merge cannot express: the paragraph the
+   * agent is given, and the record of which brief a build was made from.
+   *
+   * Absent for a workspace whose brief an operator waived, for an
+   * operator-created project, and for every workspace that predates the
+   * dashboard's brief page.
+   */
+  briefInput?: BriefInput | null;
 }
 
 /** What the worker tells the operator board while a build is in flight. */
@@ -2263,6 +2284,39 @@ export class FullSiteBuildWorker {
       const onTrace = log
         ? (entry: AgentTraceEntry) => log.write(traceLogLine(entry))
         : undefined;
+      // The brief, said out loud to every pass rather than only the first:
+      // the repair passes rewrite files too, and "these are the only projects
+      // this client has" has to hold for those as much as for the expansion.
+      const briefDigest = describeBriefInput(job.briefInput ?? null);
+      if (job.briefInput) {
+        // On the board, in one line, before the agent starts: an operator
+        // watching this build should be able to read what the client actually
+        // supplied without opening the dashboard, and a build that later
+        // invents a project fails against a list already in the conversation.
+        const assetPaths = briefInputAssets(job.briefInput).map(
+          (asset) => asset.publicPath,
+        );
+        await say(
+          'log',
+          `Building from the client's brief (${job.briefInput.reason === 'operator_override' ? 'operator override' : 'completed'}, ` +
+            `composed ${job.briefInput.composedAt}): ` +
+            `${job.briefInput.projects.length} project(s)` +
+            (job.briefInput.projects.length > 0
+              ? ` — ${job.briefInput.projects.map((project) => project.name).join(', ')}`
+              : job.briefInput.noProjects
+                ? ' (asked, and they have none: no work section)'
+                : '') +
+            `, ${assetPaths.length} rights-confirmed file(s)` +
+            (assetPaths.length > 0 ? `: ${assetPaths.join(', ')}` : '') +
+            '.',
+          {
+            briefVersion: job.briefInput.version,
+            briefReason: job.briefInput.reason,
+            projects: job.briefInput.projects.map((project) => project.name),
+            assetPaths,
+          },
+        );
+      }
       const expand = (feedback?: string) =>
         this.agents.buildFullSite({
           workspaceRoot: siteRoot,
@@ -2271,6 +2325,7 @@ export class FullSiteBuildWorker {
           brandConfig: job.brandConfig,
           requiredIntegrations: job.requiredIntegrations,
           pageSet: describePageSet(pageSet),
+          ...(briefDigest ? { briefDigest } : {}),
           ...(feedback ? { feedback } : {}),
           ...(onTrace ? { onTrace } : {}),
         });
@@ -2425,14 +2480,31 @@ export class FullSiteBuildWorker {
       // The output gate that protects the client's name rather than the
       // site's shape: every project the work section presents has to be one
       // the client actually told us about.
-      const briefProjectNames = (job.intake.projects ?? []).map(
-        (project) => project.name,
-      );
-      if (briefProjectNames.length > 0) {
+      //
+      // `projects` present at all means the client answered the brief's
+      // question. An empty array is the answer "I have no past work to show",
+      // and it is the stricter input of the two: the gate then rejects every
+      // project-shaped heading outside the closed generic list, because there
+      // is no real project any of them could be. `undefined` is a workspace
+      // that was never asked, and the gate stays silent for it exactly as it
+      // did before the brief existed.
+      //
+      // The image gate below is the other half of that answer: this one
+      // refuses an invented *name*, and it refuses the template's stand-in
+      // art put where the work would have been. A client with no past work
+      // should get the typographic treatment, not a stock screenshot.
+      const briefProjects = job.intake.projects;
+      const projectsKnown = Array.isArray(briefProjects);
+      const briefProjectNames = (briefProjects ?? [])
+        .map((project) => project.name)
+        .filter((name) => name.trim().length > 0);
+      if (briefProjectNames.length > 0 || projectsKnown) {
         await phase('Checking the work section against the brief');
+        const inventedOptions = { projectsKnown };
         let inventedIssue = findInventedProjectIssue(
           await collectBuiltSiteText(siteRoot),
           briefProjectNames,
+          inventedOptions,
         );
         if (inventedIssue) {
           await say('log', inventedIssue);
@@ -2441,6 +2513,7 @@ export class FullSiteBuildWorker {
           inventedIssue = findInventedProjectIssue(
             await collectBuiltSiteText(siteRoot),
             briefProjectNames,
+            inventedOptions,
           );
         }
         if (inventedIssue) {

@@ -25,6 +25,27 @@ import {
 
 vi.mock('server-only', () => ({}));
 
+/**
+ * The build the override exists to start.
+ *
+ * An override that only writes a timestamp is the psql UPDATE this endpoint
+ * was built to replace: `override_at` is one of the two conditions the
+ * worker's claim reads, so the moment it is written the parked job may run,
+ * and something has to say so. The state machine itself is pinned in
+ * `lib/flowstarter/__tests__/brief-build-dispatch.test.ts`; what is defended
+ * here is that this route calls it, after the write and never instead of it.
+ */
+const enqueueOnReady = vi.hoisted(() =>
+  vi.fn(async () => ({
+    outcome: 'resumed' as const,
+    jobId: 'job-1',
+    reason: '',
+  }))
+);
+vi.mock('@/lib/flowstarter/deposit-workflow', () => ({
+  enqueueBuildOnBriefReady: enqueueOnReady,
+}));
+
 const WORKSPACE = '0f4e1088-8d8f-4f18-83b1-406cc292b23c';
 const OPERATOR = 'user_team_1';
 
@@ -192,6 +213,7 @@ const cases: RouteCase[] = [
 
 beforeEach(() => {
   db.reset();
+  enqueueOnReady.mockClear();
   authState.userId = OPERATOR;
   authState.role = 'team';
   db.seed('workspaces', [{ id: WORKSPACE, project_state: 'DEPOSIT_PAID' }]);
@@ -292,6 +314,31 @@ describe('POST /api/admin/projects/[id]/brief/override', () => {
     expect(body.readiness.missing.map((entry) => entry.code)).toContain(
       'brief_offer_missing'
     );
+  });
+
+  it('starts the parked build, and says which job it let out', async () => {
+    const response = await call({
+      reason: 'Client sent the offer and two projects by email on 11 Sep',
+    });
+    expect(response.status).toBe(200);
+    expect(enqueueOnReady).toHaveBeenCalledTimes(1);
+    expect(enqueueOnReady).toHaveBeenCalledWith({ workspaceId: WORKSPACE });
+
+    const body = (await response.json()) as {
+      build: { outcome: string; jobId: string | null };
+    };
+    expect(body.build).toEqual({
+      outcome: 'resumed',
+      jobId: 'job-1',
+      reason: '',
+    });
+  });
+
+  it('refuses before it starts anything when the workspace does not exist', async () => {
+    db.seed('workspaces', []);
+    const response = await call({ reason: 'Client sent everything by email' });
+    expect(response.status).toBe(404);
+    expect(enqueueOnReady).not.toHaveBeenCalled();
   });
 
   it('still overrides when the audit event cannot be written', async () => {

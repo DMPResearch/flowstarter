@@ -112,6 +112,23 @@ vi.mock('@/supabase-clients/server', () => ({
 }));
 
 /**
+ * The composed brief, scripted.
+ *
+ * A deposit lands before the client has written a word of their brief, so
+ * `null` is the default and it is what decides the status the job is enqueued
+ * in: `waiting_brief`, not `queued`. The override case -- an operator waived
+ * the brief before the money arrived -- is the one that queues immediately,
+ * and it is asserted below.
+ */
+const briefScript: { briefInput: unknown } = { briefInput: null };
+vi.mock('../brief-build-input', () => ({
+  loadBriefBuildInput: async () => ({
+    briefInput: briefScript.briefInput,
+    reason: briefScript.briefInput ? '' : 'brief is not ready',
+  }),
+}));
+
+/**
  * The preview a workspace claimed. Scripted rather than faked through
  * postgrest, because what is under test here is what reaches the job payload,
  * not how the row is read.
@@ -249,7 +266,10 @@ describe('deposit paid by operator invoice', () => {
     expect(captured.insert).toMatchObject({
       workspace_id: WORKSPACE_ID,
       kind: 'FULL_SITE_BUILD',
-      status: 'queued',
+      // Parked, not queued. The deposit lands minutes before the client opens
+      // the brief page, and a `queued` row the worker silently refuses on
+      // every poll is indistinguishable on the board from a dropped dispatch.
+      status: 'waiting_brief',
       stripe_event_id: 'evt_1',
       // An invoice deposit has no PaymentIntent of its own to record.
       stripe_payment_intent_id: null,
@@ -289,8 +309,10 @@ describe('deposit paid by operator invoice', () => {
 
       expect(result).toMatchObject({ jobId: 'job-1', duplicate: false });
       // The operator has to be able to find the job that needs picking up.
-      expect(errors.mock.calls[0]?.[0]).toContain('job-1');
-      expect(errors.mock.calls[0]?.[0]).toContain('could not be dispatched');
+      const dispatchError = errors.mock.calls
+        .map((call) => String(call[0]))
+        .find((line) => line.includes('could not be dispatched'));
+      expect(dispatchError).toContain('job-1');
       // A log line is not enough on its own: it must also land on the
       // project's timeline so an operator sees it without tailing a server.
       expect(captured.events).toHaveLength(1);

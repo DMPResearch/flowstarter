@@ -26,6 +26,7 @@
  * Rules decide, models phrase: the phrases a build is held to are diffed out
  * of the files, never guessed from the client's sentence.
  */
+import type { BriefInput } from '@flowstarter/agentic-codegen/src/flowstarter/brief-input';
 import type {
   ApprovedPreviewEdit,
   BusinessIntakePayload,
@@ -315,6 +316,16 @@ export interface DepositBuildPayload {
   balancePercent: number;
   claimedPreviewId?: string;
   previewIntent?: PreviewIntent;
+  /**
+   * The in-depth brief, composed by `brief-build-input.ts`.
+   *
+   * Absent at deposit time, which is the ordinary case: the client has just
+   * paid and has not opened the brief page. It is written onto the payload
+   * later, when the brief becomes ready or an operator waives it, by the same
+   * helper that enqueues the job -- which is what makes a build that starts
+   * days after the deposit carry the material the client supplied in between.
+   */
+  briefInput?: BriefInput;
 }
 
 /**
@@ -329,6 +340,7 @@ export function depositBuildPayload(input: {
   source: 'payment_intent' | 'deposit_invoice';
   claimedPreviewId?: string | null;
   previewIntent?: PreviewIntent | null;
+  briefInput?: BriefInput | null;
 }): DepositBuildPayload {
   return {
     trigger: 'deposit_paid',
@@ -340,5 +352,6 @@ export function depositBuildPayload(input: {
       ? { claimedPreviewId: input.claimedPreviewId }
       : {}),
     ...(input.previewIntent ? { previewIntent: input.previewIntent } : {}),
+    ...(input.briefInput ? { briefInput: input.briefInput } : {}),
   };
 }

@@ -95,6 +95,97 @@ the Supabase CLI stack on the Hetzner host itself.
    `E2E_CLERK_OPERATOR_PASSWORD` the same way if the suite signs in with a
    password rather than a ticket.
 
+## Deposit to build
+
+This section is the answer to risk 1 of
+`docs/quality/codex-review-2026-09-12.md` ("The new brief does not start or
+inform the paid build"), which found both halves of this flow missing: nothing
+turned brief readiness back into a build, and the build that eventually ran had
+never seen the brief.
+
+The paid build is not started by the deposit alone. Between paying and being
+able to build there is one more thing only the client can supply: the in-depth
+brief on their own dashboard, which is where the offer, the real projects, the
+photographs and the design references arrive. A build taken before that has
+nothing true to build from, and a generator with nothing true to build from
+invents a case study.
+
+So the job has a waiting state of its own, and it is a status on the row rather
+than an inference from silence:
+
+```
+deposit settled ──> FULL_SITE_BUILD enqueued
+                      │
+                      ├─ brief ready or waived ──> queued ──> running ──> succeeded
+                      │                              ▲
+                      └─ otherwise ──> waiting_brief ─┘
+                                        (client finishes the brief, or an
+                                         operator overrides it)
+```
+
+- **`waiting_brief`** is a real `flowstarter_agent_jobs.status`
+  (`supabase/migrations/20260912180000_waiting_brief_job_state.sql`). It means
+  the deposit is settled, the job exists, and the one thing outstanding is a
+  form only the client can fill in. Before it existed such a job sat at
+  `queued` and the board reported it, after fifteen minutes, as a dispatch that
+  had probably been dropped — an alarm about our own system for a situation
+  only the client can end.
+- **The deposit path enqueues straight into it** when the brief is not ready
+  (`enqueueBuildAndAdvance` in `lib/flowstarter/deposit-workflow.ts`), and the
+  worker parks a `queued` job into it if it claims one whose brief is still
+  outstanding (`parkOnBrief` in `apps/build-worker/src/job-store.ts`). Parking
+  never spends an attempt: waiting is not a failed try.
+- **Readiness is what ends the wait.** Saving a complete brief
+  (`PUT /api/client/brief/[workspaceId]`) and the operator override
+  (`POST /api/admin/projects/[id]/brief/override`) both call
+  `enqueueBuildOnBriefReady`, which composes the build input, writes it onto
+  the job payload, promotes `waiting_brief` to `queued` and nudges the worker.
+  It is idempotent on two keys — the workspace, through the
+  `flowstarter_agent_jobs_one_full_build` unique index, and the deposit, which
+  must be `paid` — so calling it on every save is correct and cheap.
+- **A worker that was not listening still finds the job.** `BuildReconciler`
+  (`apps/build-worker/src/reconcile.ts`) asks the database what is runnable at
+  startup and every `FLOWSTARTER_BUILD_POLL_INTERVAL_MS` (default 60s, capped
+  by `FLOWSTARTER_BUILD_POLL_LIMIT` jobs per sweep): queued jobs that are due,
+  and parked jobs whose workspace has since become ready. Promotion is a
+  guarded compare-and-set, so two workers sweeping at once take a job once
+  between them, and the claim itself is unchanged. A sweep that cannot reach
+  the database logs and returns; it never takes the worker down.
+
+**What the build is made from.** `enqueueBuildOnBriefReady` composes a
+versioned `briefInput` (`lib/flowstarter/brief-build-input.ts`,
+`BRIEF_INPUT_VERSION`) onto the job payload: the offer, the projects (name,
+line, validated https link, screenshots), the page-count answer and the tone,
+plus every rights-confirmed file with the public path it will have under
+`/flowstarter-media/`, its caption and its role (`portrait`,
+`project-screenshot`, `design-reference`, `photo`). `loadUsableAssets` is the
+only reader used, so a file whose rights are not confirmed cannot enter a
+payload; the worker re-reads `rights_confirmed_at` at claim time anyway, drops
+anything it cannot deliver from both the manifest and the brief, and says so on
+the job's timeline — the prompt never names a path with nothing behind it.
+
+The worker merges that into the intake the preview was approved from
+(`mergeBriefIntoIntake`) and seeds the files beside the approved preview
+through the same loader the change-request build uses. That merge is what makes
+the downstream rules work at all: the page-set rule counts real projects (no
+projects, no work page), and the `INVENTED_PROJECT` gate finally has names to
+check the built site against. When the client has answered that they have no
+past work, the gate runs in its stricter mode and rejects every project-shaped
+heading outside the closed generic list.
+
+**Preview continuity is unchanged.** The worktree is still seeded from
+`flowstarter_project_artifacts.preview_manifest`, the teaser is still stripped,
+and the approved-edit validator still holds the build to every phrase the
+client approved before paying. The brief is layered on top by the agent pass;
+it never replaces the preview.
+
+**Operator view.** A parked job shows on the pipeline board as `waitingOn:
+'brief'` with a plain-language reason and is explicitly _not_ a stall; the
+project-state budget still applies, so a deposit sitting in `DEPOSIT_PAID` for
+days is still flagged, which is the moment to call the client or override. The
+client's dashboard reads the same status as `waiting_on_brief`. A parked job
+can be cancelled and can carry operator notes.
+
 ## Migrations
 
 There is no separate migrations workflow anymore; `staging-migrate.yml` is

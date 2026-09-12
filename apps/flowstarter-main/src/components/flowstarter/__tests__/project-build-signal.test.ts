@@ -167,6 +167,44 @@ describe('clientBuildSignal', () => {
       ).toBe('waiting_on_brief');
     });
 
+    it('reads the parked status without needing a second query', () => {
+      // The worker writes `waiting_brief` the first time it refuses to claim
+      // the job, so a caller that never looked at the brief table still tells
+      // the client the truth. `briefReady` is deliberately absent here.
+      expect(
+        clientBuildSignal(
+          [
+            job({
+              status: 'waiting_brief',
+              run_after: '2026-09-10T00:00:00.000Z',
+              created_at: '2026-09-10T00:00:00.000Z',
+              started_at: null,
+              finished_at: null,
+            }),
+          ],
+          NOW
+        )
+      ).toEqual({ jobId: JOB, attention: 'waiting_on_brief' });
+    });
+
+    it('never reads a parked build as a stall, however old it is', () => {
+      expect(
+        clientBuildSignal(
+          [
+            job({
+              status: 'waiting_brief',
+              run_after: '2026-01-01T00:00:00.000Z',
+              created_at: '2026-01-01T00:00:00.000Z',
+              started_at: null,
+              finished_at: null,
+            }),
+          ],
+          NOW,
+          { briefReady: true }
+        )?.attention
+      ).toBe('waiting_on_brief');
+    });
+
     it('still reports a genuine stall once the brief is ready', () => {
       expect(
         clientBuildSignal([queuedSince('2026-09-10T00:00:00.000Z')], NOW, {

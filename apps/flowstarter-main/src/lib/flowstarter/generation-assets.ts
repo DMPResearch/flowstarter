@@ -25,6 +25,13 @@ export interface UsableAsset {
   height: number | null;
   usableFor: string[];
   caption: string | null;
+  /**
+   * The role the app stored on the row: `portrait` for the one photograph the
+   * client picked as themselves, null otherwise. Read here rather than
+   * inferred, because the about section is the one place it decides anything
+   * and a guess would put a stranger's face on it.
+   */
+  kind: string | null;
 }
 
 /** The columns this module reads; `withTenant` is deliberately loosely typed. */
@@ -36,6 +43,7 @@ interface AssetRow {
   height: number | null;
   usable_for: string[] | null;
   caption: string | null;
+  kind: string | null;
   rights_confirmed_at: string | null;
 }
 
@@ -46,7 +54,7 @@ export async function loadUsableAssets(
   const { data, error } = await withTenant(supabase, workspaceId)
     .from('assets')
     .select(
-      'id, storage_path, mime, width, height, usable_for, caption, rights_confirmed_at'
+      'id, storage_path, mime, width, height, usable_for, caption, kind, rights_confirmed_at'
     )
     .not('rights_confirmed_at', 'is', null);
   if (error) throw error;
@@ -62,5 +70,6 @@ export async function loadUsableAssets(
       height: row.height,
       usableFor: row.usable_for ?? [],
       caption: row.caption,
+      kind: row.kind,
     }));
 }

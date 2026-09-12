@@ -59,7 +59,9 @@ const TIMELINE_EVENT_LIMIT = 200;
 
 /** Statuses a re-dispatch may legally reset. `running` is deliberately absent. */
 const REDISPATCHABLE_STATUSES = ['queued', 'failed', 'canceled'] as const;
-const CANCELLABLE_STATUSES = ['queued', 'running'] as const;
+// `waiting_brief` is cancellable: a project an operator is abandoning must not
+// leave a build parked on a brief nobody will ever finish.
+const CANCELLABLE_STATUSES = ['queued', 'running', 'waiting_brief'] as const;
 
 /**
  * Kinds the build worker runs, and therefore the only kinds a re-dispatch can
@@ -71,7 +73,12 @@ type Ctx = { params: Promise<{ id: string }> };
 type JobCtx = { params: Promise<{ id: string; jobId: string }> };
 
 /** Job statuses an operator note can still reach: the worker reads notes at pass boundaries, and a failed job is re-read on its next attempt. */
-const NOTEABLE_STATUSES = ['queued', 'running', 'failed'] as const;
+const NOTEABLE_STATUSES = [
+  'queued',
+  'running',
+  'failed',
+  'waiting_brief',
+] as const;
 const JOB_EVENT_COLUMNS = 'id, job_id, kind, actor, body, payload, created_at';
 const JOB_EVENT_LIMIT = 2_000;
 

@@ -156,6 +156,27 @@ const ALLOW_LIST: AllowListEntry[] = [
     reason:
       'markFailed(): update keyed by the job id the caller already holds.',
   },
+  {
+    file: 'job-store.ts',
+    table: 'flowstarter_agent_jobs',
+    match: `.update({ status: WAITING_BRIEF, updated_at: now })`,
+    reason:
+      "parkOnBrief(): compare-and-set keyed by (id, status), both from claim()'s own read of that job.",
+  },
+  {
+    file: 'job-store.ts',
+    table: 'flowstarter_agent_jobs',
+    match: `.in('status', ['queued', WAITING_BRIEF])`,
+    reason:
+      'readyForClaim(): the reconciliation sweep is deliberately fleet-wide. It is a worker asking which jobs anywhere are runnable, exactly like the dispatcher it replaces; it returns only ids, and every one of them still goes through claim(), which does the per-workspace reads under withTenant.',
+  },
+  {
+    file: 'job-store.ts',
+    table: 'flowstarter_agent_jobs',
+    match: `.eq('status', WAITING_BRIEF)`,
+    reason:
+      "readyForClaim(): compare-and-set promotion keyed by (id, status), both from the sweep's own read of that job.",
+  },
   // -- flowstarter_agent_job_events: both call sites are keyed by a job id
   // the worker obtained from its own claim() read, not from user input, so
   // there is nothing a caller could supply to point either query at another

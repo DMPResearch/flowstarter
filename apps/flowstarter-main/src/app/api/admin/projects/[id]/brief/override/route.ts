@@ -33,6 +33,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { requireTeamAuth } from '@/lib/api-auth';
 import { loadBriefSnapshot } from '@/lib/flowstarter/brief-data';
+import { enqueueBuildOnBriefReady } from '@/lib/flowstarter/deposit-workflow';
 import { withTenant } from '@/lib/tenancy';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 
@@ -127,6 +128,17 @@ export async function POST(
       );
     }
 
+    // An override that does not start the build is a timestamp, which is the
+    // thing this endpoint exists to be better than. `override_at` is one of
+    // the two conditions the worker's claim reads, so the moment it is written
+    // the parked job may run -- and the same helper the client's own brief
+    // save uses is what lets it out of the waiting room, with the material the
+    // brief does hold composed onto its payload.
+    //
+    // Never throws, by its own contract: the override has landed either way,
+    // and the worker's reconciliation sweep is the backstop.
+    const build = await enqueueBuildOnBriefReady({ workspaceId: id });
+
     // The readiness the client's own brief page would show, so an operator who
     // overrode a brief can see exactly what they waived. Read through the same
     // loader that page uses, which is the only way the two can never disagree.
@@ -135,6 +147,11 @@ export async function POST(
     return NextResponse.json({
       override: { at: now, by: auth.userId, reason },
       readiness: snapshot.readiness,
+      build: {
+        outcome: build.outcome,
+        jobId: build.jobId,
+        reason: build.reason,
+      },
     });
   } catch (error) {
     console.error('[brief-override] failed', error);

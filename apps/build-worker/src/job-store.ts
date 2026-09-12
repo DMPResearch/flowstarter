@@ -10,10 +10,15 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   ProjectState,
+  briefInputAssets,
   isPreviewToolingPath,
+  mergeBriefIntoIntake,
   normalizeCalLink,
+  parseBriefInput,
   parseChangeRequestIntent,
+  withoutMissingAssets,
   type BrandConfig,
+  type BriefInput,
   type BusinessIntakePayload,
   type ChangeRequestIntent,
   type FullSiteBuildEvent,
@@ -27,6 +32,7 @@ import {
 } from '@flowstarter/agentic-codegen';
 import {
   loadChangeRequestAssetFiles,
+  loadTenantAssetFiles,
   withChangeRequestAssets,
 } from './change-request-assets';
 import { withTenant } from './tenancy';
@@ -34,8 +40,30 @@ import { withTenant } from './tenancy';
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/** States a job may be claimed from. Anything else is a no-op. */
-const CLAIMABLE = new Set(['queued', 'failed']);
+/**
+ * The persisted state of a FULL_SITE_BUILD that is parked on its client.
+ *
+ * Before it existed, such a job sat at `queued` and `claim()` returned null on
+ * every poll: correct in the ledger, invisible everywhere else. An operator
+ * reading the board saw a queued build that nobody was running, which is
+ * indistinguishable from the failure mode the board exists to catch (a dropped
+ * dispatch), and after fifteen minutes it was reported as exactly that.
+ *
+ * Making it a status rather than a comment means the board, the client's
+ * dashboard, the reconciler and the claim rule all read the same fact from the
+ * same column, and a job in it can be found by a query instead of by inferring
+ * it from the absence of activity.
+ */
+export const WAITING_BRIEF = 'waiting_brief';
+
+/**
+ * States a job may be claimed from. Anything else is a no-op.
+ *
+ * `waiting_brief` is claimable because the gate below is re-read on every
+ * claim: a job that was parked is claimed the moment the brief allows it, and
+ * one that is still parked is simply parked again.
+ */
+const CLAIMABLE = new Set(['queued', 'failed', WAITING_BRIEF]);
 
 /**
  * Kinds this worker knows how to run. Both are dispatched to the same
@@ -373,10 +401,16 @@ export function buildJobFromRows(input: {
   calComUrl?: string | null;
   /**
    * The client's own pictures, already downloaded and verified, appended to
-   * the seed manifest. Only a CHANGE_REQUEST_BUILD has any: they are the
-   * files the request names, and the prompt gives the agent their paths.
+   * the seed manifest. A CHANGE_REQUEST_BUILD's are the files the request
+   * names; a FULL_SITE_BUILD's are the brief's, and the prompt gives the agent
+   * their paths in both cases.
    */
   changeRequestAssetFiles?: readonly TemplateScaffoldFile[];
+  /**
+   * The in-depth brief, with every asset that could not be delivered already
+   * removed, or null for a workspace that has none.
+   */
+  briefInput?: BriefInput | null;
 }): FullSiteBuildJob {
   const intake = asRecord(
     input.artifacts.intake_payload,
@@ -408,12 +442,20 @@ export function buildJobFromRows(input: {
     requiredIntegrations.push(CAL_COM);
   }
 
+  // The brief laid over the intake the preview was approved from. This is the
+  // whole point of the exercise: `intake_payload` was frozen before the client
+  // was ever asked what they sell or what they have built, and every rule
+  // downstream -- the page-set budget, the invented-project gate, the prompt
+  // itself -- reads those fields off the intake.
+  const briefInput = input.briefInput ?? null;
+  const mergedIntake = mergeBriefIntoIntake(intake, briefInput);
+
   return {
     id: input.job.id,
     projectId: input.job.workspace_id,
     kind,
     projectState: input.projectState as ProjectState,
-    intake,
+    intake: mergedIntake,
     brandConfig: asRecord(
       input.artifacts.brand_config,
       'brand_config',
@@ -426,6 +468,7 @@ export function buildJobFromRows(input: {
     ...(calComUrl ? { calComUrl } : {}),
     ...(previewIntent ? { previewIntent } : {}),
     ...(changeRequest ? { changeRequest } : {}),
+    ...(briefInput ? { briefInput } : {}),
   };
 }
 
@@ -580,6 +623,86 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
     }
   }
 
+  /**
+   * Parks a job on its client: the status moves to `waiting_brief` and the
+   * ledger says so once.
+   *
+   * The status write is guarded on the exact status that was read, so two
+   * workers polling the same job cannot both move it, and a job that another
+   * process claimed between the read and here is left alone. `attempt_count`
+   * is deliberately untouched -- waiting is not an attempt, and burning the
+   * budget of a build with nothing wrong with it is how a client who filled
+   * their brief in on Friday got a permanently unclaimable job on Monday.
+   *
+   * Never throws. A job that stays `queued` because this write failed is
+   * exactly the behaviour that shipped before the status existed, and that is
+   * not a reason to fail a claim.
+   */
+  private async parkOnBrief(row: JobLedgerRow): Promise<void> {
+    if (row.status !== WAITING_BRIEF) {
+      try {
+        const now = new Date().toISOString();
+        const { error } = await this.client
+          .from('flowstarter_agent_jobs')
+          .update({ status: WAITING_BRIEF, updated_at: now })
+          .eq('id', row.id)
+          .eq('status', row.status);
+        if (error) throw error;
+      } catch (error) {
+        console.warn(
+          `[job-store] could not park job ${row.id} on its brief:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    }
+    await this.noteWaitingOnBrief(row);
+  }
+
+  /**
+   * The brief material for a FULL_SITE_BUILD, and the files it needs on disk.
+   *
+   * Two things happen here and both are re-checks rather than reads of the
+   * payload's word. The storage path comes off the `assets` row through
+   * `withTenant`, and `rights_confirmed_at` is read again at build time --
+   * rights are a statement a client can withdraw, and this is the last moment
+   * before those bytes are on a public website. Anything undeliverable is
+   * dropped from the files *and* from the brief, so the paragraph the agent
+   * is given never names a path with nothing behind it.
+   */
+  private async loadBriefMaterial(row: JobLedgerRow): Promise<{
+    briefInput: BriefInput | null;
+    files: TemplateScaffoldFile[];
+  }> {
+    if (row.kind !== 'FULL_SITE_BUILD') return { briefInput: null, files: [] };
+    const parsed = parseBriefInput(row.payload);
+    if (!parsed) return { briefInput: null, files: [] };
+
+    const wanted = briefInputAssets(parsed);
+    const { files, skipped } = await loadTenantAssetFiles({
+      client: this.client,
+      workspaceId: row.workspace_id,
+      assets: wanted,
+      onMissing: 'skip',
+    });
+    if (skipped.length > 0) {
+      // Said out loud rather than swallowed: a client whose photograph is
+      // missing from their finished site is owed an answer, and the answer is
+      // on the job's own timeline before the build starts.
+      await this.appendEvent(row.id, {
+        kind: 'log',
+        body:
+          `${skipped.length} file(s) named by the brief could not be used and ` +
+          'are not on this build: ' +
+          skipped.map((entry) => entry.reason).join(' '),
+        payload: { skippedAssetIds: skipped.map((entry) => entry.assetId) },
+      }).catch(() => {
+        // Commentary. Losing it is not a reason to fail a paid build.
+      });
+    }
+    const delivered = new Set(files.map((file) => file.path));
+    return { briefInput: withoutMissingAssets(parsed, delivered), files };
+  }
+
   async claim(jobId: string): Promise<FullSiteBuildJob | null> {
     const { data: row, error } = await this.client
       .from('flowstarter_agent_jobs')
@@ -603,7 +726,7 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
     if (row.kind === 'FULL_SITE_BUILD') {
       const brief = await this.readBrief(row.workspace_id);
       if (!briefAllowsBuild(brief)) {
-        await this.noteWaitingOnBrief(row);
+        await this.parkOnBrief(row);
         return null;
       }
     }
@@ -680,12 +803,19 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
           })
         : [];
 
+      // The brief's own files, fetched the same way and at the same moment,
+      // for the same reason: a build that discovers a missing picture three
+      // agent-minutes in explains itself far worse than one that resolves
+      // every path before it starts.
+      const brief = await this.loadBriefMaterial(row);
+
       return buildJobFromRows({
         job: row,
         projectState: workspace.project_state,
         artifacts,
         calComUrl: workspace.cal_com_url,
-        changeRequestAssetFiles,
+        changeRequestAssetFiles: [...changeRequestAssetFiles, ...brief.files],
+        briefInput: brief.briefInput,
       });
     } catch (error) {
       await this.markFailed(jobId, {
@@ -697,6 +827,70 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
       });
       throw error;
     }
+  }
+
+  /**
+   * Jobs this worker should be running but was never told about.
+   *
+   * Dispatch is a nudge over HTTP from a Next.js process to this one. Every
+   * way that nudge can be lost leaves a row that is a promise to a paying
+   * client and a process that will never look at it again: the worker was
+   * restarting, the host was unreachable, the deploy replaced the container
+   * mid-flight, or -- the case this was written for -- the job was parked on
+   * a brief that the client finished at two in the morning while nothing was
+   * listening.
+   *
+   * So the queue is read from the database rather than remembered in this
+   * process. Two kinds of row come back:
+   *
+   *   - `queued` and due (`run_after` has passed), which is a dispatch that
+   *     did not arrive.
+   *   - `waiting_brief` whose workspace now allows a build. Those are promoted
+   *     to `queued` here, guarded on the status that was read, so of two
+   *     workers sweeping at once exactly one takes each job and the board
+   *     never shows a build as parked while it is running.
+   *
+   * `running` is deliberately absent: recovering a job whose worker died
+   * mid-build needs leases and heartbeats, which is its own piece of work.
+   */
+  async readyForClaim(limit: number): Promise<string[]> {
+    const { data, error } = await this.client
+      .from('flowstarter_agent_jobs')
+      .select('id, workspace_id, kind, status, attempt_count, run_after')
+      .in('status', ['queued', WAITING_BRIEF])
+      .in('kind', Array.from(CLAIMABLE_KINDS))
+      .order('created_at', { ascending: true })
+      .limit(limit);
+    if (error) throw error;
+
+    const rows = (data ?? []) as unknown as (JobLedgerRow & {
+      run_after: string | null;
+    })[];
+    const now = Date.now();
+    const ready: string[] = [];
+
+    for (const row of rows) {
+      if (row.attempt_count >= this.options.maxAttempts) continue;
+      if (row.status === 'queued') {
+        // A backoff window is not a stall; a job is not due until it says so.
+        const due = row.run_after ? Date.parse(row.run_after) : 0;
+        if (Number.isFinite(due) && due > now) continue;
+        ready.push(row.id);
+        continue;
+      }
+      const brief = await this.readBrief(row.workspace_id);
+      if (!briefAllowsBuild(brief)) continue;
+      const { data: promoted, error: promoteError } = await this.client
+        .from('flowstarter_agent_jobs')
+        .update({ status: 'queued', updated_at: new Date().toISOString() })
+        .eq('id', row.id)
+        .eq('status', WAITING_BRIEF)
+        .select('id')
+        .maybeSingle();
+      if (promoteError) throw promoteError;
+      if (promoted) ready.push(row.id);
+    }
+    return ready;
   }
 
   async markAgentWorking(jobId: string, worktree: GitWorktree): Promise<void> {

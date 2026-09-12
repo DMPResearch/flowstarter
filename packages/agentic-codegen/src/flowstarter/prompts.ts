@@ -133,13 +133,23 @@ export function buildFullSiteTask(input: {
    * sentence exists so the agent does not put back what the rule removed.
    */
   pageSet?: string;
+  /**
+   * The in-depth brief the client filled in after paying, restated as prose
+   * by `describeBriefInput`. It is also inside BUILD_SPEC_JSON; it is repeated
+   * here because the two things that must not be missed in eight kilobytes of
+   * JSON are the list of real project names and the exact paths of the
+   * client's own pictures, and because "they have no past work" has to arrive
+   * as an instruction rather than as an empty array.
+   */
+  briefDigest?: string;
   /** Build/validation output from a failed previous pass, for one repair. */
   feedback?: string;
 }): string {
   const pageRule = input.pageSet
     ? `\n\nPAGE SET (trusted, decided by rule, not negotiable)\n${input.pageSet}`
     : '';
-  return `Build the production-ready multi-page Flowstarter site in the current isolated worktree.\n\nBUILD_SPEC_JSON\n${JSON.stringify(input)}\nEND_BUILD_SPEC_JSON${pageRule}\n\nCompletion requirements: preserve the selected component system; implement accessible pages, SEO metadata, semantic sitemap, and only the listed integrations; create no page outside the stated page set; format the repository; finish without requesting shell access.`;
+  const briefRule = input.briefDigest ? `\n\n${input.briefDigest}` : '';
+  return `Build the production-ready multi-page Flowstarter site in the current isolated worktree.\n\nBUILD_SPEC_JSON\n${JSON.stringify(input)}\nEND_BUILD_SPEC_JSON${pageRule}${briefRule}\n\nCompletion requirements: preserve the selected component system; implement accessible pages, SEO metadata, semantic sitemap, and only the listed integrations; create no page outside the stated page set; format the repository; finish without requesting shell access.`;
 }
 
 export const FULL_SITE_CODING_SYSTEM_PROMPT = `You are Flowstarter's production site build agent operating inside one pre-created, isolated git worktree.

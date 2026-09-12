@@ -26,10 +26,8 @@ import {
   BRIEF_ROW_COLUMNS,
   briefViewFromRow,
   judgeBrief,
-  loadBriefSnapshot,
   photosFor,
   portraitFrom,
-  storedProjects,
   type BriefProjectView,
   type BriefRow,
   type BriefView,
@@ -38,6 +36,10 @@ import {
   evaluateBriefReadiness,
   type BriefReadiness,
 } from '@/lib/flowstarter/brief-readiness';
+import {
+  enqueueBuildOnBriefReady,
+  type BriefReadyOutcome,
+} from '@/lib/flowstarter/deposit-workflow';
 import { withTenant } from '@/lib/tenancy';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import {
@@ -58,6 +60,14 @@ export interface BriefResponse {
   brief: BriefView;
   readiness: BriefReadiness;
   assets: ClientAsset[];
+  /**
+   * What saving this brief did to the build, when it did anything.
+   *
+   * Present on PUT only, and only once the brief is complete. It is the one
+   * place a client can be told the truth in the same response as the save:
+   * their build is no longer waiting on them.
+   */
+  build?: { outcome: BriefReadyOutcome; jobId: string | null };
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -298,6 +308,20 @@ export async function PUT(
       missing: readiness.missing.map((entry) => entry.code),
     });
 
+    // The whole point of `ready_at`. Before this call the column was written
+    // and nothing read it until the next time a worker happened to be nudged
+    // about a job it had already refused -- which, for a client who paid on
+    // Monday and finished their brief on Thursday, was never. The build is
+    // started here, on the transition, by the same helper the deposit uses.
+    //
+    // Idempotent and safe to call on every complete save: a build already
+    // queued, running or finished is recognised, and the function never
+    // throws, so a nudge that fails cannot fail a save the client watched
+    // succeed. The worker's own reconciliation sweep is the backstop.
+    const build = readyAt
+      ? await enqueueBuildOnBriefReady({ workspaceId: access.workspaceId })
+      : null;
+
     const refreshed = await listWorkspaceAssets(access.workspaceId);
     return NextResponse.json({
       brief: {
@@ -312,6 +336,9 @@ export async function PUT(
       },
       readiness,
       assets: refreshed,
+      ...(build
+        ? { build: { outcome: build.outcome, jobId: build.jobId } }
+        : {}),
     } satisfies BriefResponse);
   } catch (error) {
     return failure(error);

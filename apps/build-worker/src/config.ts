@@ -150,6 +150,18 @@ export interface WorkerConfig {
   maxAttempts: number;
   concurrency: number;
   queueLimit: number;
+  /**
+   * How often the worker asks the database what it should be running, rather
+   * than waiting to be told. Dispatch is an HTTP nudge and every way it can be
+   * lost -- a restart, a deploy, an unreachable host, a brief a client
+   * finished at two in the morning -- leaves a paid build nobody picks up.
+   *
+   * A minute is short enough that no client notices and long enough that this
+   * is one small indexed query per minute per worker.
+   */
+  pollIntervalMs: number;
+  /** Most jobs one reconciliation sweep considers, so a backlog is paced. */
+  pollLimit: number;
 }
 
 const THINKING_LEVELS = new Set([
@@ -592,6 +604,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     queueLimit: optionalNumber(env, 'FLOWSTARTER_BUILD_QUEUE_LIMIT', 32, {
       min: 1,
       max: 512,
+    }),
+    pollIntervalMs: optionalNumber(
+      env,
+      'FLOWSTARTER_BUILD_POLL_INTERVAL_MS',
+      60_000,
+      { min: 5_000, max: 900_000 },
+    ),
+    pollLimit: optionalNumber(env, 'FLOWSTARTER_BUILD_POLL_LIMIT', 25, {
+      min: 1,
+      max: 200,
     }),
   };
 }

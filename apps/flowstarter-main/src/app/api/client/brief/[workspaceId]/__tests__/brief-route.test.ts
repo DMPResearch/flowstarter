@@ -28,6 +28,26 @@ import { MIN_OFFER_CHARS } from '@/lib/flowstarter/brief-readiness';
 
 vi.mock('server-only', () => ({}));
 
+/**
+ * The build dispatch, spied rather than run.
+ *
+ * `ready_at` used to be written and read by nobody: the worker had already
+ * refused this job once and nothing ever asked it to look again. The route now
+ * starts the build on the transition, and what these tests defend is *when* it
+ * calls that, not what the call does -- the state machine itself is pinned in
+ * `lib/flowstarter/__tests__/brief-build-dispatch.test.ts`.
+ */
+const enqueueOnReady = vi.hoisted(() =>
+  vi.fn(async () => ({
+    outcome: 'enqueued' as const,
+    jobId: 'job-1',
+    reason: '',
+  }))
+);
+vi.mock('@/lib/flowstarter/deposit-workflow', () => ({
+  enqueueBuildOnBriefReady: enqueueOnReady,
+}));
+
 const WORKSPACE_A = '0f4e1088-8d8f-4f18-83b1-406cc292b23c';
 const WORKSPACE_B = '7c2a91b4-3d5e-4a17-9f88-1b2c3d4e5f60';
 
@@ -628,6 +648,36 @@ describe('PUT /api/client/brief/[workspaceId]', () => {
     expect(payload.readiness.ready).toBe(true);
     expect(typeof payload.brief.readyAt).toBe('string');
     expect(savedBrief()?.ready_at).toBe(payload.brief.readyAt);
+  });
+
+  it('starts the build once the brief is complete, and tells the client so', async () => {
+    enqueueOnReady.mockClear();
+    const payload = await (await callPut(WORKSPACE_A, body())).json();
+    expect(enqueueOnReady).toHaveBeenCalledTimes(1);
+    expect(enqueueOnReady).toHaveBeenCalledWith({ workspaceId: WORKSPACE_A });
+    expect(payload.build).toEqual({ outcome: 'enqueued', jobId: 'job-1' });
+  });
+
+  it('does not start a build from a brief that is not complete', async () => {
+    enqueueOnReady.mockClear();
+    const payload = await (
+      await callPut(
+        WORKSPACE_A,
+        body({ offer: 'Too short', noProjects: false })
+      )
+    ).json();
+    expect(enqueueOnReady).not.toHaveBeenCalled();
+    expect(payload.build).toBeUndefined();
+  });
+
+  it('nudges the build on every complete save, because the helper is the idempotent one', async () => {
+    enqueueOnReady.mockClear();
+    await callPut(WORKSPACE_A, body());
+    await callPut(WORKSPACE_A, body({ offer: `${GOOD_OFFER} And more.` }));
+    // Two calls, one job: the unique index on (workspace_id, kind) is the
+    // idempotency key, not a read-then-write in this route.
+    expect(enqueueOnReady).toHaveBeenCalledTimes(2);
+    expect(rows('workspace_briefs')).toHaveLength(1);
   });
 
   it('keeps the instant the brief first became complete on a second save', async () => {

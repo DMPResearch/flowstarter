@@ -162,3 +162,62 @@ describe('headingMarkups', () => {
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 });
+
+/**
+ * "Asked, and they have none" is a stricter input than "nobody asked".
+ *
+ * Before the brief reached the build, `job.intake.projects` was always absent
+ * and this gate therefore never ran at all -- which is how a paid portfolio
+ * shipped with a fourth case study for a company nobody has heard of. Two
+ * inputs now switch it on: a list of real names, and an explicit empty answer.
+ * The third input, absence, must still switch it off, because failing a build
+ * for having no data is worse than the defect.
+ */
+describe('the no-projects answer', () => {
+  const files = [
+    {
+      path: 'dist/work/index.html',
+      content:
+        '<h2>Selected work</h2><h2>Northwind Bank</h2><h3>The result</h3>',
+    },
+  ];
+
+  it('stays silent when nobody asked the client about their work', () => {
+    expect(findInventedProjects(files, [])).toEqual([]);
+    expect(findInventedProjects(files, [], { projectsKnown: false })).toEqual(
+      [],
+    );
+  });
+
+  it('rejects every project-shaped heading once the client has said they have none', () => {
+    expect(findInventedProjects(files, [], { projectsKnown: true })).toEqual([
+      { path: 'dist/work/index.html', heading: 'Northwind Bank' },
+    ]);
+  });
+
+  it('still allows the closed list of generic section labels', () => {
+    const generic = [
+      {
+        path: 'dist/work/index.html',
+        content:
+          '<h2>Selected work</h2><h2>Services</h2><h3>Get in touch</h3>' +
+          '<h2>Frequently asked questions</h2>',
+      },
+    ];
+    expect(findInventedProjects(generic, [], { projectsKnown: true })).toEqual(
+      [],
+    );
+  });
+
+  it('tells the agent to remove the section rather than rename it', () => {
+    const message = describeInventedProjectFindings(
+      [{ path: 'dist/work/index.html', heading: 'Northwind Bank' }],
+      [],
+    );
+    expect(message).toContain('no past work to show');
+    expect(message).toContain('Remove the work section entirely');
+    expect(message).toContain('no stock photography');
+    // The empty-list phrasing that would have shipped otherwise.
+    expect(message).not.toContain('The only projects this client has are: .');
+  });
+});
