@@ -11,15 +11,22 @@
  *      hosting_servers.deploy_agent_url.
  *   3. The agent extracts to /var/www/sites/{slug}/, writes the Caddy site
  *      snippet, reloads Caddy, returns when ready.
- *   4. We upsert Cloudflare DNS for the slug's preview subdomain (and any
- *      configured custom domains) pointing to the server's IPv4.
+ *   4. We claim one Cloudflare A record for the site's FINAL hostname,
+ *      `{slug}.{platformDomain}`, pointing at the server's IPv4.
  *   5. We record a `deployments` row + bump workspaces.last_deploy_id.
+ *
+ * A paid site is not a preview and does not live in the preview namespace.
+ * This used to mint `{slug}.preview.{platformDomain}` — the same zone the
+ * throwaway funnel previews are reaped out of — so the one URL a paying client
+ * was given had the word "preview" in it and sat under a wildcard whose whole
+ * purpose is deletion. `site-hostnames.ts` holds both rules now; this path
+ * uses `finalHostname` and nothing else.
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '../database.types';
-import { CloudflareClient } from './cloudflare';
-import { getSubdomainUrl } from '@flowstarter/platform-config';
+import { CloudflareClient, CloudflareRecordConflictError } from './cloudflare';
+import { finalHostname } from './site-hostnames';
 
 export class DeployError extends Error {
   constructor(public code: string, message: string, public cause?: unknown) {
@@ -162,9 +169,11 @@ export class DryRunDeployAgentClient implements DeployAgentClient {
  * workspace has no `hosting_server_id` yet. A workspace that already had a
  * server assigned went straight to `agentClient.push({ siteSlug:
  * workspace.slug })` with nothing checked, so a null or non-slug-safe value
- * reached the deploy-agent as-is and `previewDomainForSlug` derived hostnames
+ * reached the deploy-agent as-is and the hostname derivation produced names
  * like `null.preview.flowstarter.net`. The guard belongs on every path that
- * uses the slug, not on the one that happens to allocate.
+ * uses the slug, not on the one that happens to allocate. `finalHostname`
+ * now refuses such a value outright as well; this keeps the failure at the
+ * top of the deploy, where the message can say which workspace it is.
  */
 export function requireSiteSlug(raw: string | null | undefined): string {
   const slug = String(raw ?? '')
@@ -413,31 +422,39 @@ export async function deploySite(opts: {
     };
   }
 
-  // DNS: upsert preview subdomain → server IPv4 (Cloudflare optional).
-  const previewDomain = previewDomainForSlug(siteSlug);
+  // DNS: one A record for the site's own name → server IPv4 (Cloudflare
+  // optional). `claimRecord`, not `upsertRecord`: the zone already serves
+  // live client sites and the platform's own records, and a deploy is never
+  // allowed to repoint one of them.
+  const siteDomain = finalHostname(siteSlug);
+  let dnsDetail: string | null = null;
   if (
     opts.cloudflare &&
     opts.cloudflareDefaultZoneId &&
-    previewDomain &&
+    siteDomain &&
     server.ipv4
   ) {
     try {
-      await opts.cloudflare.upsertRecord({
+      await opts.cloudflare.claimRecord({
         zoneId: opts.cloudflareDefaultZoneId,
         type: 'A',
-        name: previewDomain,
+        name: siteDomain,
         content: String(server.ipv4),
         ttl: 60,
         proxied: false,
         comment: `flowstarter site ${siteSlug}`,
       });
     } catch (e) {
-      // DNS errors don't fail the deploy; the artifact is on the server,
-      // they just need a manual DNS fixup.
-      console.warn(
-        '[deploySite] DNS upsert failed (deploy succeeded):',
-        e instanceof Error ? e.message : e
-      );
+      // DNS errors don't fail the deploy; the artifact is on the server, and
+      // taking a working deploy away because a name is contested helps nobody.
+      // A conflict is recorded on the deployment rather than only logged: it
+      // means somebody else owns that name, and an operator has to see it.
+      const message = e instanceof Error ? e.message : String(e);
+      dnsDetail =
+        e instanceof CloudflareRecordConflictError
+          ? message
+          : `DNS for ${siteDomain} could not be written: ${message}`;
+      console.warn('[deploySite] DNS (deploy succeeded):', message);
     }
   }
 
@@ -447,6 +464,7 @@ export async function deploySite(opts: {
     .from('deployments')
     .update({
       status: 'live',
+      status_detail: dnsDetail,
       finished_at: finishedAt,
       artifact_sha256: agentResult.sha256 || null,
       artifact_bytes: agentResult.sizeBytes || null,
@@ -463,11 +481,9 @@ export async function deploySite(opts: {
     .eq('id', workspace.id);
 
   // Tell the client, once per version. Imported here rather than at the top of
-  // the file for two reasons: `site-live-email` reaches back through
-  // `site-urls` into this module for `previewDomainForSlug`, and it pulls in
-  // the `server-only` mailer, which nothing that merely wants a site URL
-  // should have to carry. It cannot throw (see `notifyClientOnce`), and the
-  // catch is only for the import itself.
+  // the file because `site-live-email` pulls in the `server-only` mailer,
+  // which nothing that merely wants a site URL should have to carry. It cannot
+  // throw (see `notifyClientOnce`), and the catch is only for the import.
   try {
     const { notifySiteLive } = await import('./site-live-email');
     await notifySiteLive({
@@ -491,20 +507,6 @@ export async function deploySite(opts: {
     deploymentId: deploy.id,
     version: nextVersion,
     status: 'live',
-    detail: null,
+    detail: dnsDetail,
   };
-}
-
-/**
- * Helper to derive what the preview domain SHOULD be for a slug.
- *
- * `getSubdomainUrl` → `getPlatformDomain` → `resolvePlatformDomain` under the
- * hood, so with no `PLATFORM_DOMAIN` override this mints
- * `{slug}.preview.flowstarter.dev` in development, test and staging, and
- * `{slug}.preview.flowstarter.net` in production. The environment decides,
- * so nobody has to set `PLATFORM_DOMAIN` by hand before a deploy.
- */
-export function previewDomainForSlug(slug: string): string {
-  const url = getSubdomainUrl(`${slug}.preview`);
-  return url.replace(/^https?:\/\//, '');
 }

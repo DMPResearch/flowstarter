@@ -366,6 +366,15 @@ const en = {
   'domain.preview.availableAt': 'Your site will be available at:',
   'domain.preview.customConfigured': 'Custom domain configured',
   'domain.preview.hostedOn': 'Hosted on',
+
+  // The two hostname families, said out loud. A final site has no expiry and
+  // nothing blurred; a preview has both, and says so.
+  'site.link.live': 'View your site',
+  'site.link.preview': 'View your preview',
+  'site.preview.worksUntil': 'Your preview link works until {date}',
+  'site.preview.expired':
+    'Your preview link has expired. Your full site is not affected.',
+  'site.preview.heading': 'Your temporary preview',
   'domain.validation.valid': 'Valid domain format',
   'domain.validation.invalid': 'Invalid domain format',
   'domain.validation.didYouMean': 'Did you mean:',

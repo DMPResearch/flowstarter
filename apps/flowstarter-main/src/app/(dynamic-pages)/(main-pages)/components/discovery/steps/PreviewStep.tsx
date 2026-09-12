@@ -27,6 +27,7 @@ import {
   describeWithIntakeAnswers,
 } from '../intake-chat.shared';
 import { usePreviewProgress } from '../usePreviewProgress';
+import { formatPreviewExpiry } from '@/components/flowstarter/site-link';
 import { DemoSiteFrame } from './DemoSiteFrame';
 import { DerivedSiteSkeleton } from './IntakePreviewPane';
 import {
@@ -1063,6 +1064,38 @@ export function PreviewStep({
           </div>
         )}
       </div>
+
+      {/* The shareable copy, and the date it stops working.
+          The iframe above renders a sandbox that dies with the session; this
+          is the hosted preview, and it is temporary by rule rather than by
+          accident. Showing the link without the date would be the half of the
+          promise that flatters us. */}
+      {progress.hostedPreviewUrl && (
+        <div
+          data-testid="hosted-preview"
+          className="flex flex-col gap-1 rounded-xl border border-[var(--fs-rule)] bg-[var(--fs-bg-elevated)]/40 px-3 py-2"
+        >
+          <a
+            href={progress.hostedPreviewUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-fit text-[12px] font-semibold text-[var(--purple-primary)] underline underline-offset-4"
+          >
+            {progress.hostedPreviewUrl.replace(/^https?:\/\//, '')}
+          </a>
+          {progress.hostedPreviewExpiresAt ? (
+            <p
+              data-testid="hosted-preview-expiry"
+              className="text-[11px] text-[var(--fs-ink-faint)]"
+            >
+              {t('site.preview.worksUntil').replace(
+                '{date}',
+                formatPreviewExpiry(progress.hostedPreviewExpiresAt)
+              )}
+            </p>
+          ) : null}
+        </div>
+      )}
 
       {/* Ask for a change — under the site, answered on the left. */}
       {mode === 'live' && liveUrl && (

@@ -26,6 +26,11 @@ import { resolvePlatformDomain } from '@flowstarter/platform-config';
 import { safeExtractTarball } from './tar-safety';
 import { buildCaddySnippet, buildPreviewCaddySnippet, type ServeTarget } from './caddy-snippet';
 import {
+  SLUG_PLACEHOLDER,
+  hostFromTemplate,
+  slugFromTemplateHost,
+} from './host-templates';
+import {
   deployDockerSite,
   removeDockerSite,
   systemCommandRunner,
@@ -120,6 +125,29 @@ const SITE_PORT = Number(process.env.DEPLOY_AGENT_SITE_PORT ?? 9080);
 const PREVIEW_HOST_SUFFIX =
   process.env.DEPLOY_AGENT_PREVIEW_HOST_SUFFIX?.trim() ||
   `preview.${resolvePlatformDomain()}`;
+
+/**
+ * The FINAL hostname a paid site is served at: `{slug}.{domain}`.
+ *
+ * A paid site is not a preview and does not live in the preview namespace.
+ * Before this existed, the only template a sites-mode agent understood was
+ * `DEPLOY_AGENT_PREVIEW_DOMAIN_TEMPLATE`, so a client who had paid got a site
+ * whose one working hostname had the word "preview" in it — and an operator
+ * who left that unset got an empty Caddy snippet and a site nobody could
+ * reach at all. The preview template still works, and still means what it
+ * meant; this is the one that means "this site is theirs".
+ *
+ * Defaults the same env-driven way `PREVIEW_HOST_SUFFIX` does, so a host
+ * bootstrapped for production serves `{slug}.flowstarter.net` and one
+ * bootstrapped for development serves `{slug}.flowstarter.dev` without an
+ * operator having to remember a variable.
+ */
+const SITE_DOMAIN_TEMPLATE =
+  process.env.DEPLOY_AGENT_SITE_DOMAIN_TEMPLATE?.trim() ||
+  `{slug}.${resolvePlatformDomain()}`;
+
+const PREVIEW_DOMAIN_TEMPLATE =
+  process.env.DEPLOY_AGENT_PREVIEW_DOMAIN_TEMPLATE?.trim() || null;
 
 if (!SHARED_SECRET) {
   console.error(
@@ -265,26 +293,36 @@ function dockerServeTarget(upstream: string): ServeTarget {
 /**
  * Does this agent currently serve `domain`?
  *
- * The front Caddy calls this before issuing an on-demand certificate. Without
- * it, anybody who points a DNS record at this box makes us ask Let's Encrypt
- * for a certificate on their behalf, which is both a rate-limit hazard and an
- * open cert-minting service. Answers 200 only for a hostname in our own
- * preview zone that has a snippet on disk.
+ * The front Caddy calls this before issuing an on-demand certificate. Answers
+ * 200 only for a hostname one of this agent's own templates produces AND that
+ * has a snippet on disk. It used to be a previews-only endpoint, which made
+ * on-demand TLS impossible for a paid site's final hostname: the sites agent
+ * 404'd for every name including its own.
  */
 async function handleTlsAsk(domain: string | null): Promise<Response> {
-  if (MODE !== 'previews') return jsonResponse({ error: 'not found' }, 404);
   const host = (domain ?? '').trim().toLowerCase();
-  const suffix = `.${PREVIEW_HOST_SUFFIX}`;
-  if (!host.endsWith(suffix)) {
-    return jsonResponse({ error: 'not a preview host' }, 404);
+
+  // Which slug, if any, this agent would serve this hostname for. A previews
+  // agent answers for its preview zone; a sites agent answers for the final
+  // site names its own template mints, and for a preview name only if it has
+  // been configured to serve one. An agent with no matching template answers
+  // for nothing, which is the correct answer and the safe one.
+  const slug =
+    MODE === 'previews'
+      ? slugFromTemplateHost(`${SLUG_PLACEHOLDER}.${PREVIEW_HOST_SUFFIX}`, host)
+      : slugFromTemplateHost(SITE_DOMAIN_TEMPLATE, host) ??
+        slugFromTemplateHost(PREVIEW_DOMAIN_TEMPLATE, host);
+
+  if (!slug) {
+    return jsonResponse({ error: 'not a host served here' }, 404);
   }
-  const slug = host.slice(0, -suffix.length);
-  if (!SLUG_RE.test(slug)) {
-    return jsonResponse({ error: 'not a preview host' }, 404);
-  }
+  // Having a name is not enough: there has to be a site behind it. Otherwise
+  // anyone who points a record at this box gets us to ask Let's Encrypt for a
+  // certificate on their behalf, which is both a rate-limit hazard and an open
+  // cert-minting service.
   const snippet = join(CADDY_SITES_DIR, `${slug}.caddy`);
   if (!(await exists(snippet))) {
-    return jsonResponse({ error: 'no such preview' }, 404);
+    return jsonResponse({ error: 'no such site' }, 404);
   }
   return new Response('', { status: 200 });
 }
@@ -417,9 +455,11 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
     );
   }
 
-  const previewHost = process.env.DEPLOY_AGENT_PREVIEW_DOMAIN_TEMPLATE
-    ? process.env.DEPLOY_AGENT_PREVIEW_DOMAIN_TEMPLATE.replace('{slug}', slug)
-    : null;
+  // Both, in sites mode. The final name is what the client was sold; the
+  // preview name stays in the snippet where it is configured so an existing
+  // host does not lose a hostname it is already answering on.
+  const siteHost = hostFromTemplate(SITE_DOMAIN_TEMPLATE, slug);
+  const previewHost = hostFromTemplate(PREVIEW_DOMAIN_TEMPLATE, slug);
   // The publisher sends the unguessable hostname as primary_domain for a
   // preview. Custom domains are meaningless for a preview and are ignored
   // rather than trusted.
@@ -433,7 +473,8 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
           body.primary_domain ?? null,
           body.additional_domains ?? [],
           previewHost,
-          EDITOR_UPSTREAM
+          EDITOR_UPSTREAM,
+          siteHost
         );
 
   if (SITE_RUNTIME === 'docker') {

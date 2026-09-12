@@ -56,10 +56,9 @@ function buildFake() {
 }
 
 // ─── platform-config ────────────────────────────────────────────────────────
-// Pinned so the preview domain assertion does not depend on the environment.
-vi.mock('@flowstarter/platform-config', () => ({
-  getSubdomainUrl: (sub: string) => `https://${sub}.flowstarter.dev`,
-}));
+// Not mocked. `resolvePlatformDomain` is the rule under test here as much as
+// the route is, and a stub would let the route agree with a fiction. The
+// suite runs as `test`, so the domain is the development one.
 
 import { GET as teamGet, POST as teamPost } from '../site/route';
 import {
@@ -210,7 +209,11 @@ describe.each(GETS)('GET /api/%s/projects/[id]/site', (_tree, handler) => {
     const body = await res.json();
     expect(body.server).toBeNull();
     expect(body.deployments).toEqual([]);
-    expect(body.previewDomain).toBe('acme-coaching.preview.flowstarter.dev');
+    // The site's own name. It used to be `acme-coaching.preview.…`, which
+    // put a paid site in the namespace the throwaway previews are reaped out
+    // of.
+    expect(body.siteDomain).toBe('acme-coaching.flowstarter.dev');
+    expect(body.siteDomain).not.toContain('preview');
     expect(body.workspace).toMatchObject({ id: WORKSPACE_ID });
   });
 

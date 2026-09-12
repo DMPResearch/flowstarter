@@ -165,6 +165,9 @@ describe('the polling fallback', () => {
               phase: 'Choosing a template',
               previewUrl: 'https://example.preview',
               personalized: true,
+              // The hosted copy never came up, so the watch that looks for
+              // it has its answer and stops with everything else.
+              hostedPreviewStatus: 'failed',
             };
       return { json: async () => body };
     }) as unknown as typeof fetch;
@@ -190,14 +193,68 @@ describe('the polling fallback', () => {
     expect(result.current.status).toBe('ready');
     expect(result.current.previewUrl).toBe('https://example.preview');
 
+    // The hosted-preview watch starts when the build is reported ready and
+    // gets its answer on its first tick, so allow for that one call before
+    // asserting that nothing keeps polling.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
     const callsAtReady = (global.fetch as ReturnType<typeof vi.fn>).mock.calls
       .length;
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(30_000);
     });
-    // No further polling once the fallback itself has resolved.
+    // No further polling once the fallback and the hosted watch have both
+    // resolved.
     expect((global.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(
       callsAtReady
+    );
+  });
+
+  it('picks up the hosted preview and its expiry after the build is ready', async () => {
+    // The publish to the previews host is detached, so the durable URL and
+    // the date it dies arrive after the stream has closed. The visitor is
+    // shown both together or neither: a shareable link with no expiry on it
+    // is the promise this whole model exists to stop us making.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let call = 0;
+    global.fetch = vi.fn().mockImplementation(async () => {
+      call += 1;
+      const ready = {
+        status: 'ready',
+        phase: 'Done',
+        previewUrl: 'https://example.preview',
+        personalized: true,
+      };
+      return {
+        json: async () =>
+          call === 1
+            ? { ...ready, hostedPreviewStatus: 'pending' }
+            : {
+                ...ready,
+                hostedPreviewStatus: 'live',
+                hostedPreviewUrl:
+                  'https://p-0123456789abcdef.preview.flowstarter.net',
+                hostedPreviewExpiresAt: '2026-09-26T00:00:00.000Z',
+              },
+      };
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => usePreviewProgress('demo-2'));
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    act(() => FakeEventSource.instances[0]!.triggerError());
+
+    await vi.waitFor(() => expect(result.current.status).toBe('ready'));
+    expect(result.current.hostedPreviewUrl).toBeUndefined();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+    expect(result.current.hostedPreviewUrl).toBe(
+      'https://p-0123456789abcdef.preview.flowstarter.net'
+    );
+    expect(result.current.hostedPreviewExpiresAt).toBe(
+      '2026-09-26T00:00:00.000Z'
     );
   });
 });

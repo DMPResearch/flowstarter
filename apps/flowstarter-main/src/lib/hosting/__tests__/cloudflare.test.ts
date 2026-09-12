@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   CloudflareApiError,
   CloudflareClient,
+  CloudflareRecordConflictError,
   cloudflareFromEnv,
 } from '../cloudflare';
 
@@ -274,5 +275,121 @@ describe('CloudflareClient error shapes that are not the documented envelope', (
     expect((error as CloudflareApiError).errors).toEqual([
       { code: 0, message: 'Bad Gateway' },
     ]);
+  });
+});
+
+/**
+ * `claimRecord` is the half of the DNS story that says no.
+ *
+ * `flowstarter.net` is a live zone: the apex, `www`, the mail records and at
+ * least one client site (`lebadusul.flowstarter.net`) are already in it. A
+ * deploy that wrote "make this name point at my new box" over any of them
+ * would return a 200 and take a business offline. So a paid deploy creates a
+ * record, or leaves the existing one exactly as it found it. It never patches.
+ */
+describe('claimRecord never takes a name that is already spoken for', () => {
+  const input = {
+    zoneId: 'zone1',
+    type: 'A' as const,
+    name: 'acme.flowstarter.net',
+    content: '203.0.113.10',
+    ttl: 60,
+    proxied: false,
+    comment: 'flowstarter site acme',
+  };
+
+  it('creates the record when the name is free', async () => {
+    const fetchSpy = mockFetchSeq([
+      { body: envelopeOk([]) },
+      { body: envelopeOk({ id: 'rec-new', name: input.name }) },
+    ]);
+    const client = new CloudflareClient({
+      token: 't',
+      fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+    const out = await client.claimRecord(input);
+    expect(out.created).toBe(true);
+    expect(out.record.id).toBe('rec-new');
+    expect(fetchSpy.mock.calls[1]?.[1]?.method).toBe('POST');
+  });
+
+  it('leaves an identical record alone, so a redeploy is idempotent', async () => {
+    const fetchSpy = mockFetchSeq([
+      {
+        body: envelopeOk([
+          { id: 'rec-1', name: input.name, type: 'A', content: '203.0.113.10' },
+        ]),
+      },
+    ]);
+    const client = new CloudflareClient({
+      token: 't',
+      fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+    const out = await client.claimRecord(input);
+    expect(out.created).toBe(false);
+    expect(out.record.id).toBe('rec-1');
+    // One call: the list. No POST and, above all, no PATCH.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses, loudly, when the record points somewhere else', async () => {
+    const fetchSpy = mockFetchSeq([
+      {
+        body: envelopeOk([
+          { id: 'rec-1', name: input.name, type: 'A', content: '198.51.100.7' },
+        ]),
+      },
+    ]);
+    const client = new CloudflareClient({
+      token: 't',
+      fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+    const error = await client
+      .claimRecord(input)
+      .catch((e: unknown) => e as CloudflareRecordConflictError);
+    expect(error).toBeInstanceOf(CloudflareRecordConflictError);
+    const conflict = error as CloudflareRecordConflictError;
+    expect(conflict.recordName).toBe('acme.flowstarter.net');
+    expect(conflict.found).toBe('198.51.100.7');
+    expect(conflict.wanted).toBe('203.0.113.10');
+    expect(conflict.message).toContain('Refusing to overwrite');
+    // Nothing beyond the read.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a wildcard before it asks Cloudflare anything at all', async () => {
+    const fetchSpy = mockFetchSeq([]);
+    const client = new CloudflareClient({
+      token: 't',
+      fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+    await expect(
+      client.claimRecord({ ...input, name: '*.flowstarter.net' })
+    ).rejects.toBeInstanceOf(CloudflareRecordConflictError);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('ignores a record the API returned that is not the name asked for', async () => {
+    // Cloudflare's name filter is not a guarantee; the one record acted on has
+    // to be the one whose name actually matches.
+    const fetchSpy = mockFetchSeq([
+      {
+        body: envelopeOk([
+          {
+            id: 'rec-other',
+            name: 'other.flowstarter.net',
+            type: 'A',
+            content: '1.1.1.1',
+          },
+        ]),
+      },
+      { body: envelopeOk({ id: 'rec-new', name: input.name }) },
+    ]);
+    const client = new CloudflareClient({
+      token: 't',
+      fetch: fetchSpy as unknown as typeof globalThis.fetch,
+    });
+    const out = await client.claimRecord(input);
+    expect(out.created).toBe(true);
   });
 });

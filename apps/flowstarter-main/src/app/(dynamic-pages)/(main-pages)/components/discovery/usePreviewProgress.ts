@@ -30,6 +30,20 @@ export interface PreviewProgressSnapshot {
   /** Every phase seen so far, in order — the running log the UI renders. */
   phases: PreviewPhaseEntry[];
   previewUrl?: string;
+  /**
+   * The durable, shareable copy on the previews host. Not the same thing as
+   * `previewUrl`, which points at the sandbox the iframe renders and dies with
+   * it. Arrives after `ready` — the publish runs detached — so it is picked up
+   * by a short second poll rather than by the stream, which has already
+   * closed by then.
+   */
+  hostedPreviewUrl?: string;
+  /**
+   * ISO instant the hosted preview stops being served. Shown to the visitor
+   * next to the link, never after it. A preview is temporary by rule, and the
+   * rule is only honest if the person holding the link knows it.
+   */
+  hostedPreviewExpiresAt?: string;
   personalized: boolean;
   error?: string;
   /** True once SSE has been abandoned for the polling fallback. */
@@ -48,6 +62,10 @@ const FALLBACK_POLL_MS = 3500;
 /** Matches the previous poll loop's own cap; the SSE route has its own
  * (longer) server-side timeout, so this only bounds the fallback path. */
 const FALLBACK_MAX_MS = 18 * 60_000;
+
+/** How often, and for how long, the hosted copy is waited for after `ready`. */
+const HOSTED_PREVIEW_POLL_MS = 3000;
+const HOSTED_PREVIEW_MAX_MS = 90_000;
 
 function streamUrl(demoId: string): string {
   return `/api/discovery/preview/live/stream?demoId=${encodeURIComponent(
@@ -228,6 +246,61 @@ export function usePreviewProgress(
       settle();
     };
   }, [demoId]);
+
+  // The hosted copy lands after the build is reported ready: `publishFunnelPreview`
+  // is deliberately detached so a previews host that is slow or down cannot
+  // hold up the preview the visitor is already looking at. By then the stream
+  // has closed and the build poll has settled, so this is its own short watch,
+  // and it stops the moment there is an answer either way.
+  const ready = snapshot.status === 'ready';
+  const hosted = snapshot.hostedPreviewUrl;
+  useEffect(() => {
+    if (!demoId || !ready || hosted) return;
+    let cancelled = false;
+    const startedAt = Date.now();
+    const timer = setInterval(async () => {
+      if (cancelled) return;
+      if (Date.now() - startedAt > HOSTED_PREVIEW_MAX_MS) {
+        clearInterval(timer);
+        return;
+      }
+      let json: {
+        hostedPreviewUrl?: string;
+        hostedPreviewStatus?: string;
+        hostedPreviewExpiresAt?: string;
+      } = {};
+      try {
+        const res = await fetch(statusUrl(demoId));
+        json = await res.json().catch(() => ({}));
+      } catch {
+        return; // try again next tick
+      }
+      if (cancelled) return;
+      if (json.hostedPreviewUrl) {
+        setSnapshot((prev) => ({
+          ...prev,
+          hostedPreviewUrl: json.hostedPreviewUrl,
+          ...(json.hostedPreviewExpiresAt
+            ? { hostedPreviewExpiresAt: json.hostedPreviewExpiresAt }
+            : {}),
+        }));
+        clearInterval(timer);
+        return;
+      }
+      // `failed` and `removed` are answers too: there will be no hosted copy,
+      // and asking for one every three seconds for a minute is noise.
+      if (
+        json.hostedPreviewStatus === 'failed' ||
+        json.hostedPreviewStatus === 'removed'
+      ) {
+        clearInterval(timer);
+      }
+    }, HOSTED_PREVIEW_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [demoId, ready, hosted]);
 
   return snapshot;
 }

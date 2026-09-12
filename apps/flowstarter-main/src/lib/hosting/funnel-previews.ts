@@ -35,11 +35,39 @@ import {
 export const TENANT_ASSET_BUCKET = 'tenant-assets';
 
 /**
- * How long an unclaimed preview is hosted. Long enough that "let me show my
- * business partner tomorrow" works, short enough that we are not hosting a
- * site for someone who walked away a month ago.
+ * How long an unclaimed preview is hosted, in days.
+ *
+ * A preview is temporary by rule, not by neglect: the URL is handed out with
+ * "your preview link works until <date>" printed next to it, this is the
+ * number that date comes from, and `preview-reaper.ts` is what makes the
+ * sentence true. Two weeks is long enough that "let me show my business
+ * partner next weekend" works and short enough that we are not serving a
+ * stranger's business name at a URL nobody can account for.
+ *
+ * `FLOWSTARTER_PREVIEW_TTL_DAYS` overrides it. Values that are not a positive
+ * number are ignored rather than obeyed: a typo in an env file must not mint
+ * previews that expire in the past or never.
  */
-export const PREVIEW_TTL_MS = 7 * 24 * 60 * 60_000;
+export const DEFAULT_PREVIEW_TTL_DAYS = 14;
+
+const DAY_MS = 24 * 60 * 60_000;
+
+export function previewTtlDays(
+  env: Record<string, string | undefined> = process.env
+): number {
+  const raw = Number(env.FLOWSTARTER_PREVIEW_TTL_DAYS?.trim());
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_PREVIEW_TTL_DAYS;
+  return raw;
+}
+
+export function previewTtlMs(
+  env: Record<string, string | undefined> = process.env
+): number {
+  return previewTtlDays(env) * DAY_MS;
+}
+
+/** The TTL this process was started with. */
+export const PREVIEW_TTL_MS = previewTtlMs();
 
 /**
  * How long a CLAIMED preview is kept. At claim the site belongs to somebody
@@ -47,7 +75,7 @@ export const PREVIEW_TTL_MS = 7 * 24 * 60 * 60_000;
  * lives on mostly so the hosted preview URL keeps working while the real build
  * is produced.
  */
-export const CLAIMED_PREVIEW_TTL_MS = 30 * 24 * 60 * 60_000;
+export const CLAIMED_PREVIEW_TTL_MS = 30 * DAY_MS;
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -141,7 +169,7 @@ export interface SaveFunnelPreviewInput {
   /** The `TemplateScaffoldFile[]` a claim rebuilds from. */
   manifest?: unknown;
   artifactPath?: string | null;
-  /** Defaults to now + {@link PREVIEW_TTL_MS}. */
+  /** Defaults to now + {@link previewTtlMs}. */
   expiresAt?: Date;
   supabase?: Client;
 }
@@ -198,7 +226,7 @@ export async function saveFunnelPreview(
   input: SaveFunnelPreviewInput
 ): Promise<boolean> {
   if (!isValidPreviewId(input.previewId)) return false;
-  const expiresAt = input.expiresAt ?? new Date(Date.now() + PREVIEW_TTL_MS);
+  const expiresAt = input.expiresAt ?? new Date(Date.now() + previewTtlMs());
   const { value: safeManifest, reencoded } = manifestSafeForJson(
     input.manifest ?? {}
   );

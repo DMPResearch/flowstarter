@@ -864,7 +864,10 @@ export async function POST(req: NextRequest) {
           updateJob(demoId, {
             hostedPreviewStatus: published.status,
             ...(published.status === 'live'
-              ? { hostedPreviewUrl: published.url }
+              ? {
+                  hostedPreviewUrl: published.url,
+                  hostedPreviewExpiresAt: published.expiresAt,
+                }
               : {}),
           });
           if (published.status !== 'live') {
@@ -984,6 +987,9 @@ export async function GET(req: NextRequest) {
       // it is only ever present once that host reported the site live.
       hostedPreviewUrl: job.hostedPreviewUrl,
       hostedPreviewStatus: job.hostedPreviewStatus,
+      // The hosted copy is temporary and the visitor is told so at the same
+      // moment they are given the link, never afterwards.
+      hostedPreviewExpiresAt: job.hostedPreviewExpiresAt,
       editsUsed: job.editsUsed,
       error: job.status === 'failed' ? job.error : undefined,
       failedPhase: job.status === 'failed' ? job.failedPhase : undefined,

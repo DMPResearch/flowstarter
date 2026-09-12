@@ -68,7 +68,7 @@ type Deployment = {
 type SiteResponse = {
   workspace: WorkspaceSiteState;
   server: HostingServer | null;
-  previewDomain: string;
+  siteDomain: string | null;
   deployments: Deployment[];
 };
 
@@ -186,7 +186,7 @@ export function HostingTab({ project }: { project: Project }) {
   const workspace = data.workspace;
   const server = data.server;
   const deployments = data.deployments;
-  const previewDomain = data.previewDomain;
+  const siteDomain = data.siteDomain;
 
   // Not allocated yet — show allocate panel.
   if (!workspace.hosting_server_id) {
@@ -292,17 +292,17 @@ export function HostingTab({ project }: { project: Project }) {
           </div>
           <div>
             <dt className="text-[0.65rem] uppercase tracking-wide text-[var(--fs-ink-faint)]">
-              Preview domain
+              Site domain
             </dt>
             <dd>
-              {previewDomain ? (
+              {siteDomain ? (
                 <a
-                  href={`https://${previewDomain}`}
+                  href={`https://${siteDomain}`}
                   target="_blank"
                   rel="noreferrer"
                   className="inline-flex items-center gap-1 text-[var(--purple)] hover:underline"
                 >
-                  {previewDomain}
+                  {siteDomain}
                   <ExternalLink className="w-3 h-3" />
                 </a>
               ) : (

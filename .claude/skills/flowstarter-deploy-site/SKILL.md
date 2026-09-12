@@ -1,13 +1,13 @@
 ---
 name: flowstarter-deploy-site
-description: This skill should be used when the user asks to "deploy a workspace site", "ship the site", "publish the workspace", "push a build to the deploy agent", "POST to /site/deploy", or "release this concierge build". Wraps the Flowstarter `/api/team/projects/[id]/site/deploy` endpoint that pushes a built static-site artifact to the workspace's allocated Hetzner host via the per-host deploy-agent (extracts to `/var/www/sites/{slug}/`, writes Caddy snippet, reloads Caddy, upserts preview DNS).
+description: This skill should be used when the user asks to "deploy a workspace site", "ship the site", "publish the workspace", "push a build to the deploy agent", "POST to /site/deploy", or "release this concierge build". Wraps the Flowstarter `/api/team/projects/[id]/site/deploy` endpoint that pushes a built static-site artifact to the workspace's allocated Hetzner host via the per-host deploy-agent (extracts to `/var/www/sites/{slug}/`, writes Caddy snippet, reloads Caddy, claims the site's DNS record).
 ---
 
 # Flowstarter site deploy
 
 Concierge operators (and Claude acting on their behalf) use this skill to push a built site to the Hetzner host that owns a workspace. The artifact path is: build a static directory, tarball it, host the tarball at an HTTPS URL the deploy-agent can fetch, then POST that URL to the deploy endpoint.
 
-The deploy endpoint orchestrates: server lookup, secret resolution, agent push (extract + Caddy snippet + reload), Cloudflare DNS upsert (preview subdomain), and writes a `deployments` row + bumps `workspaces.last_deploy_id`. See `apps/flowstarter-main/src/lib/hosting/deploy.ts` for the source-of-truth implementation.
+The deploy endpoint orchestrates: server lookup, secret resolution, agent push (extract + Caddy snippet + reload), Cloudflare DNS claim for the site's final hostname, and writes a `deployments` row + bumps `workspaces.last_deploy_id`. See `apps/flowstarter-main/src/lib/hosting/deploy.ts` for the source-of-truth implementation.
 
 ## Preconditions
 
@@ -103,7 +103,7 @@ Success (200):
 
 After a successful deploy, surface to the operator:
 - `deploymentId` and `version` (for rollback reference).
-- Preview URL: `<slug>.preview.<rootDomain>` (the route returns this on `GET /site`).
+- Site URL: `<slug>.<platformDomain>` — the final hostname, from `src/lib/hosting/site-hostnames.ts` (the route returns this as `siteDomain` on `GET /site`). Never a `preview.` name: that namespace belongs to the temporary funnel previews, which expire and get reaped.
 - Any custom domains from `workspace_hosts` are now live in Caddy; DNS for those is operator-managed, not auto-upserted.
 
 ## Error code map

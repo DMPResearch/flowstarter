@@ -70,7 +70,7 @@ In order, executed in `deploySite()`:
 1. **Insert `deployments` row** with `status='building'`, `version = max(existing)+1`.
 2. **Update workspace** `deploy_status='deploying'`.
 3. **Push to agent** via `HttpDeployAgentClient.push()` — returns `{sha256, sizeBytes}`. On failure, marks the deployment `failed`, workspace `failed`, returns 200 with status='failed'.
-4. **Cloudflare DNS upsert** (best-effort) — preview subdomain → `server.ipv4`, A record, TTL 60, not proxied. Skipped if `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_DEFAULT_ZONE_ID` are unset, or if `cloudflare_default_zone_id` is null. DNS errors are logged but do not fail the deploy.
+4. **Cloudflare DNS claim** (best-effort) — the site's final hostname `{slug}.{platformDomain}` → `server.ipv4`, A record, TTL 60, not proxied. `claimRecord`, not `upsertRecord`: an existing record pointing elsewhere is a refusal, never an overwrite, and a wildcard is refused outright. Skipped if `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_DEFAULT_ZONE_ID` are unset, or if `cloudflare_default_zone_id` is null. DNS errors are logged but do not fail the deploy.
 5. **Update deployment** `status='live'`, `finished_at=now`, `artifact_sha256`, `artifact_bytes`.
 6. **Update workspace** `deploy_status='live'`, `last_deploy_id`, `last_deployed_at=now`.
 
@@ -124,7 +124,7 @@ The flowstarter-main route only sends JSON form. The bytes form is reserved for 
 }
 ```
 
-Hosts include: `primary_domain`, every `additional_domains` entry, and (if `DEPLOY_AGENT_PREVIEW_DOMAIN_TEMPLATE` is set) the preview host. Empty host list → no snippet written, returns success but the site has no Caddy entry (intentional for migration scenarios).
+Hosts include: `primary_domain`, every `additional_domains` entry, the final site host (if `DEPLOY_AGENT_SITE_DOMAIN_TEMPLATE` is set) and the preview host (if `DEPLOY_AGENT_PREVIEW_DOMAIN_TEMPLATE` is set). Duplicates are dropped, because Caddy refuses a block naming one host twice. Empty host list → no snippet written, returns success but the site has no Caddy entry (intentional for migration scenarios).
 
 **Success (200):**
 ```ts
@@ -168,11 +168,11 @@ Source: `apps/flowstarter-main/src/lib/database.types.ts` (search for `deploymen
 
 `workspaces` updates touched by a deploy: `deploy_status` (`pending`/`deploying`/`live`/`failed`), `last_deploy_id`, `last_deployed_at`.
 
-## Cloudflare DNS upsert
+## Cloudflare DNS claim
 
 Code: `deploy.ts:328-354`. Best-effort, never fails the deploy. Uses `CloudflareClient.upsertRecord` with:
 - `type: 'A'`
-- `name: <slug>.preview.<rootDomain>` (from `previewDomainForSlug()` via `@flowstarter/platform-config`)
+- `name: <slug>.<platformDomain>` (from `finalHostname()` in `src/lib/hosting/site-hostnames.ts`, whose domain comes from `resolvePlatformDomain()` in `@flowstarter/platform-config`)
 - `content: server.ipv4`
 - `ttl: 60`, `proxied: false`
 - `comment: flowstarter site <slug>`

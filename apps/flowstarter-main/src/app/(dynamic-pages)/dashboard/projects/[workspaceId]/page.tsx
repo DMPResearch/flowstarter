@@ -26,7 +26,10 @@ import {
   paymentPosition,
   projectPayments,
 } from '@/components/flowstarter/project-payment';
-import { resolveSiteLink } from '@/components/flowstarter/site-link';
+import {
+  resolvePreviewLink,
+  resolveSiteLink,
+} from '@/components/flowstarter/site-link';
 import { workspaceDisplayName } from '../../client-workspaces';
 
 export const dynamic = 'force-dynamic';
@@ -63,32 +66,47 @@ export default async function ClientProjectPage({
   // One clock for the page: the month the credits are counted in and the reset
   // date the client is quoted have to be the same month.
   const now = new Date();
-  const [{ data: hosts }, { data: messageRows }, { data: buildRows }, counts] =
-    await Promise.all([
-      supabase
-        .from('workspace_hosts')
-        .select('hostname, is_primary')
-        .eq('workspace_id', workspaceId),
-      supabase
-        .from('project_messages')
-        .select('*')
-        .eq('workspace_id', workspaceId)
-        .order('created_at', { ascending: true }),
-      // `project_state` alone cannot tell a client whether their build is
-      // moving: the worker rolls a failed build back to DEPOSIT_PAID so a
-      // retry can claim it, and the page then reads that as "about to start".
-      supabase
-        .from('flowstarter_agent_jobs')
-        .select(
-          'id, kind, status, created_at, run_after, started_at, finished_at'
-        )
-        .eq('workspace_id', workspaceId)
-        .order('created_at', { ascending: false })
-        .limit(10),
-      // Every query inside is filtered by this workspace id, which is the one
-      // `requireWorkspaceAccess` authorized above.
-      loadSiteOverviewCounts(supabase, workspaceId, now),
-    ]);
+  const [
+    { data: hosts },
+    { data: messageRows },
+    { data: buildRows },
+    counts,
+    { data: previewRow },
+  ] = await Promise.all([
+    supabase
+      .from('workspace_hosts')
+      .select('hostname, is_primary')
+      .eq('workspace_id', workspaceId),
+    supabase
+      .from('project_messages')
+      .select('*')
+      .eq('workspace_id', workspaceId)
+      .order('created_at', { ascending: true }),
+    // `project_state` alone cannot tell a client whether their build is
+    // moving: the worker rolls a failed build back to DEPOSIT_PAID so a
+    // retry can claim it, and the page then reads that as "about to start".
+    supabase
+      .from('flowstarter_agent_jobs')
+      .select(
+        'id, kind, status, created_at, run_after, started_at, finished_at'
+      )
+      .eq('workspace_id', workspaceId)
+      .order('created_at', { ascending: false })
+      .limit(10),
+    // Every query inside is filtered by this workspace id, which is the one
+    // `requireWorkspaceAccess` authorized above.
+    loadSiteOverviewCounts(supabase, workspaceId, now),
+    // The temporary preview this workspace was claimed from, if there was
+    // one. Shown separately from the site, with the date it stops working,
+    // because that is the whole difference between the two links.
+    supabase
+      .from('funnel_previews')
+      .select('hostname, expires_at, deploy_status')
+      .eq('claimed_workspace_id', workspaceId)
+      .order('expires_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
   const buildSignal = clientBuildSignal(buildRows ?? [], now);
 
   // The client is reading the bad news; this is the same news in their inbox,
@@ -114,6 +132,12 @@ export default async function ClientProjectPage({
     slug: workspace.slug,
     deployStatus: workspace.deploy_status,
     hosts: hosts ?? [],
+  });
+  const preview = resolvePreviewLink({
+    hostname: previewRow?.hostname ?? null,
+    expiresAt: previewRow?.expires_at ?? null,
+    deployStatus: previewRow?.deploy_status ?? null,
+    now,
   });
 
   // Credits are spent on the proposal, not the apply, so the number that ran
@@ -166,6 +190,27 @@ export default async function ClientProjectPage({
           >
             {site.label} · {site.hostname}
           </a>
+        ) : null}
+        {preview ? (
+          <div
+            data-testid="preview-link"
+            className="flex w-fit flex-col gap-0.5"
+          >
+            {preview.expired ? null : (
+              <a
+                href={preview.href}
+                target="_blank"
+                rel="noreferrer noopener"
+                data-testid="preview-link-href"
+                className="w-fit text-sm font-semibold text-[var(--fs-ink-dim)] underline underline-offset-4"
+              >
+                {preview.label} · {preview.hostname}
+              </a>
+            )}
+            <p className="text-xs text-[var(--fs-ink-faint)]">
+              {preview.expiryNote}
+            </p>
+          </div>
         ) : null}
         {/* The editor authorizes itself; this link is a shortcut, not a gate. */}
         <Link

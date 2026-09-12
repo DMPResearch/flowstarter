@@ -20,6 +20,54 @@ describe('buildCaddySnippet (site, static filesystem target)', () => {
     expect(snippet).toContain('acme.com, www.acme.com, acme.preview.flowstarter.app {');
   });
 
+  test('writes a real block for a site with only its final hostname', () => {
+    // The common case for a paid site: no custom domain attached yet, so the
+    // final hostname is the only name it has. Before `siteHost` existed this
+    // produced an empty snippet and a site nobody could reach.
+    const snippet = buildCaddySnippet(
+      'acme',
+      { kind: 'static', rootDir: '/var/www/sites/acme' },
+      null,
+      [],
+      null,
+      EDITOR_UPSTREAM,
+      'acme.flowstarter.net'
+    );
+    expect(snippet).toContain('acme.flowstarter.net {');
+    expect(snippet).toContain('root * /var/www/sites/acme');
+  });
+
+  test('puts the final hostname ahead of the preview one', () => {
+    const snippet = buildCaddySnippet(
+      'acme',
+      { kind: 'static', rootDir: '/var/www/sites/acme' },
+      'acme.com',
+      ['www.acme.com'],
+      'acme.preview.flowstarter.net',
+      EDITOR_UPSTREAM,
+      'acme.flowstarter.net'
+    );
+    expect(snippet).toContain(
+      'acme.com, www.acme.com, acme.flowstarter.net, acme.preview.flowstarter.net {'
+    );
+  });
+
+  test('does not repeat a host that is also the custom domain', () => {
+    // Caddy refuses a block that names the same host twice, and a client is
+    // free to point their own domain at the name we gave them.
+    const snippet = buildCaddySnippet(
+      'acme',
+      { kind: 'static', rootDir: '/var/www/sites/acme' },
+      'acme.flowstarter.net',
+      [],
+      null,
+      EDITOR_UPSTREAM,
+      'ACME.flowstarter.net'
+    );
+    expect(snippet).toContain('acme.flowstarter.net {');
+    expect(snippet).not.toContain('acme.flowstarter.net, ');
+  });
+
   test('keeps the editor reverse-proxy route ahead of the site content', () => {
     const snippet = buildCaddySnippet(
       'acme',

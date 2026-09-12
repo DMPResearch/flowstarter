@@ -13,7 +13,7 @@
 
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync } from 'node:fs';
-import { readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { packSiteTarball } from '../../../packages/agentic-codegen/src/flowstarter/site-tarball';
@@ -33,6 +33,9 @@ process.env.DEPLOY_AGENT_TEMP_ROOT = join(ROOT, 'temp');
 // overlapping requests would interleave visibly if they were not serialized.
 process.env.DEPLOY_AGENT_CADDY_RELOAD_CMD = `printf 'start\\n' >> ${RELOAD_LOG}; sleep 0.12; printf 'end\\n' >> ${RELOAD_LOG}`;
 process.env.DEPLOY_AGENT_DOCKER_READY_TIMEOUT_MS = '30000';
+// The final hostname family this agent owns. Everything else is somebody
+// else's name and gets a 404 from /tls-ask.
+process.env.DEPLOY_AGENT_SITE_DOMAIN_TEMPLATE = '{slug}.flowstarter.net';
 
 const { routeRequest } = await import('./index');
 
@@ -153,11 +156,41 @@ describe('routing', () => {
     expect(res.status).toBe(404);
   });
 
-  test('tls-ask is not served in sites mode, secret or no secret', async () => {
+  test('tls-ask refuses a preview name on an agent that serves paid sites', async () => {
+    // This agent's only template is the final one. A preview hostname is a
+    // different family served by a different agent, and answering for it
+    // would have Caddy mint a certificate on that agent's behalf.
     const res = await routeRequest(
       new Request('http://agent.test/tls-ask?domain=x.preview.flowstarter.net')
     );
     expect(res.status).toBe(404);
+  });
+
+  test('tls-ask refuses a final name in a zone this agent does not serve', async () => {
+    const res = await routeRequest(
+      new Request('http://agent.test/tls-ask?domain=acme.example.com')
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test('tls-ask refuses one of its own names with no site behind it', async () => {
+    // Otherwise anybody who points a DNS record at this box gets us to ask
+    // Let's Encrypt for a certificate on their behalf.
+    const res = await routeRequest(
+      new Request('http://agent.test/tls-ask?domain=never-deployed.flowstarter.net')
+    );
+    expect(res.status).toBe(404);
+  });
+
+  test('tls-ask accepts a final hostname it is actually serving', async () => {
+    await mkdir(CADDY_DIR, { recursive: true });
+    await writeFile(join(CADDY_DIR, 'tlsok.caddy'), '# site\n');
+    const res = await routeRequest(
+      new Request('http://agent.test/tls-ask?domain=tlsok.flowstarter.net')
+    );
+    expect(res.status).toBe(200);
+    // Unauthenticated on purpose: Caddy's ask has no way to send a token.
+    expect(await res.text()).toBe('');
   });
 
   test('a deploy with neither a URL nor a body is a 400', async () => {
