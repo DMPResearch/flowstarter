@@ -326,6 +326,24 @@ export default clerkMiddleware(async (auth, req) => {
     const isApi = pathname.startsWith('/api');
     const isWebhook = pathname.startsWith('/api/webhooks');
     const isHealth = pathname.startsWith('/api/health');
+    /**
+     * The public lead capture endpoint, which is cross-origin by design: it is
+     * the contact form on a client's own site posting to the platform, from a
+     * hostname that is deliberately not ours.
+     *
+     * The blanket same-origin CSRF test below can therefore only ever reject
+     * it, and the blanket CORS allowlist can only ever refuse its preflight -
+     * neither of them knows which hostnames belong to which workspace, so
+     * neither can say yes. The route itself does, and asks a stricter
+     * question: the origin has to be one of the hostnames of the very
+     * workspace whose token is in the path. It answers its own preflight
+     * against that same rule.
+     *
+     * A CSRF check asks "did a browser on another site cause this?". Here the
+     * honest answer is yes, on purpose, and the defence is the token plus the
+     * per-workspace origin rule rather than same-origin.
+     */
+    const isLeadCapture = pathname.startsWith('/api/leads/capture/');
 
     // CORS allowlist
     if (isApi) {
@@ -381,6 +399,8 @@ export default clerkMiddleware(async (auth, req) => {
 
       // Preflight handling
       if (req.method === 'OPTIONS') {
+        // Lead capture answers its own, per workspace. See above.
+        if (isLeadCapture) return NextResponse.next();
         if (!isAllowedOrigin) {
           return new NextResponse(null, { status: 403 });
         }
@@ -407,6 +427,7 @@ export default clerkMiddleware(async (auth, req) => {
       if (
         unsafe &&
         !isWebhook &&
+        !isLeadCapture &&
         !isInternalApi &&
         !isTeamApi &&
         !isAiApi &&

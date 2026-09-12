@@ -39,6 +39,12 @@ export const PUBLIC_ROUTES = [
   '/api/contact(.*)', // Public contact form API
   '/api/support-chat(.*)', // Public support bot LLM endpoint
   '/api/discovery(.*)', // Public discovery wizard: lead capture + booking deposit
+  // The contact form on a client's own generated site. There is no session to
+  // check: the person filling it in is a visitor to somebody else's business,
+  // not a Flowstarter user. What stands in for one is the workspace's public
+  // capture token in the path plus an origin check against that workspace's
+  // own hostnames, both inside the route. See docs/integrations/lead-capture.md.
+  '/api/leads/capture/(.*)',
   '/unlock(.*)', // Preview unlock landing: reached from a generated site, viewer may be signed out
   '/welcome(.*)', // Guest deposit landing: Stripe returns here before the account exists
   '/contact(.*)',
