@@ -37,6 +37,7 @@ import {
   TIER_SETUP_FROM,
   type Tier,
 } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/discovery.logic';
+import { deriveBusinessName } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/quick-defaults';
 import type { Json } from '@/lib/database.types';
 import {
   claimFunnelPreview,
@@ -474,6 +475,13 @@ export interface ClaimPreviewInput {
   clientEmail?: string | null;
   clientName?: string | null;
   businessName?: string | null;
+  /**
+   * A site they already had. Not authorization or a claimed fact — just
+   * enough for the workspace's name/slug rule (`deriveBusinessName`) to name
+   * the business after its own website when nobody has answered the
+   * business-name question yet. See the "workspace naming" comment below.
+   */
+  websiteUrl?: string | null;
   /** Tier the visitor confirmed in the wizard; priced server-side. */
   tier?: Tier | '' | null;
   /** The monthly care plan the visitor confirmed at step 6, by name. */
@@ -593,7 +601,22 @@ export async function claimPreview(
 
   const quoteMinor = quoteMinorForTier(input.tier ?? '');
   const businessName = input.businessName?.trim() || null;
-  const name = businessName || `${input.clientName?.trim() || 'New'} project`;
+  // The workspace's own name — and, through `uniqueSlug`, its slug — names
+  // the BUSINESS, not whoever happened to answer for it. `deriveBusinessName`
+  // is the same rule the quick-intake preview uses (an answer, once given;
+  // else the one website's hostname; else the visitor's own name for a
+  // personal portfolio), so a dental practice claimed with a website but no
+  // business-name answer yet becomes "Ionescu Dental" rather than
+  // "Andrei Ionescu project". `client_business_name` below stays the raw,
+  // unguessed answer — this is display/slug only, never a claimed fact.
+  const name =
+    deriveBusinessName({
+      businessName: businessName ?? '',
+      fullName: input.clientName ?? '',
+      websiteUrl: input.websiteUrl ?? '',
+      instagramUrl: '',
+      linkedinUrl: '',
+    }) || `${input.clientName?.trim() || 'New'} project`;
 
   // Resolve Cal before insert so guest claims (no intakeSummary) still pick up
   // the URL stashed on the preview at generation time.

@@ -19,6 +19,7 @@ import { IntakeChatSchema } from '@/lib/flowstarter/intake-chat-schema';
 import { currentUser } from '@clerk/nextjs/server';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+import { recommendTier } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/discovery.logic';
 import type {
   CatalogSize,
   CommerceMode,
@@ -162,6 +163,18 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
   const spec = parsed.data;
+  // Rebuilt once and read by both the routing classifier and the tier
+  // fallback below, so the two never disagree about what the visitor
+  // answered.
+  const draftData = discoveryDataFrom(spec);
+  // Step 6 (the tier confirmation) comes after the preview, so a quick-intake
+  // claim — every claim from a visitor who has not been asked yet — arrives
+  // with `spec.tier` unset. Falling back to the same deterministic
+  // recommendation the wizard's own CTA shows keeps `quoteMinorForTier` (and
+  // therefore `final_value_minor` and `/unlock`'s Pay button) from silently
+  // going null: an unpriced, unbuildable claim is a worse outcome than a
+  // recommended tier the client can still change from their dashboard.
+  const tier = spec.tier ?? recommendTier(draftData).tier;
 
   try {
     const result = await claimPreview({
@@ -170,7 +183,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       clientEmail: await primaryEmail(),
       clientName: spec.fullName,
       businessName: spec.businessName,
-      ...(spec.tier ? { tier: spec.tier } : {}),
+      websiteUrl: spec.websiteUrl,
+      tier,
       ...(spec.subscription ? { subscriptionPlan: spec.subscription } : {}),
       ...(spec.billingCadence ? { billingCadence: spec.billingCadence } : {}),
       useProfilePicture: spec.useProfilePicture,
@@ -194,7 +208,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       },
       ...(spec.calComUrl ? { calComUrl: spec.calComUrl } : {}),
       ...(spec.intakeChat ? { intakeChat: spec.intakeChat } : {}),
-      routing: classifyRouting(discoveryDataFrom(spec)),
+      routing: classifyRouting(draftData),
     });
 
     return NextResponse.json(

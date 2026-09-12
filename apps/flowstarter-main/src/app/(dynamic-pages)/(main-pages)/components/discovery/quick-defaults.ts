@@ -27,7 +27,12 @@
  * only fills blanks, so a draft from before the cut, or a brief the client has
  * since corrected, passes through untouched.
  */
-import type { CommerceMode, DiscoveryData, PageCount } from './discovery.logic';
+import {
+  recommendTier,
+  type CommerceMode,
+  type DiscoveryData,
+  type PageCount,
+} from './discovery.logic';
 
 /**
  * Words to an industry, first match wins.
@@ -153,12 +158,24 @@ export function goalFromDescription(description: string): string {
 export const DEFAULT_PAGE_COUNT: PageCount = 'unsure';
 
 /**
- * The default commerce mode.
+ * The default commerce mode — and, for now, the only one a workspace can
+ * have.
  *
- * `'none'` rather than a guess from the words. A site that grows a product row
- * because the description said "products" and then has no catalogue behind it
- * is the exact failure the sufficiency gate exists to prevent, and the Brief
- * asks the question properly a few minutes later.
+ * `'none'` rather than a guess from the words: a site that grows a product
+ * row because the description said "products" and then has no catalogue
+ * behind it is the exact failure the sufficiency gate exists to prevent.
+ *
+ * This used to say the Brief asks the question properly a few minutes
+ * later. It never did: `intake-script.ts` carried a `commerceMode` question
+ * at `phase: 'brief'`, but `BriefForm.tsx` — the Brief as it actually
+ * shipped — has no commerce section and nothing reads that phase, so the
+ * question was unreachable from day one and every workspace has always
+ * filed `'none'` regardless of what the business sells. Wiring commerce into
+ * the Brief for real (a `workspace_briefs` column, a form section, a route
+ * change, and a way for the answer to reach the generator's page-set rule)
+ * is out of scope for closing that gap — this default is the honest,
+ * explicit decision until it is: commerce is out of pilot scope, not merely
+ * unasked.
  */
 export const DEFAULT_COMMERCE_MODE: CommerceMode = 'none';
 
@@ -166,10 +183,21 @@ export const DEFAULT_COMMERCE_MODE: CommerceMode = 'none';
  * Fills the blanks the quick intake no longer asks about. Pure, and additive
  * only: a field the visitor answered, or the Brief later corrected, is left
  * exactly as it is.
+ *
+ * `selectedTier` belongs here for the same reason the others do: step 6 (the
+ * tier confirmation) comes after the preview, so every quick-intake visitor
+ * reaches the preview — and the claim/checkout buttons on it — with an empty
+ * `selectedTier`. `recommendTier` is the same deterministic rule the
+ * recommendation step itself uses, run against the *other* derived fields
+ * above (a recommendation read off an empty `commerceMode`/`pageCount` would
+ * be a worse guess than one read off the defaults just filled in). Leaving
+ * this blank was R2/R3 of the PR #108 regression: a required tier enum 400'd
+ * the guest deposit checkout, and an absent one left the signed-in claim's
+ * quote — and therefore `/unlock`'s Pay button — null.
  */
 export function withQuickDefaults(data: DiscoveryData): DiscoveryData {
   const description = data.description ?? '';
-  return {
+  const derived: DiscoveryData = {
     ...data,
     industry: data.industry?.trim()
       ? data.industry
@@ -177,6 +205,10 @@ export function withQuickDefaults(data: DiscoveryData): DiscoveryData {
     goal: data.goal?.trim() ? data.goal : goalFromDescription(description),
     pageCount: data.pageCount || DEFAULT_PAGE_COUNT,
     commerceMode: data.commerceMode || DEFAULT_COMMERCE_MODE,
+  };
+  return {
+    ...derived,
+    selectedTier: data.selectedTier || recommendTier(derived).tier,
   };
 }
 

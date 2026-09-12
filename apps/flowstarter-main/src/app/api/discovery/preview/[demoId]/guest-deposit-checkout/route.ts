@@ -32,6 +32,10 @@ import { stashGuestIntakeChat } from '@/lib/hosting/funnel-previews';
 import { depositAmountMinor } from '@flowstarter/agentic-codegen/src/flowstarter/state-machine';
 import { STRIPE_API_VERSION } from '@/lib/billing/stripe';
 import {
+  EMPTY_DISCOVERY,
+  recommendTier,
+} from '@/app/(dynamic-pages)/(main-pages)/components/discovery/discovery.logic';
+import {
   getClaimablePreview,
   quoteMinorForTier,
 } from '@/lib/flowstarter/claim';
@@ -43,9 +47,25 @@ export const dynamic = 'force-dynamic';
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+/**
+ * The recommendation rule's own answer to "no signal at all" — every field
+ * `recommendTier` reads (`commerceMode`, `catalogSize`, `pageCount`, `goal`,
+ * `customIntegrations`, `timeline`) is one this public, deliberately minimal
+ * endpoint never collects. Computed once from the rule itself, rather than
+ * hardcoded as `'starter'`, so this stays correct if the rule's own default
+ * branch ever changes.
+ */
+const RECOMMENDATION_WITH_NO_SIGNAL = recommendTier(EMPTY_DISCOVERY).tier;
+
 const GuestDepositSchema = z.object({
-  /** Wizard step 5. Priced server-side; see the file comment. */
-  tier: z.enum(['starter', 'pro', 'commerce', 'custom']),
+  /**
+   * Wizard step 5 — but step 6 comes after the preview, so a quick-intake
+   * guest reaches this endpoint having never seen it. Optional for exactly
+   * that reason: PR #108 made `tier` unreachable for a visitor going straight
+   * from preview to guest checkout, and a required enum 400'd every one of
+   * them. Missing tier is priced server-side; see `RECOMMENDATION_WITH_NO_SIGNAL`.
+   */
+  tier: z.enum(['starter', 'pro', 'commerce', 'custom']).optional(),
   /** Wizard step 6, by name. The monthly fee is server-owned too. */
   subscription: z.enum(['starter', 'pro', 'max']).optional(),
   billingCadence: z.enum(['monthly', 'yearly']).optional(),
@@ -53,6 +73,13 @@ const GuestDepositSchema = z.object({
   email: z.string().email().max(320),
   fullName: z.string().max(200).optional().default(''),
   businessName: z.string().max(200).optional().default(''),
+  /**
+   * A site they already have. Carried through to the eventual claim so the
+   * business-name rule there can name the workspace after its own website
+   * rather than the guest paying for it (see `claimPreview`'s `deriveBusinessName`
+   * use).
+   */
+  websiteUrl: z.string().max(300).optional().default(''),
   /**
    * The info-agent conversation. Too big for Stripe metadata, so it is
    * stashed onto the durable preview at checkout time and the webhook reads
@@ -142,7 +169,13 @@ export async function POST(
     await stashGuestIntakeChat(demoId, spec.intakeChat);
   }
 
-  const quoteMinor = quoteMinorForTier(spec.tier);
+  // Applying the same recommendation rule the wizard's own CTA label and the
+  // signed-in claim now fall back to (see `withQuickDefaults`), just with
+  // less signal than either of those has: this endpoint never collects
+  // `commerceMode`/`pageCount`/etc, so the rule has nothing to read and
+  // resolves to its own no-signal default rather than 400ing the checkout.
+  const tier = spec.tier ?? RECOMMENDATION_WITH_NO_SIGNAL;
+  const quoteMinor = quoteMinorForTier(tier);
   if (!quoteMinor) {
     return NextResponse.json(
       { error: 'That build tier is not priced' },
@@ -159,13 +192,17 @@ export async function POST(
     kind: GUEST_DEPOSIT_KIND,
     previewId: demoId,
     email,
-    tier: spec.tier,
+    tier,
     ...(spec.subscription ? { subscription: spec.subscription } : {}),
     ...(spec.billingCadence ? { billingCadence: spec.billingCadence } : {}),
     ...(spec.fullName ? { fullName: spec.fullName.slice(0, 200) } : {}),
     ...(spec.businessName
       ? { businessName: spec.businessName.slice(0, 200) }
       : {}),
+    // Carried to the webhook's eventual `claimPreview` call so a dental
+    // practice's workspace is named and slugged after its own website
+    // rather than the guest who paid for it.
+    ...(spec.websiteUrl ? { websiteUrl: spec.websiteUrl.slice(0, 300) } : {}),
   };
 
   try {

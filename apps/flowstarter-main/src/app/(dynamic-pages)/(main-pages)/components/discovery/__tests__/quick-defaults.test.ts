@@ -9,7 +9,11 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { EMPTY_DISCOVERY, type DiscoveryData } from '../discovery.logic';
+import {
+  EMPTY_DISCOVERY,
+  recommendTier,
+  type DiscoveryData,
+} from '../discovery.logic';
 import {
   DEFAULT_COMMERCE_MODE,
   DEFAULT_GOAL,
@@ -146,6 +150,44 @@ describe('withQuickDefaults', () => {
   it('is pure: the same data in gives the same data out', () => {
     const data = withDescription('A barber shop with four chairs.');
     expect(withQuickDefaults(data)).toEqual(withQuickDefaults(data));
+  });
+
+  describe('selectedTier', () => {
+    // Regression (R2/R3 of the PR #108 fallout): step 6, the tier
+    // confirmation, comes after the preview, so every quick-intake visitor
+    // reaches the claim/checkout buttons with `selectedTier: ''`. A required
+    // tier enum 400'd the guest deposit checkout; an absent one left the
+    // signed-in claim's quote -- and `/unlock`'s Pay button -- null. Both are
+    // fixed by never letting `selectedTier` leave this function blank.
+    it('fills it from the recommendation when the visitor never confirmed one', () => {
+      // No commerce/page-count signal at all -> the rule's own default.
+      expect(withQuickDefaults(EMPTY_DISCOVERY).selectedTier).toBe(
+        recommendTier(withQuickDefaults(EMPTY_DISCOVERY)).tier
+      );
+      expect(withQuickDefaults(EMPTY_DISCOVERY).selectedTier).toBe('starter');
+    });
+
+    it('recommends from the OTHER derived fields, not the blank originals', () => {
+      // A large physical catalogue recommends Commerce -- but only once
+      // `commerceMode`/`catalogSize` have real values, which for a
+      // quick-intake visitor only `withQuickDefaults` itself has just
+      // supplied. Recommending off the pre-fill blanks would silently
+      // undersell a business that plainly sells things.
+      const sellsALot: DiscoveryData = {
+        ...EMPTY_DISCOVERY,
+        commerceMode: 'physical',
+        catalogSize: '26-100',
+      };
+      expect(withQuickDefaults(sellsALot).selectedTier).toBe('commerce');
+    });
+
+    it('never overwrites a tier the visitor actually confirmed', () => {
+      const confirmed: DiscoveryData = {
+        ...EMPTY_DISCOVERY,
+        selectedTier: 'custom',
+      };
+      expect(withQuickDefaults(confirmed).selectedTier).toBe('custom');
+    });
   });
 });
 

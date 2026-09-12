@@ -30,8 +30,6 @@
  * downstream of it (the preview, the claim, the generator) is unaffected.
  */
 import {
-  type CatalogSize,
-  type CommerceMode,
   type DiscoveryData,
   type PageCount,
   type Step,
@@ -59,8 +57,6 @@ export type IntakeQuestionId =
   | 'brandTone'
   | 'pageCount'
   | 'timeline'
-  | 'commerceMode'
-  | 'catalogSize'
   | 'calComUrl'
   | 'customIntegrations'
   | 'selectedTier'
@@ -332,63 +328,6 @@ const TIMELINE_OPTIONS: ReadonlyArray<IntakeOption & { value: TimelineId }> = [
   },
 ];
 
-const COMMERCE_OPTIONS: ReadonlyArray<IntakeOption & { value: CommerceMode }> =
-  [
-    {
-      value: 'none',
-      label: 'No products',
-      labelKey: 'landing.discovery.options.commerce.none.label',
-    },
-    {
-      value: 'few-services',
-      label: 'A few paid offers',
-      labelKey: 'landing.discovery.options.commerce.few-services.label',
-    },
-    {
-      value: 'digital',
-      label: 'Digital products',
-      labelKey: 'landing.discovery.options.commerce.digital.label',
-    },
-    {
-      value: 'physical',
-      label: 'Physical products',
-      labelKey: 'landing.discovery.options.commerce.physical.label',
-    },
-    {
-      value: 'mixed',
-      label: 'Mix of both',
-      labelKey: 'landing.discovery.options.commerce.mixed.label',
-    },
-  ];
-
-const CATALOG_OPTIONS: ReadonlyArray<IntakeOption & { value: CatalogSize }> = [
-  {
-    value: '1-5',
-    label: '1 – 5',
-    labelKey: 'landing.discovery.options.catalog.1-5',
-  },
-  {
-    value: '6-25',
-    label: '6 – 25',
-    labelKey: 'landing.discovery.options.catalog.6-25',
-  },
-  {
-    value: '26-100',
-    label: '26 – 100',
-    labelKey: 'landing.discovery.options.catalog.26-100',
-  },
-  {
-    value: '100+',
-    label: '100+',
-    labelKey: 'landing.discovery.options.catalog.100+',
-  },
-  {
-    value: 'unsure',
-    label: 'Not sure',
-    labelKey: 'landing.discovery.options.catalog.unsure',
-  },
-];
-
 const TIER_OPTIONS: ReadonlyArray<IntakeOption & { value: Tier }> = [
   {
     value: 'starter',
@@ -628,50 +567,19 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
     apply: choiceApplier('timeline', TIMELINE_OPTIONS),
     value: (data) => data.timeline,
   },
-  {
-    id: 'commerceMode',
-    phase: 'brief',
-    step: 6,
-    kind: 'choice',
-    promptKey: `${Q}commerceMode.prompt`,
-    required: true,
-    options: COMMERCE_OPTIONS,
-    validate: choiceValidator(COMMERCE_OPTIONS),
-    // Mirrors the old CommerceStep: picking "nothing to sell" clears a catalog
-    // size the visitor may have given before changing their mind.
-    apply: (data, raw) => {
-      const mode = matchOption(COMMERCE_OPTIONS, raw) as CommerceMode | null;
-      if (mode === null) return data;
-      const sells =
-        mode === 'digital' || mode === 'physical' || mode === 'mixed';
-      return {
-        ...data,
-        commerceMode: mode,
-        catalogSize: sells
-          ? data.catalogSize === 'na'
-            ? '1-5'
-            : data.catalogSize
-          : 'na',
-      };
-    },
-    value: (data) => data.commerceMode,
-  },
-  {
-    id: 'catalogSize',
-    phase: 'brief',
-    step: 6,
-    kind: 'choice',
-    promptKey: `${Q}catalogSize.prompt`,
-    required: false,
-    options: CATALOG_OPTIONS,
-    when: (data) =>
-      data.commerceMode === 'digital' ||
-      data.commerceMode === 'physical' ||
-      data.commerceMode === 'mixed',
-    validate: choiceValidator(CATALOG_OPTIONS),
-    apply: choiceApplier('catalogSize', CATALOG_OPTIONS),
-    value: (data) => (data.catalogSize === 'na' ? '' : data.catalogSize),
-  },
+  // `commerceMode` and `catalogSize` used to live here, `phase: 'brief'`,
+  // required and ready to ask. They never got asked: `BriefForm.tsx` — the
+  // Brief as it actually shipped — has no commerce question, does not read
+  // `questionsInPhase('brief')` at all, and neither does anything else, so
+  // every workspace has always filed `commerceMode: 'none'` regardless of
+  // what the business actually sells. Wiring commerce into the Brief for
+  // real is a new column on `workspace_briefs`, a form section, a route
+  // change and a way for the value to reach the generator's page-set rule —
+  // a feature, not a bug fix, and out of scope for closing this gap. Rather
+  // than leave a question object that looks reachable and is not, it is
+  // removed here; `commerceMode`/`catalogSize` remain ordinary
+  // `DiscoveryData` fields, explicitly defaulted by
+  // `quick-defaults.ts`'s `DEFAULT_COMMERCE_MODE` for exactly this reason.
   {
     id: 'calComUrl',
     phase: 'brief',

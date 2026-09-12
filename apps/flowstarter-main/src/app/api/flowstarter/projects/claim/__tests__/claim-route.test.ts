@@ -333,6 +333,49 @@ describe('POST /api/flowstarter/projects/claim', () => {
     expect(body.unlockUrl).toContain(`/unlock/${body.workspaceId}`);
   });
 
+  it('names the workspace after its own website, not the person claiming it, when there is no business-name answer yet', async () => {
+    // Regression: the business-name question moved behind the deposit, so a
+    // quick-intake claim has an empty `businessName` and the workspace's own
+    // name (and, through it, its slug) fell back to "<full name> project" --
+    // a dental practice became "andrei-ionescu-project-<id>". `claimPreview`
+    // now runs the same `deriveBusinessName` rule the quick-intake preview
+    // uses, so a real website link still names the business.
+    stashPreview();
+
+    await POST(
+      claimRequest({
+        ...VALID_BODY,
+        businessName: '',
+        fullName: 'Andrei Ionescu',
+        websiteUrl: 'https://ionescu-dental.ro',
+      })
+    );
+
+    expect(db.workspaces[0].name).toBe('Ionescu Dental');
+    expect(db.workspaces[0].slug).toMatch(/^ionescu-dental-/);
+    // The raw, unguessed answer stays null -- this is display/slug only,
+    // never a claimed fact about what the client actually typed.
+    expect(db.workspaces[0].client_business_name).toBeNull();
+  });
+
+  it('falls back to the visitor’s own name when there is neither a business-name answer nor a link', async () => {
+    // For a personal portfolio the business IS the person, so their own name
+    // is the honest final fallback -- not "<name> project", which only
+    // survives as the true last resort when there is no name at all either.
+    stashPreview();
+
+    await POST(
+      claimRequest({
+        ...VALID_BODY,
+        businessName: '',
+        fullName: 'Andrei Ionescu',
+        websiteUrl: '',
+      })
+    );
+
+    expect(db.workspaces[0].name).toBe('Andrei Ionescu');
+  });
+
   it('recomputes the routing verdict server-side', async () => {
     stashPreview();
 
@@ -360,7 +403,12 @@ describe('POST /api/flowstarter/projects/claim', () => {
     expect(db.intake_submissions[0].score).toBeGreaterThanOrEqual(5);
   });
 
-  it('leaves the quote unset when the wizard sent no tier', async () => {
+  it('recommends and prices a tier when the wizard sent no tier', async () => {
+    // Regression: step 6 (the tier confirmation) comes after the preview, so
+    // every quick-intake visitor claims having never seen it. This used to
+    // leave `quoteMinor` (and `final_value_minor`) null, which left
+    // `/unlock`'s Pay button with nothing to render — a workspace the client
+    // owns but genuinely cannot pay for.
     stashPreview();
 
     const { tier: _tier, ...withoutTier } = VALID_BODY;
@@ -368,8 +416,22 @@ describe('POST /api/flowstarter/projects/claim', () => {
     const body = (await response.json()) as { quoteMinor: number | null };
 
     expect(response.status).toBe(201);
-    expect(body.quoteMinor).toBeNull();
-    expect(db.workspaces[0].final_value_minor).toBeUndefined();
+    // No commerce/page-count/custom-integration signal in the body — the
+    // recommendation rule's own no-signal default, 'starter'.
+    expect(body.quoteMinor).toBe(79_900);
+    expect(db.workspaces[0].final_value_minor).toBe(79_900);
+    expect(db.workspaces[0].tier_name).toBe('starter');
+  });
+
+  it('still prefers the wizard-confirmed tier over the recommendation', async () => {
+    stashPreview();
+
+    // A visitor who did reach step 6 is not overridden by the fallback: a
+    // real answer beats a guess, same as everywhere else in this funnel.
+    await POST(claimRequest({ ...VALID_BODY, tier: 'commerce' }));
+
+    expect(db.workspaces[0].final_value_minor).toBe(149_900);
+    expect(db.workspaces[0].tier_name).toBe('commerce');
   });
 
   it('returns the same workspace when the same preview is claimed twice', async () => {

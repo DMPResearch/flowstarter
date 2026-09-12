@@ -105,6 +105,7 @@ export async function provisionGuestDeposit(
       : undefined;
   const businessName = meta['businessName']?.trim() || null;
   const fullName = meta['fullName']?.trim() || null;
+  const websiteUrl = meta['websiteUrl']?.trim() || null;
 
   // ── 1. Redelivery guard ──────────────────────────────────────────────────
   const settled = await findProvisionedWorkspace(previewId);
@@ -145,6 +146,7 @@ export async function provisionGuestDeposit(
       clientEmail: email,
       clientName: fullName,
       businessName,
+      websiteUrl,
       ...(stashedChat.success ? { intakeChat: stashedChat.data } : {}),
       ...(tier ? { tier } : {}),
       ...(subscription ? { subscriptionPlan: subscription } : {}),

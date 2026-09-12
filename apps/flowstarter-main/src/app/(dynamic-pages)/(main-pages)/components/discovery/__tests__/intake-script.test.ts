@@ -12,7 +12,7 @@
  * owns them: a number asserted in two files is a number that gets changed in
  * one of them. This file is the mechanics underneath -- validators, appliers,
  * option matching, reflections, interpolation -- for every question in the
- * script, including the twelve the Brief now asks after the deposit.
+ * script, including the ten the Brief now asks after the deposit.
  */
 import { describe, expect, it } from 'vitest';
 import en from '@/locales/en';
@@ -31,7 +31,6 @@ import {
   firstSentence,
   humanList,
   interpolate,
-  matchOption,
   nextQuestion,
   promptText,
   questionById,
@@ -104,7 +103,6 @@ const FULL_ANSWERS: Record<string, string> = {
   brandTone: 'Calm, Trustworthy',
   pageCount: '5-7',
   timeline: 'asap',
-  commerceMode: 'none',
   calComUrl: 'https://cal.com/ionescu-dental/intro',
   customIntegrations: 'Mailchimp for newsletters',
   selectedTier: 'starter',
@@ -218,8 +216,11 @@ describe('the required-answer gate', () => {
 
   it('keeps every required question required, whichever phase it moved to', () => {
     // Moving a question did not make it optional. The four in front of the
-    // preview are gated by `canProceed`; `goal` and `commerceMode` are the
-    // Brief's own required fields, and the two panels are the deposit's.
+    // preview are gated by `canProceed`; `goal` is the Brief's own required
+    // field (its former Brief-mate `commerceMode` was removed from the
+    // script entirely -- see `intake-script.ts` -- rather than left as a
+    // required question nothing ever asks), and the two panels are the
+    // deposit's.
     const required = INTAKE_SCRIPT.filter((question) => question.required);
     expect(required.map((question) => question.id)).toEqual([
       'fullName',
@@ -227,7 +228,6 @@ describe('the required-answer gate', () => {
       'description',
       'links',
       'goal',
-      'commerceMode',
       'selectedTier',
       'subscription',
     ]);
@@ -236,7 +236,6 @@ describe('the required-answer gate', () => {
       'quick',
       'quick',
       'quick',
-      'brief',
       'brief',
       'deposit',
       'deposit',
@@ -265,8 +264,10 @@ function applyWholeScript(answers: Record<string, string>): DiscoveryData {
 
 describe('answers landing in DiscoveryData', () => {
   it('keeps the DiscoveryData shape the preview already reads', () => {
-    // Applied directly rather than walked: the Brief asks twelve of these on
-    // the dashboard now, and they have to land in the same fields the
+    // Applied directly rather than walked: the Brief asks ten of these on the
+    // dashboard now (`commerceMode`/`catalogSize` were removed from the
+    // script entirely -- see `intake-script.ts` -- rather than kept as
+    // questions nothing asks), and they have to land in the same fields the
     // conversation used to write.
     const data = applyWholeScript(FULL_ANSWERS);
     expect(data).toMatchObject({
@@ -278,27 +279,22 @@ describe('answers landing in DiscoveryData', () => {
       brandTone: 'Calm, Trustworthy',
       pageCount: '5-7',
       timeline: 'asap',
-      commerceMode: 'none',
-      catalogSize: 'na',
       calComUrl: 'https://cal.com/ionescu-dental/intro',
       customIntegrations: 'Mailchimp for newsletters',
     });
+    // Never asked by the script -- explicitly defaulted downstream by
+    // `quick-defaults.ts`'s `DEFAULT_COMMERCE_MODE` instead.
+    expect(data.commerceMode).toBe('');
+    expect(data.catalogSize).toBe('na');
     expect(Object.keys(data).sort()).toEqual(
       Object.keys(EMPTY_DISCOVERY).sort()
     );
   });
 
-  it('matches a typed answer to a chip, however it was capitalised', () => {
-    const commerce = questionById('commerceMode');
-    expect(matchOption(commerce?.options, 'digital products')).toBe('digital');
-    expect(matchOption(commerce?.options, '  Physical Products ')).toBe(
-      'physical'
-    );
-    expect(matchOption(commerce?.options, 'whatever')).toBeNull();
-    expect(commerce?.validate?.('whatever')).toBe(
-      'landing.discovery.chat.errors.choice'
-    );
-  });
+  // `commerceMode`'s "matches a typed answer to a chip, however it was
+  // capitalised" coverage lived here; the question is gone from the script
+  // (see `intake-script.ts`), and `matchOption`'s case-insensitive matching
+  // is still exercised via `pageCount` in intake-brief-questions.test.ts.
 
   it('takes an industry the chips do not cover, verbatim', () => {
     const industry = questionById('industry');
@@ -384,11 +380,11 @@ describe('what the visitor sees', () => {
   it("draws the visitor's bubble from the catalogue's words, not the stored code", () => {
     const data: DiscoveryData = {
       ...EMPTY_DISCOVERY,
-      commerceMode: 'few-services',
+      timeline: '4-weeks',
       selectedTier: 'commerce',
     };
-    expect(answerText(questionById('commerceMode')!, data, t)).toBe(
-      'A few paid offers'
+    expect(answerText(questionById('timeline')!, data, t)).toBe(
+      'Within 4 weeks'
     );
     // A Commerce build has no plan to choose — it has the store plan.
     expect(answerText(questionById('subscription')!, data, t)).toBe('Commerce');
@@ -405,13 +401,13 @@ describe('what the agent says back', () => {
   };
 
   it('picks the reaction to a chip by the stored value, never by a model', () => {
-    const digital = q('commerceMode').apply(EMPTY_DISCOVERY, 'digital');
-    expect(reflectionText(q('commerceMode'), digital, t)).toBe(
-      t('landing.discovery.chat.q.commerceMode.reflect.digital')
+    const asap = q('timeline').apply(EMPTY_DISCOVERY, 'asap');
+    expect(reflectionText(q('timeline'), asap, t)).toBe(
+      t('landing.discovery.chat.q.timeline.reflect.asap')
     );
-    const none = q('commerceMode').apply(EMPTY_DISCOVERY, 'none');
-    expect(reflectionText(q('commerceMode'), none, t)).toBe(
-      t('landing.discovery.chat.q.commerceMode.reflect.none')
+    const flexible = q('timeline').apply(EMPTY_DISCOVERY, 'flexible');
+    expect(reflectionText(q('timeline'), flexible, t)).toBe(
+      t('landing.discovery.chat.q.timeline.reflect.flexible')
     );
   });
 
@@ -461,8 +457,6 @@ describe('what the agent says back', () => {
       brandTone: 'Warm, Premium / elegant',
       pageCount: '5-7',
       timeline: 'asap',
-      commerceMode: 'digital',
-      catalogSize: '6-25',
       calComUrl: 'https://cal.com/maria',
       customIntegrations: 'A newsletter',
       selectedTier: 'pro',
