@@ -12,8 +12,10 @@ import {
   ProjectState,
   isPreviewToolingPath,
   normalizeCalLink,
+  parseChangeRequestIntent,
   type BrandConfig,
   type BusinessIntakePayload,
+  type ChangeRequestIntent,
   type FullSiteBuildEvent,
   type FullSiteBuildJob,
   type FullSiteBuildJobStore,
@@ -23,6 +25,10 @@ import {
   type PreviewIntent,
   type TemplateScaffoldFile,
 } from '@flowstarter/agentic-codegen';
+import {
+  loadChangeRequestAssetFiles,
+  withChangeRequestAssets,
+} from './change-request-assets';
 import { withTenant } from './tenancy';
 
 const UUID =
@@ -36,7 +42,11 @@ const CLAIMABLE = new Set(['queued', 'failed']);
  * endpoint, because they are the same pipeline with different halves of it
  * enabled; the worker branches on the kind, not on the route.
  */
-const CLAIMABLE_KINDS = new Set(['FULL_SITE_BUILD', 'SITE_REBUILD']);
+const CLAIMABLE_KINDS = new Set([
+  'FULL_SITE_BUILD',
+  'SITE_REBUILD',
+  'CHANGE_REQUEST_BUILD',
+]);
 
 export class JobArtifactError extends Error {}
 
@@ -308,11 +318,24 @@ function parseCalComUrl(raw: string | null | undefined): string | null {
   return normalizeCalLink(trimmed) ? trimmed : null;
 }
 
+/** The three kinds this worker runs, off the ledger row's free-text column. */
+function jobKindFor(kind: string): FullSiteBuildJob['kind'] {
+  if (kind === 'SITE_REBUILD') return 'SITE_REBUILD';
+  if (kind === 'CHANGE_REQUEST_BUILD') return 'CHANGE_REQUEST_BUILD';
+  return 'FULL_SITE_BUILD';
+}
+
 export function buildJobFromRows(input: {
   job: JobLedgerRow;
   projectState: string;
   artifacts: ProjectArtifactRow;
   calComUrl?: string | null;
+  /**
+   * The client's own pictures, already downloaded and verified, appended to
+   * the seed manifest. Only a CHANGE_REQUEST_BUILD has any: they are the
+   * files the request names, and the prompt gives the agent their paths.
+   */
+  changeRequestAssetFiles?: readonly TemplateScaffoldFile[];
 }): FullSiteBuildJob {
   const intake = asRecord(
     input.artifacts.intake_payload,
@@ -335,6 +358,11 @@ export function buildJobFromRows(input: {
   );
   const calComUrl = parseCalComUrl(input.calComUrl);
   const previewIntent = parsePreviewIntent(input.job.payload);
+  const kind = jobKindFor(input.job.kind);
+  const changeRequest =
+    kind === 'CHANGE_REQUEST_BUILD'
+      ? parseChangeRequestIntent(input.job.payload)
+      : null;
   if (calComUrl && !requiredIntegrations.some((slug) => slug === CAL_COM)) {
     requiredIntegrations.push(CAL_COM);
   }
@@ -342,21 +370,34 @@ export function buildJobFromRows(input: {
   return {
     id: input.job.id,
     projectId: input.job.workspace_id,
-    kind:
-      input.job.kind === 'SITE_REBUILD' ? 'SITE_REBUILD' : 'FULL_SITE_BUILD',
+    kind,
     projectState: input.projectState as ProjectState,
     intake,
     brandConfig: asRecord(
       input.artifacts.brand_config,
       'brand_config',
     ) as unknown as BrandConfig,
-    approvedPreviewFiles: parseApprovedPreviewFiles(
-      input.artifacts.preview_manifest,
+    approvedPreviewFiles: withChangeRequestAssets(
+      parseApprovedPreviewFiles(input.artifacts.preview_manifest),
+      input.changeRequestAssetFiles ?? [],
     ),
     requiredIntegrations,
     ...(calComUrl ? { calComUrl } : {}),
     ...(previewIntent ? { previewIntent } : {}),
+    ...(changeRequest ? { changeRequest } : {}),
   };
+}
+
+/**
+ * The change request on a claimed job, or null for the other two kinds.
+ *
+ * Exported so the claim path and its tests read the payload the same way.
+ */
+export function changeRequestFor(
+  row: JobLedgerRow,
+): ChangeRequestIntent | null {
+  if (row.kind !== 'CHANGE_REQUEST_BUILD') return null;
+  return parseChangeRequestIntent(row.payload);
 }
 
 export interface SupabaseJobStoreOptions {
@@ -494,11 +535,26 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
         );
       }
 
+      // The client's own pictures are fetched at claim time, alongside the
+      // manifest, so a change request whose files have been deleted or whose
+      // rights have been withdrawn fails here -- before an agent spends
+      // minutes building a site that the applied-change gate would then fail
+      // anyway with a much worse explanation.
+      const changeRequest = changeRequestFor(row);
+      const changeRequestAssetFiles = changeRequest
+        ? await loadChangeRequestAssetFiles({
+            client: this.client,
+            workspaceId: row.workspace_id,
+            assets: changeRequest.assets,
+          })
+        : [];
+
       return buildJobFromRows({
         job: row,
         projectState: workspace.project_state,
         artifacts,
         calComUrl: workspace.cal_com_url,
+        changeRequestAssetFiles,
       });
     } catch (error) {
       await this.markFailed(jobId, {
@@ -632,6 +688,171 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
       })
       .eq('id', jobId);
     if (error) throw error;
+  }
+
+  async markChangeRequestBuildStarted(
+    jobId: string,
+    worktree: GitWorktree,
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    const { error } = await this.client
+      .from('flowstarter_agent_jobs')
+      .update({
+        worktree_branch: worktree.branch,
+        worktree_path: worktree.path,
+        updated_at: now,
+      })
+      .eq('id', jobId);
+    if (error) throw error;
+    // No project_state update, for the same reason a rebuild makes none: a
+    // client who has paid for one more section has not gone back into the
+    // build pipeline, and moving a LIVE_SUBSCRIPTION project into
+    // AGENTS_WORKING would tell the operator board a story that never
+    // happened.
+  }
+
+  /**
+   * The finished change, saved as the site's next version.
+   *
+   * This is the same two writes `saveSiteVersion` does in the main app -- a
+   * new `site_versions` row and a mirror into the artifact manifest the worker
+   * and the deploy path both read -- restated here because this process has no
+   * access to that module. Nothing is marked published yet: that happens only
+   * after the deploy has actually succeeded.
+   *
+   * The version number is taken under an insert that will fail on the table's
+   * own (workspace_id, version) uniqueness if a client publish lands in the
+   * same moment, and the retry re-reads rather than assuming.
+   */
+  async saveChangeRequestVersion(
+    jobId: string,
+    input: { changeRequestId: string; files: TemplateScaffoldFile[] },
+  ): Promise<{ version: number }> {
+    const workspaceId = await this.workspaceFor(jobId);
+    const manifest = { files: input.files };
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const { data: latest, error: readError } = await withTenant(
+        this.client,
+        workspaceId,
+      )
+        .from('site_versions')
+        .select('version')
+        .order('version', { ascending: false })
+        .limit(1)
+        .maybeSingle<{ version: number }>();
+      if (readError) throw readError;
+
+      const next = (latest?.version ?? 0) + 1;
+      const { error } = await withTenant(this.client, workspaceId)
+        .from('site_versions')
+        .insert({
+          version: next,
+          manifest,
+          summary: `Paid change request ${input.changeRequestId}`,
+          created_by: `system:change_request_build:${jobId}`,
+        });
+      if (error) {
+        if (error.code === '23505') continue;
+        throw error;
+      }
+
+      const { error: mirrorError } = await withTenant(this.client, workspaceId)
+        .from('flowstarter_project_artifacts')
+        .update({
+          preview_manifest: manifest,
+          updated_at: new Date().toISOString(),
+        });
+      if (mirrorError) throw mirrorError;
+
+      return { version: next };
+    }
+    throw new JobArtifactError(
+      'Could not take a site version number for the finished change request',
+    );
+  }
+
+  /**
+   * The last thing a change-request build does, and the only thing that tells
+   * anybody the work shipped.
+   *
+   * The move to `done` is a compare-and-set on `paid`, so a redelivered job, a
+   * second attempt, or an operator who marked it done by hand in the meantime
+   * cannot produce a second completion -- and, more importantly, a build that
+   * crashed before reaching this line leaves the request exactly where it was.
+   * A request that reads `done` always means a site that went live.
+   */
+  async markChangeRequestBuilt(
+    jobId: string,
+    result: {
+      commitSha: string;
+      pullRequestUrl: string;
+      stagingUrl: string;
+      changeRequestId: string;
+      version: number;
+    },
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    const workspaceId = await this.workspaceFor(jobId);
+    const existing = await this.currentPayload(jobId);
+
+    // The version is the one the client is about to be told about, so it is
+    // stamped published before the request claims to be done.
+    const { error: unpublishError } = await withTenant(this.client, workspaceId)
+      .from('site_versions')
+      .update({ published_at: null })
+      .not('published_at', 'is', null);
+    if (unpublishError) throw unpublishError;
+    const { error: publishError } = await withTenant(this.client, workspaceId)
+      .from('site_versions')
+      .update({ published_at: now })
+      .eq('version', result.version);
+    if (publishError) throw publishError;
+
+    const { error } = await this.client
+      .from('flowstarter_agent_jobs')
+      .update({
+        status: 'succeeded',
+        pull_request_url: result.pullRequestUrl,
+        payload: {
+          ...existing,
+          commitSha: result.commitSha,
+          stagingUrl: result.stagingUrl,
+          pullRequestUrl: result.pullRequestUrl,
+          builtVersion: result.version,
+        },
+        finished_at: now,
+        updated_at: now,
+      })
+      .eq('id', jobId);
+    if (error) throw error;
+
+    const { data: done, error: doneError } = await withTenant(
+      this.client,
+      workspaceId,
+    )
+      .from('flowstarter_change_requests')
+      .update({
+        status: 'done',
+        completed_at: now,
+        completed_via: 'build',
+        built_version: result.version,
+        build_job_id: jobId,
+        updated_at: now,
+      })
+      .eq('id', result.changeRequestId)
+      .eq('status', 'paid')
+      .select('id');
+    if (doneError) throw doneError;
+    if (!done || done.length === 0) {
+      // Loud rather than silent: the site is live and the ledger disagrees,
+      // which is exactly the state an operator has to be able to see.
+      throw new JobArtifactError(
+        `Change request ${result.changeRequestId} was not at paid when its ` +
+          'build finished, so it was not marked done. The site is live in ' +
+          `version ${result.version}.`,
+      );
+    }
   }
 
   async markFailed(

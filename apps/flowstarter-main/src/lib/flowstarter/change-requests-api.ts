@@ -16,6 +16,7 @@ import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import {
   ChangeRequestError,
   MAX_CHANGE_QUOTE_MINOR,
+  MAX_COMPLETION_REASON_CHARS,
   completeChangeRequest,
   declineChangeRequest,
   getChangeRequest,
@@ -23,6 +24,8 @@ import {
   quoteChangeRequest,
   toChangeRequestView,
 } from './change-requests';
+import { enqueueChangeRequestBuild } from './change-request-build';
+import { dispatchAgentJob } from './pipeline/dispatch';
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -157,7 +160,12 @@ export async function quoteChangeRequestHandler(
 
 const statusSchema = z.object({
   status: z.enum(['declined', 'done']),
-  reason: z.string().trim().max(500).optional().default(''),
+  reason: z
+    .string()
+    .trim()
+    .max(MAX_COMPLETION_REASON_CHARS)
+    .optional()
+    .default(''),
 });
 
 export async function setChangeRequestStatusHandler(
@@ -174,7 +182,9 @@ export async function setChangeRequestStatusHandler(
     if (!row) return fail('Change request not found', 'NOT_FOUND', 404);
     const moved =
       parsed.data.status === 'done'
-        ? await completeChangeRequest(op.db, row)
+        ? await completeChangeRequest(op.db, row, {
+            reason: parsed.data.reason,
+          })
         : await declineChangeRequest(op.db, row, 'operator');
     await recordEvent(op.db, {
       workspaceId: op.workspaceId,
@@ -191,6 +201,113 @@ export async function setChangeRequestStatusHandler(
     });
     return NextResponse.json({
       request: toChangeRequestView(moved, { forOperator: true }),
+    });
+  } catch (error) {
+    return handle(error);
+  }
+}
+
+// ─── POST /projects/[id]/changes/[changeId]/build — do the paid work ────────
+
+const buildSchema = z.object({
+  /** What the operator wants the agents to know beyond the client's words. */
+  note: z.string().trim().max(2_000).optional().default(''),
+  /**
+   * The client's pictures this change should carry. Omitted means "work it
+   * out": every rights-confirmed picture the request names by caption, and
+   * failing that all of them.
+   */
+  assetIds: z.array(z.string().uuid()).max(12).optional(),
+});
+
+/**
+ * Queues the build that actually does a paid change request.
+ *
+ * This is the button that did not exist. Both gates are read from the
+ * database, never from the body: the project has to be in a state where a
+ * delivered site exists (HUMAN_QA or LIVE_SUBSCRIPTION), and the request has
+ * to be `paid`. A request that is merely quoted has not been bought.
+ *
+ * The request is not moved here. It stays `paid` for the whole of the build
+ * and is moved to `done` by the worker, in the same step that records the
+ * version it went live in, so a crash anywhere in between leaves the row
+ * saying the true thing.
+ */
+export async function buildChangeRequestHandler(
+  req: NextRequest,
+  ctx: ChangeCtx
+): Promise<NextResponse> {
+  const op = await operator(ctx);
+  if (!op.ok) return op.response;
+  const parsed = buildSchema.safeParse(
+    (await req.json().catch(() => ({}))) ?? {}
+  );
+  if (!parsed.success) {
+    return fail(
+      'Send an optional note and an optional list of your files.',
+      'INVALID_BODY',
+      400
+    );
+  }
+  try {
+    const row = await getChangeRequest(op.db, op.workspaceId, op.changeId!);
+    if (!row) return fail('Change request not found', 'NOT_FOUND', 404);
+
+    const { data: workspace, error: workspaceError } = await op.db
+      .from('workspaces')
+      .select('id, project_state')
+      .eq('id', op.workspaceId)
+      .maybeSingle();
+    if (workspaceError) throw workspaceError;
+    if (!workspace) return fail('Project not found', 'NOT_FOUND', 404);
+
+    const queued = await enqueueChangeRequestBuild({
+      supabase: op.db,
+      workspaceId: op.workspaceId,
+      row,
+      projectState: workspace.project_state,
+      operatorNote: parsed.data.note || null,
+      ...(parsed.data.assetIds
+        ? { selectedAssetIds: parsed.data.assetIds }
+        : {}),
+    });
+
+    // The ledger row is the commitment; this is only a nudge. An unreachable
+    // worker leaves a queued job an operator can re-dispatch, which is far
+    // better than failing a request that is already recorded as building.
+    let dispatched = false;
+    try {
+      await dispatchAgentJob(queued.jobId);
+      dispatched = true;
+    } catch (error) {
+      console.warn(
+        '[change-requests] could not nudge the build worker:',
+        error instanceof Error ? error.message : error
+      );
+    }
+
+    await recordEvent(op.db, {
+      workspaceId: op.workspaceId,
+      kind: 'change_request_build_queued',
+      actor: op.userId,
+      payload: {
+        changeRequestId: row.id,
+        jobId: queued.jobId,
+        created: queued.created,
+        dispatched,
+        seedVersion: queued.seedVersion,
+        assets: queued.assets.map((asset) => asset.assetId),
+      },
+    });
+
+    const refreshed = await getChangeRequest(op.db, op.workspaceId, row.id);
+    return NextResponse.json({
+      jobId: queued.jobId,
+      created: queued.created,
+      dispatched,
+      seedVersion: queued.seedVersion,
+      assets: queued.assets,
+      request: toChangeRequestView(refreshed ?? row, { forOperator: true }),
     });
   } catch (error) {
     return handle(error);

@@ -66,6 +66,8 @@ export class LocalSitePublisher implements PullRequestPublisher {
     commitSha: string;
     siteRoot?: string;
     calComUrl?: string | null;
+    changeRequestId?: string | null;
+    siteVersion?: number | null;
   }): Promise<{ pullRequestUrl: string; stagingUrl: string }> {
     const siteRoot = input.siteRoot ?? input.worktreePath;
     const outputDir = await resolveSiteOutputDir(
@@ -91,6 +93,16 @@ export class LocalSitePublisher implements PullRequestPublisher {
       artifactUrl: artifact.url,
       artifactSha256: artifact.sha256,
       commitSha: input.commitSha,
+      // Carried on the deploy rather than sent as a second callback: the
+      // deploy is the moment "your change is live" becomes true, and it is
+      // already the one place every publishing path in the product converges
+      // on, which is what makes the notice fire once and only once.
+      ...(input.changeRequestId
+        ? { changeRequestId: input.changeRequestId }
+        : {}),
+      ...(typeof input.siteVersion === 'number'
+        ? { siteVersion: input.siteVersion }
+        : {}),
     });
 
     return {
@@ -112,6 +124,8 @@ export class LocalSitePublisher implements PullRequestPublisher {
     artifactUrl: string;
     artifactSha256: string;
     commitSha: string;
+    changeRequestId?: string;
+    siteVersion?: number;
   }): Promise<string | null> {
     const fetchImpl = this.options.fetchImpl ?? globalThis.fetch;
     const url = `${this.options.flowstarterMainUrl.replace(/\/$/, '')}/api/internal/build/deploy`;

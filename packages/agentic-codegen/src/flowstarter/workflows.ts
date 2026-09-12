@@ -66,6 +66,19 @@ import {
   phrasesFromFiles,
   usablePhrases,
 } from './preview-manifest';
+import { readSiteWorkspaceFiles } from './site-manifest';
+import {
+  builtPageNames,
+  changeRequestFeedback,
+  changeRequestSummary,
+  describeUnappliedChangeRequest,
+  describeUncheckableChangeRequest,
+  findChangeRequestPageIssue,
+  findUnappliedChangeRequest,
+  unappliedChangeRequestFeedback,
+  CHANGE_REQUEST_NOT_APPLIED,
+  type ChangeRequestIntent,
+} from './change-request-build';
 
 export interface SiteValidator {
   /** Trusted, operator-defined formatter/check/build commands run outside Pi. */
@@ -1293,12 +1306,14 @@ export interface FullSiteBuildJob {
   id: string;
   projectId: string;
   /**
-   * Which of the two jobs this worker runs. FULL_SITE_BUILD is the paid build:
-   * agents expand the approved preview and a human takes it from there.
+   * Which of the three jobs this worker runs. FULL_SITE_BUILD is the paid
+   * build: agents expand the approved preview and a human takes it from there.
    * SITE_REBUILD is the client's own published edit going live: the same
-   * manifest column, no agents, no state move.
+   * manifest column, no agents, no state move. CHANGE_REQUEST_BUILD is a paid
+   * change request being done: one agent pass over the site the client already
+   * has, seeded from the manifest their editor last wrote.
    */
-  kind: 'FULL_SITE_BUILD' | 'SITE_REBUILD';
+  kind: 'FULL_SITE_BUILD' | 'SITE_REBUILD' | 'CHANGE_REQUEST_BUILD';
   projectState: ProjectState;
   intake: BusinessIntakePayload;
   brandConfig: BrandConfig;
@@ -1320,6 +1335,12 @@ export interface FullSiteBuildJob {
    * output is checked for the text each change introduced.
    */
   previewIntent?: PreviewIntent | null;
+  /**
+   * The paid change request this job exists to deliver, off the job payload.
+   * Present only on CHANGE_REQUEST_BUILD, and the job fails without it rather
+   * than running an agent against a site with no instruction.
+   */
+  changeRequest?: ChangeRequestIntent | null;
 }
 
 /** What the worker tells the operator board while a build is in flight. */
@@ -1360,6 +1381,43 @@ export interface FullSiteBuildJobStore {
   markRebuilt(
     jobId: string,
     result: { commitSha: string; pullRequestUrl: string; stagingUrl: string },
+  ): Promise<void>;
+  /**
+   * A change-request build's worktree. Like `markRebuildStarted` it moves no
+   * project state: a client whose site is live and who has paid for one more
+   * section has not gone back into the build pipeline.
+   */
+  markChangeRequestBuildStarted?(
+    jobId: string,
+    worktree: GitWorktree,
+  ): Promise<void>;
+  /**
+   * The manifest the agents wrote, saved as the site's next version, before
+   * anything is published. Returns the version number, which is what the
+   * client is later told their change went live in.
+   */
+  saveChangeRequestVersion?(
+    jobId: string,
+    input: { changeRequestId: string; files: TemplateScaffoldFile[] },
+  ): Promise<{ version: number }>;
+  /**
+   * The end of a change-request build: the version is marked published, the
+   * job succeeds, and the request moves paid -> done with the version on it.
+   *
+   * Deliberately the last thing the job does. Everything before it is
+   * repeatable, so a crash anywhere earlier leaves the request at `paid` and
+   * an operator with a failed job to look at, which is the honest state. A
+   * request must never read `done` for work that did not ship.
+   */
+  markChangeRequestBuilt?(
+    jobId: string,
+    result: {
+      commitSha: string;
+      pullRequestUrl: string;
+      stagingUrl: string;
+      changeRequestId: string;
+      version: number;
+    },
   ): Promise<void>;
   markFailed(
     jobId: string,
@@ -1900,6 +1958,15 @@ export interface PullRequestPublisher {
     commitSha: string;
     siteRoot?: string;
     calComUrl?: string | null;
+    /**
+     * Set when this publish is a paid change request going live, so the deploy
+     * that puts it on the host can tell the client which request it was. It
+     * rides here rather than on a second callback because the deploy is the
+     * moment the sentence "your change is live" becomes true.
+     */
+    changeRequestId?: string | null;
+    /** The `site_versions.version` being published, when there is one. */
+    siteVersion?: number | null;
   }): Promise<{ pullRequestUrl: string; stagingUrl: string }>;
 }
 
@@ -1996,6 +2063,15 @@ export class FullSiteBuildWorker {
     // that path is the absence of an agent, not an assertion about one.
     if (job.kind === 'SITE_REBUILD') {
       await this.rebuild(job, say, log);
+      return;
+    }
+    // A paid change request is the one path where agents touch a site that is
+    // already the client's. It is not a rebuild (an agent does run) and it is
+    // not a full build (the site exists, the deposit is long since paid and
+    // the project is past DEPOSIT_PAID), so it gets its own leg rather than a
+    // flag on one of theirs.
+    if (job.kind === 'CHANGE_REQUEST_BUILD') {
+      await this.changeRequestBuild(job, say, log);
       return;
     }
     if (job.projectState !== ProjectState.DEPOSIT_PAID) {
@@ -2311,6 +2387,301 @@ export class FullSiteBuildWorker {
       throw error;
     } finally {
       // Whatever the outcome, the last lines of work are on the record.
+      await log?.flush();
+    }
+  }
+
+  /**
+   * A paid change request, done.
+   *
+   * This is the leg that did not exist, and its absence is why a client could
+   * file a request the editor correctly refused, be quoted, accept, pay, and
+   * then watch an operator press a button that moved a status and shipped
+   * nothing. It is deliberately the narrowest agent pass in this file: the
+   * site already exists, every page of it has been reviewed and paid for, and
+   * the only thing being bought is the one change. So the seed is the manifest
+   * the client's own editor last wrote, the prompt states the request in their
+   * words, the client's own rights-confirmed pictures are already on disk with
+   * the paths the prompt names, and the gates afterwards are the full build's
+   * gates re-pointed at "did this do what was paid for and nothing else".
+   *
+   * Order matters at the end. The version is saved before the publish so the
+   * number exists to tell the client, and the request is moved paid -> done
+   * only after the deploy has succeeded. Anything that throws before that last
+   * step leaves the request at `paid` and the job `failed`, which is the true
+   * state; a request that reads `done` always means work that shipped.
+   */
+  private async changeRequestBuild(
+    job: FullSiteBuildJob,
+    say: (
+      kind: FullSiteBuildEventKind,
+      body: string,
+      payload?: Record<string, unknown>,
+    ) => Promise<void>,
+    log: JobLogWriter | null,
+  ): Promise<void> {
+    const jobId = job.id;
+    const phase = async (body: string) => {
+      await log?.flush();
+      await say('phase', body);
+    };
+
+    // The same two states a rebuild is valid from, for the same reason: this
+    // edits a site the client already has, and before the deposit build has
+    // produced one there is nothing to change.
+    if (
+      job.projectState !== ProjectState.HUMAN_QA &&
+      job.projectState !== ProjectState.LIVE_SUBSCRIPTION
+    ) {
+      await this.store.markFailed(jobId, {
+        code: 'INVALID_PROJECT_STATE',
+        detail:
+          'A change request build requires HUMAN_QA or LIVE_SUBSCRIPTION, ' +
+          `received ${job.projectState}`,
+      });
+      return;
+    }
+    const intent = job.changeRequest;
+    if (!intent) {
+      // Running an agent over a paid client's live site with no instruction is
+      // strictly worse than not running one, so this fails rather than guesses.
+      await this.store.markFailed(jobId, {
+        code: 'CHANGE_REQUEST_MISSING',
+        detail:
+          'The job payload carries no readable change request, so there is ' +
+          'nothing to build. The request has been left at paid.',
+      });
+      return;
+    }
+
+    try {
+      await phase('Preparing a clean worktree');
+      await this.worktrees.discard?.(job.projectId);
+      const worktree = await this.worktrees.create(job.projectId);
+      const siteRoot = join(worktree.path, 'generated-sites', job.projectId);
+      await mkdir(siteRoot, { recursive: true, mode: 0o700 });
+
+      await phase('Materializing the site the client has');
+      // The seed is the client's current published manifest, plus their own
+      // pictures, which `claim()` has already folded in as real files. The
+      // teaser has no business in it; a delivered site should never carry one,
+      // and re-stripping costs nothing if it does not.
+      const seeded = stripPreviewTeaserFromFiles(job.approvedPreviewFiles);
+      await materializeScaffold(siteRoot, seeded.files);
+      // Unconditional, for the same reason the teaser strip is: a workspace
+      // with no booking link still needs the funnel's blurred cal-preview
+      // demo taken back out, and gating this on `job.calComUrl` is exactly
+      // how that demo shipped on a paid contact page (#100).
+      await applyIntegrationsToWorkspace(siteRoot, {
+        booking: { provider: 'cal.com', url: job.calComUrl ?? null },
+      });
+      const seedPages = builtPageNames(seeded.files.map((file) => file.path));
+      await say('log', changeRequestSummary(intent), {
+        changeRequestId: intent.changeRequestId,
+        seedVersion: intent.seedVersion,
+        assets: intent.assets.map((asset) => asset.publicPath),
+      });
+      await this.store.markChangeRequestBuildStarted?.(jobId, worktree);
+
+      const brief = changeRequestFeedback(intent);
+      const withRequest = (feedback?: string): string =>
+        feedback ? `${brief}\n\n${feedback}` : brief;
+      const onTrace = log
+        ? (entry: AgentTraceEntry) => log.write(traceLogLine(entry))
+        : undefined;
+      const pass = async (label: string, feedback?: string) => {
+        await phase(label);
+        const built = await this.agents.buildFullSite({
+          workspaceRoot: siteRoot,
+          projectId: job.projectId,
+          intake: job.intake,
+          brandConfig: job.brandConfig,
+          requiredIntegrations: job.requiredIntegrations,
+          feedback: withRequest(feedback),
+          ...(onTrace ? { onTrace } : {}),
+        });
+        await log?.flush();
+        await say('reply', replyExcerpt(built.summary), {
+          changedPaths: built.changedPaths.length,
+        });
+        return built;
+      };
+      // `validate` is where the asset-binary and preview-teaser gates live, so
+      // a change request gets both of them for free and gets them on the bytes
+      // that would have been deployed.
+      const check = async () => {
+        await phase('Checking the build');
+        try {
+          await this.validator.validate(siteRoot, 'full');
+        } catch (error) {
+          const detail =
+            error instanceof Error ? error.message.slice(0, 2_500) : 'unknown';
+          await say('log', `The trusted build failed:\n${detail}`);
+          await pass(
+            'Repairing the build',
+            'The trusted build of your previous pass failed. Repair the ' +
+              `files so it passes; the output was: ${detail}`,
+          );
+          await phase('Checking the repaired build');
+          await this.validator.validate(siteRoot, 'full');
+        }
+      };
+
+      const built = await pass('Agents making the change');
+      if (built.changedPaths.length === 0) {
+        throw new FullSiteBuildFailure(
+          CHANGE_REQUEST_NOT_APPLIED,
+          'The agents finished the change request without modifying any ' +
+            'file, so nothing was delivered for it.',
+        );
+      }
+      await check();
+
+      const builtPaths = async () =>
+        (await collectBuiltSiteText(siteRoot)).map((file) =>
+          file.path.replace(/^dist\//, ''),
+        );
+
+      await phase('Checking the change stayed inside the brief');
+      let pageIssue = findChangeRequestPageIssue(
+        seedPages,
+        builtPageNames(await builtPaths()),
+      );
+      if (pageIssue) {
+        await say('log', pageIssue);
+        await pass('Cutting back to what the request asked for', pageIssue);
+        await check();
+        pageIssue = findChangeRequestPageIssue(
+          seedPages,
+          builtPageNames(await builtPaths()),
+        );
+      }
+      if (pageIssue) {
+        throw new FullSiteBuildFailure(PAGE_BUDGET_EXCEEDED, pageIssue);
+      }
+
+      await phase('Checking for placeholder copy');
+      const placeholderOptions = { hasBookingLink: Boolean(job.calComUrl) };
+      let placeholderIssue = findPlaceholderCopyIssue(
+        await collectBuiltSiteText(siteRoot),
+        placeholderOptions,
+      );
+      if (placeholderIssue) {
+        await say('log', placeholderIssue);
+        await pass('Removing placeholder copy', placeholderIssue);
+        await check();
+        placeholderIssue = findPlaceholderCopyIssue(
+          await collectBuiltSiteText(siteRoot),
+          placeholderOptions,
+        );
+      }
+      if (placeholderIssue) {
+        throw new FullSiteBuildFailure(
+          PLACEHOLDER_COPY_SHIPPED,
+          placeholderIssue,
+        );
+      }
+
+      // The gate that speaks for the client: their pictures are on the site
+      // and the wording they quoted is on it. One repair pass, then the job
+      // fails and the request stays paid, because a change that did not ship
+      // must never be recorded as one that did.
+      await phase('Checking the paid change is on the site');
+      let missing = findUnappliedChangeRequest(
+        await collectBuiltSiteText(siteRoot),
+        intent,
+      );
+      if (missing === null && intent.assets.length === 0) {
+        await say('log', describeUncheckableChangeRequest(intent));
+      }
+      if (missing) {
+        await say(
+          'log',
+          'The built site does not carry the paid change yet; asking the ' +
+            'agents to put it there.',
+          {
+            missingAssets: missing.missingAssets,
+            missingPhrases: missing.missingPhrases.length,
+          },
+        );
+        await pass(
+          'Putting the paid change back on the site',
+          unappliedChangeRequestFeedback(intent, missing),
+        );
+        await check();
+        missing = findUnappliedChangeRequest(
+          await collectBuiltSiteText(siteRoot),
+          intent,
+        );
+      }
+      if (missing) {
+        throw new FullSiteBuildFailure(
+          CHANGE_REQUEST_NOT_APPLIED,
+          describeUnappliedChangeRequest(intent, missing),
+        );
+      }
+
+      // The manifest is saved before anything is published, so the version the
+      // client is told about exists before the sentence is true, and a deploy
+      // that fails leaves a saved-but-unpublished version rather than a live
+      // site nobody can name.
+      await phase('Saving the new version of the site');
+      const files = await readSiteWorkspaceFiles(siteRoot);
+      const saved = await this.store.saveChangeRequestVersion?.(jobId, {
+        changeRequestId: intent.changeRequestId,
+        files,
+      });
+      if (!saved) {
+        throw new FullSiteBuildFailure(
+          CHANGE_REQUEST_NOT_APPLIED,
+          'This worker cannot save a site version, so the finished change ' +
+            'could not be recorded and was not published.',
+        );
+      }
+      await say(
+        'log',
+        `Saved ${files.length} files as version ${saved.version} of the site.`,
+        { version: saved.version, files: files.length },
+      );
+
+      await phase('Committing the site');
+      const commitSha = await this.worktrees.commit(
+        worktree,
+        `build: apply paid change request to site ${job.projectId.toLowerCase()}`,
+      );
+      await phase('Publishing');
+      const published = await this.pullRequests.create({
+        projectId: job.projectId,
+        branch: worktree.branch,
+        worktreePath: worktree.path,
+        commitSha,
+        siteRoot,
+        calComUrl: job.calComUrl ?? null,
+        changeRequestId: intent.changeRequestId,
+        siteVersion: saved.version,
+      });
+      await this.store.markChangeRequestBuilt?.(jobId, {
+        commitSha,
+        ...published,
+        changeRequestId: intent.changeRequestId,
+        version: saved.version,
+      });
+      await phase(`Live, in version ${saved.version}`);
+    } catch (error) {
+      const detail =
+        error instanceof Error
+          ? error.message
+          : 'Unknown change request build failure';
+      await say('log', `Change request build failed: ${detail}`);
+      await this.store.markFailed(jobId, {
+        code:
+          error instanceof FullSiteBuildFailure
+            ? error.code
+            : 'CHANGE_REQUEST_BUILD_FAILED',
+        detail: detail.slice(0, 2_000),
+      });
+      throw error;
+    } finally {
       await log?.flush();
     }
   }

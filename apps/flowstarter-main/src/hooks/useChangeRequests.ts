@@ -40,11 +40,23 @@ function useChangeAction<TBody>(
   path: 'quote' | 'status',
   fallback: string
 ) {
+  return useChangeMutation<TBody, { request: ChangeRequestView }>(
+    id,
+    path,
+    fallback
+  );
+}
+
+function useChangeMutation<TBody, TResult>(
+  id: string | undefined,
+  path: 'quote' | 'status' | 'build',
+  fallback: string
+) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (
       input: { changeId: string } & TBody
-    ): Promise<{ request: ChangeRequestView }> => {
+    ): Promise<TResult> => {
       if (!id) throw new Error('Missing project id');
       const { changeId, ...body } = input;
       const res = await fetch(
@@ -79,4 +91,25 @@ export function useSetChangeRequestStatus(id: string | undefined) {
     'status',
     'Failed to update the request'
   );
+}
+
+export interface ChangeBuildStarted {
+  jobId: string;
+  created: boolean;
+  dispatched: boolean;
+  seedVersion: number;
+  assets: Array<{ assetId: string; publicPath: string; caption: string }>;
+  request: ChangeRequestView;
+}
+
+/**
+ * "Build this change": the button that did the work rather than moving a
+ * status. Invalidates the pipeline detail too, so the job appears on the board
+ * in the same render the card starts showing its conversation.
+ */
+export function useBuildChangeRequest(id: string | undefined) {
+  return useChangeMutation<
+    { note?: string; assetIds?: string[] },
+    ChangeBuildStarted
+  >(id, 'build', 'Failed to start the build');
 }

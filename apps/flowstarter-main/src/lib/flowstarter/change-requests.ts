@@ -104,6 +104,14 @@ export interface ChangeRequestRow {
   stripe_payment_intent_id: string | null;
   paid_at: string | null;
   completed_at: string | null;
+  /** The CHANGE_REQUEST_BUILD delivering this, once an operator has started one. */
+  build_job_id: string | null;
+  /** `site_versions.version` the finished change went live in. */
+  built_version: number | null;
+  /** `build` when a job shipped it, `manual` when an operator overrode it. */
+  completed_via: string | null;
+  /** Why an operator marked it done by hand. Required for a manual override. */
+  completion_note: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -113,6 +121,7 @@ export const CHANGE_REQUEST_COLUMNS =
   'id, workspace_id, message_id, request, classification, matched_rules, status, ' +
   'quote_minor, currency, quote_note, quoted_by, quoted_at, responded_at, ' +
   'stripe_checkout_session_id, stripe_payment_intent_id, paid_at, completed_at, ' +
+  'build_job_id, built_version, completed_via, completion_note, ' +
   'created_by, created_at, updated_at';
 
 /** What both the client editor and the operator board render. */
@@ -130,8 +139,21 @@ export interface ChangeRequestView {
   paidAt: string | null;
   completedAt: string | null;
   createdAt: string;
+  /**
+   * The build delivering this request, once an operator has started one. Both
+   * sides read it: the operator's card shows the build conversation inline,
+   * and the client's card says "in progress" rather than "your team is on it"
+   * while the job is running.
+   */
+  buildJobId: string | null;
+  /** The site version the change went live in, once it has. */
+  builtVersion: number | null;
+  /** How it was completed: by a build, or by an operator's manual override. */
+  completedVia: 'build' | 'manual' | null;
   /** Operator-only: the rule table's opening number. */
   suggestedQuoteMinor?: number;
+  /** Operator-only: why somebody marked this done by hand. */
+  completionNote?: string | null;
 }
 
 export function toChangeRequestView(
@@ -157,8 +179,17 @@ export function toChangeRequestView(
     paidAt: row.paid_at,
     completedAt: row.completed_at,
     createdAt: row.created_at,
+    buildJobId: row.build_job_id,
+    builtVersion: row.built_version,
+    completedVia:
+      row.completed_via === 'build' || row.completed_via === 'manual'
+        ? row.completed_via
+        : null,
     ...(options.forOperator
-      ? { suggestedQuoteMinor: suggestQuoteMinor(matchedRules) }
+      ? {
+          suggestedQuoteMinor: suggestQuoteMinor(matchedRules),
+          completionNote: row.completion_note,
+        }
       : {}),
   };
 }
@@ -330,11 +361,45 @@ export function markChangeRequestPaid(
   });
 }
 
-export function completeChangeRequest(db: Db, row: ChangeRequestRow) {
+/**
+ * "Mark done" as a manual override, and only as a manual override.
+ *
+ * This used to be the whole of what the product could do with a paid change
+ * request, which is how EUR 190 was taken for work that never shipped. It
+ * survives because an operator who did the work outside the product (a hand
+ * edit, a conversation, a request that turned out to need nothing) still has
+ * to be able to close the row honestly. What it no longer is, is the normal
+ * path: the normal path is a CHANGE_REQUEST_BUILD.
+ *
+ * So it now costs a sentence. The reason is stored on the request and shown on
+ * the card, which makes the difference between "a build shipped this" and "a
+ * person says this is handled" legible forever after, to whoever reads the row
+ * next.
+ */
+export function completeChangeRequest(
+  db: Db,
+  row: ChangeRequestRow,
+  input: { reason: string }
+) {
+  const reason = input.reason.trim();
+  if (reason.length < MIN_COMPLETION_REASON_CHARS) {
+    throw new ChangeRequestError(
+      'Marking a paid request done by hand needs a sentence saying how it ' +
+        'was handled. Use "Build this change" if the work still has to be done.',
+      'CHANGE_REQUEST_REASON_REQUIRED',
+      400
+    );
+  }
   return move(db, row, 'done', 'operator', {
     completed_at: new Date().toISOString(),
+    completed_via: 'manual',
+    completion_note: reason.slice(0, MAX_COMPLETION_REASON_CHARS),
   });
 }
+
+/** Short enough to type, long enough that "done" is not a reason. */
+export const MIN_COMPLETION_REASON_CHARS = 10;
+export const MAX_COMPLETION_REASON_CHARS = 500;
 
 /** Re-runs the classifier; exported so callers do not import two modules. */
 export { classifyChangeRequest };

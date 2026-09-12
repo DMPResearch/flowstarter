@@ -41,6 +41,10 @@ function row(overrides: Partial<ChangeRequestRow> = {}): ChangeRequestRow {
     stripe_payment_intent_id: null,
     paid_at: null,
     completed_at: null,
+    build_job_id: null,
+    built_version: null,
+    completed_via: null,
+    completion_note: null,
     created_by: 'user_client',
     created_at: '2026-09-08T10:00:00.000Z',
     updated_at: '2026-09-08T10:00:00.000Z',
@@ -194,9 +198,12 @@ describe('a change request through quote, payment and completion', () => {
     expect(paid.stripe_payment_intent_id).toBe('pi_test_123');
     expect(paid.paid_at).not.toBeNull();
 
-    const done = await completeChangeRequest(client(), paid);
+    const done = await completeChangeRequest(client(), paid, {
+      reason: 'Handled on a call; the client no longer wants it built.',
+    });
     expect(done.status).toBe('done');
     expect(done.completed_at).not.toBeNull();
+    expect(done.completed_via).toBe('manual');
   });
 
   it('re-quotes a quoted request and drops the checkout the old price minted', async () => {
@@ -295,7 +302,11 @@ describe('a change request through quote, payment and completion', () => {
       code: 'CHANGE_REQUEST_TRANSITION',
       status: 409,
     });
-    await expect(completeChangeRequest(client(), created)).rejects.toThrow(
+    await expect(
+      completeChangeRequest(client(), created, {
+        reason: 'Handled on a call with the client.',
+      })
+    ).rejects.toThrow(
       /requested request cannot be marked done by the operator/
     );
   });

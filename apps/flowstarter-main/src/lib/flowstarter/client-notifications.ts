@@ -47,6 +47,10 @@ export type ClientNotification =
   | 'deposit_paid'
   | 'balance_invoice'
   | 'site_live'
+  // Keys on the change request's id, so a client hears once per thing they
+  // bought. A request is built once; a second build of the same request is a
+  // repair of the first and is not news.
+  | 'change_request_live'
   // Keys on the build job's id, so a client hears once per stopped build and
   // a retry that stops again is a new thing worth saying.
   | 'build_failed'

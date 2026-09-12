@@ -1564,18 +1564,27 @@ describe('rendered-audit repair loop', () => {
   });
 
   it('keeps the first publish when the auditor throws', async () => {
-    const { PreviewGenerationPipeline } = await import('../src/flowstarter/workflows');
-    const { mkdir: mkdirP, writeFile: writeF } = await import('node:fs/promises');
+    const { PreviewGenerationPipeline } = await import(
+      '../src/flowstarter/workflows'
+    );
+    const { mkdir: mkdirP, writeFile: writeF } = await import(
+      'node:fs/promises'
+    );
     const { join: joinP } = await import('node:path');
 
     const agents = {
       analyzeBrand: async () => validBrandConfig(),
       selectTemplate: async () => ({
-        slug: 'wellness-therapy', reason: 'r', matchedSignals: [], confidence: 0.9,
+        slug: 'wellness-therapy',
+        reason: 'r',
+        matchedSignals: [],
+        confidence: 0.9,
       }),
       buildPreview: async (input: { workspaceRoot: string }) => {
         const target = joinP(input.workspaceRoot, 'src/content/site.md');
-        await mkdirP(joinP(input.workspaceRoot, 'src/content'), { recursive: true });
+        await mkdirP(joinP(input.workspaceRoot, 'src/content'), {
+          recursive: true,
+        });
         await writeF(target, `# ${validIntake().business.name}`, 'utf8');
         return { summary: 'ok', changedPaths: ['src/content/site.md'] };
       },
@@ -1584,7 +1593,18 @@ describe('rendered-audit repair loop', () => {
       search: async () => [],
       getDetails: async () => ({}),
       scaffold: async () => ({
-        template: { metadata: { slug: 'wellness-therapy', displayName: 'x', description: 'x', category: 'services', useCase: [], fileCount: 1, totalLOC: 1 }, config: {} },
+        template: {
+          metadata: {
+            slug: 'wellness-therapy',
+            displayName: 'x',
+            description: 'x',
+            category: 'services',
+            useCase: [],
+            fileCount: 1,
+            totalLOC: 1,
+          },
+          config: {},
+        },
         files: [{ path: 'src/content/site.md', content: 'seed', type: 'file' }],
       }),
       close: async () => undefined,
@@ -1598,11 +1618,18 @@ describe('rendered-audit repair loop', () => {
       }),
     } as never;
 
-    const pipeline = new PreviewGenerationPipeline(agents, library, validator, publisher, undefined, {
-      renderedAudit: async () => {
-        throw new Error('browser failed to launch');
+    const pipeline = new PreviewGenerationPipeline(
+      agents,
+      library,
+      validator,
+      publisher,
+      undefined,
+      {
+        renderedAudit: async () => {
+          throw new Error('browser failed to launch');
+        },
       },
-    });
+    );
 
     const result = await pipeline.run({
       intake: validIntake(),
@@ -2445,5 +2472,453 @@ describe('a retried build starts clean', () => {
     expect(second.branch).toBe(first.branch);
     // Discarding when nothing is there is a no-op, not an error.
     await manager.discard('11111111-2222-4333-8444-555555555555');
+  });
+});
+
+describe('CHANGE_REQUEST_BUILD: the paid change that used to ship nothing', () => {
+  const CHANGE_ID = '72fe7f79-0e83-4cf6-9b4a-2502842b9a54';
+  const ASSET_ID = 'b104b1e0-6d4c-4a3e-9230-13cc17b426a0';
+
+  function changeIntent(overrides: Record<string, unknown> = {}) {
+    return {
+      changeRequestId: CHANGE_ID,
+      request:
+        'Please add a small gallery to the Flowstarter case study page with ' +
+        'the screenshot I uploaded.',
+      operatorNote: null,
+      seedVersion: 4,
+      assets: [
+        {
+          assetId: ASSET_ID,
+          publicPath: '/flowstarter-media/cr-b104b1e0.jpg',
+          manifestPath: 'public/flowstarter-media/cr-b104b1e0.jpg',
+          caption: 'The Flowstarter client dashboard',
+          mime: 'image/jpeg',
+          width: 1200,
+          height: 750,
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  it('refuses to touch a site that does not exist yet', async () => {
+    const calls: string[] = [];
+    const store: FullSiteBuildJobStore = {
+      claim: async (jobId) => ({
+        id: jobId,
+        projectId: validIntake().projectId,
+        kind: 'CHANGE_REQUEST_BUILD',
+        // No delivered site exists in this state, so there is nothing to
+        // change and an agent pass would be inventing one.
+        projectState: ProjectState.DEPOSIT_PAID,
+        intake: validIntake(),
+        brandConfig: validBrandConfig(),
+        approvedPreviewFiles: [],
+        requiredIntegrations: [],
+        changeRequest: changeIntent(),
+      }),
+      markAgentWorking: async () => undefined,
+      markRebuildStarted: async () => undefined,
+      markRebuilt: async () => undefined,
+      markHumanQa: async () => undefined,
+      markFailed: async (_jobId, error) => {
+        calls.push(error.code);
+      },
+    };
+    const worktrees = {
+      create: async () => {
+        calls.push('worktree-created');
+        throw new Error('must not run');
+      },
+    } as unknown as SafeGitWorktreeManager;
+
+    await new FullSiteBuildWorker(
+      store,
+      worktrees,
+      {} as PiSdkFlowstarterAgents,
+      {} as SiteValidator,
+      {} as PullRequestPublisher,
+    ).run('job-cr-state');
+
+    expect(calls).toEqual(['INVALID_PROJECT_STATE']);
+  });
+
+  it('refuses to run an agent over a live site with no instruction', async () => {
+    const calls: string[] = [];
+    const store: FullSiteBuildJobStore = {
+      claim: async (jobId) => ({
+        id: jobId,
+        projectId: validIntake().projectId,
+        kind: 'CHANGE_REQUEST_BUILD',
+        projectState: ProjectState.LIVE_SUBSCRIPTION,
+        intake: validIntake(),
+        brandConfig: validBrandConfig(),
+        approvedPreviewFiles: [],
+        requiredIntegrations: [],
+        // The payload carried nothing readable.
+        changeRequest: null,
+      }),
+      markAgentWorking: async () => undefined,
+      markRebuildStarted: async () => undefined,
+      markRebuilt: async () => undefined,
+      markHumanQa: async () => undefined,
+      markFailed: async (_jobId, error) => {
+        calls.push(error.code);
+        expect(error.detail).toContain('left at paid');
+      },
+    };
+    const worktrees = {
+      create: async () => {
+        calls.push('worktree-created');
+        throw new Error('must not run');
+      },
+    } as unknown as SafeGitWorktreeManager;
+
+    await new FullSiteBuildWorker(
+      store,
+      worktrees,
+      {} as PiSdkFlowstarterAgents,
+      {} as SiteValidator,
+      {} as PullRequestPublisher,
+    ).run('job-cr-empty');
+
+    expect(calls).toEqual(['CHANGE_REQUEST_MISSING']);
+  });
+
+  it('does the change, saves a version, publishes it and only then marks it done', async () => {
+    const calls: string[] = [];
+    const events: Array<{ kind: string; body: string }> = [];
+    const projectId = validIntake().projectId;
+    const worktreeRoot = await deepTempDir('flowstarter-change-build');
+    temporaryDirectories.push(worktreeRoot);
+    let promptSeen = '';
+
+    const store: FullSiteBuildJobStore = {
+      claim: async (jobId) => ({
+        id: jobId,
+        projectId,
+        kind: 'CHANGE_REQUEST_BUILD',
+        projectState: ProjectState.LIVE_SUBSCRIPTION,
+        intake: validIntake(),
+        brandConfig: validBrandConfig(),
+        approvedPreviewFiles: [
+          {
+            path: 'src/content/site.md',
+            content: 'The site the client already has',
+            type: 'file',
+          },
+          // The client's own picture, folded into the seed by the job store.
+          {
+            path: 'public/flowstarter-media/cr-b104b1e0.jpg',
+            content: Buffer.from('not-really-a-jpeg').toString('base64'),
+            encoding: 'base64',
+            type: 'file',
+          },
+        ],
+        requiredIntegrations: [],
+        changeRequest: changeIntent(),
+      }),
+      markAgentWorking: async () => {
+        calls.push('store:agents-working');
+      },
+      markHumanQa: async () => {
+        calls.push('store:human-qa');
+      },
+      markRebuildStarted: async () => {
+        calls.push('store:rebuild-started');
+      },
+      markRebuilt: async () => {
+        calls.push('store:rebuilt');
+      },
+      markChangeRequestBuildStarted: async (_jobId, worktree) => {
+        calls.push('store:change-started');
+        expect(worktree.path).toBe(worktreeRoot);
+      },
+      saveChangeRequestVersion: async (_jobId, input) => {
+        calls.push('store:version-saved');
+        expect(input.changeRequestId).toBe(CHANGE_ID);
+        // The manifest read back off disk is what the agents actually wrote.
+        expect(
+          input.files.find((file) => file.path === 'src/content/site.md')
+            ?.content,
+        ).toContain('/flowstarter-media/cr-b104b1e0.jpg');
+        return { version: 5 };
+      },
+      markChangeRequestBuilt: async (_jobId, result) => {
+        calls.push('store:change-done');
+        expect(result.changeRequestId).toBe(CHANGE_ID);
+        expect(result.version).toBe(5);
+        expect(result.commitSha).toBe('cha09e5');
+      },
+      markFailed: async (_jobId, error) => {
+        calls.push(`store:failed:${error.code}`);
+      },
+      appendEvent: async (_jobId, event) => {
+        events.push({ kind: event.kind, body: event.body });
+      },
+    };
+
+    const worktrees = {
+      discard: async () => {
+        calls.push('git:discard');
+      },
+      create: async () => {
+        calls.push('git:create-worktree');
+        return { branch: `change/${projectId}`, path: worktreeRoot };
+      },
+      commit: async (_worktree: unknown, message: string) => {
+        calls.push('git:commit');
+        expect(message).toContain('apply paid change request');
+        return 'cha09e5';
+      },
+    } as unknown as SafeGitWorktreeManager;
+
+    const agents = {
+      buildFullSite: async (input: {
+        workspaceRoot: string;
+        feedback?: string;
+      }) => {
+        calls.push('agent:change-pass');
+        promptSeen = input.feedback ?? '';
+        const source = join(input.workspaceRoot, 'src/content/site.md');
+        await writeFile(
+          source,
+          'The site the client already has, now with ' +
+            '<img src="/flowstarter-media/cr-b104b1e0.jpg">',
+          'utf8',
+        );
+        return { summary: 'Added the gallery', changedPaths: [source] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    const validator: SiteValidator = {
+      validate: async (_root, phase) => {
+        calls.push(`validator:${phase}`);
+      },
+    };
+
+    const pullRequests: PullRequestPublisher = {
+      create: async (input) => {
+        calls.push('publisher:deploy');
+        // The deploy is where "your change is live" becomes true, so it is
+        // the deploy that has to know which request it was.
+        expect(input.changeRequestId).toBe(CHANGE_ID);
+        expect(input.siteVersion).toBe(5);
+        return {
+          pullRequestUrl: 'https://example.test/deploy/12',
+          stagingUrl: 'https://calm-path.flowstarter.net',
+        };
+      },
+    };
+
+    await new FullSiteBuildWorker(
+      store,
+      worktrees,
+      agents,
+      validator,
+      pullRequests,
+    ).run('job-cr-ok');
+
+    expect(calls).toEqual([
+      'git:discard',
+      'git:create-worktree',
+      'store:change-started',
+      'agent:change-pass',
+      'validator:full',
+      'store:version-saved',
+      'git:commit',
+      'publisher:deploy',
+      'store:change-done',
+    ]);
+    // Never the full build's state moves: a client who bought one more
+    // section has not gone back into the build pipeline.
+    expect(calls).not.toContain('store:agents-working');
+    expect(calls).not.toContain('store:human-qa');
+
+    // The prompt carries the client's words, the asset path and the rules.
+    expect(promptSeen).toContain('PAID CHANGE REQUEST');
+    expect(promptSeen).toContain('add a small gallery');
+    expect(promptSeen).toContain('/flowstarter-media/cr-b104b1e0.jpg');
+    expect(promptSeen).toContain('Invent nothing');
+
+    const phases = events
+      .filter((event) => event.kind === 'phase')
+      .map((event) => event.body);
+    expect(phases).toContain('Checking the paid change is on the site');
+    expect(phases).toContain('Live, in version 5');
+  });
+
+  it('leaves the request at paid when the change was dropped', async () => {
+    const calls: string[] = [];
+    const projectId = validIntake().projectId;
+    const worktreeRoot = await deepTempDir('flowstarter-change-dropped');
+    temporaryDirectories.push(worktreeRoot);
+
+    const store: FullSiteBuildJobStore = {
+      claim: async (jobId) => ({
+        id: jobId,
+        projectId,
+        kind: 'CHANGE_REQUEST_BUILD',
+        projectState: ProjectState.HUMAN_QA,
+        intake: validIntake(),
+        brandConfig: validBrandConfig(),
+        approvedPreviewFiles: [
+          {
+            path: 'src/content/site.md',
+            content: 'The site the client already has',
+            type: 'file',
+          },
+        ],
+        requiredIntegrations: [],
+        changeRequest: changeIntent(),
+      }),
+      markAgentWorking: async () => undefined,
+      markRebuildStarted: async () => undefined,
+      markRebuilt: async () => undefined,
+      markHumanQa: async () => undefined,
+      markChangeRequestBuildStarted: async () => {
+        calls.push('store:change-started');
+      },
+      saveChangeRequestVersion: async () => {
+        calls.push('store:version-saved');
+        return { version: 5 };
+      },
+      markChangeRequestBuilt: async () => {
+        calls.push('store:change-done');
+      },
+      markFailed: async (_jobId, error) => {
+        calls.push(`store:failed:${error.code}`);
+        expect(error.detail).toContain('/flowstarter-media/cr-b104b1e0.jpg');
+        expect(error.detail).toContain('left at paid');
+      },
+    };
+
+    const worktrees = {
+      discard: async () => undefined,
+      create: async () => ({
+        branch: `change/${projectId}`,
+        path: worktreeRoot,
+      }),
+      commit: async () => {
+        calls.push('git:commit');
+        return 'nope';
+      },
+    } as unknown as SafeGitWorktreeManager;
+
+    // Both passes write something, and neither of them uses the picture: the
+    // agents did work, they just did not do the work that was bought.
+    let pass = 0;
+    const agents = {
+      buildFullSite: async (input: { workspaceRoot: string }) => {
+        pass += 1;
+        calls.push(`agent:pass-${pass}`);
+        const source = join(input.workspaceRoot, 'src/content/site.md');
+        await writeFile(source, `A rewrite, attempt ${pass}`, 'utf8');
+        return { summary: 'done', changedPaths: [source] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    const validator: SiteValidator = { validate: async () => undefined };
+    const pullRequests: PullRequestPublisher = {
+      create: async () => {
+        calls.push('publisher:deploy');
+        return { pullRequestUrl: 'x', stagingUrl: 'y' };
+      },
+    };
+
+    await expect(
+      new FullSiteBuildWorker(
+        store,
+        worktrees,
+        agents,
+        validator,
+        pullRequests,
+      ).run('job-cr-dropped'),
+    ).rejects.toThrow(/does not carry the paid change/);
+
+    // One repair pass, then the job fails. Nothing is saved, nothing is
+    // deployed, and nothing anywhere says the work shipped.
+    expect(calls).toEqual([
+      'store:change-started',
+      'agent:pass-1',
+      'agent:pass-2',
+      'store:failed:CHANGE_REQUEST_NOT_APPLIED',
+    ]);
+    expect(calls).not.toContain('store:version-saved');
+    expect(calls).not.toContain('publisher:deploy');
+    expect(calls).not.toContain('store:change-done');
+  });
+
+  it('fails rather than publishing when no version can be recorded', async () => {
+    const calls: string[] = [];
+    const projectId = validIntake().projectId;
+    const worktreeRoot = await deepTempDir('flowstarter-change-noversion');
+    temporaryDirectories.push(worktreeRoot);
+
+    const store: FullSiteBuildJobStore = {
+      claim: async (jobId) => ({
+        id: jobId,
+        projectId,
+        kind: 'CHANGE_REQUEST_BUILD',
+        projectState: ProjectState.HUMAN_QA,
+        intake: validIntake(),
+        brandConfig: validBrandConfig(),
+        approvedPreviewFiles: [
+          { path: 'src/content/site.md', content: 'seed', type: 'file' },
+        ],
+        requiredIntegrations: [],
+        // No attached picture and no quoted wording, so the applied-change
+        // check has nothing to evaluate and correctly passes.
+        changeRequest: changeIntent({
+          assets: [],
+          request: 'Please make the contact page feel a bit warmer',
+        }),
+      }),
+      markAgentWorking: async () => undefined,
+      markRebuildStarted: async () => undefined,
+      markRebuilt: async () => undefined,
+      markHumanQa: async () => undefined,
+      markFailed: async (_jobId, error) => {
+        calls.push(`store:failed:${error.code}`);
+      },
+      // saveChangeRequestVersion deliberately absent: a store that cannot
+      // record the result must not let the build publish one.
+    };
+
+    const worktrees = {
+      discard: async () => undefined,
+      create: async () => ({ branch: 'b', path: worktreeRoot }),
+      commit: async () => {
+        calls.push('git:commit');
+        return 'nope';
+      },
+    } as unknown as SafeGitWorktreeManager;
+
+    const agents = {
+      buildFullSite: async (input: { workspaceRoot: string }) => {
+        const source = join(input.workspaceRoot, 'src/content/site.md');
+        await writeFile(source, 'warmer copy', 'utf8');
+        return { summary: 'done', changedPaths: [source] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    await expect(
+      new FullSiteBuildWorker(
+        store,
+        worktrees,
+        agents,
+        { validate: async () => undefined } as SiteValidator,
+        {
+          create: async () => {
+            calls.push('publisher:deploy');
+            return { pullRequestUrl: 'x', stagingUrl: 'y' };
+          },
+        } as PullRequestPublisher,
+      ).run('job-cr-noversion'),
+    ).rejects.toThrow(/cannot save a site version/);
+
+    expect(calls).toEqual(['store:failed:CHANGE_REQUEST_NOT_APPLIED']);
+    expect(calls).not.toContain('publisher:deploy');
   });
 });
