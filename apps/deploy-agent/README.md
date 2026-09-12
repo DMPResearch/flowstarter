@@ -129,7 +129,10 @@ Extra env in previews mode:
 
 - `DEPLOY_AGENT_MODE=previews`
 - `DEPLOY_AGENT_SITE_PORT` (default `9080`) — the previews Caddy's HTTP port
-- `DEPLOY_AGENT_PREVIEW_HOST_SUFFIX` (default `preview.flowstarter.net`)
+- `DEPLOY_AGENT_PREVIEW_HOST_SUFFIX`: defaults to `preview.${resolvePlatformDomain()}`
+  from `@flowstarter/platform-config`: `preview.flowstarter.dev` unless this
+  process's `FLOWSTARTER_ENV` (or `NODE_ENV`) says `production`, in which case
+  `preview.flowstarter.net`.
 
 Everything else — port, secret, roots, reload command — comes from the second
 env file (`/etc/flowstarter/preview-deploy-agent.env`), written by

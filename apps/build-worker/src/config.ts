@@ -7,6 +7,8 @@
  * this process.
  */
 
+import { resolvePlatformDomain } from '@flowstarter/platform-config';
+
 export interface ValidatorCommand {
   bin: string;
   args: string[];
@@ -423,11 +425,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     );
   }
 
+  // Same env-driven rule as the app's own preview hostnames
+  // (`resolvePlatformDomain` in `@flowstarter/platform-config`): a
+  // development or staging worker's default staging URL sits on
+  // `staging.flowstarter.dev` (matching `deploy/hetzner-staging`), and only
+  // a worker whose FLOWSTARTER_ENV/NODE_ENV says production defaults to
+  // `staging.flowstarter.net`.
   const stagingUrlTemplate =
     env.FLOWSTARTER_STAGING_URL_TEMPLATE?.trim() ||
     (publishMode === 'local'
       ? 'http://localhost:8788/{projectId}/'
-      : 'https://{projectId}.staging.flowstarter.net');
+      : `https://{projectId}.staging.${resolvePlatformDomain({
+          flowstarterEnv: env.FLOWSTARTER_ENV,
+          nodeEnv: env.NODE_ENV,
+        })}`);
   if (!stagingUrlTemplate.includes('{projectId}')) {
     throw new ConfigError(
       'FLOWSTARTER_STAGING_URL_TEMPLATE must contain the {projectId} placeholder',

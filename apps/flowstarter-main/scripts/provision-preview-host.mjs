@@ -4,20 +4,33 @@
  *
  * Creates ONE Hetzner server that runs both deploy-agents (paid sites and
  * previews) behind two Caddy instances, registers it in `hosting_servers`, and
- * points `*.preview.flowstarter.net` at it.
+ * points a preview wildcard at it.
+ *
+ * WHICH ZONE: the same env-driven rule as everywhere else
+ * (`resolvePlatformDomain` in `@flowstarter/platform-config`). This script
+ * runs from the app's env files, so it takes the environment it runs under,
+ * which is `FLOWSTARTER_ENV`, defaulting to `development` when unset, since a
+ * one-off provisioning script has no meaningful `NODE_ENV` to fall back to.
+ * `development`, `test` and `staging` all resolve to `flowstarter.dev`;
+ * only `production` resolves to `flowstarter.net`. `--zone` overrides the
+ * resolved zone, but never the safety check below.
  *
  * IT COSTS MONEY AND IT CHANGES DNS. Therefore:
  *
- *   - the default is a DRY RUN. It prints the exact plan — server type, image,
- *     location, cloud-init size, the DNS record it would write — and exits 0
- *     without calling a single mutating API;
+ *   - the default is a DRY RUN. It prints the exact plan (which zone it
+ *     resolved and why, server type, image, location, cloud-init size, the
+ *     DNS record it would write) and exits 0 without calling a single
+ *     mutating API;
  *   - the real run requires `--yes-i-understand-this-costs-money`, in full;
+ *   - it refuses to write a `.net` record unless `FLOWSTARTER_ENV=production`
+ *     is set explicitly, whether the zone came from the resolver or from
+ *     `--zone`. The flowstarter.net zone carries live production records
+ *     (the apex, www, mail, autoconfig, autodiscover, MX/TXT/SRV, and at
+ *     least one client site); this script must be incapable of disturbing
+ *     them from a laptop that forgot to set an env var;
  *   - it NEVER touches an existing DNS record. Before creating the wildcard it
  *     lists the zone, and if a record with that name already exists it stops
- *     and tells you, rather than "upserting" over something you rely on. The
- *     flowstarter.net zone carries live production records (the apex, www,
- *     mail, autoconfig, autodiscover, MX/TXT/SRV, and at least one client
- *     site); this script must be incapable of disturbing them.
+ *     and tells you, rather than "upserting" over something you rely on.
  *
  * The wildcard is created dns-only (NOT proxied) deliberately: Caddy answers
  * the ACME HTTP-01 challenge itself, and Cloudflare's proxy would intercept it.
@@ -27,14 +40,18 @@
  * bytes the tests cover — not a copy that can drift.
  *
  * Usage (from apps/flowstarter-main):
- *   npx tsx scripts/provision-preview-host.mjs                               # plan
+ *   npx tsx scripts/provision-preview-host.mjs                               # plan (dev zone)
  *   npx tsx scripts/provision-preview-host.mjs --name fs-previews-01 \
- *        --yes-i-understand-this-costs-money                                 # apply
+ *        --yes-i-understand-this-costs-money                                 # apply (dev zone)
+ *   FLOWSTARTER_ENV=production npx tsx scripts/provision-preview-host.mjs \
+ *        --yes-i-understand-this-costs-money                                 # apply (production zone)
  *
  * Note: it reads .env.local, which points NEXT_PUBLIC_SUPABASE_URL at the LOCAL
  * stack. Point it at production explicitly when you mean production.
  *
  * Env (read from apps/flowstarter-main/.env.local if present):
+ *   FLOWSTARTER_ENV         optional; defaults to development. Set to
+ *                           production explicitly to target flowstarter.net.
  *   HETZNER_API_TOKEN       required
  *   CLOUDFLARE_API_TOKEN    required
  *   CLOUDFLARE_ZONE_ID      optional; looked up by zone name when absent
@@ -49,6 +66,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolvePlatformDomain } from '@flowstarter/platform-config';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = resolve(HERE, '..');
@@ -59,13 +77,17 @@ const CONFIRM_FLAG = '--yes-i-understand-this-costs-money';
 // ─── Defaults ──────────────────────────────────────────────────────────────
 // Smallest current shared-vCPU type, Falkenstein, current Ubuntu LTS. A
 // preview host serves static files; CPU is not what runs out first.
+//
+// `zone` and `previewSuffix` are NOT here: this script runs from the app's
+// env files, so which of the two live zones it targets has to be decided
+// after those files are loaded (below), the same way `resolvePlatformDomain`
+// decides it everywhere else: `flowstarter.net` only when `FLOWSTARTER_ENV`
+// says `production`, `flowstarter.dev` otherwise.
 const DEFAULTS = {
   name: 'fs-previews-01',
   serverType: 'cx22',
   location: 'fsn1',
   image: 'ubuntu-24.04',
-  zone: 'flowstarter.net',
-  previewSuffix: 'preview.flowstarter.net',
   siteCapacity: 200,
 };
 
@@ -124,11 +146,19 @@ const serverType =
     : DEFAULTS.serverType;
 const location =
   typeof args.location === 'string' ? args.location : DEFAULTS.location;
-const zone = typeof args.zone === 'string' ? args.zone : DEFAULTS.zone;
+
+// The environment this script is running under. `FLOWSTARTER_ENV` is
+// authoritative, same as `resolveFlowstarterEnv()` in the app; unlike the
+// app, there is no meaningful `NODE_ENV` for a one-off provisioning script,
+// so an unset `FLOWSTARTER_ENV` means development, the safe zone, rather
+// than guessing from `NODE_ENV`.
+const flowstarterEnv = process.env.FLOWSTARTER_ENV?.trim() || 'development';
+const defaultZone = resolvePlatformDomain({ flowstarterEnv });
+const zone = typeof args.zone === 'string' ? args.zone : defaultZone;
 const previewSuffix =
   typeof args['preview-suffix'] === 'string'
     ? args['preview-suffix']
-    : DEFAULTS.previewSuffix;
+    : `preview.${zone}`;
 const wildcard = `*.${previewSuffix}`;
 
 if (!/^[a-z0-9-]{2,40}$/.test(name)) {
@@ -242,6 +272,11 @@ async function main() {
   line();
   line('══ Flowstarter previews host ══════════════════════════════════════');
   line(args.apply ? 'MODE:  APPLY (this will spend money)' : 'MODE:  DRY RUN');
+  line(
+    `ENV:   FLOWSTARTER_ENV=${flowstarterEnv} → zone ${zone}${
+      args.zone ? ' (--zone override)' : ''
+    }`
+  );
   line();
   line('1. Hetzner server');
   line(`     name           ${name}`);
@@ -282,9 +317,7 @@ async function main() {
   line();
   line('4. Env to set afterwards (values printed once, on apply only)');
   line(`     FLOWSTARTER_DEPLOY_AGENT_SECRET           ${redact(paidSecret)}`);
-  line(
-    `     FLOWSTARTER_PREVIEW_DEPLOY_AGENT_URL      https://<ipv4>:8444`
-  );
+  line(`     FLOWSTARTER_PREVIEW_DEPLOY_AGENT_URL      https://<ipv4>:8444`);
   line(
     `     FLOWSTARTER_PREVIEW_DEPLOY_AGENT_SECRET   ${redact(previewsSecret)}`
   );
@@ -307,6 +340,18 @@ async function main() {
   }
 
   // ── From here on it is real. ────────────────────────────────────────────
+  // The flowstarter.net zone carries live production DNS. Writing to it is
+  // refused unless FLOWSTARTER_ENV=production was set explicitly: not
+  // inferred, not defaulted, and not implied by `--zone flowstarter.net`
+  // alone, so a laptop running with no env file cannot touch it by accident.
+  if (zone.endsWith('.net') && flowstarterEnv !== 'production') {
+    fail(
+      `Refusing to write to zone "${zone}": FLOWSTARTER_ENV is ` +
+        `"${flowstarterEnv}", not "production". This zone carries live ` +
+        'production DNS records. Set FLOWSTARTER_ENV=production explicitly ' +
+        'if you really mean to provision the production previews host.'
+    );
+  }
   if (!hetznerToken) fail('HETZNER_API_TOKEN is required to apply');
   if (!cloudflareToken) fail('CLOUDFLARE_API_TOKEN is required to apply');
   if (!cloudInit) fail(`cloud-init could not be built: ${cloudInitError}`);
@@ -384,7 +429,9 @@ async function main() {
       line('  → ok');
     }
   } else {
-    line('Skipping hosting_servers row (no Supabase service-role credentials).');
+    line(
+      'Skipping hosting_servers row (no Supabase service-role credentials).'
+    );
   }
 
   if (ipv4) {

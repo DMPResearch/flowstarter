@@ -38,6 +38,7 @@ import 'server-only';
 
 import { randomBytes } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { resolvePlatformDomain } from '@flowstarter/platform-config';
 import type { Database } from '../database.types';
 import {
   DryRunDeployAgentClient,
@@ -59,19 +60,22 @@ type Client = SupabaseClient<Database>;
 
 /**
  * The DNS zone every preview hostname sits under. It has to match the wildcard
- * A record (`*.preview.flowstarter.net`, dns-only so Caddy can answer the ACME
- * HTTP-01 challenge itself) and the previews Caddy's wildcard site block, so it
- * is one constant rather than three.
+ * A record (dns-only so Caddy can answer the ACME HTTP-01 challenge itself)
+ * and the previews Caddy's wildcard site block, so it is one constant rather
+ * than three.
  *
- * Not `previewDomainForSlug` from `deploy.ts`: that derives its domain from
- * PLATFORM_DOMAIN — the domain the APP is served on, which is free to differ
- * per environment — while a preview hostname has to resolve to the one host
- * the wildcard record points at. Same `{slug}.preview.{zone}` shape; a pinned
- * zone.
+ * Defaults from `resolvePlatformDomain()`, the same env-driven rule
+ * `previewDomainForSlug` (`deploy.ts`) and the deploy-agent's own preview
+ * suffix default derive from, so a development or staging process mints
+ * `preview.flowstarter.dev` and production mints `preview.flowstarter.net`
+ * with nobody having to remember to set an env var per environment.
+ * `FLOWSTARTER_PREVIEW_DOMAIN_SUFFIX` still overrides it explicitly, for the
+ * case where the previews wildcard is pinned to a zone that genuinely
+ * differs from the app's own domain.
  */
 export const PREVIEW_DOMAIN_SUFFIX =
   process.env.FLOWSTARTER_PREVIEW_DOMAIN_SUFFIX?.trim() ||
-  'preview.flowstarter.net';
+  `preview.${resolvePlatformDomain()}`;
 
 /** `p-` + 16 hex chars. Matches the deploy-agent's slug grammar. */
 const SLUG_PATTERN = /^p-[0-9a-f]{16}$/;

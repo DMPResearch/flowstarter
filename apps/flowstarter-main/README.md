@@ -121,7 +121,7 @@ Browser
          • Per-client Docker sandboxes: dev server + file-ops agent
 ```
 
-Client traffic (`<platform-domain>` is resolved from `@flowstarter/platform-config` — never hardcoded; the runtime domain is `flowstarter.net`):
+Client traffic (`<platform-domain>` is resolved from `@flowstarter/platform-config`, never hardcoded; `resolvePlatformDomain()` mints `flowstarter.net` in production and `flowstarter.dev` in development, test and staging):
 - `acme.<platform-domain>/edit` → editor container (Hetzner) authenticated via magic-link or Clerk
 - `acme.preview.<platform-domain>` → that client's dev-server container (live preview)
 - `acme-customdomain.com` → that client's production output

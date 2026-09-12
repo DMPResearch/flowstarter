@@ -13,6 +13,9 @@
     "build:linux": "bun build --compile --minify --target=bun-linux-x64 --outfile dist/deploy-agent-linux-x64 src/index.ts",
     "build:linux-arm64": "bun build --compile --minify --target=bun-linux-arm64 --outfile dist/deploy-agent-linux-arm64 src/index.ts"
   },
+  "dependencies": {
+    "@flowstarter/platform-config": "workspace:*"
+  },
   "devDependencies": {
     "@types/bun": "^1.3.9",
     "typescript": "^5.7.3"

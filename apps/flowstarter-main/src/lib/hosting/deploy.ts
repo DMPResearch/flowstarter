@@ -497,6 +497,12 @@ export async function deploySite(opts: {
 
 /**
  * Helper to derive what the preview domain SHOULD be for a slug.
+ *
+ * `getSubdomainUrl` → `getPlatformDomain` → `resolvePlatformDomain` under the
+ * hood, so with no `PLATFORM_DOMAIN` override this mints
+ * `{slug}.preview.flowstarter.dev` in development, test and staging, and
+ * `{slug}.preview.flowstarter.net` in production. The environment decides,
+ * so nobody has to set `PLATFORM_DOMAIN` by hand before a deploy.
  */
 export function previewDomainForSlug(slug: string): string {
   const url = getSubdomainUrl(`${slug}.preview`);
