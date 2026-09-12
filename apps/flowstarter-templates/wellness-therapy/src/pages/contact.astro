@@ -31,6 +31,13 @@ const pageTitle = `Contact — ${(siteLabels as any).siteMeta?.title ?? ''}`;
       />
       <ContactDetailsPanel details={contactPage.details} />
     </section>
+    <!--
+      The trusted integration step replaces this block with this workspace's
+      own lead capture script, which posts the form to Flowstarter under the
+      workspace's public token. With nothing injected the form keeps its
+      mailto: action, so the placeholder is empty rather than a promise.
+    -->
+    <div class="contact-page__lead-capture" data-flowstarter-lead-capture-slot></div>
   </main>
   <CTASection />
   <Footer />

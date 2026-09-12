@@ -1401,6 +1401,15 @@ export interface FullSiteBuildJob {
    */
   calComUrl?: string | null;
   /**
+   * Where this workspace's contact form posts, built from
+   * `workspaces.lead_capture_token` and the platform host at claim time by the
+   * job store. Wired as an inline script on the contact page, the same way the
+   * Cal.com embed is wired on the booking page, and for the same reason: the
+   * preview scaffold carries no endpoint at all, so a build that did not add
+   * one would ship a site whose enquiries go nowhere.
+   */
+  leadCaptureEndpoint?: string | null;
+  /**
    * What the client approved in their preview before they paid, off the job
    * payload. Absent for an operator-created project, which has no preview.
    *
@@ -2035,9 +2044,10 @@ export function operatorNotesFeedback(notes: OperatorNote[]): string {
  * Two implementations exist. The GitHub one opens the internal draft PR that
  * gates HUMAN_QA. The local one packages the build output and deploys it, and
  * needs `siteRoot` (the directory that was actually built, not the worktree
- * root) and `calComUrl` (so a built tree whose source injection did not take
- * still gets the tenant's live embed rather than the blurred preview demo).
- * Both fields are optional so the GitHub publisher can ignore them.
+ * root), `calComUrl` and `leadCaptureEndpoint` (so a built tree whose source
+ * injection did not take still gets the tenant's live embed and its own
+ * contact form endpoint rather than the blurred preview demo and nothing).
+ * All three are optional so the GitHub publisher can ignore them.
  */
 export interface PullRequestPublisher {
   create(input: {
@@ -2047,6 +2057,12 @@ export interface PullRequestPublisher {
     commitSha: string;
     siteRoot?: string;
     calComUrl?: string | null;
+    /**
+     * Same reasoning as `calComUrl`: a built tree whose source injection did
+     * not take still has to end up posting its enquiries at the tenant's own
+     * capture endpoint rather than at nothing.
+     */
+    leadCaptureEndpoint?: string | null;
     /**
      * Set when this publish is a paid change request going live, so the deploy
      * that puts it on the host can tell the client which request it was. It
@@ -2269,6 +2285,12 @@ export class FullSiteBuildWorker {
       // the workspace had no link, so nothing ever ran to take it back out.
       await applyIntegrationsToWorkspace(siteRoot, {
         booking: { provider: 'cal.com', url: job.calComUrl ?? null },
+        // Unconditional for the same reason the booking key is: a workspace
+        // whose token could not be resolved still needs any endpoint a
+        // previous run left on the page taken back out, and a paid site whose
+        // contact form posts to a preview token is a form that silently loses
+        // every enquiry.
+        leadCapture: { endpoint: job.leadCaptureEndpoint ?? null },
       });
       await this.store.markAgentWorking(jobId, worktree);
       // Every pass is given the approved changes, not only the first: the
@@ -2563,6 +2585,7 @@ export class FullSiteBuildWorker {
         commitSha,
         siteRoot,
         calComUrl: job.calComUrl ?? null,
+        leadCaptureEndpoint: job.leadCaptureEndpoint ?? null,
       });
       await this.store.markHumanQa(jobId, { commitSha, ...published });
       await phase('Handed to human QA');
@@ -2671,6 +2694,12 @@ export class FullSiteBuildWorker {
       // how that demo shipped on a paid contact page (#100).
       await applyIntegrationsToWorkspace(siteRoot, {
         booking: { provider: 'cal.com', url: job.calComUrl ?? null },
+        // Unconditional for the same reason the booking key is: a workspace
+        // whose token could not be resolved still needs any endpoint a
+        // previous run left on the page taken back out, and a paid site whose
+        // contact form posts to a preview token is a form that silently loses
+        // every enquiry.
+        leadCapture: { endpoint: job.leadCaptureEndpoint ?? null },
       });
       // The baseline, read off the manifest as source. `builtPageNames` was
       // used here once and only counts paths ending in `.html`, which a
@@ -2907,6 +2936,7 @@ export class FullSiteBuildWorker {
         commitSha,
         siteRoot,
         calComUrl: job.calComUrl ?? null,
+        leadCaptureEndpoint: job.leadCaptureEndpoint ?? null,
         changeRequestId: intent.changeRequestId,
         siteVersion: saved.version,
       });
@@ -2996,6 +3026,12 @@ export class FullSiteBuildWorker {
       // rebuild can never carry the funnel's blurred demo either.
       await applyIntegrationsToWorkspace(siteRoot, {
         booking: { provider: 'cal.com', url: job.calComUrl ?? null },
+        // Unconditional for the same reason the booking key is: a workspace
+        // whose token could not be resolved still needs any endpoint a
+        // previous run left on the page taken back out, and a paid site whose
+        // contact form posts to a preview token is a form that silently loses
+        // every enquiry.
+        leadCapture: { endpoint: job.leadCaptureEndpoint ?? null },
       });
       await this.store.markRebuildStarted(jobId, worktree);
 
@@ -3019,6 +3055,7 @@ export class FullSiteBuildWorker {
         commitSha,
         siteRoot,
         calComUrl: job.calComUrl ?? null,
+        leadCaptureEndpoint: job.leadCaptureEndpoint ?? null,
       });
       await this.store.markRebuilt(jobId, { commitSha, ...published });
       await phase('Live');

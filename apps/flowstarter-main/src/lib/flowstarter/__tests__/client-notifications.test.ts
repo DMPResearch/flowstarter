@@ -134,6 +134,29 @@ describe('clientDashboardUrl', () => {
 });
 
 describe('notifyClientOnce', () => {
+  it('sets a reply-to only when the reply belongs to somebody else', async () => {
+    seedWorkspace();
+    // An enquiry: hitting reply has to reach the visitor, not us.
+    await notify({
+      notification: 'lead_captured',
+      dedupeKey: 'lead-1',
+      replyTo: 'elena@salon.ro',
+    });
+    expect(sendEmail).toHaveBeenCalledWith({
+      to: 'client@example.com',
+      subject: 'Subject line',
+      html: '<p>Body</p>',
+      text: 'Body',
+      replyTo: 'elena@salon.ro',
+    });
+
+    sendEmail.mockClear();
+    // Everything else: the sender is the right recipient, so no header at all
+    // rather than one pointing at nobody.
+    await notify({ notification: 'site_live' });
+    expect(sendEmail.mock.calls[0]?.[0]).not.toHaveProperty('replyTo');
+  });
+
   it('sends to the workspace client and records it in the ledger', async () => {
     seedWorkspace();
     const result = await notify();

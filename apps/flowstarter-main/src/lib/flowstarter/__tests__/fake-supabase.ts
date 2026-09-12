@@ -46,6 +46,10 @@ export function createFakeSupabase(): FakeDb {
             const real = column.slice(0, -'__notnull'.length);
             return row[real] !== null && row[real] !== undefined;
           }
+          if (column.endsWith('__neq')) {
+            const real = column.slice(0, -'__neq'.length);
+            return row[real] !== value;
+          }
           return Array.isArray(value)
             ? value.includes(row[column])
             : row[column] === value;
@@ -113,6 +117,11 @@ export function createFakeSupabase(): FakeDb {
       },
       eq(column: string, value: unknown) {
         filters.push([column, value]);
+        return self;
+      },
+      /** `neq('status', 'spam')`: the same filter list, matched by exclusion. */
+      neq(column: string, value: unknown) {
+        filters.push([`${column}__neq`, value]);
         return self;
       },
       /** `in('status', [...])`: the same filter list, matched by membership. */

@@ -344,6 +344,8 @@ contactPage:
     messagePlaceholder: "Roughly what you are after, where you are, and any timing you have in mind — a kitchen, a staircase, a few doors, anything."
     submitLabel: "Send enquiry"
     successMessage: "Thanks. Your email app should now be open with your enquiry ready to send. We normally reply within a working day."
+    sentMessage: "Thanks. Your enquiry is with us, and we normally reply within a working day."
+    failureMessage: "That did not go through. Give us a call or send an email and we will pick it up."
   details:
     emailLabel: "Email us"
     emailValue: "hello@example.com"

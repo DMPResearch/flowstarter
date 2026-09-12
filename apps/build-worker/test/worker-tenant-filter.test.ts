@@ -202,7 +202,7 @@ const ALLOW_LIST: AllowListEntry[] = [
   {
     file: 'job-store.ts',
     table: 'workspaces',
-    match: `.select('id, project_state, cal_com_url')`,
+    match: `.select('id, project_state, cal_com_url, lead_capture_token')`,
     reason:
       "claim(): filtered on workspaces.id, which is the workspace's own id.",
   },

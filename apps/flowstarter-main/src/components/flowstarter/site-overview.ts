@@ -59,7 +59,16 @@ export interface SiteOverviewInput {
   /** Raw `workspaces.tier_name`, normalised here. */
   tier: string | null | undefined;
   credits: EditCreditPosition;
-  enquiries: { total: number; last30Days: number; unread: number };
+  enquiries: {
+    total: number;
+    last30Days: number;
+    unread: number;
+    /**
+     * Where the tile goes. Optional so an existing caller keeps working, and
+     * a tile with no link is still a true tile.
+     */
+    href?: string;
+  };
   edits: { appliedThisMonth: number };
   /**
    * `connected` is whether a Cal.com link is saved; the three numbers come
@@ -226,6 +235,7 @@ function enquiriesTile({
       label: 'Enquiries',
       value: '0',
       note: 'Enquiries from your contact form will show here once your site is live.',
+      ...(enquiries.href ? { href: enquiries.href } : {}),
       tone: 'muted',
     };
   }
@@ -244,6 +254,7 @@ function enquiriesTile({
       'enquiry',
       'enquiries'
     )} in total, ${waiting}.`,
+    ...(enquiries.href ? { href: enquiries.href } : {}),
     tone: enquiries.unread > 0 ? 'attention' : 'ok',
   };
 }

@@ -249,7 +249,11 @@ export const TENANT_TABLES = [
   {
     table: 'workspaces',
     tenantKey: 'id',
-    select: 'id',
+    // `lead_capture_token` is in the select list on purpose. It is public by
+    // nature - it ships in the client's own site HTML - but "public" has to
+    // mean "published by us on their site", not "readable from this API by
+    // anybody". A member may read their own; nobody may read another's.
+    select: 'id,lead_capture_token',
     seed: null,
     forgedInsert: (_workspaceId, run) => ({
       slug: `rls-forged-${run}`,
@@ -257,6 +261,10 @@ export const TENANT_TABLES = [
       site_kind: 'astro',
     }),
     updatePatch: { name: 'renamed by another tenant' },
+    // Rotation is the API's job, behind the workspace guard, which records who
+    // did it. A member rotating their own token straight through PostgREST
+    // would bypass that ledger, so it has to be refused even on their own row.
+    deniedColumnUpdate: { lead_capture_token: 'forged-by-a-member' },
   },
   {
     table: 'workspace_memberships',

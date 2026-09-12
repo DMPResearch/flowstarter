@@ -37,6 +37,7 @@ import {
   injectCalComPreviewDemoIntoScaffoldFiles,
   resolveTenantCalComUrl,
 } from '@/lib/flowstarter/cal-com';
+import { injectLeadCapturePreviewIntoScaffoldFiles } from '@/lib/flowstarter/lead-capture-scaffold';
 import { publishFunnelPreview } from '@/lib/hosting/preview-publisher';
 import { buildSandboxStaticFiles } from '@/lib/hosting/sandbox-static-build';
 import type {
@@ -901,8 +902,12 @@ export async function POST(req: NextRequest) {
         calComUrl: spec.calComUrl,
         customIntegrations: spec.customIntegrations,
       });
-      const filesWithCal = injectCalComPreviewDemoIntoScaffoldFiles(
-        result.files
+      // Same two integration steps the paid build runs, in the preview's own
+      // form: a blurred calendar rather than the tenant's, and a contact form
+      // pointed at a preview token the capture endpoint refuses out loud.
+      const filesWithCal = injectLeadCapturePreviewIntoScaffoldFiles(
+        injectCalComPreviewDemoIntoScaffoldFiles(result.files),
+        demoId
       );
 
       // The watchdog may already have failed this job while the pipeline was

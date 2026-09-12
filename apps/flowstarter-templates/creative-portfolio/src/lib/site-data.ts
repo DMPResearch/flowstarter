@@ -178,6 +178,8 @@ export const getContactPageData = () => {
       messagePlaceholder: asString(form.messagePlaceholder),
       submitLabel: asString(form.submitLabel),
       successMessage: asString(form.successMessage),
+      sentMessage: asString(form.sentMessage),
+      failureMessage: asString(form.failureMessage),
     },
     details: {
       emailLabel: asString(details.emailLabel),

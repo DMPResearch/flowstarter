@@ -30,6 +30,7 @@ import {
   type PreviewIntent,
   type TemplateScaffoldFile,
 } from '@flowstarter/agentic-codegen';
+import { resolvePlatformDomain } from '@flowstarter/platform-config';
 import {
   loadChangeRequestAssetFiles,
   loadTenantAssetFiles,
@@ -387,6 +388,30 @@ function parseCalComUrl(raw: string | null | undefined): string | null {
   return normalizeCalLink(trimmed) ? trimmed : null;
 }
 
+/**
+ * Where this workspace's contact form posts, or null.
+ *
+ * Two things decide it and neither is in the job payload: the workspace's own
+ * `lead_capture_token`, and the platform host this process belongs to, which
+ * `resolvePlatformDomain()` reads from its own environment. That is why the
+ * URL is assembled here rather than sent by whoever queued the job - a build
+ * worker running against the dev zone must not write a production endpoint
+ * into a site because a queued row said so.
+ *
+ * The token shape is checked rather than trusted for the same reason the Cal
+ * link's host is: this string ends up in public HTML, and a token carrying a
+ * slash or a dot would either change the path or collide with the preview
+ * token shape the endpoint refuses.
+ */
+const LEAD_CAPTURE_TOKEN = /^[A-Za-z0-9_-]{43,128}$/;
+
+function leadCaptureEndpointFor(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const token = raw.trim();
+  if (!LEAD_CAPTURE_TOKEN.test(token)) return null;
+  return `https://${resolvePlatformDomain()}/api/leads/capture/${token}`;
+}
+
 /** The three kinds this worker runs, off the ledger row's free-text column. */
 function jobKindFor(kind: string): FullSiteBuildJob['kind'] {
   if (kind === 'SITE_REBUILD') return 'SITE_REBUILD';
@@ -399,6 +424,8 @@ export function buildJobFromRows(input: {
   projectState: string;
   artifacts: ProjectArtifactRow;
   calComUrl?: string | null;
+  /** Raw `workspaces.lead_capture_token`; the endpoint is built from it here. */
+  leadCaptureToken?: string | null;
   /**
    * The client's own pictures, already downloaded and verified, appended to
    * the seed manifest. A CHANGE_REQUEST_BUILD's are the files the request
@@ -432,6 +459,7 @@ export function buildJobFromRows(input: {
     input.artifacts.preview_manifest,
   );
   const calComUrl = parseCalComUrl(input.calComUrl);
+  const leadCaptureEndpoint = leadCaptureEndpointFor(input.leadCaptureToken);
   const previewIntent = parsePreviewIntent(input.job.payload);
   const kind = jobKindFor(input.job.kind);
   const changeRequest =
@@ -466,6 +494,7 @@ export function buildJobFromRows(input: {
     ),
     requiredIntegrations,
     ...(calComUrl ? { calComUrl } : {}),
+    ...(leadCaptureEndpoint ? { leadCaptureEndpoint } : {}),
     ...(previewIntent ? { previewIntent } : {}),
     ...(changeRequest ? { changeRequest } : {}),
     ...(briefInput ? { briefInput } : {}),
@@ -761,12 +790,13 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
     try {
       const { data: workspace, error: workspaceError } = await this.client
         .from('workspaces')
-        .select('id, project_state, cal_com_url')
+        .select('id, project_state, cal_com_url, lead_capture_token')
         .eq('id', row.workspace_id)
         .maybeSingle<{
           id: string;
           project_state: string;
           cal_com_url: string | null;
+          lead_capture_token: string | null;
         }>();
       if (workspaceError) throw workspaceError;
       if (!workspace)
@@ -816,6 +846,7 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
         calComUrl: workspace.cal_com_url,
         changeRequestAssetFiles: [...changeRequestAssetFiles, ...brief.files],
         briefInput: brief.briefInput,
+        leadCaptureToken: workspace.lead_capture_token,
       });
     } catch (error) {
       await this.markFailed(jobId, {

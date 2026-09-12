@@ -338,6 +338,8 @@ contactPage:
     messagePlaceholder: "Tell me about the project, the product problem, or the decision you need help moving forward."
     submitLabel: "Send message"
     successMessage: "Thanks. Your email app should now be open with the message ready to send to me."
+    sentMessage: "Thanks. Your message reached me, and I will come back to you shortly."
+    failureMessage: "That did not go through. Email me directly and it will reach me just the same."
   details:
     emailLabel: "Email address"
     emailValue: "hello@example.com"

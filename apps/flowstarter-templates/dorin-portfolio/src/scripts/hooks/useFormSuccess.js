@@ -12,6 +12,14 @@ export function useFormSuccess({ formSelector, successSelector, mailto, onSucces
     return;
   }
 
+  // The platform's lead capture script sets this flag the moment it binds,
+  // which is during parse, before this deferred module runs. When it is on,
+  // the message goes to the client's own workspace and this handler must not
+  // also open a mail client or claim success.
+  if (form.dataset.leadCapture === 'on') {
+    return;
+  }
+
   form.addEventListener('submit', (event) => {
     event.preventDefault();
 

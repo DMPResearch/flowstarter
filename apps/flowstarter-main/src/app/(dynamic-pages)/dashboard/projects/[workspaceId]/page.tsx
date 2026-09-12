@@ -169,7 +169,14 @@ export default async function ClientProjectPage({
       usedThisMonth: counts.edits.proposedThisMonth,
       now,
     }),
-    enquiries: counts.enquiries,
+    enquiries: {
+      ...counts.enquiries,
+      // Straight to the list when there is something to read, to the contact
+      // form settings when there is not, the same rule the bookings tile uses.
+      href: counts.enquiries.total
+        ? `/dashboard/projects/${workspaceId}/enquiries/list`
+        : `/dashboard/projects/${workspaceId}/enquiries`,
+    },
     edits: { appliedThisMonth: counts.edits.appliedThisMonth },
     booking: {
       connected: Boolean(workspace.cal_com_url?.trim()),
