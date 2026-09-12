@@ -13,9 +13,13 @@
 #   1. Resolves the Hetzner platform slot that serves this commit:
 #        pull request  → https://pr-<n>.staging.flowstarter.dev
 #        push to main  → vars.STAGING_URL (https://staging.flowstarter.dev)
-#      and waits for that slot's /api/health to report `"ok":true` and
-#      `"target":"local"`, for up to 15 minutes, which is the staging PR lane's
-#      own build-and-deploy budget.
+#      and waits for that slot's /api/health to report `"ok":true`,
+#      `"target":"local"` AND `"commit":"<this commit's SHA>"`, for up to 15
+#      minutes, which is the staging PR lane's own build-and-deploy budget.
+#      The commit check matters because a slot takes minutes to redeploy; a
+#      health check that only looked at ok/target would pass immediately
+#      against the PREVIOUS container while the new one was still building,
+#      and this lane would then test stale code under the new commit's name.
 #   2. Runs Playwright smoke tests against that URL.
 #
 # There are no Netlify Deploy Previews anymore. A pull request's preview is its
@@ -128,10 +132,20 @@ jobs:
             echo "${message}" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "url=${url%/}" >> "$GITHUB_OUTPUT"
-      # ── Wait for that slot to be healthy ───────────────────────────────────
+      # ── Wait for that slot to be healthy AND on this commit ────────────────
       # continue-on-error: a slot that never comes up is an infrastructure
       # signal, not a code defect, so a timeout here must not redden the job.
       # The next steps gate on steps.wait.outputs.url being non-empty instead.
+      #
+      # EXPECTED_COMMIT closes the race this lane used to lose: deploying a
+      # slot takes minutes (build, push, SSH, docker compose up), and the
+      # PREVIOUS container answers "ok":true and "target":"local" the whole
+      # time the new one is rolling out. Without a commit check this step
+      # passed against stale code the instant the old container was found
+      # healthy, and the smoke run below then failed assertions this commit
+      # was supposed to fix (or passed against a build that never contained
+      # it). /api/health now names its own commit; wait until it names this
+      # one.
       - name: Wait for the Hetzner slot
         id: wait
         if: steps.ssh.outputs.present == 'true' && steps.slot.outputs.url != ''
@@ -142,13 +156,14 @@ jobs:
           TIMEOUT_SECONDS: '900'
           POLL_INTERVAL: '15'
           EXPECT_TARGET: local
+          EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: No healthy Hetzner slot
         if: steps.ssh.outputs.present == 'true' && steps.slot.outputs.url != '' && steps.wait.outputs.url == ''
         env:
           SLOT_URL: ${{ steps.slot.outputs.url }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          message="${SLOT_URL} never reported \"ok\":true and \"target\":\"local\" for ${SHA} within 15 minutes. Check the Staging deploy (PR) run for this commit. Skipping."
+          message="${SLOT_URL} never reported \"ok\":true, \"target\":\"local\" and \"commit\":\"${SHA}\" within 15 minutes. Check the Staging deploy (PR) run for this commit. Skipping."
           echo "::warning::${message}"
           echo "${message}" >> "$GITHUB_STEP_SUMMARY"
       # ── Run smoke against the resolved slot URL ────────────────────────────

@@ -293,6 +293,10 @@ jobs:
       # smoke exists to test the slot and can afford to wait 15 minutes for it,
       # this lane can review the diff without one. `continue-on-error` means a
       # slot that never comes up leaves `url` empty and the review still runs.
+      #
+      # EXPECTED_COMMIT: without it this step could hand the reviewer a
+      # preview still on the PR's PREVIOUS commit, mid-redeploy of this one --
+      # /api/health's own commit field is what lets the wait tell those apart.
       - name: Find this pull request's Hetzner slot
         id: preview
         if: steps.slot_creds.outputs.present == 'true'
@@ -303,6 +307,7 @@ jobs:
           TIMEOUT_SECONDS: '600'
           POLL_INTERVAL: '15'
           EXPECT_TARGET: local
+          EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha }}
       # The lookup runs with `continue-on-error`, so a slot that fails for any
       # reason leaves `url` empty and the reviewer silently loses the browser.
       # Say so out loud instead.

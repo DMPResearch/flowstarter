@@ -22,6 +22,12 @@
 #   The draft stays a draft, and this workflow ends red, when either
 #   verification job fails:
 #     - `staging-journey`  the full-journey tier on staging (when configured).
+#                          Waits for the staging slot's /api/health to report
+#                          this release's own commit (not just "ok":true) via
+#                          .github/scripts/wait-for-staging-slot.sh before
+#                          running the journey, since staging-deploy.yml is a
+#                          separate, racing workflow and could still be
+#                          mid-rollout of this exact commit.
 #     - `deploy-prod`      production image build and `prod` slot deploy.
 #     - `full-e2e`         verifies the prod slot just deployed (directly, via
 #                          curl --resolve, never skipped), then contract +
@@ -197,6 +203,28 @@ jobs:
             echo "Staging is not configured; the full-journey tier was skipped." >> "$GITHUB_STEP_SUMMARY"
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
+      # Staging deploys on every push to main (staging-deploy.yml), but that
+      # is a separate workflow racing this one: this release just tagged
+      # "the current main" (needs.prepare.outputs.sha) and there is no
+      # guarantee staging has finished rolling that commit out yet, or has
+      # even started. Without this wait, the step below could run the release
+      # gate's full journey against whatever staging happened to be serving
+      # at that instant -- the previous release's build, or a container
+      # mid-restart -- and a pass would prove nothing about the commit this
+      # release is about to publish. Deliberately NOT continue-on-error, unlike
+      # the advisory PR lanes (e2e-smoke.yml, visual-check.yml): staging-journey
+      # is one of the two checks release.yml's header names as blocking, so a
+      # slot that never reaches this commit inside the budget must fail this
+      # job, not skip it quietly and let deploy-prod through unverified.
+      - name: Wait for the Hetzner slot to reach this release's commit
+        if: steps.staging.outputs.present == 'true'
+        run: bash .github/scripts/wait-for-staging-slot.sh
+        env:
+          TARGET_URL: ${{ steps.staging.outputs.url }}
+          TIMEOUT_SECONDS: '900'
+          POLL_INTERVAL: '15'
+          EXPECT_TARGET: local
+          EXPECTED_COMMIT: ${{ needs.prepare.outputs.sha }}
       - uses: pnpm/action-setup@v4
         if: steps.staging.outputs.present == 'true'
       - uses: actions/setup-node@v4
@@ -350,6 +378,7 @@ jobs:
             NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ vars.PROD_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
             NEXT_PUBLIC_SITE_URL=https://flowstarter.net
             BUILD_LIBRARY_PREVIEWS=true
+            FLOWSTARTER_BUILD_COMMIT=${{ needs.prepare.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

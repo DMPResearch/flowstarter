@@ -194,16 +194,23 @@ jobs:
             NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ vars.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
             NEXT_PUBLIC_SITE_URL=${{ steps.pr.outputs.url }}
             BUILD_LIBRARY_PREVIEWS=true
+            FLOWSTARTER_BUILD_COMMIT=${{ github.event.pull_request.head.sha || github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Deployed by its SHA tag, not the floating `pr-<n>` tag also pushed
+      # above: deploy-slot.sh derives the `commit` /api/health reports from
+      # whatever tag it is handed (see its FLOWSTARTER_BUILD_COMMIT export),
+      # and only the SHA tag makes that value the git commit
+      # wait-for-staging-slot.sh is told to expect. Same image either way --
+      # both tags point at the content this build just pushed.
       - name: Deploy slot over SSH
         if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
         env:
           HOST: ${{ secrets.STAGING_SSH_HOST }}
           USER: ${{ secrets.STAGING_SSH_USER }}
           KEY: ${{ secrets.STAGING_SSH_KEY }}
-          IMAGE: ${{ steps.image.outputs.name }}:pr-${{ steps.pr.outputs.number }}
+          IMAGE: ${{ steps.image.outputs.name }}:${{ github.event.pull_request.head.sha || github.sha }}
           SLOT: ${{ steps.pr.outputs.slot }}
           PR: ${{ steps.pr.outputs.number }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
