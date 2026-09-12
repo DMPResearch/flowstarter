@@ -1,16 +1,31 @@
 'use client';
 
 /**
- * Changes tab: what the client asked for after launch, priced by us.
+ * Changes tab: what the client asked for after launch, priced by us, and done
+ * by us.
  *
  * Each request shows the classifier's labels and the rule table's suggested
  * price, pre-filled into a quote form an operator edits before sending. The
  * client accepts and pays in their editor; the request comes back here as
- * paid, and the operator marks it done when the work has shipped.
+ * paid, and then there is a button that does the work.
+ *
+ * That last part is new, and it is the whole point of this screen. A paid card
+ * used to offer one thing, "Mark done", which moved a status and shipped
+ * nothing -- a client paid EUR 190 on 2026-09-12 for a change the product had
+ * no route to make. "Build this change" queues a CHANGE_REQUEST_BUILD: an
+ * agent pass over the site the client already has, seeded from the manifest
+ * their editor last wrote and carrying their own rights-confirmed pictures.
+ * The build's conversation is shown inline, in the same component the pipeline
+ * tab uses, so an operator watches the work rather than guessing at it.
+ *
+ * "Mark done" survives as a manual override for work that genuinely happened
+ * outside the product, and now costs a typed reason that is stored on the
+ * request. The difference between "a build shipped this" and "a person says
+ * this is handled" has to stay legible after everyone involved has forgotten.
  */
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { BadgeEuro, Check, XCircle } from 'lucide-react';
+import { BadgeEuro, Check, Hammer, XCircle } from 'lucide-react';
 import { ShellCard } from '../../../components/TeamDashboardShell';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -18,12 +33,17 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { compactRelative } from '@/lib/format-utils';
 import {
+  useBuildChangeRequest,
   useChangeRequests,
   useQuoteChangeRequest,
   useSetChangeRequestStatus,
   type ChangeRequestView,
 } from '@/hooks/useChangeRequests';
+import { BuildConversation } from './BuildConversation';
 import type { Project } from './form-helpers';
+
+/** Lifecycle states in which a delivered site exists to be changed. */
+const BUILDABLE_STATES = new Set(['HUMAN_QA', 'LIVE_SUBSCRIPTION']);
 
 const NEUTRAL_TONE =
   'border-[var(--fs-rule)] bg-transparent text-[var(--fs-ink-dim)]';
@@ -56,19 +76,30 @@ export function formatMoney(minor: number, currency: string): string {
 function RequestCard({
   request,
   projectId,
+  projectState,
 }: {
   request: ChangeRequestView;
   projectId: string;
+  projectState: string;
 }) {
   const quote = useQuoteChangeRequest(projectId);
   const setStatus = useSetChangeRequestStatus(projectId);
+  const build = useBuildChangeRequest(projectId);
   const [amount, setAmount] = useState(() =>
     ((request.quoteMinor ?? request.suggestedQuoteMinor ?? 0) / 100).toFixed(2)
   );
   const [note, setNote] = useState(request.quoteNote ?? '');
-  const busy = quote.isPending || setStatus.isPending;
+  const [buildNote, setBuildNote] = useState('');
+  const [override, setOverride] = useState(false);
+  const [reason, setReason] = useState('');
+  const busy = quote.isPending || setStatus.isPending || build.isPending;
   const canQuote =
     request.status === 'requested' || request.status === 'quoted';
+  const canBuild =
+    request.status === 'paid' && BUILDABLE_STATES.has(projectState);
+  // The job id survives the mutation, so the conversation keeps rendering
+  // after the list refetches and the card re-reads the row.
+  const jobId = build.data?.jobId ?? request.buildJobId;
 
   const onQuote = async () => {
     const minor = Math.round(Number(amount) * 100);
@@ -89,10 +120,32 @@ function RequestCard({
   };
   const onStatus = async (status: 'declined' | 'done') => {
     try {
-      await setStatus.mutateAsync({ changeId: request.id, status });
+      await setStatus.mutateAsync({
+        changeId: request.id,
+        status,
+        ...(status === 'done' ? { reason: reason.trim() } : {}),
+      });
+      setOverride(false);
+      setReason('');
       toast.success(status === 'done' ? 'Marked done' : 'Declined');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Could not update');
+    }
+  };
+  const onBuild = async () => {
+    try {
+      const started = await build.mutateAsync({
+        changeId: request.id,
+        note: buildNote.trim(),
+      });
+      setBuildNote('');
+      toast.success(
+        started.created
+          ? `Build queued with ${started.assets.length} of the client's files.`
+          : 'A build for this project is already running; this joined it.'
+      );
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not start the build');
     }
   };
 
@@ -184,13 +237,109 @@ function RequestCard({
         </div>
       )}
 
+      {request.status === 'done' && (
+        <p className="mt-2 text-xs text-[var(--fs-ink-dim)]">
+          {request.completedVia === 'build' && request.builtVersion !== null
+            ? `Built and published in version ${request.builtVersion}.`
+            : request.completedVia === 'manual'
+            ? `Marked done by hand: ${
+                request.completionNote ?? 'no reason recorded'
+              }`
+            : 'Done.'}
+        </p>
+      )}
+
       {request.status === 'paid' && (
-        <div className="mt-3 flex justify-end border-t border-[var(--fs-rule)] pt-3">
-          <Button size="sm" onClick={() => onStatus('done')} disabled={busy}>
-            <Check className="h-4 w-4" />
-            Mark done
-          </Button>
+        <div
+          data-testid="change-request-build"
+          className="mt-3 space-y-2 border-t border-[var(--fs-rule)] pt-3"
+        >
+          {canBuild ? (
+            <>
+              <Label htmlFor={`build-note-${request.id}`}>
+                Anything the agents should know (optional)
+              </Label>
+              <Textarea
+                id={`build-note-${request.id}`}
+                rows={2}
+                value={buildNote}
+                onChange={(e) => setBuildNote(e.target.value)}
+                placeholder="Put the gallery under the case study body, three across on desktop."
+              />
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button
+                  size="sm"
+                  data-testid="change-request-build-start"
+                  onClick={onBuild}
+                  disabled={busy}
+                >
+                  <Hammer className="h-4 w-4" />
+                  Build this change
+                </Button>
+              </div>
+            </>
+          ) : (
+            <p className="text-xs text-[var(--fs-ink-faint)]">
+              This project has no delivered site to change yet, so the work
+              cannot be built. A change is buildable once the site is in human
+              QA or live.
+            </p>
+          )}
+
+          {/* The manual override, deliberately behind a second click and a
+              typed reason: it closes the row without shipping anything. */}
+          {!override ? (
+            <button
+              type="button"
+              data-testid="change-request-override"
+              onClick={() => setOverride(true)}
+              className="text-[11px] text-[var(--fs-ink-faint)] underline underline-offset-2"
+            >
+              Mark done by hand instead
+            </button>
+          ) : (
+            <div className="space-y-2 rounded-lg border border-[var(--fs-rule)] p-2">
+              <Label htmlFor={`done-reason-${request.id}`}>
+                How was this handled? Stored on the request.
+              </Label>
+              <Textarea
+                id={`done-reason-${request.id}`}
+                rows={2}
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="Client changed their mind on a call; nothing to build."
+              />
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setOverride(false)}
+                  disabled={busy}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  data-testid="change-request-done"
+                  onClick={() => onStatus('done')}
+                  disabled={busy || reason.trim().length < 10}
+                >
+                  <Check className="h-4 w-4" />
+                  Mark done
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
+      )}
+
+      {jobId && (
+        <BuildConversation
+          projectId={projectId}
+          jobId={jobId}
+          status={request.status === 'done' ? 'succeeded' : 'running'}
+        />
       )}
     </li>
   );
@@ -198,6 +347,7 @@ function RequestCard({
 
 export function ChangesTab({ project }: { project: Project }) {
   const { data, isLoading, error } = useChangeRequests(project.id);
+  const projectState = project.project_state ?? '';
 
   if (error) {
     return (
@@ -241,6 +391,7 @@ export function ChangesTab({ project }: { project: Project }) {
               key={request.id}
               request={request}
               projectId={project.id}
+              projectState={projectState}
             />
           ))}
         </ul>

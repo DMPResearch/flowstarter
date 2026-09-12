@@ -1,0 +1,156 @@
+/**
+ * Putting the client's own pictures where the change-request agent can use
+ * them.
+ *
+ * A change request like "add a gallery with the three screenshots I uploaded"
+ * is unanswerable unless those screenshots are files on disk in the build
+ * worktree. They are not: they live in the private `tenant-assets` bucket,
+ * content-addressed under `tenant/{workspaceId}/assets/{sha256}.{ext}`, and
+ * before this nothing in the product ever handed one to a generator -- the
+ * one reader allowed to (`loadUsableAssets`) was imported by its own test and
+ * by nothing else.
+ *
+ * So the seeded manifest gets them appended as ordinary base64 files under
+ * `public/flowstarter-media/`, which is the directory the client's own
+ * Pictures tab already publishes into, and the prompt names those exact
+ * paths.
+ *
+ * Two things are deliberately NOT trusted from the job payload:
+ *
+ *   - the storage path. It is read from the `assets` row here, through
+ *     `withTenant`, so a hand-edited payload cannot point this at another
+ *     tenant's object however plausible the string looks.
+ *   - the rights. `rights_confirmed_at` is re-checked at build time rather
+ *     than relied on from the moment the payload was written. Rights are a
+ *     statement a client makes and can withdraw, and the build is the last
+ *     moment before those bytes are on a public website.
+ */
+import type { SupabaseClient } from '@supabase/supabase-js';
+import {
+  assertSafeUploadedImage,
+  type ChangeRequestAsset,
+  type TemplateScaffoldFile,
+} from '@flowstarter/agentic-codegen';
+import { withTenant } from './tenancy';
+
+/** The private bucket `apps/flowstarter-main` uploads tenant media into. */
+export const TENANT_ASSET_BUCKET = 'tenant-assets';
+
+export class ChangeRequestAssetError extends Error {}
+
+interface AssetRow {
+  id: string;
+  storage_path: string | null;
+  rights_confirmed_at: string | null;
+}
+
+/**
+ * True when a storage path belongs to this workspace. The same shape
+ * `assertTenantPath` enforces in the main app, restated here because this
+ * process has its own Supabase client and no access to that module.
+ */
+export function isTenantAssetPath(path: string, workspaceId: string): boolean {
+  if (path.includes('..') || path.startsWith('/')) return false;
+  return path.toLowerCase().startsWith(`tenant/${workspaceId.toLowerCase()}/`);
+}
+
+/**
+ * Every named asset as a manifest file, ready to be seeded into a worktree.
+ *
+ * An asset that cannot be delivered -- deleted, rights withdrawn, bytes gone,
+ * or no longer an image -- throws rather than being quietly dropped. The
+ * request was quoted and paid on the understanding that those pictures would
+ * be used, and a build that silently ran without them would produce a site
+ * the applied-change gate then fails anyway, several agent minutes later, with
+ * a worse explanation.
+ */
+export async function loadChangeRequestAssetFiles(input: {
+  client: SupabaseClient;
+  workspaceId: string;
+  assets: readonly ChangeRequestAsset[];
+}): Promise<TemplateScaffoldFile[]> {
+  const { client, workspaceId, assets } = input;
+  if (assets.length === 0) return [];
+
+  const { data, error } = await withTenant(client, workspaceId)
+    .from('assets')
+    .select('id, storage_path, rights_confirmed_at')
+    .in(
+      'id',
+      assets.map((asset) => asset.assetId),
+    );
+  if (error) throw error;
+  const rows = new Map(
+    ((data ?? []) as unknown as AssetRow[]).map((row) => [row.id, row]),
+  );
+
+  const files: TemplateScaffoldFile[] = [];
+  for (const asset of assets) {
+    const row = rows.get(asset.assetId);
+    if (!row) {
+      throw new ChangeRequestAssetError(
+        `Asset ${asset.assetId} is no longer in this workspace's library, so ` +
+          'the change request cannot be built with it.',
+      );
+    }
+    if (!row.rights_confirmed_at) {
+      throw new ChangeRequestAssetError(
+        `Asset ${asset.assetId} no longer has confirmed rights, so it must ` +
+          'not be published.',
+      );
+    }
+    if (
+      !row.storage_path ||
+      !isTenantAssetPath(row.storage_path, workspaceId)
+    ) {
+      throw new ChangeRequestAssetError(
+        `Asset ${asset.assetId} has no stored copy inside this workspace.`,
+      );
+    }
+
+    const download = await client.storage
+      .from(TENANT_ASSET_BUCKET)
+      .download(row.storage_path);
+    if (download.error || !download.data) {
+      throw new ChangeRequestAssetError(
+        `Asset ${asset.assetId} could not be read from storage: ` +
+          (download.error?.message ?? 'no data'),
+      );
+    }
+    const bytes = Buffer.from(await download.data.arrayBuffer());
+    // The same magic-byte check the upload and the Pictures tab both run. A
+    // row written before that check existed still cannot put an SVG, or a
+    // renamed script, onto a client's live site.
+    assertSafeUploadedImage(bytes);
+
+    files.push({
+      path: asset.manifestPath,
+      content: bytes.toString('base64'),
+      encoding: 'base64',
+      type: 'file',
+    });
+  }
+  return files;
+}
+
+/**
+ * The seed manifest with the client's pictures folded in.
+ *
+ * A path already in the manifest is replaced rather than added: the client may
+ * have put the same file into a slot through the Pictures tab, and
+ * `materializeScaffold` writes with `wx`, so a duplicate path would fail the
+ * build on a filesystem error rather than on anything meaningful.
+ */
+export function withChangeRequestAssets(
+  seed: readonly TemplateScaffoldFile[],
+  assetFiles: readonly TemplateScaffoldFile[],
+): TemplateScaffoldFile[] {
+  if (assetFiles.length === 0) return [...seed];
+  const added = new Map(assetFiles.map((file) => [file.path, file]));
+  const merged = seed.map((file) => added.get(file.path) ?? file);
+  const seen = new Set(seed.map((file) => file.path));
+  for (const file of assetFiles) {
+    if (!seen.has(file.path)) merged.push(file);
+  }
+  return merged;
+}

@@ -289,3 +289,50 @@ export function buildNeedsReviewEmail(input: {
   `),
   };
 }
+
+/**
+ * A paid change request is on the site.
+ *
+ * The sixth notice, and the one the product owed a client who paid EUR 190 for
+ * a change on 2026-09-12 and heard nothing, because there was no route that
+ * could do the work and therefore no moment at which anything could be said.
+ *
+ * It quotes the client's own request back to them rather than describing the
+ * change in our words. They wrote that sentence, they paid against it, and
+ * reading it back is the shortest honest way to say "this, the thing you
+ * asked for, is the thing that is now live".
+ */
+export function changeRequestLiveEmail(input: {
+  request: string;
+  siteUrl: string;
+  dashboardUrl: string;
+  version: number;
+  clientName?: string | null;
+  businessName?: string | null;
+}): RenderedEmail {
+  return {
+    subject: 'Your change is live',
+    html: baseEmailTemplate(`
+    <h1>Your change is live</h1>
+    <p>${greeting(input.clientName)}</p>
+    <p>
+      The change you asked for on ${projectPhrase(input.businessName)} is done
+      and published. This is what you asked for, in your words:
+    </p>
+    <blockquote style="margin: 16px 0; padding: 12px 16px; border-left: 3px solid #d9d5cc;">
+      ${escapeHtml(input.request)}
+    </blockquote>
+    <div style="text-align: center;">
+      <a href="${input.siteUrl}" class="button">See it on your site</a>
+    </div>
+    <p style="margin-top: 24px;">
+      It is version ${input.version} of your site, and your editor can still
+      change any of the wording on it yourself.
+    </p>
+    <p class="muted">
+      Your dashboard is at
+      <a href="${input.dashboardUrl}">${input.dashboardUrl}</a>.
+    </p>
+  `),
+  };
+}

@@ -3,6 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { ProjectState } from '@flowstarter/agentic-codegen';
 import {
   buildJobFromRows,
+  changeRequestFor,
   isClaimable,
   JobArtifactError,
   parseApprovedPreviewFiles,
@@ -318,6 +319,17 @@ function makeScriptedClient(script: Record<string, Scripted[]>) {
         },
         gt(column: string, value: unknown) {
           record.gtCalls.push([column, value]);
+          return builder;
+        },
+        not(column: string, operator: string, value: unknown) {
+          record.eqCalls.push([
+            `not:${column}`,
+            `${operator}:${String(value)}`,
+          ]);
+          return builder;
+        },
+        in(column: string, values: unknown) {
+          record.eqCalls.push([column, values]);
           return builder;
         },
         order() {
@@ -1130,5 +1142,381 @@ describe('SupabaseFullSiteBuildJobStore', () => {
         store.markFailed('job-1', { code: 'X', detail: 'y' }),
       ).rejects.toBe(error);
     });
+  });
+
+  describe('the change-request build, on the ledger', () => {
+    const CHANGE_ID = '72fe7f79-0e83-4cf6-9b4a-2502842b9a54';
+
+    it('records the worktree and moves no project state', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.markChangeRequestBuildStarted('job-1', worktree());
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({
+        table: 'flowstarter_agent_jobs',
+        op: 'update',
+      });
+      // A client who has paid for one more section has not gone back into the
+      // build pipeline, so nothing touches `workspaces`.
+      expect(calls.some((call) => call.table === 'workspaces')).toBe(false);
+    });
+
+    it('surfaces a failure to record the worktree', async () => {
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ error: dbError('no such job') }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.markChangeRequestBuildStarted('job-1', worktree()),
+      ).rejects.toMatchObject({ message: 'no such job' });
+    });
+
+    it('saves the finished manifest as the next version, unpublished', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        site_versions: [{ data: { version: 4 } }, { error: null }],
+        flowstarter_project_artifacts: [{ error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      const saved = await store.saveChangeRequestVersion('job-1', {
+        changeRequestId: CHANGE_ID,
+        files: [
+          { path: 'src/content/site.md', content: 'the change', type: 'file' },
+        ],
+      });
+
+      expect(saved).toEqual({ version: 5 });
+      const insert = calls.find(
+        (call) => call.table === 'site_versions' && call.op === 'insert',
+      );
+      expect(insert?.values).toMatchObject({
+        workspace_id: WORKSPACE_ID,
+        version: 5,
+        summary: `Paid change request ${CHANGE_ID}`,
+      });
+      // Nothing is marked published here: that happens only once the deploy
+      // has actually succeeded.
+      expect(
+        (insert?.values as { published_at?: unknown }).published_at,
+      ).toBeUndefined();
+      // The worker and the deploy path both read the artifact row, so the
+      // change is not real until this mirrors the new version.
+      const mirror = calls.find(
+        (call) => call.table === 'flowstarter_project_artifacts',
+      );
+      expect(mirror?.op).toBe('update');
+      expect(mirror?.eqCalls).toContainEqual(['workspace_id', WORKSPACE_ID]);
+    });
+
+    it('starts at version 1 for a site that was never edited', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        site_versions: [{ data: null }, { error: null }],
+        flowstarter_project_artifacts: [{ error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      expect(
+        await store.saveChangeRequestVersion('job-1', {
+          changeRequestId: CHANGE_ID,
+          files: [],
+        }),
+      ).toEqual({ version: 1 });
+      const insert = calls.find(
+        (call) => call.table === 'site_versions' && call.op === 'insert',
+      );
+      expect((insert?.values as { version: number }).version).toBe(1);
+    });
+
+    it('re-reads the number when a client publish takes it first', async () => {
+      // The unique index on (workspace_id, version) is what decides; the read
+      // is only there so the common case does not spend an insert to learn it.
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        site_versions: [
+          { data: { version: 4 } },
+          { error: { code: '23505', message: 'duplicate key' } },
+          { data: { version: 5 } },
+          { error: null },
+        ],
+        flowstarter_project_artifacts: [{ error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      expect(
+        await store.saveChangeRequestVersion('job-1', {
+          changeRequestId: CHANGE_ID,
+          files: [],
+        }),
+      ).toEqual({ version: 6 });
+      expect(
+        calls.filter(
+          (call) => call.table === 'site_versions' && call.op === 'insert',
+        ),
+      ).toHaveLength(2);
+    });
+
+    it('gives up rather than looping when the number never settles', async () => {
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        site_versions: Array.from({ length: 8 }, (_, index) =>
+          index % 2 === 0
+            ? { data: { version: 4 } }
+            : { error: { code: '23505', message: 'duplicate key' } },
+        ),
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.saveChangeRequestVersion('job-1', {
+          changeRequestId: CHANGE_ID,
+          files: [],
+        }),
+      ).rejects.toThrow(JobArtifactError);
+    });
+
+    it('surfaces an insert failure that is not a version collision', async () => {
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        site_versions: [
+          { data: { version: 4 } },
+          { error: dbError('manifest too large') },
+        ],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.saveChangeRequestVersion('job-1', {
+          changeRequestId: CHANGE_ID,
+          files: [],
+        }),
+      ).rejects.toMatchObject({ message: 'manifest too large' });
+    });
+
+    it('publishes the version, finishes the job and moves paid to done', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: { workspace_id: WORKSPACE_ID } },
+          { data: { payload: { trigger: 'operator_build' } } },
+          { error: null },
+        ],
+        site_versions: [{ error: null }, { error: null }],
+        flowstarter_change_requests: [{ data: [{ id: CHANGE_ID }] }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.markChangeRequestBuilt('job-1', {
+        commitSha: 'cha09e5',
+        pullRequestUrl: 'https://example.test/deploy/12',
+        stagingUrl: 'https://acme.flowstarter.net',
+        changeRequestId: CHANGE_ID,
+        version: 5,
+      });
+
+      // The enqueue payload is merged into, never replaced: it is the only
+      // provenance linking a shipped change back to the request that bought it.
+      const finish = calls.find(
+        (call) =>
+          call.table === 'flowstarter_agent_jobs' && call.op === 'update',
+      );
+      expect(finish?.values).toMatchObject({
+        status: 'succeeded',
+        pull_request_url: 'https://example.test/deploy/12',
+      });
+      expect(
+        (finish?.values as { payload: Record<string, unknown> }).payload,
+      ).toMatchObject({
+        trigger: 'operator_build',
+        commitSha: 'cha09e5',
+        builtVersion: 5,
+      });
+
+      const done = calls.find(
+        (call) => call.table === 'flowstarter_change_requests',
+      );
+      expect(done?.op).toBe('update');
+      expect(done?.values).toMatchObject({
+        status: 'done',
+        completed_via: 'build',
+        built_version: 5,
+        build_job_id: 'job-1',
+      });
+      // Compare-and-set on `paid`: a request already moved by hand, or by a
+      // previous attempt, is not completed a second time.
+      expect(done?.eqCalls).toContainEqual(['status', 'paid']);
+      expect(done?.eqCalls).toContainEqual(['workspace_id', WORKSPACE_ID]);
+    });
+
+    it('says so loudly when the request was not at paid to be completed', async () => {
+      // The site is live and the ledger disagrees, which is exactly the state
+      // an operator has to be able to see.
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: { workspace_id: WORKSPACE_ID } },
+          { data: { payload: {} } },
+          { error: null },
+        ],
+        site_versions: [{ error: null }, { error: null }],
+        flowstarter_change_requests: [{ data: [] }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.markChangeRequestBuilt('job-1', {
+          commitSha: 'cha09e5',
+          pullRequestUrl: 'u',
+          stagingUrl: 's',
+          changeRequestId: CHANGE_ID,
+          version: 5,
+        }),
+      ).rejects.toThrow(/was not at paid when its build finished/);
+    });
+
+    it('surfaces a failure to stamp the version published', async () => {
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        site_versions: [{ error: dbError('site_versions unavailable') }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.markChangeRequestBuilt('job-1', {
+          commitSha: 'c',
+          pullRequestUrl: 'u',
+          stagingUrl: 's',
+          changeRequestId: CHANGE_ID,
+          version: 5,
+        }),
+      ).rejects.toMatchObject({ message: 'site_versions unavailable' });
+    });
+  });
+});
+
+describe('CHANGE_REQUEST_BUILD on the ledger', () => {
+  const CHANGE_ID = '72fe7f79-0e83-4cf6-9b4a-2502842b9a54';
+  const ASSET_ID = 'b104b1e0-6d4c-4a3e-9230-13cc17b426a0';
+
+  function changePayload(overrides: Record<string, unknown> = {}) {
+    return {
+      trigger: 'operator_build',
+      changeRequest: {
+        changeRequestId: CHANGE_ID,
+        request: 'Add a gallery to the Flowstarter case study page',
+        operatorNote: 'Three across on desktop',
+        seedVersion: 4,
+        assets: [
+          {
+            assetId: ASSET_ID,
+            publicPath: '/flowstarter-media/cr-b104b1e0.jpg',
+            caption: 'The client dashboard',
+            mime: 'image/jpeg',
+            width: 1200,
+            height: 750,
+          },
+        ],
+        ...overrides,
+      },
+    };
+  }
+
+  it('is a kind this worker will claim', () => {
+    expect(isClaimable(ledgerRow({ kind: 'CHANGE_REQUEST_BUILD' }), 3)).toBe(
+      true,
+    );
+  });
+
+  it('carries the request and the pictures onto the job', () => {
+    const job = buildJobFromRows({
+      job: ledgerRow({
+        kind: 'CHANGE_REQUEST_BUILD',
+        payload: changePayload(),
+      }),
+      projectState: ProjectState.LIVE_SUBSCRIPTION,
+      artifacts: artifacts(),
+      changeRequestAssetFiles: [
+        {
+          path: 'public/flowstarter-media/cr-b104b1e0.jpg',
+          content: 'AAAA',
+          encoding: 'base64',
+          type: 'file',
+        },
+      ],
+    });
+
+    expect(job.kind).toBe('CHANGE_REQUEST_BUILD');
+    expect(job.changeRequest?.changeRequestId).toBe(CHANGE_ID);
+    expect(job.changeRequest?.operatorNote).toBe('Three across on desktop');
+    expect(job.changeRequest?.seedVersion).toBe(4);
+    // The seed is the client's own manifest with their pictures folded in, so
+    // the paths the prompt names are files the agent can really open.
+    expect(job.approvedPreviewFiles.map((file) => file.path)).toEqual([
+      'src/content/site.md',
+      'public/flowstarter-media/cr-b104b1e0.jpg',
+    ]);
+  });
+
+  it('leaves the other two kinds carrying no change request', () => {
+    for (const kind of ['FULL_SITE_BUILD', 'SITE_REBUILD']) {
+      const job = buildJobFromRows({
+        // Even with a change request on the payload: the kind decides.
+        job: ledgerRow({ kind, payload: changePayload() }),
+        projectState: ProjectState.HUMAN_QA,
+        artifacts: artifacts(),
+      });
+      expect(job.changeRequest).toBeUndefined();
+    }
+  });
+
+  it('carries no change request when the payload holds nothing readable', () => {
+    const job = buildJobFromRows({
+      job: ledgerRow({
+        kind: 'CHANGE_REQUEST_BUILD',
+        payload: { trigger: 'operator_build' },
+      }),
+      projectState: ProjectState.HUMAN_QA,
+      artifacts: artifacts(),
+    });
+    // The worker fails the job loudly on this rather than guessing, and the
+    // request stays at paid.
+    expect(job.changeRequest).toBeUndefined();
+  });
+
+  it('reads the change request straight off a ledger row', () => {
+    expect(
+      changeRequestFor(
+        ledgerRow({ kind: 'CHANGE_REQUEST_BUILD', payload: changePayload() }),
+      )?.changeRequestId,
+    ).toBe(CHANGE_ID);
+    expect(
+      changeRequestFor(
+        ledgerRow({ kind: 'SITE_REBUILD', payload: changePayload() }),
+      ),
+    ).toBeNull();
   });
 });

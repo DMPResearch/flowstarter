@@ -16,6 +16,7 @@ import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types
 const KIND_LABELS: Readonly<Record<string, string>> = {
   FULL_SITE_BUILD: 'Full site build',
   SITE_REBUILD: 'Publish client edit',
+  CHANGE_REQUEST_BUILD: 'Paid change request',
   INLINE_EDIT: 'Inline edit',
   PREVIEW_GENERATE: 'Preview generation',
   ASSET_INGEST: 'Asset ingest',
@@ -362,6 +363,7 @@ const EVENT_KIND_LABELS: Readonly<Record<string, string>> = {
   site_reverted: 'Client reverted to an earlier version',
   change_request_quoted: 'Change request quoted',
   change_request_paid: 'Change request paid',
+  change_request_build_queued: 'Change request handed to the build agents',
   change_request_declined: 'Change request declined',
   change_request_done: 'Change request marked done',
   booking_cal_updated: 'Booking link updated',

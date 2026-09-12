@@ -92,6 +92,8 @@ export * from './flowstarter/generated-assets';
 export * from './flowstarter/site-tarball';
 export * from './flowstarter/page-set';
 export * from './flowstarter/preview-manifest';
+export * from './flowstarter/site-manifest';
+export * from './flowstarter/change-request-build';
 export * from './flowstarter/teaser-rule';
 export * from './flowstarter/cal-preview-rule';
 export * from './flowstarter/placeholder-copy';

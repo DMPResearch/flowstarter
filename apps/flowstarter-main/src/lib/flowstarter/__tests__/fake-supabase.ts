@@ -41,7 +41,15 @@ export function createFakeSupabase(): FakeDb {
 
     function selected(): Row[] {
       let out = rows(table).filter((row) =>
-        filters.every(([column, value]) => row[column] === value)
+        filters.every(([column, value]) => {
+          if (column.endsWith('__notnull')) {
+            const real = column.slice(0, -'__notnull'.length);
+            return row[real] !== null && row[real] !== undefined;
+          }
+          return Array.isArray(value)
+            ? value.includes(row[column])
+            : row[column] === value;
+        })
       );
       if (orderColumn) {
         const column = orderColumn;
@@ -105,6 +113,18 @@ export function createFakeSupabase(): FakeDb {
       },
       eq(column: string, value: unknown) {
         filters.push([column, value]);
+        return self;
+      },
+      /** `in('status', [...])`: the same filter list, matched by membership. */
+      in(column: string, values: unknown[]) {
+        filters.push([column, values]);
+        return self;
+      },
+      not(column: string, operator: string, value: unknown) {
+        // Only `not(column, 'is', null)` is used, and it means "has a value".
+        if (operator === 'is' && value === null) {
+          filters.push([`${column}__notnull`, true]);
+        }
         return self;
       },
       order(column: string, options?: { ascending?: boolean }) {

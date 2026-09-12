@@ -24,6 +24,7 @@ import {
   buildWorkerSecret,
   deployBuildArtifact,
 } from '@/lib/hosting/build-worker-deploy';
+import { notifyChangeRequestLive } from '@/lib/hosting/change-request-live-email';
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -58,6 +59,11 @@ export async function POST(req: NextRequest) {
     workspaceId?: unknown;
     artifactUrl?: unknown;
     artifactSha256?: unknown;
+    // Set only by a CHANGE_REQUEST_BUILD. It is the difference between "your
+    // site is live" and "the change you paid for is live", and the deploy is
+    // the moment either sentence becomes true.
+    changeRequestId?: unknown;
+    siteVersion?: unknown;
   };
 
   if (typeof body.workspaceId !== 'string' || !UUID.test(body.workspaceId)) {
@@ -81,9 +87,15 @@ export async function POST(req: NextRequest) {
     throw error;
   }
 
+  const changeRequestId =
+    typeof body.changeRequestId === 'string' && UUID.test(body.changeRequestId)
+      ? body.changeRequestId
+      : null;
+
   try {
+    const supabase = createSupabaseServiceRoleClient();
     const result = await deployBuildArtifact({
-      supabase: createSupabaseServiceRoleClient(),
+      supabase,
       workspaceId: body.workspaceId,
       artifactUrl: body.artifactUrl,
       artifactSha256:
@@ -92,6 +104,21 @@ export async function POST(req: NextRequest) {
           : undefined,
       deployedBy: 'build-worker',
     });
+    // Only once the deploy genuinely reached `live`. `notifyChangeRequestLive`
+    // never throws, so a mail problem cannot fail a deploy that has already
+    // put the client's site on the internet.
+    if (changeRequestId && result.deployment?.status === 'live') {
+      await notifyChangeRequestLive({
+        supabase,
+        workspaceId: body.workspaceId,
+        changeRequestId,
+        version:
+          typeof body.siteVersion === 'number' &&
+          Number.isInteger(body.siteVersion)
+            ? body.siteVersion
+            : 0,
+      });
+    }
     return NextResponse.json(result);
   } catch (error) {
     if (error instanceof DeployError) {

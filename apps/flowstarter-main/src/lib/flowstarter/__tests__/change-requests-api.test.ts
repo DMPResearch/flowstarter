@@ -45,7 +45,33 @@ vi.mock('@/supabase-clients/server', () => ({
   createSupabaseServiceRoleClient: () => db.client,
 }));
 
+/** The nudge to the build worker: a transport, proved in its own suite. */
+const dispatchAgentJob = vi.fn(async (_jobId: string) => undefined);
+vi.mock('../pipeline/dispatch', () => ({
+  dispatchAgentJob: (jobId: string) => dispatchAgentJob(jobId),
+  DispatchError: class DispatchError extends Error {},
+}));
+
+/**
+ * The rights-filtered reader, and the only one a build may take assets from.
+ * Stubbed to one confirmed picture so the payload has something to carry.
+ */
+vi.mock('../generation-assets', () => ({
+  loadUsableAssets: async () => [
+    {
+      id: 'b104b1e0-6d4c-4a3e-9230-13cc17b426a0',
+      storagePath: 'tenant/0f4e1088-8d8f-4f18-83b1-406cc292b23c/assets/a.jpg',
+      mime: 'image/jpeg',
+      width: 1200,
+      height: 750,
+      usableFor: ['section'],
+      caption: 'The workshops room',
+    },
+  ],
+}));
+
 import {
+  buildChangeRequestHandler,
   listChangeRequestsHandler,
   quoteChangeRequestHandler,
   setChangeRequestStatusHandler,
@@ -76,6 +102,10 @@ function seed(overrides: Partial<ChangeRequestRow> = {}) {
     stripe_payment_intent_id: null,
     paid_at: null,
     completed_at: null,
+    build_job_id: null,
+    built_version: null,
+    completed_via: null,
+    completion_note: null,
     created_by: 'user_client',
     created_at: '2026-09-08T09:00:00.000Z',
     updated_at: '2026-09-08T09:00:00.000Z',
@@ -101,6 +131,8 @@ beforeEach(() => {
   authState.userId = 'user_operator';
   authState.role = 'team';
   vi.restoreAllMocks();
+  dispatchAgentJob.mockReset();
+  dispatchAgentJob.mockResolvedValue(undefined);
 });
 
 describe('who may touch a change request', () => {
@@ -296,23 +328,50 @@ describe('writing the price the client will see', () => {
 });
 
 describe('closing a change request', () => {
-  it('marks a paid request done', async () => {
+  const REASON = 'Handled on a call; the client no longer wants it built.';
+
+  it('marks a paid request done when the operator says how', async () => {
     seed({ status: 'paid', quote_minor: 19_000 });
 
     const res = await setChangeRequestStatusHandler(
-      post({ status: 'done' }),
+      post({ status: 'done', reason: REASON }),
       changeCtx()
     );
 
     expect(res.status).toBe(200);
-    expect((await res.json()).request.status).toBe('done');
+    const view = (await res.json()).request;
+    expect(view.status).toBe('done');
+    // A manual close is recorded as one, forever after, so the difference
+    // between "a build shipped this" and "a person says this is handled"
+    // stays legible to whoever reads the row next.
+    expect(view.completedVia).toBe('manual');
+    expect(db.rows(TABLE)[0]!.completion_note).toBe(REASON);
     expect(db.rows('project_events')[0]).toMatchObject({
       kind: 'change_request_done',
     });
     expect(db.rows('project_events')[0]!.payload).toEqual({
       changeRequestId: CHANGE_ID,
       by: 'operator',
+      reason: REASON,
     });
+  });
+
+  it('refuses a hand-marked done with no reason on it', async () => {
+    // This button used to be the whole of what the product could do with a
+    // paid change request, which is how EUR 190 was taken for work that never
+    // shipped. It survives as an override, and an override costs a sentence.
+    seed({ status: 'paid', quote_minor: 19_000 });
+
+    for (const body of [
+      { status: 'done' },
+      { status: 'done', reason: '   ' },
+      { status: 'done', reason: 'done' },
+    ]) {
+      const res = await setChangeRequestStatusHandler(post(body), changeCtx());
+      expect(res.status).toBe(400);
+      expect((await res.json()).code).toBe('CHANGE_REQUEST_REASON_REQUIRED');
+    }
+    expect(db.rows(TABLE)[0]!.status).toBe('paid');
   });
 
   it('declines a request and keeps the operator’s reason', async () => {
@@ -338,7 +397,7 @@ describe('closing a change request', () => {
     seed({ status: 'quoted', quote_minor: 19_000 });
 
     const res = await setChangeRequestStatusHandler(
-      post({ status: 'done' }),
+      post({ status: 'done', reason: REASON }),
       changeCtx()
     );
 
@@ -360,7 +419,7 @@ describe('closing a change request', () => {
     seed({ workspace_id: OTHER_WORKSPACE_ID, status: 'paid' });
 
     const res = await setChangeRequestStatusHandler(
-      post({ status: 'done' }),
+      post({ status: 'done', reason: REASON }),
       changeCtx()
     );
 
@@ -374,11 +433,116 @@ describe('closing a change request', () => {
     db.failing.add(TABLE);
 
     const res = await setChangeRequestStatusHandler(
-      post({ status: 'done' }),
+      post({ status: 'done', reason: REASON }),
       changeCtx()
     );
 
     expect(res.status).toBe(500);
     expect((await res.json()).code).toBe('DB_ERROR');
+  });
+});
+
+describe('"Build this change": the button that does the work', () => {
+  const WORKSPACE_ROW = {
+    id: WORKSPACE_ID,
+    project_state: 'LIVE_SUBSCRIPTION',
+  };
+
+  function seedWorkspace(projectState = 'LIVE_SUBSCRIPTION') {
+    db.seed('workspaces', [{ ...WORKSPACE_ROW, project_state: projectState }]);
+  }
+
+  it('queues a build and leaves the request at paid', async () => {
+    // The request must not be moved here. It is moved to done by the worker,
+    // in the same step that records the version it went live in, so a crash
+    // anywhere in between leaves the row saying the true thing.
+    seedWorkspace();
+    seed({ status: 'paid', quote_minor: 19_000 });
+
+    const res = await buildChangeRequestHandler(
+      post({ note: 'Three across on desktop' }),
+      changeCtx()
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.created).toBe(true);
+    expect(body.request.status).toBe('paid');
+
+    const jobs = db.rows('flowstarter_agent_jobs');
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.kind).toBe('CHANGE_REQUEST_BUILD');
+    const payload = jobs[0]!.payload as {
+      changeRequest: { request: string; operatorNote: string };
+    };
+    // The client's own words, unedited, and the operator's note beside them.
+    expect(payload.changeRequest.request).toBe(
+      'Add a page for group workshops with its own booking calendar'
+    );
+    expect(payload.changeRequest.operatorNote).toBe('Three across on desktop');
+
+    expect(db.rows(TABLE)[0]!.status).toBe('paid');
+    expect(db.rows(TABLE)[0]!.build_job_id).toBe(jobs[0]!.id);
+    expect(db.rows('project_events')[0]).toMatchObject({
+      kind: 'change_request_build_queued',
+    });
+  });
+
+  it('refuses a request nobody has paid for', async () => {
+    seedWorkspace();
+    seed({ status: 'quoted', quote_minor: 19_000 });
+
+    const res = await buildChangeRequestHandler(post({}), changeCtx());
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('CHANGE_REQUEST_NOT_PAID');
+    expect(db.rows('flowstarter_agent_jobs')).toHaveLength(0);
+  });
+
+  it('refuses a project with no delivered site to change', async () => {
+    seedWorkspace('DEPOSIT_PAID');
+    seed({ status: 'paid', quote_minor: 19_000 });
+
+    const res = await buildChangeRequestHandler(post({}), changeCtx());
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('INVALID_PROJECT_STATE');
+    expect(db.rows('flowstarter_agent_jobs')).toHaveLength(0);
+  });
+
+  it('refuses a client who is not an operator', async () => {
+    authState.role = 'client';
+    seedWorkspace();
+    seed({ status: 'paid' });
+
+    expect(
+      (await buildChangeRequestHandler(post({}), changeCtx())).status
+    ).toBe(403);
+    expect(db.rows('flowstarter_agent_jobs')).toHaveLength(0);
+  });
+
+  it('404s a change request from another workspace', async () => {
+    seedWorkspace();
+    seed({ workspace_id: OTHER_WORKSPACE_ID, status: 'paid' });
+
+    const res = await buildChangeRequestHandler(post({}), changeCtx());
+
+    expect(res.status).toBe(404);
+    expect(db.rows('flowstarter_agent_jobs')).toHaveLength(0);
+  });
+
+  it('reports an unreachable worker without failing the request', async () => {
+    // The ledger row is the commitment; the dispatch is only a nudge. An
+    // operator can re-dispatch a queued job; they cannot un-lose a refusal.
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    dispatchAgentJob.mockRejectedValueOnce(new Error('worker not configured'));
+    seedWorkspace();
+    seed({ status: 'paid', quote_minor: 19_000 });
+
+    const res = await buildChangeRequestHandler(post({}), changeCtx());
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).dispatched).toBe(false);
+    expect(db.rows('flowstarter_agent_jobs')).toHaveLength(1);
   });
 });

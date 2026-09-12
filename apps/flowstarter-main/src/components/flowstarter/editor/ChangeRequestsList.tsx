@@ -23,6 +23,27 @@ const STATUS_COPY: Record<ChangeRequestView['status'], string> = {
   declined: 'Declined',
 };
 
+/**
+ * What a paid request says while the work is actually happening, and after.
+ *
+ * A paid request used to read "your team is on it" forever, because there was
+ * no work for the team to do it with: the operator's only button moved a
+ * status. Now a paid request with a build attached says so, and a finished one
+ * names the version it went live in, which is the same number the client's own
+ * version history shows them.
+ */
+export function changeRequestProgress(request: ChangeRequestView): string {
+  if (request.status === 'done') {
+    return request.builtVersion !== null
+      ? `Done, live in version ${request.builtVersion}`
+      : 'Done';
+  }
+  if (request.status === 'paid' && request.buildJobId) {
+    return 'In progress, we are making the change now';
+  }
+  return STATUS_COPY[request.status];
+}
+
 export function formatMoney(minor: number, currency: string): string {
   return new Intl.NumberFormat('en-IE', {
     style: 'currency',
@@ -109,8 +130,11 @@ export function ChangeRequestsList({
             className="rounded-xl border border-[var(--fs-rule)] bg-[var(--fs-bg-elevated)]/40 px-3.5 py-3"
           >
             <p className="text-sm text-[var(--fs-ink)]">{request.request}</p>
-            <p className="mt-1 text-xs text-[var(--fs-ink-dim)]">
-              {STATUS_COPY[request.status]}
+            <p
+              data-testid="change-request-progress"
+              className="mt-1 text-xs text-[var(--fs-ink-dim)]"
+            >
+              {changeRequestProgress(request)}
               {request.quoteMinor !== null &&
                 request.status !== 'requested' &&
                 ` · ${formatMoney(request.quoteMinor, request.currency)}`}

@@ -17,6 +17,7 @@ export { verificationEmail } from './verification';
 export { leadNotificationEmail } from './lead-notification';
 export {
   balanceInvoiceEmail,
+  changeRequestLiveEmail,
   depositReceivedEmail,
   previewReadyEmail,
   siteLiveEmail,
