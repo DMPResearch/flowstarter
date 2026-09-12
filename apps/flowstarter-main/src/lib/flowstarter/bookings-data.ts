@@ -15,7 +15,17 @@ import 'server-only';
  * decision cannot see: two copies of the same delivery arriving at once. When
  * the index wins the race, the insert comes back as a duplicate and this
  * module reports a skip rather than an error, because a webhook that returns
- * 500 is a webhook Cal.com will send again.
+ * 500 for a delivery that already landed is a webhook Cal.com will needlessly
+ * send again.
+ *
+ * A GENUINE DATABASE FAILURE IS NOT A SKIP. Only the unique-violation race
+ * above, and an exact-replay `bookingWriteAction` decision, are "nothing to
+ * do". A failed read, a failed update, or an insert that failed for any other
+ * reason means this delivery's booking state was never durably written, and
+ * `recordCalBooking` throws rather than returning a skip — the caller (the
+ * webhook route) turns that into a 500 so Cal.com retries. Swallowing it as
+ * `{ kind: 'skip', reason: 'replayed' }`, as this module used to, would tell
+ * Cal.com "handled" for a delivery that was actually lost.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, Json } from '@/lib/database.types';
@@ -131,9 +141,12 @@ export interface RecordedBooking {
 /**
  * Apply one verified Cal.com delivery to the table.
  *
- * Never throws. A webhook handler that throws makes Cal.com retry, and a retry
- * of a delivery that already landed is the failure this whole module exists to
- * avoid, so a write that fails comes back as a skip and a log line.
+ * Throws on a genuine database failure (a failed read, a failed update, or an
+ * insert failure that is not the expected duplicate-delivery race) so the
+ * caller can turn that into a 500 and let Cal.com retry a delivery that was
+ * never durably recorded. The one thing this function does swallow is the
+ * unique-index race on a duplicate insert — that is not a failure, it is two
+ * copies of a delivery this function already knows how to no-op.
  */
 export async function recordCalBooking(
   supabase: SupabaseServiceClient,
@@ -148,24 +161,26 @@ export async function recordCalBooking(
 
   const { data: existing, error: readError } = await supabase
     .from('workspace_bookings')
-    .select('id, status')
+    .select('id, status, start_at, end_at')
     .eq('workspace_id', workspaceId)
     .eq('provider', 'cal.com')
     .eq('external_uid', event.uid)
     .maybeSingle();
   if (readError) {
-    console.error(
+    throw new Error(
       `[cal] could not read booking ${event.uid} for workspace ${workspaceId}: ${readError.message}`
     );
-    return {
-      action: { kind: 'skip', reason: 'replayed' },
-      externalUid: event.uid,
-    };
   }
 
   const action = bookingWriteAction(
-    existing ? (existing.status as BookingStatus) : null,
-    event.status
+    existing
+      ? {
+          status: existing.status as BookingStatus,
+          startAt: existing.start_at,
+          endAt: existing.end_at,
+        }
+      : null,
+    { status: event.status, startAt: event.startAt, endAt: event.endAt }
   );
   if (action.kind === 'skip') {
     return { action, externalUid: event.uid };
@@ -190,13 +205,9 @@ export async function recordCalBooking(
       .eq('id', existing.id)
       .eq('workspace_id', workspaceId);
     if (error) {
-      console.error(
+      throw new Error(
         `[cal] could not update booking ${event.uid} for workspace ${workspaceId}: ${error.message}`
       );
-      return {
-        action: { kind: 'skip', reason: 'replayed' },
-        externalUid: event.uid,
-      };
     }
     return { action, externalUid: event.uid };
   }
@@ -216,13 +227,9 @@ export async function recordCalBooking(
         externalUid: event.uid,
       };
     }
-    console.error(
+    throw new Error(
       `[cal] could not record booking ${event.uid} for workspace ${workspaceId}: ${error.message}`
     );
-    return {
-      action: { kind: 'skip', reason: 'replayed' },
-      externalUid: event.uid,
-    };
   }
 
   return { action, externalUid: event.uid };

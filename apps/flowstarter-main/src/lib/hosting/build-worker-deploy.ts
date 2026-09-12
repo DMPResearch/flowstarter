@@ -118,7 +118,8 @@ export async function deployBuildArtifact(input: {
   supabase: SupabaseClient<Database>;
   workspaceId: string;
   artifactUrl: string;
-  artifactSha256?: string | undefined;
+  /** Required — see the route's doc comment. */
+  artifactSha256: string;
   deployedBy: string;
   env?: EnvLike;
 }): Promise<BuildWorkerDeployResult> {
@@ -136,7 +137,7 @@ export async function deployBuildArtifact(input: {
     artifact: {
       kind: 'url',
       url: input.artifactUrl,
-      ...(input.artifactSha256 ? { sha256: input.artifactSha256 } : {}),
+      sha256: input.artifactSha256,
     },
     deployedBy: input.deployedBy,
     resolveSharedSecret: async (ref) => resolveDeployAgentSecret(ref, env),

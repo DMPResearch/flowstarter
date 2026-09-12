@@ -10,8 +10,13 @@
  * secret this app signs its dispatch to the worker with. No user session: the
  * caller is a service.
  *
- * Body: { workspaceId, artifactUrl, artifactSha256? }
+ * Body: { workspaceId, artifactUrl, artifactSha256 }
  * 200:  { deployment, siteUrl }
+ *
+ * `artifactSha256` is required — the deploy-agent will not extract an
+ * artifact it cannot verify against it, and `LocalSitePublisher` /
+ * `GitHubPullRequestPublisher` both already have the digest by the time
+ * they call here (packaging the tarball computes it).
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -86,6 +91,18 @@ export async function POST(req: NextRequest) {
     }
     throw error;
   }
+  if (
+    typeof body.artifactSha256 !== 'string' ||
+    !/^[0-9a-f]{64}$/i.test(body.artifactSha256)
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          'artifactSha256 is required and must be a 64-character hex sha256',
+      },
+      { status: 400 }
+    );
+  }
 
   const changeRequestId =
     typeof body.changeRequestId === 'string' && UUID.test(body.changeRequestId)
@@ -98,10 +115,7 @@ export async function POST(req: NextRequest) {
       supabase,
       workspaceId: body.workspaceId,
       artifactUrl: body.artifactUrl,
-      artifactSha256:
-        typeof body.artifactSha256 === 'string'
-          ? body.artifactSha256
-          : undefined,
+      artifactSha256: body.artifactSha256,
       deployedBy: 'build-worker',
     });
     // Only once the deploy genuinely reached `live`. `notifyChangeRequestLive`

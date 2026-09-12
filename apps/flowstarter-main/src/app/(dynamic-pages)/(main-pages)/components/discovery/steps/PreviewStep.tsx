@@ -1117,7 +1117,13 @@ export function PreviewStep({
                 'block border-0 bg-white transition-opacity duration-700',
                 frameLoaded ? 'opacity-100' : 'opacity-0',
               ].join(' ')}
-              sandbox="allow-scripts allow-same-origin"
+              // No `allow-same-origin`: the local-preview proxy re-hosts
+              // generated content on this app's own origin (see
+              // `local-preview-guard.ts` / the frame proxy route), so without
+              // this the framed document could read this page's cookies and
+              // reach `window.parent`. `allow-forms` keeps embedded contact
+              // forms working without granting that origin access back.
+              sandbox="allow-scripts allow-forms"
               loading="lazy"
             />
             {!frameLoaded && (

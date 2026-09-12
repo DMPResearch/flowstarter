@@ -15,8 +15,10 @@ import { CloudflareClient } from '@/lib/hosting/cloudflare';
  * Deploy a build artifact for the project's allocated site.
  *
  * Body shapes:
- *   - JSON: { artifact_url: string, artifact_sha256?: string }
+ *   - JSON: { artifact_url: string, artifact_sha256: string }
  *     Agent fetches the URL and extracts. Best for large artifacts.
+ *     `artifact_sha256` is required — the agent will not extract an
+ *     artifact it cannot verify against it.
  *
  * Auth: team-only via requireTeamAuth.
  *
@@ -63,6 +65,22 @@ export async function POST(
       { status: 400 }
     );
   }
+  // Required, not optional: the deploy-agent will not extract an artifact it
+  // cannot verify against a caller-supplied digest, and asking the operator
+  // for it here — rather than letting a bad or swapped URL reach a host
+  // unverified — is the whole point of that check.
+  if (
+    typeof body.artifact_sha256 !== 'string' ||
+    !/^[0-9a-f]{64}$/i.test(body.artifact_sha256)
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          'artifact_sha256 is required and must be a 64-character hex sha256',
+      },
+      { status: 400 }
+    );
+  }
 
   const supabase = createSupabaseServiceRoleClient();
   const dryRun = process.env.DEPLOY_AGENT_DRY_RUN === 'true';
@@ -85,10 +103,7 @@ export async function POST(
       artifact: {
         kind: 'url',
         url: body.artifact_url,
-        sha256:
-          typeof body.artifact_sha256 === 'string'
-            ? body.artifact_sha256
-            : undefined,
+        sha256: body.artifact_sha256,
       },
       deployedBy: auth.userId,
       resolveSharedSecret: async (ref) => {

@@ -13,24 +13,32 @@
  *      oracle: whatever workspace id they put in the path, signed or invented,
  *      existing or not, they get the same 401 and the database is never asked
  *      about it.
- *   2. A signature was offered, so the caller is claiming to be Cal.com. Now
- *      the workspace is looked up. A path that is not a uuid, or a uuid with
- *      no workspace behind it, is a 404: at this point the caller already had
- *      to guess a v4 uuid, and telling Cal.com "that workspace is gone" is how
- *      an operator finds a stale webhook in their settings screen.
- *   3. The workspace exists but has no secret, or the signature does not match
- *      it -> 401. Those two are one answer on purpose. Which of them it was is
- *      in our logs, not in the response.
+ *   2. A signature was offered, so the caller is claiming to be Cal.com, and
+ *      the workspace's secret is looked up to check it against. This lookup
+ *      does NOT branch the response on whether the workspace exists: Cal.com's
+ *      HMAC is per workspace, so a request against an unknown or malformed
+ *      workspace id can never carry a valid signature for it (there is no
+ *      secret to have signed with) — a caller with a real secret for their own
+ *      workspace and a made-up header for someone else's both land on the
+ *      same "signature does not match" outcome. A distinct 404 for "no such
+ *      workspace" would tell an unauthenticated caller which workspace ids
+ *      exist before their signature was ever checked; there is no answer this
+ *      route can give here that is allowed to depend on that.
+ *   3. The signature does not verify -> 401, whether that is because the
+ *      workspace does not exist, has no calendar connected, or the bytes were
+ *      signed with the wrong secret. Which of those it was is in our logs,
+ *      not in the response.
  *
  * RAW BODY. The HMAC covers the exact bytes Cal.com sent. `request.text()` is
  * read once, before anything parses it, and the parsed object is never
  * re-serialised for verification: `JSON.stringify(JSON.parse(body))` is a
  * different string for the same JSON and would fail every real delivery.
  *
- * THIS HANDLER DOES NOT THROW. Cal.com retries a non-2xx, so a delivery that
- * was verified and then hit a database problem still returns 200 with an
- * honest body. The one thing a retry must never do is double-count a booking,
- * and that is the unique index plus `bookingWriteAction`, not the status code.
+ * A VERIFIED DELIVERY THAT IS HANDLED CLEANLY RETURNS 200. A verified delivery
+ * whose write genuinely failed (not the expected duplicate-delivery race)
+ * returns 500 so Cal.com retries it — see `recordCalBooking`'s doc comment.
+ * The one thing a retry must never do is double-count a booking, and that is
+ * the unique index plus `bookingWriteAction`, not the status code.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
@@ -71,37 +79,37 @@ export async function POST(
   }
 
   const rawBody = await request.text();
-
-  if (!UUID_PATTERN.test(workspaceId)) {
-    return NextResponse.json({ error: 'Unknown workspace' }, { status: 404 });
-  }
-
   const supabase = createSupabaseServiceRoleClient();
 
+  // Only a syntactically valid uuid can possibly have a row (and therefore a
+  // secret) behind it — skip the query for anything else rather than asking
+  // Postgres to compare a non-uuid string to a uuid column. Either way,
+  // `secret` staying null takes the exact same path through
+  // `verifyCalSignature` below: 401, indistinguishable from a wrong signature
+  // for a real workspace.
   let secret: string | null = null;
-  try {
-    const { data, error } = await supabase
-      .from('workspaces')
-      .select('id, cal_com_webhook_secret')
-      .eq('id', workspaceId)
-      .maybeSingle();
-    if (error) throw error;
-    if (!data) {
-      return NextResponse.json({ error: 'Unknown workspace' }, { status: 404 });
+  if (UUID_PATTERN.test(workspaceId)) {
+    try {
+      const { data, error } = await supabase
+        .from('workspaces')
+        .select('id, cal_com_webhook_secret')
+        .eq('id', workspaceId)
+        .maybeSingle();
+      if (error) throw error;
+      secret = data?.cal_com_webhook_secret ?? null;
+    } catch (error) {
+      console.error(
+        `[cal] could not load workspace ${workspaceId}: ` +
+          (error instanceof Error ? error.message : 'unknown error')
+      );
+      return NextResponse.json({ error: 'Unavailable' }, { status: 503 });
     }
-    secret = data.cal_com_webhook_secret;
-  } catch (error) {
-    console.error(
-      `[cal] could not load workspace ${workspaceId}: ` +
-        (error instanceof Error ? error.message : 'unknown error')
-    );
-    return NextResponse.json({ error: 'Unavailable' }, { status: 503 });
   }
 
   if (!verifyCalSignature(rawBody, signature, secret)) {
     console.warn(
-      `[cal] rejected a delivery for workspace ${workspaceId}: ` +
-        (secret ? 'signature did not match' : 'no calendar is connected')
+      `[cal] rejected a delivery claiming workspace ${workspaceId}: ` +
+        (secret ? 'signature did not match' : 'no matching workspace/secret')
     );
     return unauthorized();
   }
@@ -126,11 +134,18 @@ export async function POST(
       payload: JSON.parse(rawBody) as unknown,
     });
   } catch (error) {
+    // A genuine storage failure, not the expected duplicate-delivery race
+    // (that comes back as a normal `skip` from `recordCalBooking`, not a
+    // throw). 500 tells Cal.com to retry; a 200 here would acknowledge a
+    // delivery that was never actually saved.
     console.error(
       `[cal] could not record ${event.trigger} for workspace ${workspaceId}: ` +
         (error instanceof Error ? error.message : 'unknown error')
     );
-    return NextResponse.json({ ok: false, recorded: false });
+    return NextResponse.json(
+      { ok: false, error: 'storage failure' },
+      { status: 500 }
+    );
   }
 
   if (shouldNotifyClient(recorded.action, event.trigger)) {

@@ -226,23 +226,63 @@ export type BookingWriteAction =
   | { kind: 'skip'; reason: 'replayed' | 'superseded' };
 
 /**
+ * The fields that decide whether two deliveries for the same uid describe the
+ * same state of the world, lifted out of `CalBookingEvent` (the incoming
+ * delivery) or the stored row (`existing`).
+ */
+export interface BookingSnapshot {
+  status: BookingStatus;
+  startAt: string | null;
+  endAt: string | null;
+}
+
+/**
  * What a delivery should do to the row already in the table.
  *
- * `existing` is the status on the stored row for this workspace and uid, or
- * null when there is none.
+ * `existing` is the stored row's status and time for this workspace and uid,
+ * or null when there is none.
  *
- *   nothing stored            insert, and this is the only case that emails
- *   same status stored        replayed delivery, change nothing
- *   cancelled, now booked     a retry that arrived late, change nothing
- *   anything else             update, the booking moved
+ *   nothing stored                        insert, the only case that emails
+ *   same status AND same start/end        replayed delivery, change nothing
+ *   same status, different start/end      the booking moved again, update
+ *                                         (two RESCHEDULED events for the
+ *                                         same uid are not the same event
+ *                                         just because both say
+ *                                         "rescheduled" — Cal.com does not
+ *                                         repeat a reschedule to the same
+ *                                         slot, so a changed time means a
+ *                                         second, later reschedule)
+ *   already cancelled                     nothing un-cancels through this
+ *                                         webhook, change nothing
+ *   incoming "booked", existing is not    a CREATED delivery arriving after
+ *                                         a RESCHEDULED or CANCELLED one for
+ *                                         the same uid — Cal.com does not
+ *                                         guarantee delivery order, and
+ *                                         applying it would put a moved or
+ *                                         cancelled meeting back on the
+ *                                         client's dashboard as freshly
+ *                                         booked
+ *   anything else                         update, the booking moved
  */
 export function bookingWriteAction(
-  existing: BookingStatus | null,
-  incoming: BookingStatus
+  existing: BookingSnapshot | null,
+  incoming: BookingSnapshot
 ): BookingWriteAction {
   if (existing === null) return { kind: 'insert' };
-  if (existing === incoming) return { kind: 'skip', reason: 'replayed' };
-  if (existing === 'cancelled') return { kind: 'skip', reason: 'superseded' };
+
+  const sameStatus = existing.status === incoming.status;
+  const sameWhen =
+    existing.startAt === incoming.startAt && existing.endAt === incoming.endAt;
+  if (sameStatus && sameWhen) {
+    return { kind: 'skip', reason: 'replayed' };
+  }
+
+  const staleCreate =
+    incoming.status === 'booked' && existing.status !== 'booked';
+  if (staleCreate || existing.status === 'cancelled') {
+    return { kind: 'skip', reason: 'superseded' };
+  }
+
   return { kind: 'update' };
 }
 

@@ -219,42 +219,79 @@ describe('parseCalBookingEvent', () => {
 });
 
 describe('bookingWriteAction', () => {
+  const AT = {
+    startAt: '2026-09-15T09:30:00.000Z',
+    endAt: '2026-09-15T10:00:00.000Z',
+  };
+  const LATER = {
+    startAt: '2026-09-16T14:00:00.000Z',
+    endAt: '2026-09-16T14:30:00.000Z',
+  };
+
+  function snap(status: BookingStatus, when = AT) {
+    return { status, ...when };
+  }
+
   it('inserts when nothing is stored', () => {
-    expect(bookingWriteAction(null, 'booked')).toEqual({ kind: 'insert' });
+    expect(bookingWriteAction(null, snap('booked'))).toEqual({
+      kind: 'insert',
+    });
   });
 
-  it('does nothing when the same delivery arrives again', () => {
-    expect(bookingWriteAction('booked', 'booked')).toEqual({
+  it('does nothing when the exact same delivery arrives again', () => {
+    expect(bookingWriteAction(snap('booked'), snap('booked'))).toEqual({
       kind: 'skip',
       reason: 'replayed',
     });
-    expect(bookingWriteAction('cancelled', 'cancelled')).toEqual({
+    expect(bookingWriteAction(snap('cancelled'), snap('cancelled'))).toEqual({
       kind: 'skip',
       reason: 'replayed',
     });
+  });
+
+  // The bug this rule exists to close: a second RESCHEDULED for the same uid
+  // is not automatically the same event just because both say "rescheduled".
+  it('treats a second reschedule to a different time as an update, not a replay', () => {
+    expect(
+      bookingWriteAction(snap('rescheduled', AT), snap('rescheduled', LATER))
+    ).toEqual({ kind: 'update' });
+  });
+
+  it('still treats an identical reschedule (same status, same time) as a replay', () => {
+    expect(
+      bookingWriteAction(snap('rescheduled', AT), snap('rescheduled', AT))
+    ).toEqual({ kind: 'skip', reason: 'replayed' });
   });
 
   // Webhook order is not guaranteed. The table is what the client reads, so a
-  // late BOOKING_CREATED must not put a cancelled meeting back on it.
+  // late BOOKING_CREATED must not put a moved or cancelled meeting back on it.
   it('refuses to resurrect a cancelled booking', () => {
-    expect(bookingWriteAction('cancelled', 'booked')).toEqual({
+    expect(bookingWriteAction(snap('cancelled'), snap('booked'))).toEqual({
       kind: 'skip',
       reason: 'superseded',
     });
-    expect(bookingWriteAction('cancelled', 'rescheduled')).toEqual({
+    expect(bookingWriteAction(snap('cancelled'), snap('rescheduled'))).toEqual({
       kind: 'skip',
       reason: 'superseded',
     });
   });
 
+  // The other half of the same bug: a late `booked` after a `rescheduled`
+  // (not just after a `cancelled`) is also stale and must be ignored.
+  it('refuses a late create that arrives after a reschedule', () => {
+    expect(
+      bookingWriteAction(snap('rescheduled', LATER), snap('booked', AT))
+    ).toEqual({ kind: 'skip', reason: 'superseded' });
+  });
+
   it('updates when the booking genuinely moved', () => {
-    expect(bookingWriteAction('booked', 'rescheduled')).toEqual({
+    expect(
+      bookingWriteAction(snap('booked'), snap('rescheduled', LATER))
+    ).toEqual({ kind: 'update' });
+    expect(bookingWriteAction(snap('booked'), snap('cancelled'))).toEqual({
       kind: 'update',
     });
-    expect(bookingWriteAction('booked', 'cancelled')).toEqual({
-      kind: 'update',
-    });
-    expect(bookingWriteAction('rescheduled', 'cancelled')).toEqual({
+    expect(bookingWriteAction(snap('rescheduled'), snap('cancelled'))).toEqual({
       kind: 'update',
     });
   });

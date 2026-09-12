@@ -84,8 +84,13 @@ export class LocalSitePublisher implements PullRequestPublisher {
       input.projectId,
       packSiteTarball(files),
     );
+    // Never the URL: its random path token IS the bearer credential that
+    // lets anyone fetch the (unreleased, potentially unpaid-for) site — see
+    // `ArtifactStore`'s doc comment. `input.projectId` and the sha256 are
+    // enough for an operator to correlate this line with the deploy it feeds
+    // without also handing out access to the artifact.
     this.options.onProgress?.(
-      `artifact ${artifact.sizeBytes} bytes at ${artifact.url}`,
+      `artifact ${artifact.sizeBytes} bytes, sha256 ${artifact.sha256} (job ${input.projectId})`,
     );
 
     const siteUrl = await this.deploy({

@@ -74,6 +74,10 @@ import { POST as adminDeploy } from '../../../../admin/projects/[id]/site/deploy
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const WORKSPACE_ID = '4f9c1a3e-0b7d-4a52-9c31-2f8e6d5b7a01';
 const ARTIFACT_URL = 'https://artifacts.flowstarter.dev/acme/v3.tar.gz';
+// `artifact_sha256` is required now (the deploy-agent will not extract an
+// artifact it cannot verify), so every request below that expects to reach
+// `deploySite` carries a well-formed one.
+const GOOD_SHA256 = 'a'.repeat(64);
 
 type Ctx = { params: Promise<{ id: string }> };
 type Handler = (req: NextRequest, ctx: Ctx) => Promise<Response>;
@@ -194,11 +198,38 @@ describe.each(HANDLERS)(
 
     it('accepts plain http as well as https', async () => {
       const res = await handler(
-        req({ artifact_url: 'http://localhost:9000/acme/v3.tar.gz' }),
+        req({
+          artifact_url: 'http://localhost:9000/acme/v3.tar.gz',
+          artifact_sha256: GOOD_SHA256,
+        }),
         ctx()
       );
       expect(res.status).toBe(200);
     });
+
+    it.each([
+      ['a missing artifact_sha256', {}],
+      ['an empty artifact_sha256', { artifact_sha256: '' }],
+      ['a non-string artifact_sha256', { artifact_sha256: 12345 }],
+      ['an artifact_sha256 of the wrong length', { artifact_sha256: 'ab' }],
+      [
+        'an artifact_sha256 with non-hex characters',
+        { artifact_sha256: 'z'.repeat(64) },
+      ],
+    ])(
+      'refuses %s with 400, without calling deploySite',
+      async (_case, extra) => {
+        const res = await handler(
+          req({ artifact_url: ARTIFACT_URL, ...extra }),
+          ctx()
+        );
+        expect(res.status).toBe(400);
+        await expect(res.json()).resolves.toMatchObject({
+          error: expect.stringContaining('artifact_sha256'),
+        });
+        expect(deploySite).not.toHaveBeenCalled();
+      }
+    );
   }
 );
 
@@ -207,7 +238,7 @@ describe.each(HANDLERS)(
   (_tree, handler) => {
     it('passes the artifact, the workspace and the operator', async () => {
       const res = await handler(
-        req({ artifact_url: ARTIFACT_URL, artifact_sha256: 'abc123' }),
+        req({ artifact_url: ARTIFACT_URL, artifact_sha256: GOOD_SHA256 }),
         ctx()
       );
 
@@ -219,27 +250,37 @@ describe.each(HANDLERS)(
       expect(lastCall()).toMatchObject({
         workspaceId: WORKSPACE_ID,
         deployedBy: 'user_operator',
-        artifact: { kind: 'url', url: ARTIFACT_URL, sha256: 'abc123' },
+        artifact: { kind: 'url', url: ARTIFACT_URL, sha256: GOOD_SHA256 },
       });
     });
 
-    it('drops a non-string checksum rather than passing it through', async () => {
+    // Required and validated, not silently dropped: a non-string (or
+    // malformed) checksum now refuses the request outright — see "the
+    // artifact it accepts" above for the full matrix. This pins down that a
+    // bad checksum specifically never reaches the deploy layer as `undefined`.
+    it('never passes a non-string checksum through to deploySite', async () => {
       await handler(
         req({ artifact_url: ARTIFACT_URL, artifact_sha256: 12345 }),
         ctx()
       );
-      expect(lastCall().artifact).toMatchObject({ sha256: undefined });
+      expect(deploySite).not.toHaveBeenCalled();
     });
 
     it('uses the real HTTP agent client by default', async () => {
-      await handler(req({ artifact_url: ARTIFACT_URL }), ctx());
+      await handler(
+        req({ artifact_url: ARTIFACT_URL, artifact_sha256: GOOD_SHA256 }),
+        ctx()
+      );
       expect(lastCall().agentClient).toBeInstanceOf(HttpDeployAgentClient);
     });
 
     it('uses the dry-run client when DEPLOY_AGENT_DRY_RUN is set', async () => {
       vi.stubEnv('DEPLOY_AGENT_DRY_RUN', 'true');
 
-      const res = await handler(req({ artifact_url: ARTIFACT_URL }), ctx());
+      const res = await handler(
+        req({ artifact_url: ARTIFACT_URL, artifact_sha256: GOOD_SHA256 }),
+        ctx()
+      );
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toMatchObject({ dryRun: true });
       expect(lastCall().agentClient).toBeInstanceOf(DryRunDeployAgentClient);
@@ -248,7 +289,10 @@ describe.each(HANDLERS)(
     it('passes no Cloudflare client when no token is configured', async () => {
       vi.stubEnv('CLOUDFLARE_API_TOKEN', undefined);
 
-      await handler(req({ artifact_url: ARTIFACT_URL }), ctx());
+      await handler(
+        req({ artifact_url: ARTIFACT_URL, artifact_sha256: GOOD_SHA256 }),
+        ctx()
+      );
       expect(lastCall().cloudflare).toBeNull();
       expect(lastCall().cloudflareDefaultZoneId).toBeNull();
     });
@@ -257,7 +301,10 @@ describe.each(HANDLERS)(
       vi.stubEnv('CLOUDFLARE_API_TOKEN', 'cf-test-token');
       vi.stubEnv('CLOUDFLARE_DEFAULT_ZONE_ID', 'zone_123');
 
-      await handler(req({ artifact_url: ARTIFACT_URL }), ctx());
+      await handler(
+        req({ artifact_url: ARTIFACT_URL, artifact_sha256: GOOD_SHA256 }),
+        ctx()
+      );
       expect(lastCall().cloudflare).toBeInstanceOf(CloudflareClient);
       expect(lastCall().cloudflareDefaultZoneId).toBe('zone_123');
     });
@@ -271,7 +318,10 @@ describe.each(HANDLERS)(
       vi.stubEnv('DEPLOY_AGENT_SHARED_SECRET_FSN1_A', 'per-server-secret');
       vi.stubEnv('DEPLOY_AGENT_SHARED_SECRET', 'global-secret');
 
-      await handler(req({ artifact_url: ARTIFACT_URL }), ctx());
+      await handler(
+        req({ artifact_url: ARTIFACT_URL, artifact_sha256: GOOD_SHA256 }),
+        ctx()
+      );
       const resolve = lastCall().resolveSharedSecret!;
 
       await expect(resolve('deploy_agent_shared_secret_fsn1_a')).resolves.toBe(
@@ -307,7 +357,10 @@ describe.each(HANDLERS)(
         new DeployError(code as string, `deploy failed: ${code}`)
       );
 
-      const res = await handler(req({ artifact_url: ARTIFACT_URL }), ctx());
+      const res = await handler(
+        req({ artifact_url: ARTIFACT_URL, artifact_sha256: GOOD_SHA256 }),
+        ctx()
+      );
       expect(res.status).toBe(status);
       await expect(res.json()).resolves.toMatchObject({ code });
     });
@@ -317,7 +370,10 @@ describe.each(HANDLERS)(
         new DeployError('meteor_strike', 'unmapped')
       );
 
-      const res = await handler(req({ artifact_url: ARTIFACT_URL }), ctx());
+      const res = await handler(
+        req({ artifact_url: ARTIFACT_URL, artifact_sha256: GOOD_SHA256 }),
+        ctx()
+      );
       expect(res.status).toBe(500);
       await expect(res.json()).resolves.toEqual({
         error: 'unmapped',
@@ -328,7 +384,10 @@ describe.each(HANDLERS)(
     it('reports an unexpected error as a plain 500', async () => {
       deploySite.mockRejectedValueOnce(new Error('socket hang up'));
 
-      const res = await handler(req({ artifact_url: ARTIFACT_URL }), ctx());
+      const res = await handler(
+        req({ artifact_url: ARTIFACT_URL, artifact_sha256: GOOD_SHA256 }),
+        ctx()
+      );
       expect(res.status).toBe(500);
       await expect(res.json()).resolves.toEqual({ error: 'socket hang up' });
     });
@@ -336,7 +395,10 @@ describe.each(HANDLERS)(
     it('reports a non-Error rejection as a generic 500', async () => {
       deploySite.mockRejectedValueOnce('nope');
 
-      const res = await handler(req({ artifact_url: ARTIFACT_URL }), ctx());
+      const res = await handler(
+        req({ artifact_url: ARTIFACT_URL, artifact_sha256: GOOD_SHA256 }),
+        ctx()
+      );
       expect(res.status).toBe(500);
       await expect(res.json()).resolves.toEqual({ error: 'Deploy failed' });
     });

@@ -193,17 +193,51 @@ const TEAM_EMAIL_DOMAINS = new Set([
   'flowstarter.com',
 ]);
 
-function emailDomainRole(email: string | undefined): string | undefined {
-  if (!email) return undefined;
-  const domain = email.split('@')[1]?.toLowerCase();
-  return domain && TEAM_EMAIL_DOMAINS.has(domain) ? 'admin' : undefined;
+/**
+ * Minimal shape of the fields we read off a Clerk user's primary email
+ * address. Kept narrow (rather than importing Clerk's full type) so this
+ * rule is trivial to unit test with a plain object.
+ */
+type PrimaryEmailAddress = {
+  emailAddress: string;
+  verification?: { status?: string | null } | null;
+};
+
+/**
+ * Whether a primary email address earns the automatic flowstarter-domain
+ * operator role.
+ *
+ * Rule: the domain must be one of the internal team domains AND Clerk must
+ * have verified that address (verification.status === 'verified'). An
+ * unverified address on a team domain does NOT elevate — anyone can type
+ * `you@flowstarter.dev` into a sign-up form; only Clerk's verification proves
+ * the person actually controls that mailbox. `publicMetadata.role` (checked
+ * before this ever runs) always stays authoritative over this fallback.
+ */
+function emailDomainRole(
+  email: PrimaryEmailAddress | undefined
+): string | undefined {
+  if (!email?.emailAddress) return undefined;
+  const domain = email.emailAddress.split('@')[1]?.toLowerCase();
+  if (!domain || !TEAM_EMAIL_DOMAINS.has(domain)) return undefined;
+
+  if (email.verification?.status !== 'verified') {
+    console.warn(
+      '[API Auth] Refused domain-based admin elevation: primary email on a team domain is not verified',
+      { domain }
+    );
+    return undefined;
+  }
+
+  return 'admin';
 }
 
 /**
  * Resolve a Clerk user's effective role.
  *
  * Order: session-claim metadata → publicMetadata.role → flowstarter-domain
- * email fallback. Returns undefined when the user has no team-level role.
+ * email fallback (verified primary email only). Returns undefined when the
+ * user has no team-level role.
  */
 export async function resolveUserRole(
   userId: string
@@ -223,7 +257,7 @@ export async function resolveUserRole(
 
   const primaryEmail = user.emailAddresses.find(
     (e) => e.id === user.primaryEmailAddressId
-  )?.emailAddress;
+  );
   return emailDomainRole(primaryEmail);
 }
 

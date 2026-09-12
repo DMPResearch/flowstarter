@@ -44,10 +44,20 @@ export interface DeployAgentClient {
     deployAgentUrl: string;
     sharedSecret: string;
     siteSlug: string;
-    /** Either an HTTPS URL the agent should fetch, or raw tarball bytes */
+    /**
+     * Either an HTTPS URL the agent should fetch, or raw tarball bytes.
+     *
+     * `sha256` is required, not optional: the deploy-agent refuses to
+     * extract anything it cannot verify against a caller-supplied digest
+     * (see its `fetchAndVerify`/`stageUploadedArtifact`), so a `push()` that
+     * cannot supply one would only fail on the other end of the network
+     * call, with a worse error. Every caller already has the bytes (or has
+     * just packaged them) by the time it reaches here, so computing the
+     * digest costs nothing new.
+     */
     artifact:
-      | { kind: 'url'; url: string; sha256?: string }
-      | { kind: 'bytes'; bytes: ArrayBuffer; sha256?: string };
+      | { kind: 'url'; url: string; sha256: string }
+      | { kind: 'bytes'; bytes: ArrayBuffer; sha256: string };
     primaryDomain: string | null;
     additionalDomains: string[];
   }): Promise<{
@@ -86,7 +96,7 @@ export class HttpDeployAgentClient implements DeployAgentClient {
       headers['Content-Type'] = 'application/json';
       body = JSON.stringify({
         artifact_url: opts.artifact.url,
-        artifact_sha256: opts.artifact.sha256 ?? null,
+        artifact_sha256: opts.artifact.sha256,
         primary_domain: opts.primaryDomain,
         additional_domains: opts.additionalDomains,
       });
@@ -95,9 +105,7 @@ export class HttpDeployAgentClient implements DeployAgentClient {
       headers['X-Site-Primary-Domain'] = opts.primaryDomain ?? '';
       headers['X-Site-Additional-Domains'] =
         opts.additionalDomains.join(',') || '';
-      if (opts.artifact.sha256) {
-        headers['X-Artifact-Sha256'] = opts.artifact.sha256;
-      }
+      headers['X-Artifact-Sha256'] = opts.artifact.sha256;
       body = opts.artifact.bytes;
     }
 
@@ -256,9 +264,10 @@ export async function deploySite(opts: {
   cloudflare: CloudflareClient | null;
   cloudflareDefaultZoneId?: string | null;
   workspaceId: string;
+  /** See `DeployAgentClient['push']`'s doc comment: `sha256` is required. */
   artifact:
-    | { kind: 'url'; url: string; sha256?: string }
-    | { kind: 'bytes'; bytes: ArrayBuffer; sha256?: string };
+    | { kind: 'url'; url: string; sha256: string }
+    | { kind: 'bytes'; bytes: ArrayBuffer; sha256: string };
   deployedBy: string;
   /**
    * The deploy-agent shared secret is keyed by `hosting_servers.deploy_agent_secret_ref`

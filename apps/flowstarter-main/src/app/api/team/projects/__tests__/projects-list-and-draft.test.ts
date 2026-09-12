@@ -33,8 +33,12 @@ const authState = vi.hoisted(() => ({
   claimRole: undefined as string | undefined,
   /** Role on Clerk's user record, the fallback lookup. */
   metadataRole: undefined as string | undefined,
-  /** Primary verified email, the last fallback in `resolveUserRole`. */
+  /** Primary email, the last fallback in `resolveUserRole` — only elevates
+   * a team domain when Clerk has also verified it. */
   email: 'someone@gmail.com' as string | null,
+  /** Whether Clerk has verified `email`. Defaults true: most tests here use
+   * a non-team domain, where verification is moot either way. */
+  emailVerified: true,
   /** Set to make `auth()` throw, standing in for Clerk being unreachable. */
   throwOnAuth: false,
 }));
@@ -65,7 +69,15 @@ vi.mock('@clerk/nextjs/server', () => ({
           ? { role: authState.metadataRole }
           : {},
         emailAddresses: authState.email
-          ? [{ id: 'idn_1', emailAddress: authState.email }]
+          ? [
+              {
+                id: 'idn_1',
+                emailAddress: authState.email,
+                verification: {
+                  status: authState.emailVerified ? 'verified' : 'unverified',
+                },
+              },
+            ]
           : [],
         primaryEmailAddressId: authState.email ? 'idn_1' : null,
       }),
@@ -148,6 +160,7 @@ beforeEach(() => {
   authState.claimRole = undefined;
   authState.metadataRole = undefined;
   authState.email = 'someone@gmail.com';
+  authState.emailVerified = true;
   authState.throwOnAuth = false;
   clientState.ctorError = null;
   vi.restoreAllMocks();
@@ -271,16 +284,30 @@ describe('GET /api/{team,admin}/projects — who may read the list', () => {
 });
 
 describe('GET /api/admin/projects — the email-domain role fallback', () => {
-  it('lets a flowstarter address through with no metadata at all', async () => {
+  it('lets a verified flowstarter address through with no metadata at all', async () => {
     authState.email = 'newhire@flowstarter.dev';
+    authState.emailVerified = true;
     seedWorkspaces();
 
     const res = await adminList();
     expect(res.status).toBe(200);
   });
 
-  it('still refuses an address outside the flowstarter domains', async () => {
+  // The fix this pins down: a flowstarter-domain address is not enough by
+  // itself. Anyone can type `you@flowstarter.dev` into a sign-up form; only
+  // Clerk's verification proves they actually control that mailbox.
+  it('refuses an UNVERIFIED flowstarter address, even with no metadata', async () => {
+    authState.email = 'newhire@flowstarter.dev';
+    authState.emailVerified = false;
+    seedWorkspaces();
+
+    const res = await adminList();
+    expect(res.status).toBe(403);
+  });
+
+  it('still refuses a verified address outside the flowstarter domains', async () => {
     authState.email = 'newhire@notflowstarter.dev';
+    authState.emailVerified = true;
     seedWorkspaces();
 
     const res = await adminList();
