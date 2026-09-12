@@ -1,43 +1,43 @@
 /**
- * Welcome Email Template (after signup)
+ * The first email a new account gets.
+ *
+ * The subject used to carry an emoji, which the house style bans everywhere
+ * else in this directory and which reads as marketing in an inbox full of
+ * transactional mail. The copy used to promise "beautiful websites" and list
+ * three things to explore. Both are gone: somebody who just signed up needs
+ * one sentence about what they have and one link to it.
  */
-
-import { baseEmailTemplate } from './base';
+import { renderEmail, type RenderedEmail } from './base';
 
 interface WelcomeEmailProps {
   userName?: string;
   dashboardUrl: string;
 }
 
-export function welcomeEmail({ userName, dashboardUrl }: WelcomeEmailProps): {
-  subject: string;
-  html: string;
-} {
-  const subject = `Welcome to Flowstarter! 🎉`;
-
-  const greeting = userName ? `Hi ${userName},` : 'Hi there,';
-
-  const html = baseEmailTemplate(`
-    <h1>Welcome to Flowstarter!</h1>
-    <p>${greeting}</p>
-    <p>
-      Your account is ready. You can now access your dashboard and start building beautiful websites.
-    </p>
-    <div style="text-align: center;">
-      <a href="${dashboardUrl}" class="button">Go to Dashboard</a>
-    </div>
-    <p style="margin-top: 32px;">
-      <strong>What's next?</strong>
-    </p>
-    <ul style="color: #6b7280; padding-left: 20px;">
-      <li>Explore your dashboard</li>
-      <li>Start building your website</li>
-      <li>Use AI to customize your content</li>
-    </ul>
-    <p class="muted" style="margin-top: 24px;">
-      Questions? Just reply to this email - we're happy to help!
-    </p>
-  `);
-
-  return { subject, html };
+export function welcomeEmail({
+  userName,
+  dashboardUrl,
+}: WelcomeEmailProps): RenderedEmail {
+  const name = userName?.trim();
+  return renderEmail({
+    subject: 'Welcome to Flowstarter',
+    preheader: 'Your account is ready and your dashboard is waiting.',
+    blocks: [
+      { kind: 'heading', text: 'Your account is ready' },
+      { kind: 'paragraph', content: name ? `Hi ${name},` : 'Hi there,' },
+      {
+        kind: 'paragraph',
+        content:
+          'Your Flowstarter account is set up. Your dashboard is where your ' +
+          'project lives: the brief you gave us, the preview when it is ' +
+          'ready, and the site once it is live.',
+      },
+      { kind: 'button', label: 'Open your dashboard', href: dashboardUrl },
+      {
+        kind: 'note',
+        content:
+          'Questions at any point, reply to this email. A person reads it.',
+      },
+    ],
+  });
 }

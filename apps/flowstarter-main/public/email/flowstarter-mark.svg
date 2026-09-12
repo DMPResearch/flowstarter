@@ -1,0 +1,8 @@
+<svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>Flowstarter</title>
+  <rect width="40" height="40" rx="11" fill="#2d40d2"/>
+  <path d="M13 10 L13 30" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+  <path d="M13 11 C17 10, 22 10, 27 11" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+  <path d="M13 20 C16 19, 20 19, 24 20" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+  <path d="M13 30 C15 30, 17 29.6, 19 29.2" stroke="#ffffff" stroke-opacity="0.3" stroke-width="1.4" stroke-linecap="round" fill="none"/>
+</svg>

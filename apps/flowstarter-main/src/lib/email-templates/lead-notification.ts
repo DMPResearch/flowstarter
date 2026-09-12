@@ -1,96 +1,118 @@
 /**
- * Lead Notification Email
+ * Somebody filled in the contact form on a client's own site.
  *
- * Sent to the project's client (or team) when a lead lands on a hosted
- * client site via the contact form. Plain, no-fluff layout — the goal is
- * "this person wants to talk to you, here's how to reach them, fast".
+ * The only email in the system whose reader is trying to do one thing with it:
+ * reply. So the enquirer's own words come before anything of ours, the reply
+ * address is theirs (the capture route sets `replyTo`), and the facts sit in a
+ * table the eye can skip.
+ *
+ * The subject was `New lead on <site>: <name>`, which put a stranger's name in
+ * a client's inbox list and called their customer a lead. It is now the same
+ * sentence for every enquiry, which is what an inbox rule can be written
+ * against.
  */
-
-import { baseEmailTemplate } from './base';
+import { renderEmail, type Block, type RenderedEmail } from './base';
 
 interface LeadNotificationProps {
   /** Display name for the recipient (the client or team member). */
   recipientName?: string | null;
-  /** Project name (the site that received the lead). */
+  /** Project name (the site that received the enquiry). */
   projectName?: string | null;
-  /** Lead fields */
+  /** Enquirer fields */
   leadName?: string | null;
   leadEmail?: string | null;
   leadPhone?: string | null;
   leadMessage?: string | null;
-  /** Source channel — e.g. "contact_form", "newsletter". */
+  /** Source channel, e.g. "contact_form", "newsletter". */
   source?: string | null;
-  /** Optional URL to view leads in the team admin (or — Phase 2 — client dashboard). */
+  /** Optional URL to view enquiries in the dashboard. */
   inboxUrl?: string | null;
-  /** Local timestamp string for the lead arrival. */
+  /** Local timestamp string for the arrival. */
   receivedAt?: string;
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+/**
+ * The capture route hands this an ISO instant, which is correct to store and
+ * unreadable in an inbox. Anything that does not parse is printed as given,
+ * because an operator-supplied string is more likely to be right than a
+ * fallback we invent.
+ */
+export function readableReceived(value: string): string {
+  const at = new Date(value);
+  if (Number.isNaN(at.getTime())) return value;
+  const day = at.toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+  const time = at.toLocaleTimeString('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'UTC',
+  });
+  return `${day} at ${time} UTC`;
 }
 
-function row(label: string, value: string | null | undefined): string {
-  if (!value) return '';
-  return `<tr>
-    <td style="padding: 8px 12px; color: #6b7280; width: 100px; vertical-align: top;">${label}</td>
-    <td style="padding: 8px 12px; color: #111827;">${escapeHtml(value)}</td>
-  </tr>`;
-}
-
-export function leadNotificationEmail(props: LeadNotificationProps): {
-  subject: string;
-  html: string;
-} {
+export function leadNotificationEmail(
+  props: LeadNotificationProps
+): RenderedEmail {
   const projectName = props.projectName?.trim() || 'your website';
-  const greeting = props.recipientName
-    ? `Hi ${escapeHtml(props.recipientName)},`
-    : 'Hi there,';
-  const subject = `New lead on ${projectName}${
-    props.leadName ? `: ${props.leadName}` : ''
-  }`;
-
+  const who = props.leadName?.trim();
   const message = props.leadMessage?.trim();
-  const messageBlock = message
-    ? `<div style="margin-top: 16px; padding: 12px 16px; background: #f9fafb; border-left: 3px solid #4f46e5; color: #111827; white-space: pre-wrap;">${escapeHtml(
-        message
-      )}</div>`
-    : '';
 
-  const tableRows = [
-    row('Name', props.leadName),
-    row('Email', props.leadEmail),
-    row('Phone', props.leadPhone),
-    row('Source', props.source),
-    row('Received', props.receivedAt ?? new Date().toLocaleString()),
-  ]
-    .filter(Boolean)
-    .join('');
+  const blocks: Block[] = [
+    { kind: 'heading', text: 'New enquiry from your site' },
+    {
+      kind: 'paragraph',
+      content: props.recipientName?.trim()
+        ? `Hi ${props.recipientName.trim()},`
+        : 'Hi there,',
+    },
+    {
+      kind: 'paragraph',
+      content: who
+        ? `${who} just got in touch through the contact form on ${projectName}.`
+        : `Someone just got in touch through the contact form on ${projectName}.`,
+    },
+  ];
 
-  const ctaBlock = props.inboxUrl
-    ? `<div style="text-align: center; margin-top: 24px;">
-         <a href="${props.inboxUrl}" class="button">Open inbox</a>
-       </div>`
-    : '';
+  if (message) blocks.push({ kind: 'quote', text: message });
 
-  const html = baseEmailTemplate(`
-    <h1>New lead on ${escapeHtml(projectName)}</h1>
-    <p>${greeting}</p>
-    <p>Someone just reached out via your website's contact form. Details:</p>
-    <table style="width: 100%; border-collapse: collapse; margin-top: 12px;">
-      ${tableRows}
-    </table>
-    ${messageBlock}
-    ${ctaBlock}
-    <p class="muted" style="margin-top: 24px;">
-      Reply directly to this email to respond to the lead, or copy their email above.
-    </p>
-  `);
+  blocks.push({
+    kind: 'facts',
+    rows: [
+      { label: 'Name', value: who ?? '' },
+      { label: 'Email', value: props.leadEmail?.trim() ?? '' },
+      { label: 'Phone', value: props.leadPhone?.trim() ?? '' },
+      { label: 'Source', value: props.source?.trim() ?? '' },
+      {
+        label: 'Received',
+        value: readableReceived(props.receivedAt ?? new Date().toISOString()),
+      },
+    ],
+  });
 
-  return { subject, html };
+  if (props.inboxUrl) {
+    blocks.push({
+      kind: 'button',
+      label: 'Open your enquiries',
+      href: props.inboxUrl,
+    });
+  }
+
+  blocks.push({
+    kind: 'note',
+    content:
+      'Reply to this email and it goes straight to them, not to us. Their ' +
+      'address is above if you would rather start a new message.',
+  });
+
+  return renderEmail({
+    subject: 'New enquiry from your site',
+    preheader: message
+      ? `${who ?? 'Someone'}: ${message.slice(0, 90)}`
+      : `${who ?? 'Someone'} got in touch through ${projectName}.`,
+    blocks,
+  });
 }

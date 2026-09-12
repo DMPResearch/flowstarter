@@ -6,6 +6,7 @@ import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import { loadFunnelPreview } from '@/lib/hosting/funnel-previews';
 import type { Json } from '@/lib/database.types';
 import { depositReceivedEmail } from '@/lib/email-templates/client-notices';
+import { formatInvoiceAmount } from '@/lib/billing/balance-invoice-email';
 import { notifyClientOnce } from './client-notifications';
 import { depositBuildPayload, derivePreviewIntent } from './preview-intent';
 
@@ -44,7 +45,10 @@ export async function enqueueFullBuildFromDeposit(
     paymentIntent,
     workspaceId
   );
-  await notifyDepositPaid(workspaceId);
+  await notifyDepositPaid(
+    workspaceId,
+    formatInvoiceAmount(paymentIntent.amount_received, paymentIntent.currency)
+  );
   return enqueued;
 }
 
@@ -60,7 +64,11 @@ export async function enqueueFullBuildFromDeposit(
  * Never throws, by `notifyClientOnce`'s contract, so a mail problem cannot
  * fail a webhook whose money side has already succeeded.
  */
-async function notifyDepositPaid(workspaceId: string): Promise<void> {
+async function notifyDepositPaid(
+  workspaceId: string,
+  /** Formatted for display. Absent when the caller cannot see the charge. */
+  amount?: string
+): Promise<void> {
   await notifyClientOnce({
     workspaceId,
     notification: 'deposit_paid',
@@ -76,6 +84,7 @@ async function notifyDepositPaid(workspaceId: string): Promise<void> {
         briefUrl: `${client.dashboardUrl}/brief`,
         clientName: client.clientName,
         businessName: client.businessName,
+        ...(amount ? { amount } : {}),
       }),
   });
 }
@@ -215,7 +224,10 @@ export async function enqueueFullBuildFromDepositInvoice(
     source: 'deposit_invoice',
     workspaceUpdate: {},
   });
-  await notifyDepositPaid(workspaceId);
+  await notifyDepositPaid(
+    workspaceId,
+    formatInvoiceAmount(invoice.amount_paid, invoice.currency)
+  );
   return enqueued;
 }
 

@@ -105,12 +105,17 @@ export async function sendPreviewReadyEmail(
     // window in which a second caller could arrive.
     updateJob(demoId, { readyEmailAt: Date.now() });
 
-    const { subject, html } = previewReadyEmail({
+    const { subject, html, text } = previewReadyEmail({
       previewUrl,
       ...(job.businessName ? { businessName: job.businessName } : {}),
       ...(job.leadName ? { clientName: job.leadName } : {}),
+      // The visitor is told when the link stops working at the same moment
+      // they are given it, which is the only moment they will read.
+      ...(job.hostedPreviewExpiresAt
+        ? { expiresAt: job.hostedPreviewExpiresAt }
+        : {}),
     });
-    const result = await sendEmail({ to, subject, html });
+    const result = await sendEmail({ to, subject, html, text });
     if (!result.success) {
       console.error(
         `[preview-email] preview ${demoId} ready email failed: ` +

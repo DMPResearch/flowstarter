@@ -1,8 +1,10 @@
 /**
- * Team Invitation Email Template
+ * Somebody on the team invited somebody else into it.
+ *
+ * The one template in this set whose recipient may never have heard of
+ * Flowstarter, so it names the person who invited them before it names us.
  */
-
-import { baseEmailTemplate } from './base';
+import { renderEmail, type RenderedEmail } from './base';
 
 interface InvitationEmailProps {
   inviterName: string;
@@ -16,24 +18,32 @@ export function invitationEmail({
   inviterEmail,
   invitationUrl,
   expiresInDays = 30,
-}: InvitationEmailProps): { subject: string; html: string } {
-  const subject = `You're invited to join Flowstarter`;
-
-  const html = baseEmailTemplate(`
-    <h1>You're invited! 🎉</h1>
-    <p>
-      <strong>${inviterName}</strong> (${inviterEmail}) has invited you to join the Flowstarter team.
-    </p>
-    <p>
-      Click the button below to create your account and get started.
-    </p>
-    <div style="text-align: center;">
-      <a href="${invitationUrl}" class="button">Accept Invitation</a>
-    </div>
-    <p class="muted" style="margin-top: 24px;">
-      This invitation will expire in ${expiresInDays} days.
-    </p>
-  `);
-
-  return { subject, html };
+}: InvitationEmailProps): RenderedEmail {
+  return renderEmail({
+    subject: `You're invited to join Flowstarter`,
+    preheader: `${inviterName} invited you to the Flowstarter team.`,
+    blocks: [
+      { kind: 'heading', text: "You're invited to join Flowstarter" },
+      {
+        kind: 'paragraph',
+        content: [
+          { strong: inviterName },
+          ` (${inviterEmail}) invited you to join their team on Flowstarter.`,
+        ],
+      },
+      {
+        kind: 'paragraph',
+        content:
+          'The link below creates your account and puts you straight in the ' +
+          'team. It works once.',
+      },
+      { kind: 'button', label: 'Accept invitation', href: invitationUrl },
+      {
+        kind: 'note',
+        content: `This invitation expires in ${expiresInDays} day${
+          expiresInDays === 1 ? '' : 's'
+        }. If you were not expecting it, you can ignore this email.`,
+      },
+    ],
+  });
 }

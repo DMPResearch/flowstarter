@@ -30,6 +30,9 @@ design/*
 # coverage reports
 coverage
 
+# rendered email previews (node scripts/render-email-previews.mjs)
+.email-previews
+
 certificates
 scripts/unused-translations.txt
 scripts/check-translations.js

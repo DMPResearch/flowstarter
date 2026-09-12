@@ -186,7 +186,7 @@ export async function notifyClientOnce(input: {
       return { sent: false, reason: 'already_sent' };
     }
 
-    const { subject, html } = input.render({
+    const { subject, html, text } = input.render({
       workspaceId,
       email: to,
       clientName: workspace.client_name,
@@ -194,7 +194,7 @@ export async function notifyClientOnce(input: {
       dashboardUrl: clientDashboardUrl(workspaceId),
     });
 
-    const result = await sendEmail({ to, subject, html });
+    const result = await sendEmail({ to, subject, html, text });
     if (!result.success) {
       // Not recorded: an unconfigured or briefly unavailable mailer must not
       // be able to permanently consume this notice.
