@@ -174,14 +174,45 @@ describe('POST /api/discovery/preview/[demoId]/guest-deposit-checkout', () => {
     expect(createSessionSpy).not.toHaveBeenCalled();
   });
 
-  it('rejects a request with no tier at all', async () => {
+  it('prices the recommendation, server-side, rather than 400ing when there is no tier at all', async () => {
+    // Regression: step 6 (the tier confirmation) comes after the preview, so
+    // a visitor going straight from preview to guest checkout -- every
+    // quick-intake visitor -- has never seen it. A required tier enum used
+    // to 400 the whole checkout for exactly that visitor.
     stashPreview();
 
     const { tier: _tier, ...withoutTier } = VALID_BODY;
     const response = await POST(checkoutRequest(withoutTier), params());
+    const body = (await response.json()) as { amountMinor: number };
 
-    expect(response.status).toBe(400);
-    expect(createSessionSpy).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    // This endpoint never collects commerce/page-count/etc, so the
+    // recommendation rule has no signal and resolves to its own default,
+    // 'starter' -- 20% of the published €799 setup fee.
+    expect(body.amountMinor).toBe(15_980);
+    const session = createSessionSpy.mock.calls[0][0];
+    expect(session.metadata).toMatchObject({ tier: 'starter' });
+  });
+
+  it('carries the website link through to the eventual claim', async () => {
+    // So the workspace's business-name rule (`deriveBusinessName`, via
+    // `claimPreview`) can name it after its own site rather than the guest
+    // who paid for it, once the webhook claims the preview.
+    stashPreview();
+
+    await POST(
+      checkoutRequest({
+        ...VALID_BODY,
+        businessName: '',
+        websiteUrl: 'https://ionescu-dental.ro',
+      }),
+      params()
+    );
+
+    const session = createSessionSpy.mock.calls[0][0];
+    expect(session.metadata).toMatchObject({
+      websiteUrl: 'https://ionescu-dental.ro',
+    });
   });
 
   it('rejects an email it could never create an account against', async () => {

@@ -27,7 +27,12 @@
  * only fills blanks, so a draft from before the cut, or a brief the client has
  * since corrected, passes through untouched.
  */
-import type { CommerceMode, DiscoveryData, PageCount } from './discovery.logic';
+import {
+  recommendTier,
+  type CommerceMode,
+  type DiscoveryData,
+  type PageCount,
+} from './discovery.logic';
 
 /**
  * Words to an industry, first match wins.
@@ -153,12 +158,24 @@ export function goalFromDescription(description: string): string {
 export const DEFAULT_PAGE_COUNT: PageCount = 'unsure';
 
 /**
- * The default commerce mode.
+ * The default commerce mode — and, for now, the only one a workspace can
+ * have.
  *
- * `'none'` rather than a guess from the words. A site that grows a product row
- * because the description said "products" and then has no catalogue behind it
- * is the exact failure the sufficiency gate exists to prevent, and the Brief
- * asks the question properly a few minutes later.
+ * `'none'` rather than a guess from the words: a site that grows a product
+ * row because the description said "products" and then has no catalogue
+ * behind it is the exact failure the sufficiency gate exists to prevent.
+ *
+ * This used to say the Brief asks the question properly a few minutes
+ * later. It never did: `intake-script.ts` carried a `commerceMode` question
+ * at `phase: 'brief'`, but `BriefForm.tsx` — the Brief as it actually
+ * shipped — has no commerce section and nothing reads that phase, so the
+ * question was unreachable from day one and every workspace has always
+ * filed `'none'` regardless of what the business sells. Wiring commerce into
+ * the Brief for real (a `workspace_briefs` column, a form section, a route
+ * change, and a way for the answer to reach the generator's page-set rule)
+ * is out of scope for closing that gap — this default is the honest,
+ * explicit decision until it is: commerce is out of pilot scope, not merely
+ * unasked.
  */
 export const DEFAULT_COMMERCE_MODE: CommerceMode = 'none';
 
@@ -166,10 +183,21 @@ export const DEFAULT_COMMERCE_MODE: CommerceMode = 'none';
  * Fills the blanks the quick intake no longer asks about. Pure, and additive
  * only: a field the visitor answered, or the Brief later corrected, is left
  * exactly as it is.
+ *
+ * `selectedTier` belongs here for the same reason the others do: step 6 (the
+ * tier confirmation) comes after the preview, so every quick-intake visitor
+ * reaches the preview — and the claim/checkout buttons on it — with an empty
+ * `selectedTier`. `recommendTier` is the same deterministic rule the
+ * recommendation step itself uses, run against the *other* derived fields
+ * above (a recommendation read off an empty `commerceMode`/`pageCount` would
+ * be a worse guess than one read off the defaults just filled in). Leaving
+ * this blank was R2/R3 of the PR #108 regression: a required tier enum 400'd
+ * the guest deposit checkout, and an absent one left the signed-in claim's
+ * quote — and therefore `/unlock`'s Pay button — null.
  */
 export function withQuickDefaults(data: DiscoveryData): DiscoveryData {
   const description = data.description ?? '';
-  return {
+  const derived: DiscoveryData = {
     ...data,
     industry: data.industry?.trim()
       ? data.industry
@@ -177,6 +205,10 @@ export function withQuickDefaults(data: DiscoveryData): DiscoveryData {
     goal: data.goal?.trim() ? data.goal : goalFromDescription(description),
     pageCount: data.pageCount || DEFAULT_PAGE_COUNT,
     commerceMode: data.commerceMode || DEFAULT_COMMERCE_MODE,
+  };
+  return {
+    ...derived,
+    selectedTier: data.selectedTier || recommendTier(derived).tier,
   };
 }
 
@@ -192,4 +224,101 @@ export function guessedFields(data: DiscoveryData): string[] {
   if (!data.pageCount) guessed.push('pageCount');
   if (!data.commerceMode) guessed.push('commerceMode');
   return guessed;
+}
+
+/**
+ * The four quick answers `deriveBusinessName` reads. A subset of
+ * `DiscoveryData` rather than the whole shape, so a caller holding only a
+ * partial spec (the live route's own request body) can pass it through
+ * without satisfying fields this rule never looks at.
+ */
+export type QuickBusinessNameAnswers = Pick<
+  DiscoveryData,
+  'businessName' | 'fullName' | 'instagramUrl' | 'linkedinUrl' | 'websiteUrl'
+>;
+
+/**
+ * A business name from the four quick answers, for the one consumer that
+ * cannot work without one: a generated site has to be introduced as
+ * *something*. The quick intake stopped asking for a business name directly
+ * (it moved to the Brief, after the deposit), so this is what stands in for
+ * that answer until the client gives the real one. Checked in this order:
+ *
+ *   1. The Brief's own answer, once given. Never guessed over: an answer the
+ *      visitor actually typed beats a rule every time.
+ *   2. The one link, when it is the visitor's own website: the hostname,
+ *      with `www.` and the TLD stripped and the rest title-cased —
+ *      `flowstarter.net` reads as `Flowstarter`. Read from the string alone,
+ *      the same way `industryFromDescription` reads words rather than
+ *      fetching anything: a domain that does not resolve derives exactly as
+ *      well as one that does, because nothing here ever asks the network.
+ *   3. Otherwise the visitor's own name. An Instagram or LinkedIn profile
+ *      names a person, not a business — pointing this rule at a handle
+ *      instead of a real domain would produce "Sablefig.Official" out of
+ *      "@sablefig.official", which is worse than the honest answer: for a
+ *      personal portfolio the business *is* the person, so their name is
+ *      what the generated site is introduced with.
+ *
+ * Never empty when `fullName` is given. Step 1 of the intake requires a
+ * name at least two characters long, so in practice this only returns ''
+ * for a draft nobody has started.
+ */
+export function deriveBusinessName(answers: QuickBusinessNameAnswers): string {
+  const briefName = answers.businessName?.trim();
+  if (briefName) return briefName;
+
+  const fromWebsite = businessNameFromHostname(answers.websiteUrl ?? '');
+  if (fromWebsite) return fromWebsite;
+
+  return (answers.fullName ?? '').trim();
+}
+
+/**
+ * Second-level labels that are themselves generic rather than part of the
+ * name, so a two-label ccTLD like `.co.uk` or `.com.au` is dropped whole
+ * instead of leaving "Acme Co" behind.
+ */
+const GENERIC_SECOND_LEVEL_LABELS = new Set([
+  'co',
+  'com',
+  'org',
+  'net',
+  'gov',
+  'edu',
+]);
+
+/**
+ * The hostname of a URL (or a bare domain typed without a scheme) as a
+ * title-cased name, or '' when the string is not a URL at all.
+ *
+ * `new URL` only parses — it never opens a connection — so this derives the
+ * same name whether or not the domain resolves to anything.
+ */
+function businessNameFromHostname(rawUrl: string): string {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return '';
+  let hostname: string;
+  try {
+    const withScheme = /^https?:\/\//i.test(trimmed)
+      ? trimmed
+      : `https://${trimmed}`;
+    hostname = new URL(withScheme).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+  const labels = hostname
+    .replace(/^www\./, '')
+    .split('.')
+    .filter(Boolean);
+  if (labels.length === 0) return '';
+  const dropTwo =
+    labels.length >= 3 &&
+    GENERIC_SECOND_LEVEL_LABELS.has(labels[labels.length - 2]);
+  const nameLabels =
+    labels.length === 1 ? labels : labels.slice(0, dropTwo ? -2 : -1);
+  const words = nameLabels.join(' ').split(/[-_]+/).filter(Boolean);
+  if (words.length === 0) return '';
+  return words
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
 }

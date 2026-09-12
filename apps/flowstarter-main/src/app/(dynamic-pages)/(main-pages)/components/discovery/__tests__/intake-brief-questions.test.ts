@@ -97,30 +97,12 @@ describe('the chips the Brief inherited', () => {
     expect(optionLabel(options[1]!, t)).toBe('5 – 7');
   });
 
-  it('reacts to a pick with the consequence of that pick, chosen by rule', () => {
-    const commerce = q('commerceMode');
-    const digital = commerce.apply(EMPTY_DISCOVERY, 'digital');
-    expect(reflectionText(commerce, digital, t)).toBe(
-      t('landing.discovery.chat.q.commerceMode.reflect.digital')
-    );
-
-    // Changed their mind: the reaction is rewritten from the stored value, so
-    // there is no way for the old line to survive the new answer.
-    const none = commerce.apply(digital, 'none');
-    expect(reflectionText(commerce, none, t)).toBe(
-      t('landing.discovery.chat.q.commerceMode.reflect.none')
-    );
-    expect(reflectionText(commerce, none, t)).not.toBe(
-      t('landing.discovery.chat.q.commerceMode.reflect.digital')
-    );
-  });
-
-  it('shows a pick back in the catalogue words, not the stored code', () => {
-    const commerce = q('commerceMode');
-    expect(
-      answerText(commerce, commerce.apply(EMPTY_DISCOVERY, 'few-services'), t)
-    ).toBe('A few paid offers');
-  });
+  // `commerceMode`'s "reacts to a pick with the consequence of that pick" and
+  // "shows a pick back in the catalogue words" coverage lived here. The
+  // question itself is gone from the script — see the comment at its former
+  // spot in `intake-script.ts` — and the reaction/answer-text mechanisms it
+  // exercised are still covered through `businessName`, `goal` and
+  // `timeline` below and in `intake-script.test.ts`.
 });
 
 describe('the optional questions the Brief kept', () => {
@@ -145,26 +127,9 @@ describe('the optional questions the Brief kept', () => {
   });
 });
 
-describe('the catalog size, asked only of a business that sells', () => {
-  it('turns on with the commerce answer and off again with it', () => {
-    const commerce = q('commerceMode');
-    const catalog = q('catalogSize');
-
-    const selling = commerce.apply(EMPTY_DISCOVERY, 'physical');
-    expect(selling.catalogSize).toBe('1-5');
-    expect(catalog.when?.(selling)).toBe(true);
-
-    const sized = catalog.apply(selling, '26-100');
-    expect(sized.catalogSize).toBe('26-100');
-
-    // Changed their mind: the catalog size goes with it, and the question
-    // stops applying rather than lingering as a wrong answer.
-    const reversed = commerce.apply(sized, 'none');
-    expect(reversed.catalogSize).toBe('na');
-    expect(catalog.when?.(reversed)).toBe(false);
-    expect(catalog.value(reversed)).toBe('');
-  });
-});
+// The catalog-size question was `commerceMode`'s dependent — gated entirely
+// on an answer to a question that is also gone (see `intake-script.ts`) — so
+// it went with it rather than being left behind as dead, unreachable script.
 
 describe('the commercial panels', () => {
   it('is the build package and then the monthly plan, in that order', () => {

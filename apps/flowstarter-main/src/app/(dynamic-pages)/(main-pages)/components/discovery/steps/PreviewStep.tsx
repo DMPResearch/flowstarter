@@ -12,7 +12,6 @@ import {
   MAX_DEMO_EDITS,
   buildDemoSite,
   previewCtaLabel,
-  recommendTier,
 } from '../discovery.logic';
 import {
   KEEP_EXPLORING_LABEL,
@@ -26,7 +25,7 @@ import {
   claimIntakeChatPayload,
   describeWithIntakeAnswers,
 } from '../intake-chat.shared';
-import { withQuickDefaults } from '../quick-defaults';
+import { deriveBusinessName, withQuickDefaults } from '../quick-defaults';
 import { usePreviewProgress } from '../usePreviewProgress';
 import { formatPreviewExpiry } from '@/components/flowstarter/site-link';
 import { DemoSiteFrame } from './DemoSiteFrame';
@@ -149,15 +148,23 @@ interface ChatTurn {
  * generator takes. Without this the conversation would only reach the
  * generator after a claim, and the preview shown right now would ignore
  * what the visitor just told us.
+ *
+ * Exported for the unit test that pins the one field this function used to
+ * get wrong: the quick intake stopped asking for a business name directly
+ * (PR #108 moved that question behind the deposit), and this was still
+ * sending the now-always-blank `data.businessName` straight through, which
+ * is what made the live route's businessName gate — reasonably strict on its
+ * own terms — fail every quick-intake preview. `deriveBusinessName` is the
+ * rule that fills it back in from the answers the quick intake still asks.
  */
-function previewPayload(raw: DiscoveryData) {
+export function previewPayload(raw: DiscoveryData) {
   // The four answers, plus everything the intake stopped asking, derived by
   // rule from the visitor's own sentence. The generator needs an industry
   // and a page budget whether or not anybody was asked for one, and a
   // defensible guess beats a blank that the page-set rule reads as zero.
   const data = withQuickDefaults(raw);
   return {
-    businessName: data.businessName,
+    businessName: deriveBusinessName(data),
     fullName: data.fullName,
     // The intake asks "Where should I send your preview once it's ready?" and
     // this is the request that knows when it is ready. Dropping it here is
@@ -327,7 +334,7 @@ export function PreviewStep({
   // message either way.
   const captureDeferredLead = useCallback(async () => {
     try {
-      const tier = (data.selectedTier as Tier | '') || recommendTier(data).tier;
+      const tier = withQuickDefaults(data).selectedTier;
       await fetch('/api/discovery/lead', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -522,9 +529,16 @@ export function PreviewStep({
         body: JSON.stringify({
           previewId,
           // The tier is a name, not a price: the server maps it to the
-          // published setup fee so the browser cannot quote itself.
-          ...(data.selectedTier ? { tier: data.selectedTier } : {}),
-          businessName: data.businessName,
+          // published setup fee so the browser cannot quote itself. Always
+          // sent, never conditional: a visitor who reaches the claim button
+          // without ever seeing step 6 (every quick-intake visitor, by
+          // design — the deposit step comes after the preview) has an empty
+          // `selectedTier`, and `withQuickDefaults` is what stands in the
+          // recommended tier so the claim still prices at something rather
+          // than leaving `quoteMinor` null and the Pay button unable to
+          // render.
+          tier: withQuickDefaults(data).selectedTier,
+          businessName: deriveBusinessName(data),
           fullName: data.fullName,
           email: data.email,
           description: data.description,
@@ -532,6 +546,10 @@ export function PreviewStep({
           targetAudience: data.targetAudience,
           goal: data.goal,
           brandTone: data.brandTone,
+          // Read for a palette and kept as provenance; also what lets the
+          // server's business-name rule name a claim after its own website
+          // rather than the person answering for it.
+          websiteUrl: data.websiteUrl ?? '',
           // Scope answers, so the server can re-run the standard-vs-custom
           // routing classifier on the answers themselves. The wizard's own
           // copy of the verdict is deliberately not sent.
@@ -590,7 +608,13 @@ export function PreviewStep({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            ...(data.selectedTier ? { tier: data.selectedTier } : {}),
+            // Always sent — see the identical comment in submitClaim. A
+            // guest visitor is even less likely than a signed-in one to have
+            // reached step 6, since there is no account step to slow them
+            // down first, so this is the path R2 actually broke: an empty
+            // tier here 400'd the whole checkout rather than merely leaving
+            // a quote unset.
+            tier: withQuickDefaults(data).selectedTier,
             ...(data.subscription ? { subscription: data.subscription } : {}),
             ...(data.billingCadence
               ? { billingCadence: data.billingCadence }
@@ -599,7 +623,11 @@ export function PreviewStep({
             // email and, after payment, their sign-in identifier.
             email: data.email,
             fullName: data.fullName,
-            businessName: data.businessName,
+            businessName: deriveBusinessName(data),
+            // Read for the same reason submitClaim sends it: the business
+            // name rule can name the workspace after its own website rather
+            // than the person paying for it.
+            websiteUrl: data.websiteUrl ?? '',
             // Stashed server-side onto the durable preview so the webhook's
             // claim files the same citable conversation a signed-in claim does.
             ...(claimIntakeChatPayload(data)
@@ -819,11 +847,12 @@ export function PreviewStep({
         ? 'Putting your preview together'
         : 'Getting your build started');
 
-  // The offer, in the numbers of the tier this visitor confirmed. Falls back
-  // to the deterministic recommendation if they somehow reached here without
-  // confirming one, so the sentence is never quoted without a figure.
-  const quotedTier: Tier | '' =
-    (data.selectedTier as Tier | '') || recommendTier(data).tier;
+  // The offer, in the numbers of the tier this visitor confirmed — or, for
+  // every quick-intake visitor (there is no step 6 yet at this point in the
+  // conversation), `withQuickDefaults`'s own recommendation. The same call
+  // decides what `submitClaim`/`startGuestCheckout` send, so the price shown
+  // here is always the price charged.
+  const quotedTier: Tier | '' = withQuickDefaults(data).selectedTier;
   const quote = depositQuote(quotedTier);
 
   const earlier = data.intakeChat ?? [];

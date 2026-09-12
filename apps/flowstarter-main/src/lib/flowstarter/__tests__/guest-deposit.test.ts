@@ -414,6 +414,28 @@ describe('guest deposit provisioning', () => {
     });
   });
 
+  it('names the workspace after its own website when the guest never answered the business-name question', async () => {
+    // The business-name question moved behind the deposit, so a guest who
+    // paid straight from the quick-intake preview has no business-name
+    // answer on the metadata either. `claimPreview` derives one from the
+    // website link (the same `deriveBusinessName` rule the quick-intake
+    // preview uses) rather than falling back to "<full name> project".
+    stashPreview();
+
+    await provisionGuestDeposit(
+      event(),
+      guestIntent(
+        {},
+        { businessName: '', websiteUrl: 'https://ionescu-dental.ro' }
+      )
+    );
+
+    expect(db.workspaces[0]).toMatchObject({
+      name: 'Ionescu Dental',
+      client_business_name: null,
+    });
+  });
+
   it('files the stashed intake conversation with the claim', async () => {
     stashPreview();
     const { readGuestIntakeChat } = await import(

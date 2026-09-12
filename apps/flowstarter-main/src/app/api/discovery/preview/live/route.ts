@@ -21,6 +21,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
+import { deriveBusinessName } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/quick-defaults';
 import { funnelBudgetState, recordGenerationCost } from '@/lib/ai/funnel-cost';
 import { llmActionConfig, recordLlmUsage } from '@/lib/ai/llm';
 import { missingGenerationPrerequisites } from '@/lib/discovery/generation-availability';
@@ -481,6 +482,29 @@ function logPreviewOutcome(
   );
 }
 
+/**
+ * The route's readiness gate: is there anything to introduce the generated
+ * site with at all?
+ *
+ * Used to be "a business name, or skip" — which is exactly what PR #108
+ * broke. It moved the business-name question behind the deposit, into the
+ * Brief, so a quick-intake draft has an empty `businessName` by design, and
+ * the gate above skipped every one of them, sending 100% of quick-intake
+ * previews to the deterministic JSON fallback. `fullName` is the one thing
+ * step 1 of the intake still requires, so it is enough on its own: paired
+ * with `deriveBusinessName`, the route always has something to call the
+ * business.
+ *
+ * Exported and tested alone so the exact rule cannot drift from what a
+ * fixture asserts without the test failing first.
+ */
+export function hasPreviewIdentity(spec: {
+  fullName: string;
+  businessName: string;
+}): boolean {
+  return Boolean(spec.fullName.trim() || spec.businessName.trim());
+}
+
 export async function POST(req: NextRequest) {
   let body: unknown;
   try {
@@ -489,7 +513,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ skip: true }, { status: 200 });
   }
   const parsed = SpecSchema.safeParse(body);
-  if (!parsed.success || !parsed.data.businessName.trim()) {
+  if (!parsed.success || !hasPreviewIdentity(parsed.data)) {
     return NextResponse.json({ skip: true }, { status: 200 });
   }
 
@@ -530,7 +554,15 @@ export async function POST(req: NextRequest) {
   const demoId = randomUUID();
   createJob(demoId);
   const ip = clientIp(req);
-  const spec = parsed.data;
+  // Every downstream reader of `spec.businessName` — the Pi evidence, the
+  // scrape corpus, the job record the "preview is ready" email is sent
+  // from — gets the derived value from here on, computed once rather than
+  // re-derived (and potentially re-decided) at each call site.
+  const spec = {
+    ...parsed.data,
+    businessName:
+      parsed.data.businessName.trim() || deriveBusinessName(parsed.data),
+  };
 
   // Parked on the job, not passed down through the generator: the pipeline has
   // no business knowing the visitor's address, and the only thing that needs
