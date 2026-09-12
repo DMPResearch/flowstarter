@@ -7,16 +7,20 @@ import {
   buildDockerContext,
   containerName,
   deployDockerSite,
+  extractProxyPort,
   httpReadinessCheck,
   imageName,
   LABEL_MODE,
   LABEL_OWNER,
   LABEL_SLOT,
   LABEL_SLUG,
+  reconcileDockerSites,
   removeDockerSite,
+  rewriteProxyPort,
   type CommandResult,
   type CommandRunner,
   type DockerDeployDeps,
+  type ReconcileDeps,
   type SiteMode,
   type Slot,
 } from './docker-runtime';
@@ -270,6 +274,11 @@ function deps(overrides: Partial<DockerDeployDeps> & { runner: CommandRunner }):
   };
 }
 
+/** Arbitrary but distinct and stable, matching what a real deploy would get
+ * from `assignPortsForSlug` — most tests do not care about the exact
+ * numbers, only that they are explicit rather than Docker-assigned. */
+const DEFAULT_TEST_PORTS = { a: 41001, b: 41002 };
+
 function request(overrides: Partial<Parameters<typeof deployDockerSite>[0]> = {}) {
   return {
     slug: 'acme',
@@ -277,6 +286,7 @@ function request(overrides: Partial<Parameters<typeof deployDockerSite>[0]> = {}
     tarballPath: '',
     sha256: 'a'.repeat(64),
     templates: TEMPLATES,
+    ports: DEFAULT_TEST_PORTS,
     buildSnippet: (upstream: string) => `reverse_proxy ${upstream}`,
     ...overrides,
   };
@@ -351,7 +361,11 @@ describe('deployDockerSite — runtime contract', () => {
     expect(run).toContain('--pids-limit');
     expect(run).toContain('--memory');
     expect(run).toContain('-p');
-    expect(run).toContain('127.0.0.1::8080');
+    // Explicit, not Docker-assigned: the whole point of stable ports is
+    // that this exact string is the same on every redeploy and every
+    // container restart, never `127.0.0.1::8080` (ephemeral).
+    expect(run).toContain(`127.0.0.1:${DEFAULT_TEST_PORTS.a}:8080`);
+    expect(outcome.port).toBe(DEFAULT_TEST_PORTS.a);
     expect(run.join(' ')).toContain(`${LABEL_OWNER}=true`);
     expect(run.join(' ')).toContain(`${LABEL_MODE}=sites`);
     expect(run.join(' ')).toContain(`${LABEL_SLUG}=acme`);
@@ -693,6 +707,312 @@ describe('deployDockerSite — build/run failures', () => {
     if (outcome.ok) return;
     expect(outcome.error).toContain('build context failed');
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe('deployDockerSite — stable ports', () => {
+  test('a fresh deploy publishes the target slot half of the given pair, explicitly', async () => {
+    const tarballPath = await writeFixtureTarball();
+    const { runner } = makeFakeDocker({ mode: 'sites', slug: 'acme' });
+    const ports = { a: 24601, b: 24602 };
+
+    const outcome = await deployDockerSite(
+      request({ tarballPath, ports }),
+      deps({ runner }),
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.port).toBe(ports.a);
+  });
+
+  test('a slot flip keeps the same two ports every time, not a freshly derived pair', async () => {
+    // Mirrors what really happens across the site's lifetime: `index.ts`
+    // loads the same `{a, b}` pair from the ports state file on every
+    // deploy, because the slug already has an entry. This proves
+    // `deployDockerSite` always honours whichever half the *target* slot
+    // owns, so blue/green flips slots without ever touching the ports.
+    const tarballPath = await writeFixtureTarball();
+    const { runner, containers } = makeFakeDocker({
+      mode: 'sites',
+      slug: 'acme',
+    });
+    const ports = { a: 25001, b: 25002 };
+    const snippets = fakeSnippetStore();
+
+    const first = await deployDockerSite(
+      request({ tarballPath, sha256: 'a'.repeat(64), ports }),
+      deps({
+        runner,
+        readSnippet: snippets.readSnippet,
+        writeSnippet: snippets.writeSnippet,
+      }),
+    );
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.containerName).toBe(containerName('sites', 'acme', 'a'));
+    expect(first.port).toBe(ports.a);
+
+    const second = await deployDockerSite(
+      request({ tarballPath, sha256: 'b'.repeat(64), ports }),
+      deps({
+        runner,
+        readSnippet: snippets.readSnippet,
+        writeSnippet: snippets.writeSnippet,
+      }),
+    );
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.containerName).toBe(containerName('sites', 'acme', 'b'));
+    expect(second.port).toBe(ports.b);
+    // The slot 'a' container from the first deploy is gone (blue/green
+    // retired it), but its port belongs to the pair permanently — the
+    // third deploy below flips back to it unchanged.
+    expect(containers.has(containerName('sites', 'acme', 'a'))).toBe(false);
+
+    const third = await deployDockerSite(
+      request({ tarballPath, sha256: 'c'.repeat(64), ports }),
+      deps({
+        runner,
+        readSnippet: snippets.readSnippet,
+        writeSnippet: snippets.writeSnippet,
+      }),
+    );
+    expect(third.ok).toBe(true);
+    if (!third.ok) return;
+    expect(third.containerName).toBe(containerName('sites', 'acme', 'a'));
+    // Same port as the very first deploy: the pair never moved.
+    expect(third.port).toBe(ports.a);
+  });
+});
+
+describe('reconcileDockerSites', () => {
+  function reconcileDeps(
+    overrides: Partial<ReconcileDeps> = {},
+  ): ReconcileDeps {
+    return {
+      isReady: async () => true,
+      readSnippet: async () => null,
+      writeSnippet: async () => undefined,
+      reloadCaddy: async () => ({ ok: true, stderr: '' }),
+      ...overrides,
+    };
+  }
+
+  test('rewrites a stale snippet to the container’s real port and reloads exactly once', async () => {
+    const { runner } = makeFakeDocker({
+      mode: 'sites',
+      slug: 'acme',
+      activeSlot: 'a',
+    });
+    // The fake's own port counter, not the pre-fix value the incident left
+    // behind — reconcile has to discover it via `docker port`, not assume it.
+    const actualPort = 41000;
+    const staleSnippet = [
+      '# Managed by flowstarter deploy-agent — site acme',
+      'acme.flowstarter.net {',
+      '  handle_path /editor/* {',
+      '    reverse_proxy http://editor:3773 {',
+      '      header_up X-Forwarded-Host {host}',
+      '    }',
+      '  }',
+      '  handle {',
+      '    reverse_proxy 127.0.0.1:19999',
+      '  }',
+      '}',
+      '',
+    ].join('\n');
+    const writes: { slug: string; snippet: string }[] = [];
+    let reloadCount = 0;
+
+    const result = await reconcileDockerSites(
+      runner,
+      'sites',
+      reconcileDeps({
+        readSnippet: async () => staleSnippet,
+        writeSnippet: async (slug, snippet) => {
+          writes.push({ slug, snippet });
+        },
+        reloadCaddy: async () => {
+          reloadCount++;
+          return { ok: true, stderr: '' };
+        },
+      }),
+    );
+
+    expect(result.repaired).toEqual(['acme']);
+    expect(result.down).toEqual([]);
+    expect(result.errors).toEqual([]);
+    expect(result.reloaded).toBe(true);
+    expect(reloadCount).toBe(1);
+    expect(writes).toHaveLength(1);
+    expect(extractProxyPort(writes[0]?.snippet ?? '')).toBe(actualPort);
+    // Everything else in the snippet, including the editor's non-loopback
+    // reverse_proxy, is untouched.
+    expect(writes[0]?.snippet).toContain('reverse_proxy http://editor:3773');
+    expect(writes[0]?.snippet).toContain('acme.flowstarter.net {');
+  });
+
+  test('does not touch a snippet that already matches the running container', async () => {
+    const { runner } = makeFakeDocker({
+      mode: 'sites',
+      slug: 'acme',
+      activeSlot: 'a',
+    });
+    const actualPort = 41000;
+    let wrote = false;
+    let reloaded = false;
+
+    const result = await reconcileDockerSites(
+      runner,
+      'sites',
+      reconcileDeps({
+        readSnippet: async () => `reverse_proxy 127.0.0.1:${actualPort}`,
+        writeSnippet: async () => {
+          wrote = true;
+        },
+        reloadCaddy: async () => {
+          reloaded = true;
+          return { ok: true, stderr: '' };
+        },
+      }),
+    );
+
+    expect(result.repaired).toEqual([]);
+    expect(result.sites[0]?.status).toBe('ok');
+    expect(wrote).toBe(false);
+    expect(reloaded).toBe(false);
+    expect(result.reloaded).toBe(false);
+  });
+
+  test('a down container is reported, not rerouted — its snippet is left exactly as it was', async () => {
+    const { runner } = makeFakeDocker({
+      mode: 'sites',
+      slug: 'acme',
+      activeSlot: 'a',
+    });
+    let wrote = false;
+
+    const result = await reconcileDockerSites(
+      runner,
+      'sites',
+      reconcileDeps({
+        isReady: async () => false,
+        readSnippet: async () => 'reverse_proxy 127.0.0.1:19999',
+        writeSnippet: async () => {
+          wrote = true;
+        },
+      }),
+    );
+
+    expect(result.down).toEqual(['acme']);
+    expect(result.repaired).toEqual([]);
+    expect(wrote).toBe(false);
+    expect(result.sites[0]?.status).toBe('down');
+  });
+
+  test('a slug with no running container at all is reported down without crashing', async () => {
+    const { runner } = makeFakeDocker({
+      mode: 'sites',
+      slug: 'ghost',
+      activeSlot: null,
+    });
+    // makeFakeDocker only seeds a container when `activeSlot` is set, so
+    // `docker ps -a` finds nothing here — the empty-fleet case.
+    const result = await reconcileDockerSites(runner, 'sites', reconcileDeps());
+    expect(result.checkedSlugs).toBe(0);
+    expect(result.sites).toEqual([]);
+  });
+
+  test('a healthy container with no snippet at all is reported as an error, not silently skipped', async () => {
+    const { runner } = makeFakeDocker({
+      mode: 'sites',
+      slug: 'acme',
+      activeSlot: 'a',
+    });
+
+    const result = await reconcileDockerSites(
+      runner,
+      'sites',
+      reconcileDeps({ readSnippet: async () => null }),
+    );
+
+    expect(result.errors).toEqual(['acme']);
+    expect(result.sites[0]?.status).toBe('missing-snippet');
+  });
+
+  test('a failed reload reverts every snippet this pass rewrote and reports them as errors', async () => {
+    const { runner } = makeFakeDocker({
+      mode: 'sites',
+      slug: 'acme',
+      activeSlot: 'a',
+    });
+    const original = 'reverse_proxy 127.0.0.1:19999';
+    const writes: string[] = [];
+
+    const result = await reconcileDockerSites(
+      runner,
+      'sites',
+      reconcileDeps({
+        readSnippet: async () => original,
+        writeSnippet: async (_slug, snippet) => {
+          writes.push(snippet);
+        },
+        reloadCaddy: async () => ({ ok: false, stderr: 'invalid Caddyfile' }),
+      }),
+    );
+
+    expect(result.repaired).toEqual([]);
+    expect(result.errors).toEqual(['acme']);
+    expect(result.reloaded).toBe(false);
+    // Rewrote it, then put it back — the caller must see the file exactly
+    // as it was before this pass ran.
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toBe(original);
+  });
+
+  test('reconcile runs each slug through the caller’s slug lock', async () => {
+    const { runner } = makeFakeDocker({
+      mode: 'sites',
+      slug: 'acme',
+      activeSlot: 'a',
+    });
+    const lockedSlugs: string[] = [];
+
+    await reconcileDockerSites(
+      runner,
+      'sites',
+      reconcileDeps({
+        readSnippet: async () => 'reverse_proxy 127.0.0.1:41000',
+        withSlugLock: async (slug, fn) => {
+          lockedSlugs.push(slug);
+          return fn();
+        },
+      }),
+    );
+
+    expect(lockedSlugs).toEqual(['acme']);
+  });
+});
+
+describe('extractProxyPort / rewriteProxyPort', () => {
+  test('extracts the loopback reverse_proxy port and ignores a named upstream', () => {
+    expect(extractProxyPort('reverse_proxy 127.0.0.1:41000')).toBe(41000);
+    expect(extractProxyPort('reverse_proxy http://editor:3773')).toBeNull();
+    expect(extractProxyPort('root * /var/www/sites/acme')).toBeNull();
+  });
+
+  test('rewrites only the loopback proxy port, leaving everything else byte-for-byte', () => {
+    const snippet = [
+      'acme.flowstarter.net {',
+      '  reverse_proxy http://editor:3773',
+      '  reverse_proxy 127.0.0.1:19999',
+      '}',
+    ].join('\n');
+    const rewritten = rewriteProxyPort(snippet, 55123);
+    expect(rewritten).toContain('reverse_proxy http://editor:3773');
+    expect(rewritten).toContain('reverse_proxy 127.0.0.1:55123');
+    expect(rewritten).not.toContain('19999');
   });
 });
 

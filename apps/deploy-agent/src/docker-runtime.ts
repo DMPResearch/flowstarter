@@ -9,8 +9,18 @@
  * always builds and starts the slot that is NOT currently running, health
  * checks it on its own loopback port, and only then asks the caller to
  * cut Caddy over. The slot that was serving before is removed only after
- * the cutover succeeds — so a failed build, a failed health check or a
+ * the cutover succeeds, so a failed build, a failed health check or a
  * failed Caddy reload all leave the previous container serving.
+ *
+ * Ports are explicit, not Docker-assigned. Each slot publishes on a host
+ * port the caller derived from the slug (see `site-ports.ts`) and passes
+ * in as `req.ports`, bound with `-p 127.0.0.1:<port>:8080` rather than
+ * `-p 127.0.0.1::8080`. An ephemeral binding meant the port could change on
+ * every container start, including a `docker restart` after a reboot,
+ * which is exactly the incident stable ports exist to prevent: a healthy
+ * container whose Caddy snippet points at a port nothing is listening on
+ * anymore. `reconcileDockerSites`, below, is the safety net for whatever
+ * this still misses (a hand-run container, a snippet edited by hand).
  */
 
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -19,6 +29,7 @@ import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { safeExtractTarball } from './tar-safety';
 import { DOCKERFILE_TEMPLATE_NAME, type SiteRuntimeTemplates } from './site-templates';
+import type { PortState, SitePortPair } from './site-ports';
 
 export type SiteMode = 'sites' | 'previews';
 export type Slot = 'a' | 'b';
@@ -320,6 +331,13 @@ export interface DockerDeployRequest {
   buildSnippet: (upstream: string) => string;
   /** Dockerfile and Caddyfile to build the site image from. */
   templates: SiteRuntimeTemplates;
+  /**
+   * The stable host ports for this slug's two blue/green slots, from the
+   * ports state file (`site-ports.ts`). Whichever slot this deploy targets
+   * publishes on its half of the pair, explicitly, every time, so the
+   * port a redeploy or a container restart ends up on is never a surprise.
+   */
+  ports: SitePortPair;
 }
 
 export type DockerDeployOutcome =
@@ -368,6 +386,9 @@ export async function deployDockerSite(
   const targetSlot = activeSlot ? otherSlot(activeSlot) : 'a';
   const name = containerName(mode, slug, targetSlot);
   const image = imageName(mode, slug, sha256);
+  // Stable for this slot's lifetime, from the ports state file, not
+  // whatever Docker feels like handing out this time.
+  const port = targetSlot === 'a' ? req.ports.a : req.ports.b;
 
   // The image the currently-serving container runs. Redeploying an
   // unchanged artifact resolves `image` to exactly this ID, so every
@@ -436,18 +457,12 @@ export async function deployDockerSite(
       '--tmpfs',
       '/config:uid=10001,gid=10001,mode=0700,size=1m',
       '-p',
-      '127.0.0.1::8080',
+      `127.0.0.1:${port}:8080`,
       image,
     ]);
     if (run.code !== 0) {
       await rollbackNewContainer();
       return { ok: false, error: `docker run failed: ${run.stderr || run.stdout}` };
-    }
-
-    const port = await resolvePublishedPort(deps.runner, name);
-    if (port == null) {
-      await rollbackNewContainer();
-      return { ok: false, error: 'could not resolve the published loopback port' };
     }
 
     const ready = await waitForReady(
@@ -568,4 +583,322 @@ export async function removeDockerSite(
     // else's and the daemon should refuse rather than untag it.
     await runDocker(runner, ['rmi', id]).catch(() => undefined);
   }
+}
+
+/**
+ * Reconciliation: the safety net for the class of incident stable ports
+ * exist to prevent. Even with an explicit `-p 127.0.0.1:<port>:8080`
+ * binding, a container recreated by hand, or one still running the old
+ * ephemeral-port scheme from before this agent carried the fix, can end up
+ * serving on a port its Caddy snippet does not name. This walks every site
+ * the agent owns, asks Docker what port its actually-running container
+ * answers on, and repairs the snippet when it disagrees, without ever
+ * deleting a route for a container that is not actually healthy.
+ */
+
+const PROXY_PORT_PATTERN = /reverse_proxy\s+127\.0\.0\.1:(\d+)/;
+
+/**
+ * The port a docker-mode snippet's `reverse_proxy 127.0.0.1:<port>` line
+ * names, or null if the snippet has no such line. The editor route proxies
+ * to a named host, never to a loopback port, so it never matches this.
+ */
+export function extractProxyPort(snippet: string): number | null {
+  const match = snippet.match(PROXY_PORT_PATTERN);
+  if (!match || !match[1]) return null;
+  const port = Number(match[1]);
+  return Number.isFinite(port) && port > 0 ? port : null;
+}
+
+/**
+ * Replaces every loopback `reverse_proxy` target's port with `newPort`,
+ * leaving the rest of the snippet (hostnames, the editor route, headers)
+ * byte-for-byte as it was.
+ */
+export function rewriteProxyPort(snippet: string, newPort: number): string {
+  return snippet.replace(/(reverse_proxy\s+127\.0\.0\.1:)\d+/g, `$1${newPort}`);
+}
+
+/**
+ * `fs-deploy-<mode>-<slug>-<slot>` parsed back into its parts, or null for
+ * a name that does not have this agent's shape. Defensive: every name this
+ * is called on already passed our own ownership label filter, but a stray
+ * container sharing the label by accident should not crash reconcile.
+ */
+function parseOwnedContainerName(
+  mode: SiteMode,
+  name: string,
+): { slug: string; slot: Slot } | null {
+  const prefix = `${NAMESPACE}-${mode}-`;
+  if (!name.startsWith(prefix)) return null;
+  const rest = name.slice(prefix.length);
+  const slotMark = rest.slice(-2);
+  if (slotMark !== '-a' && slotMark !== '-b') return null;
+  const slug = rest.slice(0, -2);
+  return slug ? { slug, slot: slotMark === '-a' ? 'a' : 'b' } : null;
+}
+
+/** Every slug with at least one container (running or not) this agent
+ * owns in `mode`, from `docker ps -a` rather than the `docker ps`
+ * `findActiveSlot` uses, so a container Docker considers stopped is still
+ * found and reported rather than silently skipped. */
+async function listOwnedSlugs(
+  runner: CommandRunner,
+  mode: SiteMode,
+): Promise<string[]> {
+  const res = await runDocker(runner, [
+    'ps',
+    '-a',
+    '--filter',
+    `label=${LABEL_OWNER}=true`,
+    '--filter',
+    `label=${LABEL_MODE}=${mode}`,
+    '--format',
+    '{{.Names}}',
+  ]);
+  if (res.code !== 0) return [];
+  const slugs = new Set<string>();
+  for (const name of res.stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)) {
+    const parsed = parseOwnedContainerName(mode, name);
+    if (parsed) slugs.add(parsed.slug);
+  }
+  return [...slugs];
+}
+
+export type ReconcileStatus =
+  | 'ok'
+  | 'repaired'
+  | 'down'
+  | 'missing-snippet'
+  | 'error';
+
+export interface ReconcileSiteReport {
+  slug: string;
+  slot: Slot | null;
+  status: ReconcileStatus;
+  /** The port the running container actually answers on, from `docker
+   * port`. Null when there is no running container to ask. */
+  actualPort: number | null;
+  /** The port the current Caddy snippet names. Null when there is no
+   * snippet, or it has no loopback `reverse_proxy` line. */
+  snippetPort: number | null;
+  /** The port recorded in the ports state file for this slot, when a
+   * `portState` was given to `reconcileDockerSites`. Informational: the
+   * live container, not the state file, decides what the snippet says. */
+  statePort: number | null;
+  message: string;
+}
+
+export interface ReconcileResult {
+  checkedSlugs: number;
+  repaired: string[];
+  down: string[];
+  errors: string[];
+  sites: ReconcileSiteReport[];
+  /** Whether a Caddy reload actually ran. Only true when at least one
+   * snippet was rewritten. */
+  reloaded: boolean;
+}
+
+export interface ReconcileDeps {
+  isReady: ReadinessCheck;
+  readSnippet: (slug: string) => Promise<string | null>;
+  writeSnippet: (slug: string, snippet: string) => Promise<void>;
+  reloadCaddy: () => Promise<{ ok: boolean; stderr: string }>;
+  /** Serializes with any concurrent deploy or delete of the same slug, the
+   * way `index.ts`'s slug lock does. Reconcile runs unlocked (a plain
+   * pass-through) when the caller does not supply one, which is fine for
+   * tests but not for the real server. */
+  withSlugLock?: <T>(slug: string, fn: () => Promise<T>) => Promise<T>;
+}
+
+function defaultWithSlugLock<T>(
+  _slug: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return fn();
+}
+
+interface SiteReconcileOutcome extends ReconcileSiteReport {
+  previousSnippet?: string | null;
+}
+
+async function reconcileOneSite(
+  runner: CommandRunner,
+  mode: SiteMode,
+  slug: string,
+  deps: Pick<ReconcileDeps, 'isReady' | 'readSnippet' | 'writeSnippet'>,
+  expectedPair: SitePortPair | undefined,
+): Promise<SiteReconcileOutcome> {
+  const activeSlot = await findActiveSlot(runner, mode, slug);
+  if (!activeSlot) {
+    return {
+      slug,
+      slot: null,
+      status: 'down',
+      actualPort: null,
+      snippetPort: null,
+      statePort: null,
+      message: `no running container for "${slug}"; the site is down, left whatever snippet exists untouched`,
+    };
+  }
+
+  const statePort = expectedPair
+    ? activeSlot === 'a'
+      ? expectedPair.a
+      : expectedPair.b
+    : null;
+  const name = containerName(mode, slug, activeSlot);
+  const actualPort = await resolvePublishedPort(runner, name);
+  if (actualPort == null) {
+    return {
+      slug,
+      slot: activeSlot,
+      status: 'error',
+      actualPort: null,
+      snippetPort: null,
+      statePort,
+      message: `container ${name} is running but reports no published port`,
+    };
+  }
+
+  const healthy = await deps.isReady(`http://127.0.0.1:${actualPort}/`);
+  if (!healthy) {
+    return {
+      slug,
+      slot: activeSlot,
+      status: 'down',
+      actualPort,
+      snippetPort: null,
+      statePort,
+      message: `container ${name} on port ${actualPort} is not answering; left its route untouched rather than reroute to a container that is not serving`,
+    };
+  }
+
+  const snippet = await deps.readSnippet(slug);
+  if (snippet == null) {
+    return {
+      slug,
+      slot: activeSlot,
+      status: 'missing-snippet',
+      actualPort,
+      snippetPort: null,
+      statePort,
+      message: `container ${name} is healthy on port ${actualPort} but has no Caddy snippet; needs a real redeploy, reconcile cannot invent its hostnames`,
+    };
+  }
+
+  const snippetPort = extractProxyPort(snippet);
+  const stateNote =
+    statePort != null && statePort !== actualPort
+      ? ` (the ports state file also disagrees, it names ${statePort})`
+      : '';
+
+  if (snippetPort === actualPort) {
+    return {
+      slug,
+      slot: activeSlot,
+      status: 'ok',
+      actualPort,
+      snippetPort,
+      statePort,
+      message: `snippet already matches the running container${stateNote}`,
+    };
+  }
+
+  const rewritten = rewriteProxyPort(snippet, actualPort);
+  await deps.writeSnippet(slug, rewritten);
+  return {
+    slug,
+    slot: activeSlot,
+    status: 'repaired',
+    actualPort,
+    snippetPort,
+    statePort,
+    previousSnippet: snippet,
+    message:
+      `snippet pointed at ${snippetPort ?? 'no port'}, container ${name} is really on ` +
+      `${actualPort}; rewrote the route${stateNote}`,
+  };
+}
+
+/**
+ * Walks every site this agent owns, checks its live container against its
+ * Caddy snippet, and repairs any snippet that has drifted. One Caddy
+ * reload for the whole pass, not one per site: if that reload fails, every
+ * snippet this pass touched is put back exactly as it was, because a
+ * half-applied set of route changes that never actually reached Caddy is
+ * worse than the drift this was trying to fix.
+ *
+ * `portState`, when given, is consulted for its recorded port per slot and
+ * folded into the report and log line. Informational only: the live
+ * container is always the port of record for what Caddy is told to proxy
+ * to.
+ */
+export async function reconcileDockerSites(
+  runner: CommandRunner,
+  mode: SiteMode,
+  deps: ReconcileDeps,
+  portState: PortState | null = null,
+): Promise<ReconcileResult> {
+  const withLock = deps.withSlugLock ?? defaultWithSlugLock;
+  const slugs = await listOwnedSlugs(runner, mode);
+  const outcomes: SiteReconcileOutcome[] = [];
+
+  for (const slug of slugs) {
+    const expectedPair = portState?.sites[slug];
+    const outcome = await withLock(slug, () =>
+      reconcileOneSite(runner, mode, slug, deps, expectedPair),
+    );
+    outcomes.push(outcome);
+  }
+
+  const repairedOutcomes = outcomes.filter((o) => o.status === 'repaired');
+  let reloaded = false;
+
+  if (repairedOutcomes.length > 0) {
+    const reload = await deps
+      .reloadCaddy()
+      .catch((e) => ({
+        ok: false,
+        stderr: e instanceof Error ? e.message : 'unknown error',
+      }));
+    if (reload.ok) {
+      reloaded = true;
+    } else {
+      // Caddy never picked up any of this pass's rewrites, so put every one
+      // of them back rather than leave `.caddy` files on disk that disagree
+      // with what is actually being served.
+      for (const outcome of repairedOutcomes) {
+        await withLock(outcome.slug, () =>
+          deps
+            .writeSnippet(outcome.slug, outcome.previousSnippet ?? '')
+            .catch(() => undefined),
+        );
+      }
+      await deps.reloadCaddy().catch(() => undefined);
+      for (const outcome of repairedOutcomes) {
+        outcome.status = 'error';
+        outcome.message = `rewrite reverted: caddy reload failed (${reload.stderr})`;
+      }
+    }
+  }
+
+  return {
+    checkedSlugs: slugs.length,
+    repaired: outcomes
+      .filter((o) => o.status === 'repaired')
+      .map((o) => o.slug),
+    down: outcomes.filter((o) => o.status === 'down').map((o) => o.slug),
+    errors: outcomes
+      .filter((o) => o.status === 'error' || o.status === 'missing-snippet')
+      .map((o) => o.slug),
+    sites: outcomes.map(
+      ({ previousSnippet: _previousSnippet, ...rest }) => rest,
+    ),
+    reloaded,
+  };
 }

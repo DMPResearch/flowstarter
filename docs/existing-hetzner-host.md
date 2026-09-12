@@ -87,3 +87,35 @@ The normal Flowstarter preview flow compiles the site before publication. The
 deployment agent receives static assets, wraps them in its trusted Caddy image,
 checks the new container, then changes routing. Generated source and tenant
 Dockerfiles are not runtime build instructions.
+
+## Stable ports and reconciliation
+
+This is what turned into a real incident on `fs-sites-01`: a site's container
+was published on whatever loopback port Docker picked at `docker run` time
+(`-p 127.0.0.1::8080`). After a reboot, the `--restart unless-stopped` policy
+brought the container back on a *different* Docker-assigned port, and the
+site's Caddy snippet still named the old one. The container itself was fine;
+the site was a 502 until someone noticed.
+
+The agent no longer lets the host port be a surprise. Each slug's port is
+derived deterministically from the slug (hashed into
+`DEPLOY_AGENT_SITE_PORT_RANGE`, `20000-29999` by default, with collision
+handling that walks forward to the next free port), and recorded in a small
+JSON state file, `.ports.json` inside the sites root by default, so the
+assignment survives an agent restart and holds for the site's whole lifetime.
+Every `docker run` then binds that exact port explicitly,
+`-p 127.0.0.1:<port>:8080`, never the bare `127.0.0.1::8080` that let the
+port move in the first place. Blue/green deploys still work the same way,
+the two slots just get the two stable ports from that recorded pair instead
+of two ephemeral ones.
+
+As a second layer, the agent reconciles on its own: once at startup, on a
+configurable interval (`DEPLOY_AGENT_RECONCILE_INTERVAL_MS`, five minutes by
+default), and on demand via authenticated `POST /reconcile`. Each pass lists
+every container the agent owns, asks Docker what port it actually publishes,
+and compares that against the site's Caddy snippet. A snippet that disagrees
+gets rewritten and Caddy is reloaded once for the whole pass; a container
+that does not answer is reported as down and its route is left alone rather
+than rerouted toward nothing. The startup pass is exactly what would have
+caught the `fs-sites-01` incident the moment the box came back up, instead
+of leaving the site dark until a client reported it.

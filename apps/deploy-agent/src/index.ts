@@ -37,13 +37,23 @@ import {
 import {
   deployDockerSite,
   removeDockerSite,
+  reconcileDockerSites,
   systemCommandRunner,
   httpReadinessCheck,
+  type ReconcileResult,
 } from './docker-runtime';
 import {
   loadSiteRuntimeTemplates,
   type SiteRuntimeTemplates,
 } from './site-templates';
+import {
+  parsePortRange,
+  loadPortState,
+  savePortState,
+  assignSitePorts,
+  releaseSitePorts,
+  type PortRange,
+} from './site-ports';
 
 const PORT = Number(process.env.DEPLOY_AGENT_PORT ?? 8443);
 
@@ -133,6 +143,39 @@ const ARTIFACT_FETCH_TIMEOUT_MS = Number(
  * `packSiteTarball` producers always compute. Anything else is rejected
  * before a byte is fetched. */
 const SHA256_HEX = /^[0-9a-f]{64}$/i;
+
+/**
+ * The range a site's stable host port is hashed into (see `site-ports.ts`).
+ * `20000-29999` by default: well above the well-known ports and Caddy's own
+ * 80/443/9080, well below the ephemeral range the kernel hands out on its
+ * own, so a deterministic site port never collides with one either side
+ * assigns for something else.
+ */
+const SITE_PORT_RANGE: PortRange = parsePortRange(
+  process.env.DEPLOY_AGENT_SITE_PORT_RANGE,
+);
+
+/**
+ * Where each slug's stable port pair is recorded, so it survives an agent
+ * restart. Defaults to `.ports.json` inside `SITES_ROOT`, the same root the
+ * filesystem runtime extracts sites into, docker mode or not, so an
+ * operator inspecting one host directory finds both.
+ */
+const PORTS_STATE_FILE =
+  process.env.DEPLOY_AGENT_PORTS_STATE_FILE?.trim() ||
+  join(SITES_ROOT, '.ports.json');
+
+/**
+ * How often the agent re-checks every owned container's published port
+ * against its Caddy snippet, on top of running the same check once at
+ * startup. `0` (or negative) disables the interval; startup reconciliation
+ * still runs. Five minutes by default: cheap enough to run unconditionally
+ * and short enough that a `docker restart` run by hand does not leave a
+ * site behind a stale route for long.
+ */
+const RECONCILE_INTERVAL_MS = Number(
+  process.env.DEPLOY_AGENT_RECONCILE_INTERVAL_MS ?? 5 * 60 * 1000,
+);
 
 /**
  * Port the previews Caddy listens on. TLS for the preview zone is terminated
@@ -263,6 +306,49 @@ function withSlugLock<T>(slug: string, fn: () => Promise<T>): Promise<T> {
     if (slugLocks.get(slug) === tail) slugLocks.delete(slug);
   });
   return run;
+}
+
+/**
+ * Serializes every read-modify-write of the ports state file. Two deploys
+ * of different slugs racing this without a lock could each load the file
+ * before the other's write landed, and one assignment would silently
+ * disappear on save, the exact hazard `withSlugLock` exists for on a
+ * per-slug basis. This one is global because the file is shared across
+ * every slug.
+ */
+let portsFileLock: Promise<unknown> = Promise.resolve();
+
+function withPortsFileLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = portsFileLock.then(fn, fn);
+  portsFileLock = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/** The stable `{a, b}` port pair for `slug`, assigning and persisting one
+ * if this is the slug's first deploy. Stable for the site's lifetime after
+ * that: see `assignSitePorts` in `site-ports.ts`. */
+async function assignPortsForSlug(
+  slug: string,
+): Promise<{ a: number; b: number }> {
+  return withPortsFileLock(async () => {
+    const state = await loadPortState(PORTS_STATE_FILE);
+    const pair = assignSitePorts(state, slug, SITE_PORT_RANGE);
+    await savePortState(PORTS_STATE_FILE, state);
+    return pair;
+  });
+}
+
+/** Frees `slug`'s port pair so a future slug's hash can land on it. Called
+ * from `handleRemove`; best-effort the same way the rest of delete is. */
+async function releasePortsForSlug(slug: string): Promise<void> {
+  return withPortsFileLock(async () => {
+    const state = await loadPortState(PORTS_STATE_FILE);
+    releaseSitePorts(state, slug);
+    await savePortState(PORTS_STATE_FILE, state);
+  });
 }
 
 /**
@@ -570,6 +656,67 @@ async function readCaddySnippet(slug: string): Promise<string | null> {
 }
 
 /**
+ * Runs one reconciliation pass: every owned container's actual published
+ * port against its Caddy snippet, repairing whatever has drifted. Called
+ * at startup, on the reconcile interval, and from `POST /reconcile`, so
+ * all three log the same way and none of them can throw past this into an
+ * unhandled rejection or a 500 with no body.
+ *
+ * A no-op returning `null` in filesystem mode: there are no containers to
+ * ask, and no port for a snippet to drift from.
+ */
+export async function runReconcile(
+  trigger: string,
+): Promise<ReconcileResult | null> {
+  if (SITE_RUNTIME !== 'docker') return null;
+  try {
+    const portState = await loadPortState(PORTS_STATE_FILE);
+    const result = await reconcileDockerSites(
+      systemCommandRunner,
+      MODE,
+      {
+        isReady: httpReadinessCheck,
+        readSnippet: readCaddySnippet,
+        writeSnippet: writeCaddySnippet,
+        reloadCaddy,
+        withSlugLock,
+      },
+      portState,
+    );
+    if (result.repaired.length > 0) {
+      console.info(
+        `[deploy-agent] reconcile (${trigger}) rewrote a stale route for: ${result.repaired.join(', ')}`,
+      );
+    }
+    if (result.down.length > 0) {
+      console.error(
+        `[deploy-agent] reconcile (${trigger}) found no healthy container for: ${result.down.join(', ')} (routes left as-is)`,
+      );
+    }
+    if (result.errors.length > 0) {
+      console.error(
+        `[deploy-agent] reconcile (${trigger}) could not fully check: ${result.errors.join(', ')}`,
+      );
+    }
+    if (
+      result.repaired.length === 0 &&
+      result.down.length === 0 &&
+      result.errors.length === 0
+    ) {
+      console.info(
+        `[deploy-agent] reconcile (${trigger}) checked ${result.checkedSlugs} site(s); every route matches its running container`,
+      );
+    }
+    return result;
+  } catch (e) {
+    console.error(
+      `[deploy-agent] reconcile (${trigger}) failed: ${e instanceof Error ? e.message : 'unknown error'}`,
+    );
+    return null;
+  }
+}
+
+/**
  * Stage a tarball the caller streamed to us. Same verification and same temp
  * file as the URL path, so `handleDeploy` cannot tell the two apart after this
  * point.
@@ -675,6 +822,19 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
       );
     }
 
+    let ports;
+    try {
+      ports = await assignPortsForSlug(slug);
+    } catch (e) {
+      await rm(fetched.tarballPath, { force: true }).catch(() => undefined);
+      return jsonResponse(
+        {
+          error: `port assignment failed: ${e instanceof Error ? e.message : 'unknown error'}`,
+        },
+        500,
+      );
+    }
+
     let outcome;
     try {
       outcome = await deployDockerSite(
@@ -684,6 +844,7 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
           tarballPath: fetched.tarballPath,
           sha256: fetched.actualSha256,
           templates,
+          ports,
           buildSnippet: (upstream) => buildSnippet(dockerServeTarget(upstream)),
         },
         {
@@ -757,6 +918,11 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
 async function handleRemove(slug: string): Promise<Response> {
   if (SITE_RUNTIME === 'docker') {
     await removeDockerSite(systemCommandRunner, MODE, slug);
+    await releasePortsForSlug(slug).catch((e) => {
+      console.error(
+        `[deploy-agent] failed to release ports for "${slug}": ${e instanceof Error ? e.message : 'unknown error'}`,
+      );
+    });
     await writeCaddySnippet(slug, '');
     const reload = await reloadCaddy();
     if (!reload.ok) {
@@ -935,6 +1101,31 @@ export async function routeRequest(req: Request): Promise<Response> {
     });
   }
 
+  /**
+   * Manual trigger for the same reconciliation startup and the interval
+   * run: every owned container's actual published port checked against
+   * its Caddy snippet, drift repaired, one reload. For an operator who
+   * just ran `docker restart` on a site by hand and does not want to wait
+   * for the interval.
+   */
+  if (url.pathname === '/reconcile' && req.method === 'POST') {
+    if (SITE_RUNTIME !== 'docker') {
+      return jsonResponse({
+        ok: true,
+        skipped: true,
+        reason: 'filesystem runtime has no containers to reconcile',
+      });
+    }
+    const result = await runReconcile('manual');
+    if (!result) {
+      return jsonResponse(
+        { error: 'reconcile failed; see the agent log' },
+        500,
+      );
+    }
+    return jsonResponse({ ok: true, ...result });
+  }
+
   if (url.pathname.startsWith('/sites/')) {
     const slug = siteSlugFromPath(url.pathname);
     if (!slug) {
@@ -965,6 +1156,25 @@ async function startServers(): Promise<void> {
       );
       process.exit(1);
     }
+  }
+
+  await ensureDirs();
+
+  // The exact hazard this exists for: the host rebooted, Docker restarted
+  // every container per its restart policy, and at least one of them came
+  // back on a different port than the Caddy snippet still names. Checking
+  // once here, before the agent starts accepting deploys, means a stale
+  // route left over from before this boot gets repaired immediately
+  // instead of waiting for the next interval tick.
+  await runReconcile('startup');
+
+  if (SITE_RUNTIME === 'docker' && RECONCILE_INTERVAL_MS > 0) {
+    const interval = setInterval(() => {
+      void runReconcile('interval');
+    }, RECONCILE_INTERVAL_MS);
+    // Never keeps the process alive by itself; only the HTTP servers below
+    // do that, the way it already worked before this existed.
+    interval.unref?.();
   }
 
   const server = Bun.serve({
