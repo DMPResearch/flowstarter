@@ -8,6 +8,7 @@ import {
   ensureBillingCustomer,
 } from '@/lib/billing/stripe';
 import {
+  invoiceReuseVerdict,
   mapBillingError,
   resolveAmountMinor,
   sanitizeDaysUntilDue,
@@ -84,6 +85,55 @@ export async function POST(
       { error: 'Final invoice is already paid for this workspace' },
       { status: 409 }
     );
+  }
+
+  // Never a second bill for the same milestone.
+  //
+  // This POST has no idempotency key, so a double-clicked button, a proxy
+  // retry or a second operator used to create a second real invoice for a real
+  // customer: two balances owed for one engagement, and whichever the webhook
+  // saw last won. The invoice already recorded on the workspace is now read
+  // back from Stripe first, and only a void or absent one is replaced.
+  const recorded = await billing.lookupInvoice(row.final_invoice_id);
+  if (recorded) {
+    const verdict = invoiceReuseVerdict(recorded.status);
+    if (verdict === 'already-paid') {
+      return NextResponse.json(
+        {
+          error:
+            `Final invoice ${recorded.invoiceId} is already paid on Stripe. ` +
+            'The workspace row has not caught up with its webhook yet.',
+          invoiceId: recorded.invoiceId,
+        },
+        { status: 409 }
+      );
+    }
+    if (verdict === 'reuse') {
+      // The operator asked for the client to be sent the balance, so send it
+      // — the same link, not a new bill. `notifyBalanceInvoiceReady` never
+      // throws.
+      const reEmailed = await notifyBalanceInvoiceReady({
+        workspaceId,
+        invoiceId: recorded.invoiceId,
+        hostedUrl: recorded.hostedUrl,
+        amountMinor: recorded.amountMinor,
+        currency: billing.currency,
+        daysUntilDue: sanitizeDaysUntilDue(body.daysUntilDue),
+        stripeEmailed: false,
+      });
+      return NextResponse.json({
+        invoice: {
+          id: recorded.invoiceId,
+          hostedUrl: recorded.hostedUrl,
+          status: recorded.status,
+          amountMinor: recorded.amountMinor,
+          currency: billing.currency,
+          stripeEmailed: false,
+          clientEmailed: reEmailed,
+          reused: true,
+        },
+      });
+    }
   }
 
   const amountMinor = resolveAmountMinor(

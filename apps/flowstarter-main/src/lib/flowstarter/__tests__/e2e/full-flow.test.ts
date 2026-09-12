@@ -181,6 +181,8 @@ function signedInvoiceEvent(eventId: string): {
   const payload = JSON.stringify({
     id: eventId,
     object: 'event',
+    // Stripe always sends this, and the event ledger orders on it.
+    created: Math.floor(Date.parse('2026-08-11T12:00:00.000Z') / 1000),
     type: 'invoice.payment_succeeded',
     data: {
       object: {

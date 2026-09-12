@@ -44,6 +44,11 @@ const UNIQUE_INDEXES: Record<string, UniqueIndex[]> = {
       where: (row) => row['deposit_payment_intent_id'] != null,
     },
   ],
+  // `20260912163000_stripe_events.sql`: the event id is the primary key, and
+  // that primary key is the whole of webhook deduplication. Without it here a
+  // redelivery would insert a second row and be processed twice, which is the
+  // defect the ledger exists to prevent.
+  stripe_events: [{ columns: ['id'] }],
 };
 
 /**
@@ -97,6 +102,16 @@ function parseFilter(column: string, raw: string): (row: Row) => boolean {
       const actual = row[column];
       if (actual === null || actual === undefined) return expected === 'null';
       return String(actual) === expected;
+    };
+  }
+  // The Stripe event ledger's ordering lookup excludes the event being
+  // processed right now: `neq.evt_...`.
+  if (raw.startsWith('neq.')) {
+    const expected = raw.slice(4);
+    return (row) => {
+      const actual = row[column];
+      if (actual === null || actual === undefined) return expected !== 'null';
+      return String(actual) !== expected;
     };
   }
   if (raw.startsWith('in.')) {
