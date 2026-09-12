@@ -7,7 +7,10 @@
  * Outlook renders through Word, Gmail strips most of the head, and every
  * client disagrees about the rest. So this file is deliberately old
  * technology: nested tables, inline styles on every element, a fixed 600px
- * shell, and one image.
+ * shell, and by default no image at all. An email must never depend on an
+ * asset the sending deployment cannot prove is reachable, so the header mark
+ * is plain HTML unless `EMAIL_ASSET_BASE_URL` is explicitly set. See
+ * `wordmarkHtml` below.
  *
  * What the design system contributes is the palette and the restraint, not the
  * CSS. Cream page, white card, ink text, and indigo used exactly once per
@@ -61,11 +64,18 @@ const FONT_STACK =
 const MONO_STACK = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 
 /**
- * Where the wordmark image is fetched from.
+ * Where the wordmark PNG would be fetched from, if anything asked for it.
  *
  * Absolute and public by necessity: an email is read outside any origin we
- * control. The override exists for the preview harness, which renders the
- * same HTML from disk.
+ * control. Only called when `EMAIL_ASSET_BASE_URL` is explicitly set (see
+ * `wordmarkHtml` below); the default value here is never sent in an email,
+ * because a default is a guess, and this one guessed wrong once already: the
+ * first branded "Your site is live" pointed the mark at
+ * `https://flowstarter.net/email/flowstarter-mark.png`, which 404s on any
+ * deploy that has not shipped `public/email/` yet, and Gmail shows that as a
+ * broken image, not a missing one. The override exists for the preview
+ * harness, which renders the same HTML from disk and can point this at a
+ * `file://` path where the PNG actually exists.
  */
 export function emailAssetBase(): string {
   const raw = process.env.EMAIL_ASSET_BASE_URL?.trim();
@@ -370,20 +380,47 @@ function footerText(): string {
 }
 
 /**
- * The wordmark, as a small image and live text rather than inline SVG.
+ * The mark tile beside the wordmark.
+ *
+ * Plain table-and-inline-style HTML by default: a table cell filled with the
+ * brand indigo, rounded where the client honours `border-radius` and square
+ * where it does not, holding a bold white "F". No client can fail to fetch a
+ * cell it already has to render.
+ *
+ * `EMAIL_ASSET_BASE_URL` can swap this for the PNG at
+ * `public/email/flowstarter-mark.png` (built by
+ * `scripts/build-email-mark.mjs`), but only when the caller sets it
+ * explicitly, which is a promise, not a check: setting the variable in a
+ * deployment where that file is not actually served at that base recreates
+ * the exact 404 this function exists to avoid. The variable must stay unset
+ * in every environment until the asset is confirmed live there.
+ */
+function markHtml(): string {
+  const assetBaseConfigured = Boolean(process.env.EMAIL_ASSET_BASE_URL?.trim());
+  if (assetBaseConfigured) {
+    return `<img src="${emailAssetBase()}/email/flowstarter-mark.png" width="34" height="34" alt="" style="display:block;width:34px;height:34px;border:0;border-radius:10px;" />`;
+  }
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="34" height="34" style="width:34px;height:34px;">
+        <tr>
+          <td class="fs-mark" width="34" height="34" align="center" valign="middle" bgcolor="${EMAIL_COLORS.light.accent}" style="width:34px;height:34px;background-color:${EMAIL_COLORS.light.accent};border-radius:10px;font-family:${FONT_STACK};font-size:17px;font-weight:700;line-height:34px;color:#ffffff;text-align:center;">F</td>
+        </tr>
+      </table>`;
+}
+
+/**
+ * The wordmark: the mark tile plus live text, never inline SVG.
  *
  * Gmail removes `<svg>` entirely and Outlook has never rendered it, which is
  * most of the inboxes we send to, so an SVG-first header would be a blank
- * header for the majority. The mark is a PNG at twice its display size, and
- * the word itself is text: if images are blocked, the brand is still legible
- * and still the right colour.
+ * header for the majority. The word itself is text: if images are blocked,
+ * the brand is still legible and still the right colour.
  */
 function wordmarkHtml(): string {
   return `
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 18px;">
   <tr>
     <td style="padding:0 10px 0 0;vertical-align:middle;">
-      <img src="${emailAssetBase()}/email/flowstarter-mark.png" width="34" height="34" alt="" style="display:block;width:34px;height:34px;border:0;border-radius:10px;" />
+      ${markHtml()}
     </td>
     <td style="vertical-align:middle;">
       <span class="fs-ink" style="font-family:${FONT_STACK};font-size:21px;font-weight:700;letter-spacing:-0.025em;color:${
@@ -419,6 +456,7 @@ const DARK_CSS = `
   .fs-rule { border-color: ${EMAIL_COLORS.dark.rule} !important; }
   .fs-quote { border-color: ${EMAIL_COLORS.dark.quoteRule} !important; }
   .fs-panel { background-color: ${EMAIL_COLORS.dark.panel} !important; }
+  .fs-mark { background-color: ${EMAIL_COLORS.dark.button} !important; }
   .fs-button { background-color: ${EMAIL_COLORS.dark.button} !important; color: ${EMAIL_COLORS.dark.accentInk} !important; }
 }`;
 

@@ -11,9 +11,13 @@
  *   node scripts/render-email-previews.mjs --screenshots # + Chrome shots
  *
  * The templates are TypeScript with path aliases, so esbuild bundles them to
- * one ESM file in a temp directory first. `EMAIL_ASSET_BASE_URL` points the
- * wordmark at the local `public/` tree, because the hosted one is not up yet
- * when you are looking at a change to it.
+ * one ESM file in a temp directory first.
+ *
+ * This intentionally does not set `EMAIL_ASSET_BASE_URL`: the header mark
+ * must render as what actually ships, which by default is the HTML mark, not
+ * the PNG (see `markHtml` in `src/lib/email-templates/base.ts`). Export
+ * `EMAIL_ASSET_BASE_URL` yourself, pointed at a `file://` path under
+ * `public/`, if you are previewing the PNG variant on purpose.
  */
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -25,11 +29,7 @@ import { build } from 'esbuild';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.join(here, '..');
 const outDir = path.join(appRoot, '.email-previews');
-const shotDir = '/tmp/fs-email';
-
-process.env.EMAIL_ASSET_BASE_URL = pathToFileURL(
-  path.join(appRoot, 'public')
-).href;
+const shotDir = process.env.EMAIL_PREVIEW_SHOT_DIR || '/tmp/fs-email';
 
 /**
  * Bundles the fixtures (and, through them, the templates) so plain node can

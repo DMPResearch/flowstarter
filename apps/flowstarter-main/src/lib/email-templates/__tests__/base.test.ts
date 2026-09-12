@@ -90,11 +90,32 @@ describe('the email document', () => {
     expect(mail.html).toContain('display:none;max-height:0');
   });
 
-  it('shows the wordmark as an image with live text beside it', () => {
-    expect(mail.html).toContain('/email/flowstarter-mark.png');
+  it('shows the wordmark as an HTML mark tile with live text beside it, no remote image', () => {
+    expect(mail.html).toContain('class="fs-mark"');
     expect(mail.html).toContain('>Flow</span>starter');
-    // The mark is the only image in any email.
-    expect(mail.html.match(/<img/g) ?? []).toHaveLength(1);
+    // No EMAIL_ASSET_BASE_URL is set, so nothing depends on an asset this
+    // deployment cannot prove is reachable: no <img> at all.
+    expect(mail.html).not.toContain('<img');
+    expect(mail.html).not.toContain('flowstarter.net/email');
+  });
+
+  it('falls back to the PNG only when EMAIL_ASSET_BASE_URL is explicitly set', () => {
+    const previous = process.env.EMAIL_ASSET_BASE_URL;
+    process.env.EMAIL_ASSET_BASE_URL = 'https://assets.example.com';
+    try {
+      const withAsset = renderEmail({
+        subject: 'A subject',
+        preheader: 'The line under the subject',
+        blocks: SAMPLE,
+      });
+      expect(withAsset.html).toContain(
+        'https://assets.example.com/email/flowstarter-mark.png'
+      );
+      expect(withAsset.html.match(/<img/g) ?? []).toHaveLength(1);
+    } finally {
+      if (previous === undefined) delete process.env.EMAIL_ASSET_BASE_URL;
+      else process.env.EMAIL_ASSET_BASE_URL = previous;
+    }
   });
 
   it('draws the button twice so Outlook gets a real box', () => {
@@ -190,8 +211,8 @@ describe('escaping', () => {
         { kind: 'hero', href: 'https://x.example', label: hostile },
       ],
     });
-    // One `<img` only: the wordmark.
-    expect(nasty.html.match(/<img/g) ?? []).toHaveLength(1);
+    // No real `<img` at all: the wordmark is an HTML mark tile by default.
+    expect(nasty.html.match(/<img/g) ?? []).toHaveLength(0);
     expect(nasty.html).toContain('&lt;img src=x');
   });
 

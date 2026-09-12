@@ -14,7 +14,7 @@ renders through Word, Gmail strips most of the head, and the rest disagree
 about everything else.
 
 So the output is deliberately old technology: nested tables, inline styles on
-every element, a fixed 600px shell, one image.
+every element, a fixed 600px shell, and by default no image at all.
 
 Three things that used to be each template's problem are now the base's:
 
@@ -46,13 +46,27 @@ gradients, no second colour, no decorative images.
 Type is a system stack. Onest is the product's face and no mail client has it;
 a webfont would cost a request, leak a read and be ignored by Outlook anyway.
 
-**The wordmark is a PNG plus live text, not inline SVG.** Gmail strips `<svg>`
-and Outlook has never rendered it, which is most of the inboxes we send to, so
-an SVG-first header would be a blank header for the majority. The mark is
-`apps/flowstarter-main/public/email/flowstarter-mark.png`, served from
-`https://flowstarter.net/email/`, generated from the SVG beside it by
-`node apps/flowstarter-main/scripts/build-email-mark.mjs`. The word
-"Flowstarter" is HTML text, so a blocked-images inbox still shows the brand.
+**The wordmark is HTML by default, not an image or inline SVG.** Gmail strips
+`<svg>` and Outlook has never rendered it, which is most of the inboxes we
+send to, so an SVG-first header would be a blank header for the majority. A
+remote image is worse: an email is read by a client that owns none of the
+origins we control, and this base once pointed the mark at
+`https://flowstarter.net/email/flowstarter-mark.png` unconditionally, which
+404s on any deployment that has not shipped `public/email/` yet and shows
+Gmail's broken-image placeholder instead of a header. An email must never
+depend on an asset the sending deployment cannot prove is reachable, so the
+default mark is a table cell filled with the brand indigo and a bold white
+"F", no network request involved. The word "Flowstarter" beside it is HTML
+text either way, so a blocked-images inbox still shows the brand.
+
+The PNG at `apps/flowstarter-main/public/email/flowstarter-mark.png` (built
+from the SVG beside it by
+`node apps/flowstarter-main/scripts/build-email-mark.mjs`) still exists for
+whoever finishes deploying it. Setting
+`EMAIL_ASSET_BASE_URL` switches the mark back to that image, served from
+`<EMAIL_ASSET_BASE_URL>/email/`. Do not set it in any deployment until
+`public/email/flowstarter-mark.png` is confirmed live at that base; the
+variable is read as a promise the asset resolves, not checked against it.
 
 The primary button is drawn twice: a VML `<v:roundrect>` for Word-rendered
 Outlook and a padded anchor for everything else, only one of which is ever

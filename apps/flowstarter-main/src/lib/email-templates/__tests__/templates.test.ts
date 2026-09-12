@@ -66,10 +66,16 @@ describe('every template', () => {
     expect(f.mail.html).toContain(f.mail.preheader);
   });
 
-  it.each(named)('%s carries the wordmark', (_n, f) => {
-    expect(f.mail.html).toContain('/email/flowstarter-mark.png');
-    expect(f.mail.html).toContain('>Flow</span>starter');
-  });
+  it.each(named)(
+    '%s carries the wordmark, with no image that could 404',
+    (_n, f) => {
+      expect(f.mail.html).toContain('class="fs-mark"');
+      expect(f.mail.html).toContain('>Flow</span>starter');
+      // EMAIL_ASSET_BASE_URL is unset for every fixture, so no template can
+      // depend on an asset this deployment cannot prove is reachable.
+      expect(f.mail.html).not.toContain('<img');
+    }
+  );
 
   it.each(named)('%s has exactly one heading', (_n, f) => {
     expect(f.mail.html.match(/<h1/g) ?? []).toHaveLength(1);
