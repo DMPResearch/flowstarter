@@ -96,6 +96,17 @@ export FLOWSTARTER_IMAGE="$IMAGE"
 export FLOWSTARTER_CONTAINER="$CONTAINER"
 export FLOWSTARTER_HOST_PORT="$HOST_PORT"
 export FLOWSTARTER_ENV_FILE="$ENV_FILE"
+# /api/health reports this as `commit`, which is what
+# wait-for-staging-slot.sh polls for so it can tell a slot still serving the
+# previous build (while this one deploys underneath it) apart from one
+# already on the commit under test. The image is content-addressed by tag
+# (ghcr.io/dmpresearch/flowstarter-main:<sha> for every staging slot; a
+# release tag for prod), so the tag itself is the source of truth here and
+# needs no rebuild to expose -- this takes effect via docker-compose.yml's
+# `environment:` (which overrides both the env file and whatever the image
+# baked in from Dockerfile's FLOWSTARTER_BUILD_COMMIT build arg) even for an
+# image built before that arg existed.
+export FLOWSTARTER_BUILD_COMMIT="${IMAGE##*:}"
 
 # docker-compose.yml no longer hard-codes FLOWSTARTER_ENV=staging; it reads the
 # value from the slot's env file, which is what lets one compose file serve

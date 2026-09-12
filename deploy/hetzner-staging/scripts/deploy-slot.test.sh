@@ -62,6 +62,9 @@ mkdir -p "$ROOT/opt" "$ROOT/caddy" "$ROOT/etc" "$ROOT/tls" "$ROOT/bin"
 cat >"$ROOT/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "docker $*" >> "$STUB_LOG"
+# Logged on every invocation (pull and compose up both count), which is
+# enough to prove deploy-slot.sh exported it before either ran.
+echo "env FLOWSTARTER_BUILD_COMMIT=${FLOWSTARTER_BUILD_COMMIT-<unset>}" >> "$STUB_LOG"
 exit 0
 STUB
 cat >"$ROOT/bin/curl" <<'STUB'
@@ -132,6 +135,7 @@ assert_contains "$log" "supabase-stack write-env" "main refreshes the keys"
 assert_contains "$(cat "$ENV_FILE")" "FLOWSTARTER_ENV=staging" "main writes FLOWSTARTER_ENV=staging"
 assert_contains "$(cat "$ROOT/caddy/main.caddy")" "staging.flowstarter.dev {" "main writes its vhost"
 assert_contains "$(cat "$ROOT/caddy/main.caddy")" "reverse_proxy 127.0.0.1:3000" "main proxies port 3000"
+assert_contains "$log" "env FLOWSTARTER_BUILD_COMMIT=sha" "main exports the image tag as FLOWSTARTER_BUILD_COMMIT"
 
 echo "deploy-slot.sh: slot pr-73"
 out="$(run_deploy pr-73 ghcr.io/x/y:pr-73)"
@@ -141,6 +145,7 @@ assert_contains "$out" "(slot=pr-73, port=3073)" "pr-73 derives port 3073"
 assert_contains "$log" "supabase-stack ensure" "pr-73 runs the stack ensure step"
 assert_not_contains "$log" "supabase-stack migrate" "pr-73 does not migrate"
 assert_not_contains "$log" "supabase-stack write-env" "pr-73 does not rewrite the keys"
+assert_contains "$log" "env FLOWSTARTER_BUILD_COMMIT=pr-73" "pr-73 exports its own image tag as FLOWSTARTER_BUILD_COMMIT"
 
 # ── The prod slot ───────────────────────────────────────────────────────────
 echo "deploy-slot.sh: slot prod"
@@ -156,6 +161,7 @@ assert_contains "$out" "(slot=prod, port=3100)" "prod defaults to port 3100"
 assert_contains "$out" 'expecting "env":"production"' "prod asserts the production env marker"
 assert_not_contains "$log" "supabase-stack" "prod runs no Supabase stack step at all"
 assert_contains "$log" "docker pull ghcr.io/x/y:release-2026-09-14" "prod pulls the tagged image"
+assert_contains "$log" "env FLOWSTARTER_BUILD_COMMIT=release-2026-09-14" "prod exports its release tag as FLOWSTARTER_BUILD_COMMIT"
 
 env_now="$(cat "$ENV_FILE")"
 assert_contains "$env_now" "FLOWSTARTER_ENV=production" "prod rewrites FLOWSTARTER_ENV to production"

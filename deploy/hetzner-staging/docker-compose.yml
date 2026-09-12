@@ -63,6 +63,17 @@ services:
       # names as the enforcing one for the Supabase stack. Verify with
       # `nc -z <host> 3000` from somewhere else; it must not connect.
       HOSTNAME: 0.0.0.0
+      # /api/health's `commit` field, which wait-for-staging-slot.sh polls
+      # for. Set here (not left to the image's own ENV from the Dockerfile's
+      # FLOWSTARTER_BUILD_COMMIT build arg) because `environment:` overrides
+      # both `env_file:` and the image's built-in ENV, so deploy-slot.sh's
+      # derivation from the image tag (a SHA for every staging slot) is what
+      # actually takes effect -- including for an image built before this
+      # build arg existed, with no rebuild required. Empty when deploy-slot.sh
+      # did not set FLOWSTARTER_BUILD_COMMIT (e.g. this compose file run by
+      # hand); the app falls back to reporting no commit at all rather than
+      # failing health over it.
+      FLOWSTARTER_BUILD_COMMIT: '${FLOWSTARTER_BUILD_COMMIT:-}'
       # FLOWSTARTER_ENV is deliberately NOT set here. It comes from the slot's
       # env file (staging.env carries `FLOWSTARTER_ENV=staging`, prod.env
       # carries `FLOWSTARTER_ENV=production`), because a value under

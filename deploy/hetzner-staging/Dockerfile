@@ -112,6 +112,19 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
+# /api/health reports this as `commit`, which is what
+# .github/scripts/wait-for-staging-slot.sh waits to match before treating a
+# slot as ready -- health alone cannot tell a slot still serving the previous
+# commit (while a new container builds and deploys underneath it) apart from
+# one already running the commit under test. The Depot workflows pass this as
+# the git SHA they tag the image with. deploy-slot.sh independently sets the
+# same-named env var at deploy time, derived from that image tag, which is
+# what actually takes effect for an already-built image (no rebuild needed);
+# this ARG only matters for a `docker run`/`docker build` done outside that
+# script. Never required: apps/flowstarter-main/src/lib/build-commit.ts omits
+# the field rather than fail health when it is unset.
+ARG FLOWSTARTER_BUILD_COMMIT
+ENV FLOWSTARTER_BUILD_COMMIT=$FLOWSTARTER_BUILD_COMMIT
 WORKDIR /app
 
 # Monorepo standalone layout: server lives under apps/flowstarter-main.

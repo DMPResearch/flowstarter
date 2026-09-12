@@ -343,6 +343,22 @@ run first.
 Secrets: see `docs/ci/secrets.md` (`STAGING_SSH_*`, `STAGING_SUPABASE_ANON_KEY`,
 `PROD_NEXT_PUBLIC_*`, `GHCR_TOKEN`).
 
+**Health identifies its own commit.** A deploy takes minutes end to end
+(build, push, SSH, `docker compose up`), and the PREVIOUS container keeps
+answering `"ok":true` and `"target":"local"` at `/api/health` for the whole
+time the new one is rolling out underneath it. A lane that waited only on
+those two fields (`.github/scripts/wait-for-staging-slot.sh`, used by
+`e2e-smoke.yml`, `visual-check.yml`, `opencode-review.yml` and
+`release.yml`'s `staging-journey`) could therefore pass against stale code
+the instant the old container was found healthy. `/api/health` now also
+reports `"commit"`, set from `FLOWSTARTER_BUILD_COMMIT`: baked in at image
+build time (a build arg in `Dockerfile`, passed by every CI lane that builds
+this image as the git SHA it tags with), and independently re-derived by
+`deploy-slot.sh` from the image tag it is given at deploy time (so it takes
+effect even for an image built before this field existed, no rebuild
+required). `wait-for-staging-slot.sh` accepts `EXPECTED_COMMIT` and, when
+set, will not call a slot ready until its reported commit matches.
+
 ## Redeploying or rolling back production by hand
 
 ```bash

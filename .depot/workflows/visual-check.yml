@@ -21,9 +21,12 @@
 #   2. Resolves the slot URL for the run: a pull request gets
 #      https://pr-<n>.staging.flowstarter.dev, a dispatched baseline refresh
 #      gets vars.STAGING_URL. It then waits for /api/health to report
-#      `"ok":true` and `"target":"local"` via
+#      `"ok":true`, `"target":"local"` AND `"commit":"<this run's SHA>"` via
 #      .github/scripts/wait-for-staging-slot.sh (the same script e2e-smoke.yml
-#      uses).
+#      uses). The commit check matters because a slot's redeploy takes
+#      minutes and its PREVIOUS container keeps answering healthy the whole
+#      time; without it this lane could screenshot stale code under a commit
+#      that never shipped it.
 #   3. Runs `playwright test --project visual-desktop --project
 #      visual-mobile` against that URL.
 #   4. If e2e/visual/__screenshots__/linux does not exist yet (first run,
@@ -194,10 +197,16 @@ jobs:
             url="${STAGING_URL:-https://staging.flowstarter.dev}"
           fi
           echo "url=${url%/}" >> "$GITHUB_OUTPUT"
-      # ── Wait for that slot to be healthy ───────────────────────────────────
+      # ── Wait for that slot to be healthy AND on this commit ────────────────
       # continue-on-error: a slot that never comes up is an infrastructure
       # signal, not a code defect, so a timeout here must not redden the job.
       # The steps below gate on steps.wait.outputs.url being non-empty instead.
+      #
+      # EXPECTED_COMMIT: a slot mid-redeploy keeps answering "ok":true and
+      # "target":"local" from its PREVIOUS container for as long as the new
+      # one takes to build and start, so those two fields alone cannot tell
+      # "up" from "up on the right commit". /api/health now reports its own
+      # commit; wait for it to match steps.sha.outputs.sha before screenshotting.
       - name: Wait for the Hetzner slot
         id: wait
         if: steps.ssh.outputs.present == 'true' && steps.slot.outputs.url != ''
@@ -208,13 +217,14 @@ jobs:
           TIMEOUT_SECONDS: '900'
           POLL_INTERVAL: '15'
           EXPECT_TARGET: local
+          EXPECTED_COMMIT: ${{ steps.sha.outputs.sha }}
       - name: No healthy Hetzner slot
         if: steps.ssh.outputs.present == 'true' && steps.wait.outputs.url == ''
         env:
           SHA: ${{ steps.sha.outputs.sha }}
           SLOT_URL: ${{ steps.slot.outputs.url }}
         run: |
-          message="${SLOT_URL:-No slot} did not report ok:true with target:local for ${SHA} inside the 15 minute budget. Check the Staging deploy (PR) run for this commit. Skipping."
+          message="${SLOT_URL:-No slot} did not report ok:true, target:local and commit:${SHA} inside the 15 minute budget. Check the Staging deploy (PR) run for this commit. Skipping."
           echo "::warning::${message}"
           echo "${message}" >> "$GITHUB_STEP_SUMMARY"
       # ── Decide whether this run should write (not just compare) snapshots ──
