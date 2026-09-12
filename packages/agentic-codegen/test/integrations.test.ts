@@ -9,6 +9,7 @@ import {
   injectCalComPreviewDemo,
   injectIntegrations,
   normalizeCalLink,
+  removeCalComPreviewDemo,
   type FileMap,
 } from '../src/integrations';
 
@@ -41,7 +42,9 @@ describe('normalizeCalLink', () => {
   });
 
   it('strips scheme + host for a full https URL', () => {
-    expect(normalizeCalLink('https://cal.com/yourname/30min')).toBe('yourname/30min');
+    expect(normalizeCalLink('https://cal.com/yourname/30min')).toBe(
+      'yourname/30min',
+    );
   });
 
   it('strips the app.cal.com host', () => {
@@ -49,7 +52,9 @@ describe('normalizeCalLink', () => {
   });
 
   it('drops query string, fragment and trailing slash', () => {
-    expect(normalizeCalLink('https://cal.com/yourname/30min/?x=1#foo')).toBe('yourname/30min');
+    expect(normalizeCalLink('https://cal.com/yourname/30min/?x=1#foo')).toBe(
+      'yourname/30min',
+    );
   });
 
   it('is null for empty / whitespace input', () => {
@@ -87,7 +92,9 @@ describe('injectCalCom — synthetic fixture (book-page__calendar placeholder sh
     const out = injectCalCom(files, 'acme/intro');
     const page = out['src/pages/book.astro']!;
     expect(page).toContain('class="book-page__calendar"');
-    expect(page).toContain('src="https://cal.com/acme/intro/embed?layout=month_view&theme=light"');
+    expect(page).toContain(
+      'src="https://cal.com/acme/intro/embed?layout=month_view&theme=light"',
+    );
     expect(page).not.toContain('calendly.com');
     expect(page).toContain('data-flowstarter-cal-embed="true"');
   });
@@ -101,7 +108,10 @@ describe('injectCalCom — synthetic fixture (book-page__calendar placeholder sh
 
   it('is a no-op for an unrecognized (non-Cal.com) URL', () => {
     const files: FileMap = { 'src/pages/book.astro': placeholderFile };
-    const out = injectCalCom(files, 'https://calendly.com/your-username/discovery-call');
+    const out = injectCalCom(
+      files,
+      'https://calendly.com/your-username/discovery-call',
+    );
     expect(out).toEqual(files);
   });
 
@@ -125,12 +135,15 @@ describe('injectCalCom — synthetic fixture (book-page__calendar placeholder sh
     };
     const out = injectCalCom(files, 'acme/intro');
     expect(out['src/pages/book.astro']).toContain('cal.com/acme/intro');
-    expect(out['src/pages/contact.astro']).toBe(files['src/pages/contact.astro']);
+    expect(out['src/pages/contact.astro']).toBe(
+      files['src/pages/contact.astro'],
+    );
   });
 
   it('falls back to contact.astro when there is no book.astro', () => {
     const files: FileMap = {
-      'src/pages/contact.astro': '<main class="contact-page"><h1>Contact</h1></main>',
+      'src/pages/contact.astro':
+        '<main class="contact-page"><h1>Contact</h1></main>',
     };
     const out = injectCalCom(files, 'acme/intro');
     const page = out['src/pages/contact.astro']!;
@@ -180,13 +193,18 @@ describe('injectCalCom — no existing calendar placeholder (wellness-therapy sh
     // New embed was added, and only once, before the closing </main>.
     expect(page).toContain('data-flowstarter-cal-embed="true"');
     expect(page).toContain('cal.com/acme/intro/embed');
-    expect(page.indexOf('data-flowstarter-cal-embed')).toBeLessThan(page.indexOf('</main>'));
+    expect(page.indexOf('data-flowstarter-cal-embed')).toBeLessThan(
+      page.indexOf('</main>'),
+    );
     expect(page.indexOf('</main>')).toBeLessThan(page.indexOf('<Footer'));
   });
 
   it('is idempotent for the appended shape too', () => {
     const before = '<main class="book-page"><h1>Book</h1></main>';
-    const first = injectCalCom({ 'src/pages/book.astro': before }, 'acme/intro');
+    const first = injectCalCom(
+      { 'src/pages/book.astro': before },
+      'acme/intro',
+    );
     const second = injectCalCom(first, 'acme/other');
     const page = second['src/pages/book.astro']!;
     expect(page.match(/<iframe/g)).toHaveLength(1);
@@ -290,7 +308,9 @@ describe('injectCalCom — real template fixtures under apps/flowstarter-templat
 });
 
 function targetKey(files: FileMap): string {
-  return 'src/pages/book.astro' in files ? 'src/pages/book.astro' : 'src/pages/contact.astro';
+  return 'src/pages/book.astro' in files
+    ? 'src/pages/book.astro'
+    : 'src/pages/contact.astro';
 }
 
 describe('injectCalComPreviewDemo — blurred funnel tease', () => {
@@ -321,12 +341,90 @@ describe('injectCalComPreviewDemo — blurred funnel tease', () => {
   });
 });
 
+describe('removeCalComPreviewDemo / injectCalCom with no link', () => {
+  it('removes a seeded preview demo outright rather than leaving it in a paid build', () => {
+    const preview = injectCalComPreviewDemo({
+      'src/pages/book.astro':
+        '<main><div class="book-page__calendar"><iframe src="https://calendly.com/x"></iframe></div></main>',
+    });
+    expect(preview['src/pages/book.astro']).toContain(
+      'data-flowstarter-cal-preview="true"',
+    );
+
+    const out = injectCalCom(preview, null);
+    const page = out['src/pages/book.astro']!;
+    expect(page).not.toContain('data-flowstarter-cal-preview');
+    expect(page).not.toContain('flowstarter:cal-preview');
+    expect(page).not.toContain('filter:blur');
+    expect(page).not.toContain('data-flowstarter-cal-embed');
+  });
+
+  it('removes the demo wherever it actually landed, not only from book.astro', () => {
+    // This is the shape the 2026-09-12 defect shipped in: book.astro was
+    // already dropped (no booking link), so the preview demo's own
+    // append-before-</main> fallback put it on contact.astro instead.
+    const preview = injectCalComPreviewDemo({
+      'src/pages/contact.astro':
+        '<main class="contact-page"><h1>Contact</h1><p><a href="mailto:hello@example.com">Email us</a></p></main>',
+    });
+    expect(preview['src/pages/contact.astro']).toContain(
+      'data-flowstarter-cal-preview="true"',
+    );
+
+    const cleaned = injectCalCom(preview, undefined);
+    const page = cleaned['src/pages/contact.astro']!;
+    expect(page).not.toContain('data-flowstarter-cal-preview');
+    // The rest of the page — including the email call to action — survives.
+    expect(page).toContain('<h1>Contact</h1>');
+    expect(page).toContain('mailto:hello@example.com');
+  });
+
+  it('removes a stale live embed when a previously-set link is taken away', () => {
+    const withLink = injectCalCom(
+      {
+        'src/pages/book.astro': '<main class="book-page"><h1>Book</h1></main>',
+      },
+      'acme/intro',
+    );
+    expect(withLink['src/pages/book.astro']).toContain(
+      'data-flowstarter-cal-embed="true"',
+    );
+
+    const linkRemoved = injectCalCom(withLink, null);
+    const page = linkRemoved['src/pages/book.astro']!;
+    expect(page).not.toContain('data-flowstarter-cal-embed');
+    expect(page).not.toContain('cal.com/acme/intro');
+    expect(page).toContain('<h1>Book</h1>');
+  });
+
+  it('is a true no-op when there is nothing to remove', () => {
+    const files: FileMap = {
+      'src/pages/book.astro': '<main class="book-page"><h1>Book</h1></main>',
+    };
+    expect(removeCalComPreviewDemo(files)).toBe(files);
+    expect(injectCalCom(files, null)).toEqual(files);
+  });
+
+  it('does not mutate the input map', () => {
+    const preview = injectCalComPreviewDemo({
+      'src/pages/book.astro':
+        '<main><div class="book-page__calendar">placeholder</div></main>',
+    });
+    const before = preview['src/pages/book.astro'];
+    const out = removeCalComPreviewDemo(preview);
+    expect(preview['src/pages/book.astro']).toBe(before);
+    expect(out).not.toBe(preview);
+  });
+});
+
 describe('injectIntegrations', () => {
   it('delegates to injectCalCom for a cal.com booking config', () => {
     const files: FileMap = {
       'src/pages/book.astro': '<main class="book-page"><h1>Book</h1></main>',
     };
-    const out = injectIntegrations(files, { booking: { provider: 'cal.com', url: 'acme/intro' } });
+    const out = injectIntegrations(files, {
+      booking: { provider: 'cal.com', url: 'acme/intro' },
+    });
     expect(out['src/pages/book.astro']).toContain('cal.com/acme/intro/embed');
   });
 
@@ -337,12 +435,25 @@ describe('injectIntegrations', () => {
     expect(injectIntegrations(files, {})).toEqual(files);
   });
 
-  it('is a no-op with an empty booking url', () => {
+  it('is a no-op with an empty booking url when there is nothing to remove', () => {
     const files: FileMap = {
       'src/pages/book.astro': '<main class="book-page"><h1>Book</h1></main>',
     };
-    expect(injectIntegrations(files, { booking: { provider: 'cal.com', url: '' } })).toEqual(
-      files
+    expect(
+      injectIntegrations(files, { booking: { provider: 'cal.com', url: '' } }),
+    ).toEqual(files);
+  });
+
+  it('removes a seeded preview demo when the booking config has no url', () => {
+    const preview = injectCalComPreviewDemo({
+      'src/pages/book.astro':
+        '<main><div class="book-page__calendar">placeholder</div></main>',
+    });
+    const out = injectIntegrations(preview, {
+      booking: { provider: 'cal.com', url: null },
+    });
+    expect(out['src/pages/book.astro']).not.toContain(
+      'data-flowstarter-cal-preview',
     );
   });
 });
@@ -367,15 +478,19 @@ describe('built HTML output', () => {
         '<main><div class="book-page__calendar">placeholder</div></main>',
     });
     expect(previewed['contact/index.html']).toContain(
-      'data-flowstarter-cal-preview="true"'
+      'data-flowstarter-cal-preview="true"',
     );
 
     const live = injectCalCom(previewed, 'acme/intro');
-    expect(live['contact/index.html']).toContain('data-flowstarter-cal-embed="true"');
-    expect(live['contact/index.html']).not.toContain('data-flowstarter-cal-preview');
-    expect(
-      (live['contact/index.html']!.match(/<iframe/g) ?? []).length
-    ).toBe(1);
+    expect(live['contact/index.html']).toContain(
+      'data-flowstarter-cal-embed="true"',
+    );
+    expect(live['contact/index.html']).not.toContain(
+      'data-flowstarter-cal-preview',
+    );
+    expect((live['contact/index.html']!.match(/<iframe/g) ?? []).length).toBe(
+      1,
+    );
   });
 
   it('prefers the Astro source over built HTML when both are present', () => {
@@ -384,7 +499,7 @@ describe('built HTML output', () => {
         'src/pages/book.astro': '<main><h1>Book</h1></main>',
         'book/index.html': '<main><h1>Book</h1></main>',
       },
-      'acme/intro'
+      'acme/intro',
     );
     expect(out['src/pages/book.astro']).toContain('cal.com/acme/intro/embed');
     expect(out['book/index.html']).not.toContain('cal.com');

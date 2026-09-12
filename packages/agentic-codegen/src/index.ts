@@ -53,6 +53,7 @@ export {
   injectCalComPreviewDemo,
   injectIntegrations,
   normalizeCalLink,
+  removeCalComPreviewDemo,
   applyIntegrationsToWorkspace,
 } from './integrations';
 export type {
@@ -92,4 +93,5 @@ export * from './flowstarter/site-tarball';
 export * from './flowstarter/page-set';
 export * from './flowstarter/preview-manifest';
 export * from './flowstarter/teaser-rule';
+export * from './flowstarter/cal-preview-rule';
 export * from './flowstarter/placeholder-copy';

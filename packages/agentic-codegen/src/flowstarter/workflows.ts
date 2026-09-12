@@ -2093,14 +2093,17 @@ export class FullSiteBuildWorker {
         });
       }
       const approvedEdits = resolved.map((entry) => entry.edit);
-      // Preview artifacts carry a blurred Cal demo only. Wire the live tenant
-      // embed here, before the agent expands the site, so the full build has
-      // a real calendar and the agent does not invent one.
-      if (job.calComUrl) {
-        await applyIntegrationsToWorkspace(siteRoot, {
-          booking: { provider: 'cal.com', url: job.calComUrl },
-        });
-      }
+      // Preview artifacts carry a blurred Cal demo only. Reconcile it here,
+      // before the agent expands the site, unconditionally: a validated link
+      // wires the live tenant embed, so the full build has a real calendar
+      // and the agent does not invent one; no link removes the seeded demo
+      // outright, the same way the teaser strip above removes its own
+      // funnel-only artefact. Gating this behind `if (job.calComUrl)` is
+      // exactly how the blurred demo shipped on a paid contact page once —
+      // the workspace had no link, so nothing ever ran to take it back out.
+      await applyIntegrationsToWorkspace(siteRoot, {
+        booking: { provider: 'cal.com', url: job.calComUrl ?? null },
+      });
       await this.store.markAgentWorking(jobId, worktree);
       // Every pass is given the approved changes, not only the first: the
       // repair and late-note passes rewrite files too, and "preserve this" has
@@ -2367,11 +2370,12 @@ export class FullSiteBuildWorker {
         siteRoot,
         stripPreviewTeaserFromFiles(job.approvedPreviewFiles).files,
       );
-      if (job.calComUrl) {
-        await applyIntegrationsToWorkspace(siteRoot, {
-          booking: { provider: 'cal.com', url: job.calComUrl },
-        });
-      }
+      // Same rule as the full build: reconcile the Cal.com block
+      // unconditionally, whether or not this workspace has a link, so a
+      // rebuild can never carry the funnel's blurred demo either.
+      await applyIntegrationsToWorkspace(siteRoot, {
+        booking: { provider: 'cal.com', url: job.calComUrl ?? null },
+      });
       await this.store.markRebuildStarted(jobId, worktree);
 
       // One gate, no repair pass. An edit that does not build is a bug in the

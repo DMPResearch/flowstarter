@@ -16,8 +16,12 @@
  * Preview vs full site:
  *   - `injectCalComPreviewDemo` — funnel/preview only: a blurred static
  *     calendar mock. Never loads cal.com. Marker: data-flowstarter-cal-preview.
- *   - `injectCalCom` — full site only: the live Cal.com embed. Also replaces
- *     any prior preview demo so deposit→build upgrades the tease to the wire.
+ *   - `injectCalCom` — full site and every client rebuild: the live Cal.com
+ *     embed when a validated link exists, and outright removal
+ *     (`removeCalComPreviewDemo`) when it does not. Either way the blurred
+ *     demo never reaches a build the client is paying (or has paid) for —
+ *     see `packages/agentic-codegen/src/flowstarter/cal-preview-rule.ts` for
+ *     the gate that gives that rule teeth on the compiled output.
  */
 
 /** A template's file tree: relative path (posix, no leading slash) → content. */
@@ -52,16 +56,39 @@ function isWordCharacter(char: string | undefined): boolean {
   );
 }
 
-/** Everything from `openStart` to the first `</div>`, or null when there is none. */
+/**
+ * Everything from `openStart` to the `</div>` that actually closes it, or
+ * null when there is none.
+ *
+ * Counts nesting depth rather than stopping at the first `</div>`: the
+ * template placeholder and the managed live-embed block never nest a `<div>`
+ * inside themselves, but the rendered preview-demo block does (its calendar
+ * grid and its overlay caption are both `<div>`s of their own), and a scan
+ * that stopped early there would slice the block off in the middle, leaving
+ * the tail — half the old markup, none of the marker that named it — sitting
+ * in the page next to whatever replaced the front half.
+ */
 function closeBlockAt(
   html: string,
   openStart: number,
   openEnd: number,
 ): HtmlBlock | null {
-  const close = html.indexOf('</div>', openEnd);
-  if (close === -1) return null;
-  const end = close + 6;
-  return { start: openStart, end, text: html.slice(openStart, end) };
+  let depth = 1;
+  let cursor = openEnd;
+  while (depth > 0) {
+    const close = html.indexOf('</div>', cursor);
+    if (close === -1) return null;
+    const open = html.indexOf('<div', cursor);
+    // `<div\b`, same rule as `findMarkedDiv`: `<divider` does not nest.
+    if (open !== -1 && open < close && !isWordCharacter(html[open + 4])) {
+      depth += 1;
+      cursor = open + 4;
+    } else {
+      depth -= 1;
+      cursor = close + 6;
+    }
+  }
+  return { start: openStart, end: cursor, text: html.slice(openStart, cursor) };
 }
 
 /**
@@ -167,7 +194,9 @@ export interface CalComOptions {
  * only ever produces Cal.com embeds — see docs/INTEGRATIONS-PLAN.md, which
  * prefers Cal.com for new integration code).
  */
-export function normalizeCalLink(calUrl: string | null | undefined): string | null {
+export function normalizeCalLink(
+  calUrl: string | null | undefined,
+): string | null {
   if (!calUrl) return null;
   let rest = calUrl.trim();
   if (!rest) return null;
@@ -200,13 +229,19 @@ function calEmbedSrc(calLink: string, opts: CalComOptions): string {
   return `https://cal.com/${calLink}/embed?layout=${layout}&theme=${theme}`;
 }
 
-function renderManagedBlock(calLink: string, opts: CalComOptions, standalone: boolean): string {
+function renderManagedBlock(
+  calLink: string,
+  opts: CalComOptions,
+  standalone: boolean,
+): string {
   const title = opts.title ?? 'Book an appointment';
   const src = calEmbedSrc(calLink, opts);
   const wrapperOpen = standalone
     ? `<div class="flowstarter-cal-embed" data-flowstarter-cal-embed="true" style="margin:32px 0;border:1px solid var(--border-color, #e5e5e5);border-radius:var(--radius-lg, 12px);overflow:hidden;">`
     : `<div class="book-page__calendar" data-flowstarter-cal-embed="true">`;
-  const iframeStyle = standalone ? ' style="display:block;width:100%;border:0;"' : '';
+  const iframeStyle = standalone
+    ? ' style="display:block;width:100%;border:0;"'
+    : '';
   return [
     wrapperOpen,
     `  <!-- flowstarter:cal-embed — injected by injectCalCom(); re-running the injector updates this block in place -->`,
@@ -308,22 +343,68 @@ export function injectCalComPreviewDemo(files: FileMap): FileMap {
 }
 
 /**
+ * Deletes any live (`data-flowstarter-cal-embed`) or preview-demo
+ * (`data-flowstarter-cal-preview`) calendar block from every file in the
+ * tree, leaving everything else — including a page's own email
+ * call-to-action — exactly as it was.
+ *
+ * This is the other half of `injectCalCom`'s contract: a workspace with no
+ * validated booking link gets no calendar UI at all, real or blurred. It has
+ * to scan every file rather than stop at the first `BOOKING_PAGE_CANDIDATES`
+ * hit, because `injectCalComPreviewDemo` runs at preview time against
+ * whichever candidate page is still in the scaffold — normally `book.astro`,
+ * but once the page-set rule has already dropped that page for having no
+ * booking link, the demo's own append-before-`</main>` fallback lands it on
+ * `contact.astro` instead. A later call with the *same* candidate list would
+ * only find it again by coincidence; a paid build or client rebuild that
+ * inherits that seeded page must remove it regardless of which page it is on.
+ */
+export function removeCalComPreviewDemo(files: FileMap): FileMap {
+  let changed = false;
+  const next: FileMap = { ...files };
+  for (const [path, content] of Object.entries(files)) {
+    if (
+      !content.includes('data-flowstarter-cal-preview="true"') &&
+      !content.includes('data-flowstarter-cal-embed="true"')
+    ) {
+      continue;
+    }
+    let stripped = content;
+    for (;;) {
+      const block =
+        findManagedBlock(stripped) ?? findPreviewDemoBlock(stripped);
+      if (!block) break;
+      stripped = spliceBlock(stripped, block, '');
+    }
+    if (stripped !== content) {
+      next[path] = stripped;
+      changed = true;
+    }
+  }
+  return changed ? next : files;
+}
+
+/**
  * Injects (or, on re-run, updates) a Cal.com booking embed into a template's
  * file tree. Pure and deterministic: same inputs → same output, no network,
- * no LLM. Fails open — an unrecognized `calUrl` or a file tree with neither
- * `src/pages/book.astro` nor `src/pages/contact.astro` returns `files`
- * unchanged rather than throwing.
+ * no LLM.
  *
- * Also replaces a prior `injectCalComPreviewDemo` block so the full-site build
- * upgrades the blurred tease to the live embed.
+ * With no valid `calUrl`, this does not merely no-op: it calls
+ * `removeCalComPreviewDemo` so that any block a prior preview injection left
+ * behind — the blurred demo, or a stale live embed from a link the client
+ * has since removed — cannot survive into a build that has no link to back
+ * it. A file tree with neither `src/pages/book.astro` nor
+ * `src/pages/contact.astro` (nor a built-HTML equivalent) still returns
+ * `files` unchanged in that branch, since there is no candidate page to
+ * inject the live embed into.
  */
 export function injectCalCom(
   files: FileMap,
   calUrl: string | null | undefined,
-  opts: CalComOptions = {}
+  opts: CalComOptions = {},
 ): FileMap {
   const calLink = normalizeCalLink(calUrl);
-  if (!calLink) return files;
+  if (!calLink) return removeCalComPreviewDemo(files);
 
   const targetPath = BOOKING_PAGE_CANDIDATES.find((path) => path in files);
   if (!targetPath) return files;
@@ -338,7 +419,11 @@ export function injectCalCom(
 export interface IntegrationsConfig {
   booking?: {
     provider: 'cal.com';
-    url: string;
+    /**
+     * Empty, invalid or `null` removes any existing calendar block instead
+     * of injecting a new one — see `injectCalCom`.
+     */
+    url: string | null;
     options?: CalComOptions;
   };
 }
@@ -348,10 +433,18 @@ export interface IntegrationsConfig {
  * docs/INTEGRATIONS-PLAN.md's architecture diagram. Currently runs
  * `injectCalCom`; future deterministic integrations (analytics, SEO) plug in
  * here without touching call sites.
+ *
+ * A `booking` config with no url still runs `injectCalCom` — deliberately,
+ * because that is what makes it remove a leftover demo/embed block rather
+ * than only ever add one. Omitting `booking` entirely is the true no-op, for
+ * a caller that has nothing to say about Cal.com either way.
  */
-export function injectIntegrations(files: FileMap, config: IntegrationsConfig): FileMap {
+export function injectIntegrations(
+  files: FileMap,
+  config: IntegrationsConfig,
+): FileMap {
   let next = files;
-  if (config.booking?.provider === 'cal.com' && config.booking.url) {
+  if (config.booking?.provider === 'cal.com') {
     next = injectCalCom(next, config.booking.url, config.booking.options);
   }
   return next;
@@ -363,10 +456,18 @@ export function injectIntegrations(files: FileMap, config: IntegrationsConfig): 
  * them in memory, and writes back only the files that actually changed.
  * Never throws — a missing template file or an unrecognized `calUrl` is a
  * no-op, matching `injectCalCom`'s fail-open contract.
+ *
+ * Callers on the full-build and rebuild paths should call this
+ * unconditionally, `booking.url` set to `job.calComUrl ?? null` — never only
+ * when a link is present. The rule this enforces cuts both ways: a link
+ * wires the live embed, and its absence removes the seeded preview demo. A
+ * caller that only invoked this behind `if (calComUrl)` would let that demo
+ * ship on a paid site whenever the workspace has no link, which is exactly
+ * the defect this function exists to prevent.
  */
 export async function applyIntegrationsToWorkspace(
   buildDir: string,
-  config: IntegrationsConfig
+  config: IntegrationsConfig,
 ): Promise<{ applied: boolean; changedPaths: string[] }> {
   const { readFile, writeFile } = await import('node:fs/promises');
   const { join } = await import('node:path');
@@ -377,7 +478,8 @@ export async function applyIntegrationsToWorkspace(
     const abs = join(buildDir, rel);
     if (await fileExists(abs)) before[rel] = await readFile(abs, 'utf8');
   }
-  if (Object.keys(before).length === 0) return { applied: false, changedPaths: [] };
+  if (Object.keys(before).length === 0)
+    return { applied: false, changedPaths: [] };
 
   const after = injectIntegrations(before, config);
   const changedPaths: string[] = [];
