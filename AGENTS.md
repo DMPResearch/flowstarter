@@ -105,21 +105,35 @@ worker or agentic-codegen suites, so run those yourself when you change them.
 
 ## CI
 
-All four lanes below run on Depot (`depot-ubuntu-latest`) from
+Every lane below runs on Depot (`depot-ubuntu-latest`) from
 `.depot/workflows/`, the way DMPResearch/ereno runs its CI. Depot's Code
 Access GitHub App (`depot-code-access`) posts the checks on the pull
-request. The `.github/workflows/` copies of the same four files were removed
-on 2026-09-09, once the Depot-posted contexts were confirmed green on a pull
-request; Depot is now the only place these lanes run.
+request. The `.github/workflows/` copies were removed on 2026-09-09, once the
+Depot-posted contexts were confirmed green on a pull request; Depot is now the
+only place these lanes run. `.github/scripts/` still holds the shell helpers
+the lanes call.
 
 Depot secrets and variables are separate from GitHub repository secrets:
 Depot does not read GitHub's secret store, so anything a workflow needs has
 to be imported into Depot directly (`depot ci secrets add` / `depot ci vars
 add`), scoped to this repo. The names in use:
 
-- secrets: `OLLAMA_API_KEY`, `NETLIFY_AUTH_TOKEN`, `NETLIFY_SITE_ID`, and
-  optionally `GH_REVIEW_TOKEN`
-- vars: `AI_REVIEW_SMALL_MODEL`, `AI_REVIEW_BIG_MODEL`
+- secrets: `OLLAMA_API_KEY`, `GHCR_TOKEN`, `STAGING_SSH_HOST` / `_USER` /
+  `_KEY`, `STAGING_SUPABASE_ANON_KEY`, `PROD_NEXT_PUBLIC_SUPABASE_URL`,
+  `PROD_NEXT_PUBLIC_SUPABASE_ANON_KEY`, and optionally `GH_REVIEW_TOKEN`
+- vars: `AI_REVIEW_SMALL_MODEL`, `AI_REVIEW_BIG_MODEL`, `GHCR_USERNAME`,
+  `STAGING_URL`, `STAGING_SUPABASE_URL`, `PROD_URL`,
+  `PROD_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
+
+The full list, and which lane reads which, is in `docs/ci/secrets.md`.
+
+Where things run: production is the Hetzner `prod` slot at
+`https://flowstarter.net`, published only by `.depot/workflows/release.yml` on
+a release tag. Staging is slot `main` at `https://staging.flowstarter.dev`, and
+every pull request gets slot `pr-<n>` at
+`https://pr-<n>.staging.flowstarter.dev`. Netlify is gone: there are no deploy
+previews and no `netlify.toml`. See `docs/release-process.md` and
+`deploy/hetzner-staging/README.md`.
 
 - Quality Gate (`.depot/workflows/quality-gate.yml`): lint, typecheck, unit
   tests with coverage for all three suites, the coverage ratchet, and tenant
@@ -127,10 +141,12 @@ add`), scoped to this repo. The names in use:
   migrations applied. This is the blocking lane. Lint is currently advisory
   inside it (`continue-on-error`); coverage is not. The job's step summary
   carries the coverage table and the MVP readiness scorecard.
-- E2E smoke (`.depot/workflows/e2e-smoke.yml`): waits for this commit's
-  Netlify Deploy Preview (or later a Hetzner PR staging URL), then runs the
-  Playwright platform smoke against it.
-  Skips with a warning when the Netlify secrets are absent. Afterwards
+- E2E smoke (`.depot/workflows/e2e-smoke.yml`): waits up to 15 minutes for this
+  commit's Hetzner slot (`pr-<n>.staging.flowstarter.dev` on a pull request,
+  `vars.STAGING_URL` on a push to main) to report `"ok":true` and
+  `"target":"local"` on `/api/health`, then runs the Playwright platform smoke
+  against it. Skips with a warning when the `STAGING_SSH_*` secrets are absent,
+  since no slot can exist for the commit then. Afterwards
   `scripts/e2e-route-coverage.mjs` reports how many of the routes under
   `src/app` the run reached, from the records
   `e2e/support/coverage-fixture.ts` writes. Every spec imports `test` from
@@ -152,7 +168,13 @@ add`), scoped to this repo. The names in use:
   request the paid reviewer, mention the bot in a comment on the pull
   request. That is a human decision, never a workflow step.
 - UI visual check (`.depot/workflows/visual-check.yml`): Playwright
-  screenshots compared against committed Linux baselines.
+  screenshots of the same Hetzner slot, compared against committed Linux
+  baselines. Skips with a warning when `STAGING_SSH_*` are absent.
+- Release (`.depot/workflows/release.yml`): the only lane that publishes
+  production. It tags `main`, builds the image for that tag with the
+  production `NEXT_PUBLIC_*` values, pushes it to GHCR, and deploys slot `prod`
+  over SSH. A missing credential fails it rather than skipping, which is the
+  opposite of the staging convention and deliberate.
 
 ## Readiness
 

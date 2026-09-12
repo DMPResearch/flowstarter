@@ -52,9 +52,10 @@ export default {
           { key: 'Cache-Control', value: 'public, s-maxage=86400, stale-while-revalidate=604800' },
         ],
       },
-      // Everything else (marketing, legal, static-ish pages) — let Netlify's
-      // CDN serve from edge cache so we don't cold-start a function on every
-      // visit. Pages still revalidate in the background via SWR.
+      // Everything else (marketing, legal, static-ish pages) - let the CDN in
+      // front of the origin (Cloudflare, proxied) serve from edge cache so a
+      // visit does not have to reach the Hetzner box at all. Pages still
+      // revalidate in the background via SWR.
       {
         source: '/((?!_next/|api/).*)',
         headers: [

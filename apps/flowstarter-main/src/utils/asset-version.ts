@@ -5,9 +5,10 @@
  *
  * Cloudflare's cache key includes the query string, so bumping ASSET_VERSION
  * changes the key for every versioned asset and the edge refetches from the
- * Netlify origin. Netlify serves the file ignoring the query, so the param is
- * purely a cache-busting token. Bump ASSET_VERSION whenever showcase
- * thumbnails (or other versioned static assets) are regenerated.
+ * origin (the Hetzner `prod` slot). Next.js serves the file ignoring the
+ * query, so the param is purely a cache-busting token. Bump ASSET_VERSION
+ * whenever showcase thumbnails (or other versioned static assets) are
+ * regenerated.
  */
 export const ASSET_VERSION = '3';
 

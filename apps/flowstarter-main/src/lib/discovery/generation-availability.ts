@@ -4,7 +4,7 @@
  * `POST /api/discovery/preview/live` used to learn this the hard way: it
  * created the job, told the visitor a build was "building", and only then
  * checked, inside the detached worker, whether Pi, the MCP template library
- * and Daytona were configured. On Netlify Functions none of them are (no
+ * and Daytona were configured. In production none of them are (no
  * `DAYTONA_API_KEY`, no `FLOWSTARTER_MCP_URL`, no
  * `FLOWSTARTER_MCP_INTERNAL_TOKEN`), so every job failed a few hundred
  * milliseconds after it started, and the visitor watched "Getting your build

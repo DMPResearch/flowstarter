@@ -6,33 +6,44 @@
 # Cadence
 #   Monday 06:00 UTC the lane tags the current main as `release-YYYY-MM-DD`,
 #   opens a DRAFT GitHub Release with generated notes, verifies against
-#   Hetzner staging, publishes that tag to Netlify production
-#   (`netlify deploy --prod`, 15 credits), verifies production, then publishes
-#   the GitHub Release. Between Mondays, `main` updates Hetzner staging only
-#   (see staging-deploy.yml). Git-triggered Netlify production builds are
-#   skipped via netlify.toml `[context.production] ignore`.
+#   Hetzner staging, builds the production image for that tag and deploys it
+#   to the Hetzner `prod` slot at https://flowstarter.net, verifies production,
+#   then publishes the GitHub Release. Between Mondays, `main` updates Hetzner
+#   staging only (see staging-deploy.yml).
+#
+# Where production runs
+#   The Hetzner box, slot `prod`, port 3100, container `flowstarter-prod`, env
+#   file /etc/flowstarter/prod.env, published by
+#   /opt/flowstarter/staging/deploy-slot.sh over the same SSH credentials the
+#   staging lanes use. Cloudflare stays proxied in front of flowstarter.net.
+#   See deploy/hetzner-staging/README.md and docs/release-process.md.
 #
 # What blocks a release
 #   The draft stays a draft, and this workflow ends red, when either
 #   verification job fails:
 #     - `staging-journey`  the full-journey tier on staging (when configured).
-#     - `deploy-prod`      Netlify production publish of the release tag.
+#     - `deploy-prod`      production image build and `prod` slot deploy.
 #     - `full-e2e`         contract + production synthetic (+ auth journey)
 #                          against flowstarter.net after deploy-prod.
 #   A job that SKIPS does not block. Missing Clerk credentials and an
 #   unconfigured staging URL warn and skip. A job that RUNS and fails always
-#   blocks.
+#   blocks. `deploy-prod` never skips: publishing production is the point of a
+#   release, so a missing secret fails it.
 #
 # Secrets and variables it reads
 #   secrets:
 #     E2E_CLERK_OPERATOR_EMAIL / E2E_CLERK_OPERATOR_PASSWORD
 #     CLERK_SECRET_KEY
-#     NETLIFY_AUTH_TOKEN           deploy + read for flowstarter-landing
-#     NETLIFY_SITE_ID
+#     PROD_NEXT_PUBLIC_SUPABASE_URL       production project, build arg
+#     PROD_NEXT_PUBLIC_SUPABASE_ANON_KEY  production anon key, build arg
+#     GHCR_TOKEN                          classic PAT with write:packages
+#     STAGING_SSH_HOST / _USER / _KEY     the Hetzner box (one host, two slots)
 #   vars:
-#     PROD_URL                     default https://flowstarter.net
-#     STAGING_URL                  https://staging.flowstarter.dev
-#     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+#     PROD_URL                            default https://flowstarter.net
+#     STAGING_URL                         https://staging.flowstarter.dev
+#     PROD_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+#     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY   used by the authenticated journey
+#     GHCR_USERNAME
 #
 # Running it by hand
 #   depot ci dispatch --repo DMPResearch/flowstarter --workflow release.yml --ref main
@@ -211,53 +222,141 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-  # ── 3. Publish the release tag to Netlify production (15 credits) ──────────
+  # ── 3. Build the release tag and deploy it to the Hetzner `prod` slot ──────
+  #
+  # Unlike the staging lanes, a missing secret here FAILS rather than warns and
+  # skips: a release whose whole purpose is to publish production must not end
+  # green having published nothing.
   deploy-prod:
-    name: Deploy - Netlify production from release tag
+    name: Deploy - Hetzner prod slot from release tag
     needs: [prepare, staging-journey]
     if: always() && needs.prepare.result == 'success' && needs.staging-journey.result == 'success'
     runs-on: depot-ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.tag }}
-      - name: Check Netlify credentials
-        id: netlify
+
+      # The production NEXT_PUBLIC_* values are inlined into the client bundle,
+      # so a wrong one here ships a production site pointed at the wrong
+      # database. Refuse a loopback URL outright: that is a staging value, and
+      # a production image built against it would answer "target":"local" and
+      # serve nothing anyone can reach.
+      - name: Check the production build configuration
+        id: prodcfg
         env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+          PROD_SUPABASE_URL: ${{ secrets.PROD_NEXT_PUBLIC_SUPABASE_URL }}
+          PROD_SUPABASE_ANON_KEY: ${{ secrets.PROD_NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          PROD_CLERK_PUBLISHABLE_KEY: ${{ vars.PROD_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
         run: |
-          if [ -n "${NETLIFY_AUTH_TOKEN:-}" ] && [ -n "${NETLIFY_SITE_ID:-}" ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::NETLIFY_AUTH_TOKEN and NETLIFY_SITE_ID are required to publish production from a release tag."
-            echo "present=false" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          missing=""
+          [ -n "${PROD_SUPABASE_URL:-}" ] || missing="${missing} PROD_NEXT_PUBLIC_SUPABASE_URL(secret)"
+          [ -n "${PROD_SUPABASE_ANON_KEY:-}" ] || missing="${missing} PROD_NEXT_PUBLIC_SUPABASE_ANON_KEY(secret)"
+          [ -n "${PROD_CLERK_PUBLISHABLE_KEY:-}" ] || missing="${missing} PROD_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY(var)"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing production build configuration:${missing}. See docs/ci/secrets.md."
             exit 1
           fi
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-      - name: Install Netlify CLI
-        run: pnpm dlx netlify-cli@23 --version
-      - name: Deploy production
+          host="$(printf '%s' "$PROD_SUPABASE_URL" | sed -E 's#^[a-zA-Z]+://##; s#[/:].*$##')"
+          case "$host" in
+            127.0.0.1 | localhost | ::1 | host.docker.internal)
+              echo "::error::PROD_NEXT_PUBLIC_SUPABASE_URL resolves to '$host'. Production must build against the hosted Supabase project, not a loopback stack."
+              exit 1
+              ;;
+          esac
+          echo "url=${PROD_SUPABASE_URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Check the GHCR and SSH credentials
         env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          KEY: ${{ secrets.STAGING_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${GHCR_TOKEN:-}" ] || missing="${missing} GHCR_TOKEN(secret)"
+          [ -n "${GHCR_USERNAME:-}" ] || missing="${missing} GHCR_USERNAME(var)"
+          [ -n "${HOST:-}" ] || missing="${missing} STAGING_SSH_HOST(secret)"
+          [ -n "${SSH_USER:-}" ] || missing="${missing} STAGING_SSH_USER(secret)"
+          [ -n "${KEY:-}" ] || missing="${missing} STAGING_SSH_KEY(secret)"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing credentials for the production deploy:${missing}. See docs/ci/secrets.md."
+            exit 1
+          fi
+
+      - name: Lowercase image name
+        id: image
+        run: |
+          owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          echo "name=ghcr.io/${owner}/flowstarter-main" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          # Must be the account that owns GHCR_TOKEN, not github.actor.
+          username: ${{ vars.GHCR_USERNAME }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # `:<tag>` is what a rollback redeploys; `:prod` is a moving pointer at
+      # whatever is live, useful for reading the box, never for rolling back.
+      # BUILD_LIBRARY_PREVIEWS is true only here: the public /library pages
+      # iframe the Astro previews, and production is the only slot that has to
+      # serve them.
+      - name: Build and push the production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/hetzner-staging/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ needs.prepare.outputs.tag }}
+            ${{ steps.image.outputs.name }}:prod
+          build-args: |
+            NEXT_PUBLIC_SUPABASE_URL=${{ steps.prodcfg.outputs.url }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.PROD_NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ vars.PROD_NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+            NEXT_PUBLIC_SITE_URL=https://flowstarter.net
+            BUILD_LIBRARY_PREVIEWS=true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # deploy-slot.sh prod pulls the image, starts `flowstarter-prod` on
+      # 127.0.0.1:3100, waits for /api/health to report "env":"production", and
+      # only then writes the Caddy snippet for flowstarter.net + www. It runs
+      # none of the Supabase CLI stack steps: production talks to the hosted
+      # project.
+      - name: Deploy slot prod over SSH
+        env:
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          KEY: ${{ secrets.STAGING_SSH_KEY }}
+          IMAGE: ${{ steps.image.outputs.name }}:${{ needs.prepare.outputs.tag }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
           TAG: ${{ needs.prepare.outputs.tag }}
           SHA: ${{ needs.prepare.outputs.sha }}
         run: |
           set -euo pipefail
-          # --build runs the netlify.toml build command. context.production
-          # ignore only applies to git webhook builds, not CLI deploys.
-          pnpm dlx netlify-cli@23 deploy --prod --build --message "release ${TAG} (${SHA})"
-          echo "Published ${TAG} (${SHA}) to Netlify production." >> "$GITHUB_STEP_SUMMARY"
+          install -m 600 /dev/null "$RUNNER_TEMP/prod_key"
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/prod_key"
+          SSH=(ssh -i "$RUNNER_TEMP/prod_key" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
+          # GHCR packages are private; log the host in before docker pull.
+          "${SSH[@]}" "${SSH_USER}@${HOST}" \
+            "echo $(printf %q "$GHCR_TOKEN") | docker login ghcr.io -u $(printf %q "$GHCR_USERNAME") --password-stdin && sudo /opt/flowstarter/staging/deploy-slot.sh prod $(printf %q "$IMAGE") 3100"
+          echo "Deployed ${TAG} (${SHA}) to the Hetzner prod slot at https://flowstarter.net." >> "$GITHUB_STEP_SUMMARY"
 
-  # ── 4. Verify production after the Netlify publish ─────────────────────────
+  # ── 4. Verify production after the prod slot deploy ────────────────────────
   full-e2e:
     name: Full E2E - production and operator journey
     needs: [prepare, deploy-prod]

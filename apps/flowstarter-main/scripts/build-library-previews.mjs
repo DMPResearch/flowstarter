@@ -3,17 +3,19 @@
  * Build every Astro library template into
  * `apps/flowstarter-main/public/preview/<slug>/` so the library showcase iframes
  * (DeferredPreviewFrame → `/preview/<slug>/`) ship with fresh static output on
- * each deploy. Called from `netlify.toml` before `next build`.
+ * each deploy. Called from the `previews` stage of
+ * `deploy/hetzner-staging/Dockerfile`, which runs it only when the image is
+ * built with `BUILD_LIBRARY_PREVIEWS=true`. The release lane sets that;
+ * staging does not, because staging can live with empty iframes.
  *
  * Each template's `astro.config.mjs` is self-describing — it sets its own
  * `base: '/preview/<slug>/'` and `outDir` into this app's public/preview — so
  * we just run the template's build in its own directory; no slug mapping here.
  *
- * `--skip-install`: dependencies are already installed by the root
- * `pnpm install` step in the Netlify build command, so we don't re-install.
- *
- * (Restores the build step the netlify.toml command referenced; it was dropped
- * during the library-subdomain merge, which broke every production build.)
+ * This script installs nothing. Each template resolves `astro` by walking up
+ * to `apps/flowstarter-library/node_modules/.bin`, so that workspace's
+ * dependencies have to be installed before it runs. (`--skip-install` is
+ * accepted for backwards compatibility and ignored; it never did anything.)
  */
 import { readdirSync, existsSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';

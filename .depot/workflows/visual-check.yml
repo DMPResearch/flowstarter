@@ -9,16 +9,20 @@
 #
 # UI visual check: Playwright screenshot comparisons of the key public pages
 # (landing, pricing, about, contact, help, login), captured against the
-# Netlify Deploy Preview for the PR's head commit, at two viewports
+# Hetzner platform slot that serves the PR's head commit, at two viewports
 # (visual-desktop 1440x900, visual-mobile iPhone 14), compared against the
 # Linux baselines committed under e2e/visual/__screenshots__/linux/.
 #
 # What each run does:
-#   1. Checks whether NETLIFY_AUTH_TOKEN / NETLIFY_SITE_ID are set. Dependabot
-#      and fork PRs get no secrets, so a missing credential is a soft skip
-#      (::warning) rather than a red build.
-#   2. Resolves the Netlify Deploy Preview URL for the commit via
-#      .github/scripts/wait-for-netlify-deploy.sh (same script e2e-smoke.yml
+#   1. Checks whether STAGING_SSH_HOST / STAGING_SSH_USER / STAGING_SSH_KEY are
+#      set. Dependabot and fork PRs get no secrets, so the staging PR lane
+#      cannot have deployed a slot for them; that is a soft skip (::warning)
+#      rather than a red build.
+#   2. Resolves the slot URL for the run: a pull request gets
+#      https://pr-<n>.staging.flowstarter.dev, a dispatched baseline refresh
+#      gets vars.STAGING_URL. It then waits for /api/health to report
+#      `"ok":true` and `"target":"local"` via
+#      .github/scripts/wait-for-staging-slot.sh (the same script e2e-smoke.yml
 #      uses).
 #   3. Runs `playwright test --project visual-desktop --project
 #      visual-mobile` against that URL.
@@ -27,20 +31,18 @@
 #      as an artifact, and posts a comment saying baselines still need to be
 #      committed. It does NOT push on a normal PR run.
 #   5. Posts/updates a single sticky comment on the PR (marker
-#      <!-- visual-check -->) summarizing pass/fail per project, the preview
+#      <!-- visual-check -->) summarizing pass/fail per project, the slot
 #      URL, and a link to the run's artifacts.
 #   6. Always uploads playwright-report/ and test-results/ as the
 #      `visual-check-report` artifact (14-day retention).
 #
-# This lane is advisory when no preview exists, and blocking only on a real
-# failure against a preview that did resolve. The wait step runs with
-# continue-on-error and a 10-minute budget (TIMEOUT_SECONDS=600); if no
-# preview shows up in that window the job logs a warning, posts a sticky
-# comment saying the check was skipped, and ends green instead of red. As of
-# 2026-09 the Netlify site is linked to the old repository address
-# (dmihai91/flowstarter-monorepo) and builds no previews for this
-# repository's pull requests. Re-link it under Site settings -> Build &
-# deploy -> Continuous deployment to restore full coverage.
+# This lane is advisory when no slot answers, and blocking only on a real
+# failure against a slot that did. The wait step runs with continue-on-error
+# and a 15-minute budget (TIMEOUT_SECONDS=900, the staging PR lane's own
+# build-and-deploy budget); if the slot never becomes healthy in that window
+# the job logs a warning, posts a sticky comment saying the check was skipped,
+# and ends green instead of red. There are no Netlify Deploy Previews anymore;
+# see docs/preview-environment.md.
 #
 # Baseline refresh procedure (the ONLY sanctioned way to change committed
 # baselines):
@@ -55,11 +57,15 @@
 #   not something CI does on its own.
 #
 # Secrets needed:
-#   NETLIFY_AUTH_TOKEN  personal access token with read access to the site
-#                       (same secret e2e-smoke.yml uses).
-#   NETLIFY_SITE_ID     UUID of the site (Netlify -> Site settings -> API ID).
+#   STAGING_SSH_HOST / STAGING_SSH_USER / STAGING_SSH_KEY
+#     Not used to connect from here. Their presence is the signal that the
+#     staging PR lane could deploy a slot for this commit; absent, there is
+#     nothing to screenshot.
 #   No other secrets are required; PR comments and the baseline-refresh push
 #   both use the workflow's own GITHUB_TOKEN.
+# Vars needed:
+#   STAGING_URL  default https://staging.flowstarter.dev, used by a dispatched
+#                baseline refresh, which has no pull request of its own.
 ##############################################################################
 
 name: UI Visual Check
@@ -92,21 +98,23 @@ jobs:
     timeout-minutes: 30
     if: github.event.pull_request.draft != true
     steps:
-      # ── Is there a Netlify credential at all? ──────────────────────────────
-      # Dependabot / fork PRs are handed no secrets. Turn presence into an
-      # output here (the `secrets` context isn't readable from a step-level
-      # `if`) and gate every remaining step on it, so a missing secret warns
-      # and skips instead of failing the build.
-      - name: Check the Netlify credentials
-        id: netlify_creds
+      # ── Is there a Hetzner slot to screenshot at all? ──────────────────────
+      # Dependabot / fork PRs are handed no secrets, so the staging PR lane
+      # cannot have deployed a slot for them. Turn presence into an output here
+      # (the `secrets` context isn't readable from a step-level `if`) and gate
+      # every remaining step on it, so a missing secret warns and skips instead
+      # of failing the build.
+      - name: Check the staging SSH secrets
+        id: ssh
         env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          KEY: ${{ secrets.STAGING_SSH_KEY }}
         run: |
-          if [ -n "$NETLIFY_AUTH_TOKEN" ] && [ -n "$NETLIFY_SITE_ID" ]; then
+          if [ -n "$HOST" ] && [ -n "$SSH_USER" ] && [ -n "$KEY" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::NETLIFY_AUTH_TOKEN or NETLIFY_SITE_ID is not set (expected on dependabot/fork pull requests); skipping the visual check."
+            echo "::warning::STAGING_SSH_HOST / STAGING_SSH_USER / STAGING_SSH_KEY are not set (expected on dependabot/fork pull requests); no Hetzner slot is deployed for this commit, skipping the visual check."
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
       # ── Resolve which ref to check out / refresh ───────────────────────────
@@ -131,16 +139,16 @@ jobs:
             echo "branch=" >> "$GITHUB_OUTPUT"
           fi
       - name: Checkout
-        if: steps.netlify_creds.outputs.present == 'true'
+        if: steps.ssh.outputs.present == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.target.outputs.ref }}
       - name: Resolve commit SHA
-        if: steps.netlify_creds.outputs.present == 'true'
+        if: steps.ssh.outputs.present == 'true'
         id: sha
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Check whether Linux baselines are committed
-        if: steps.netlify_creds.outputs.present == 'true'
+        if: steps.ssh.outputs.present == 'true'
         id: baseline
         run: |
           if [ -d e2e/visual/__screenshots__/linux ]; then
@@ -149,41 +157,64 @@ jobs:
             echo "missing=true" >> "$GITHUB_OUTPUT"
           fi
       - name: Set up pnpm
-        if: steps.netlify_creds.outputs.present == 'true'
+        if: steps.ssh.outputs.present == 'true'
         uses: pnpm/action-setup@v4
       - name: Set up Node
-        if: steps.netlify_creds.outputs.present == 'true'
+        if: steps.ssh.outputs.present == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - name: Install dependencies
-        if: steps.netlify_creds.outputs.present == 'true'
+        if: steps.ssh.outputs.present == 'true'
         run: pnpm install --frozen-lockfile
       - name: Install Playwright browsers
-        if: steps.netlify_creds.outputs.present == 'true'
+        if: steps.ssh.outputs.present == 'true'
         run: pnpm exec playwright install chromium --with-deps
-      # ── Resolve the Netlify Deploy Preview for this commit ─────────────────
-      # continue-on-error: a missing preview is an infrastructure signal, not
-      # a code defect, so a timeout here must not redden the job. The steps
-      # below gate on steps.netlify.outputs.url being non-empty instead.
-      - name: Wait for Netlify Deploy Preview
-        id: netlify
-        if: steps.netlify_creds.outputs.present == 'true'
-        continue-on-error: true
-        run: bash .github/scripts/wait-for-netlify-deploy.sh
+      # ── Which slot serves this run ─────────────────────────────────────────
+      # A pull request has its own slot at pr-<n>.staging.flowstarter.dev. A
+      # dispatched baseline refresh has no pull request, so it screenshots slot
+      # `main` at vars.STAGING_URL: baselines are best captured against the
+      # same rendering stack the comparisons later run on.
+      - name: Resolve the Hetzner slot URL
+        id: slot
+        if: steps.ssh.outputs.present == 'true'
         env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
-          COMMIT_SHA: ${{ steps.sha.outputs.sha }}
-          TIMEOUT_SECONDS: '600'
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          STAGING_URL: ${{ vars.STAGING_URL }}
+        run: |
+          set -euo pipefail
+          url=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            if [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+              url="https://pr-${PR_NUMBER}.staging.flowstarter.dev"
+            fi
+          else
+            url="${STAGING_URL:-https://staging.flowstarter.dev}"
+          fi
+          echo "url=${url%/}" >> "$GITHUB_OUTPUT"
+      # ── Wait for that slot to be healthy ───────────────────────────────────
+      # continue-on-error: a slot that never comes up is an infrastructure
+      # signal, not a code defect, so a timeout here must not redden the job.
+      # The steps below gate on steps.wait.outputs.url being non-empty instead.
+      - name: Wait for the Hetzner slot
+        id: wait
+        if: steps.ssh.outputs.present == 'true' && steps.slot.outputs.url != ''
+        continue-on-error: true
+        run: bash .github/scripts/wait-for-staging-slot.sh
+        env:
+          TARGET_URL: ${{ steps.slot.outputs.url }}
+          TIMEOUT_SECONDS: '900'
           POLL_INTERVAL: '15'
-      - name: No Netlify Deploy Preview available
-        if: steps.netlify_creds.outputs.present == 'true' && steps.netlify.outputs.url == ''
+          EXPECT_TARGET: local
+      - name: No healthy Hetzner slot
+        if: steps.ssh.outputs.present == 'true' && steps.wait.outputs.url == ''
         env:
           SHA: ${{ steps.sha.outputs.sha }}
+          SLOT_URL: ${{ steps.slot.outputs.url }}
         run: |
-          message="No Netlify Deploy Preview for ${SHA}; the Netlify site is linked to the old repository address (dmihai91/flowstarter-monorepo) and must be re-linked to DMPResearch/flowstarter-monorepo under Site settings > Build & deploy > Continuous deployment. Skipping."
+          message="${SLOT_URL:-No slot} did not report ok:true with target:local for ${SHA} inside the 15 minute budget. Check the Staging deploy (PR) run for this commit. Skipping."
           echo "::warning::${message}"
           echo "${message}" >> "$GITHUB_STEP_SUMMARY"
       # ── Decide whether this run should write (not just compare) snapshots ──
@@ -198,7 +229,7 @@ jobs:
       #     the reviewer to run the dispatched refresh.
       - name: Determine snapshot mode
         id: mode
-        if: steps.netlify_creds.outputs.present == 'true'
+        if: steps.ssh.outputs.present == 'true'
         env:
           EVENT_NAME: ${{ github.event_name }}
           UPDATE_BASELINES: ${{ inputs.update_baselines }}
@@ -221,12 +252,12 @@ jobs:
       # rather than by letting this step fail the job outright.
       - name: Run visual checks
         id: run_tests
-        if: steps.netlify_creds.outputs.present == 'true' && steps.netlify.outputs.url != ''
+        if: steps.ssh.outputs.present == 'true' && steps.wait.outputs.url != ''
         continue-on-error: true
         env:
           CI: true
           VISUAL_CHECK: '1'
-          PLAYWRIGHT_BASE_URL: ${{ steps.netlify.outputs.url }}
+          PLAYWRIGHT_BASE_URL: ${{ steps.wait.outputs.url }}
           UPDATE: ${{ steps.mode.outputs.update }}
           PLAYWRIGHT_JSON_OUTPUT_NAME: visual-results.json
         run: |
@@ -241,7 +272,7 @@ jobs:
           fi
       - name: Summarize per-project results
         id: summary
-        if: always() && steps.netlify_creds.outputs.present == 'true' && steps.netlify.outputs.url != ''
+        if: always() && steps.ssh.outputs.present == 'true' && steps.wait.outputs.url != ''
         run: |
           summary="see the visual-check-report artifact for per-project results"
           if [ -f visual-results.json ]; then
@@ -266,7 +297,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       # ── Commit + push refreshed baselines (dispatched refresh only) ────────
       - name: Commit refreshed baselines
-        if: steps.mode.outputs.reason == 'dispatch' && steps.netlify_creds.outputs.present == 'true' && steps.netlify.outputs.url != ''
+        if: steps.mode.outputs.reason == 'dispatch' && steps.ssh.outputs.present == 'true' && steps.wait.outputs.url != ''
         env:
           BRANCH: ${{ steps.target.outputs.branch }}
         run: |
@@ -283,7 +314,7 @@ jobs:
           git push origin "HEAD:refs/heads/$BRANCH"
       # ── Artifacts, always ────────────────────────────────────────────────
       - name: Upload visual check artifacts
-        if: always() && steps.netlify_creds.outputs.present == 'true'
+        if: always() && steps.ssh.outputs.present == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: visual-check-report
@@ -296,10 +327,10 @@ jobs:
       - name: Build comment body
         if: always() && github.event_name == 'pull_request'
         env:
-          SECRET_PRESENT: ${{ steps.netlify_creds.outputs.present }}
+          SECRET_PRESENT: ${{ steps.ssh.outputs.present }}
           BASELINE_MISSING: ${{ steps.baseline.outputs.missing }}
           RUN_OUTCOME: ${{ steps.run_tests.outcome }}
-          NETLIFY_URL: ${{ steps.netlify.outputs.url }}
+          SLOT_URL: ${{ steps.wait.outputs.url }}
           SUMMARY: ${{ steps.summary.outputs.summary }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -309,11 +340,11 @@ jobs:
             echo '### UI visual check'
             echo
             if [ "$SECRET_PRESENT" != "true" ]; then
-              echo 'Skipped: `NETLIFY_AUTH_TOKEN` / `NETLIFY_SITE_ID` are not set for this PR (expected on fork/dependabot pull requests).'
-            elif [ -z "$NETLIFY_URL" ]; then
-              echo 'Skipped: no Netlify Deploy Preview was found for this commit within the wait budget.'
+              echo 'Skipped: the `STAGING_SSH_*` secrets are not set for this PR (expected on fork/dependabot pull requests), so no Hetzner slot was deployed for it.'
+            elif [ -z "$SLOT_URL" ]; then
+              echo 'Skipped: this pull request'"'"'s Hetzner slot did not become healthy within the 15 minute wait budget.'
               echo
-              echo 'The Netlify site is linked to the old repository address (dmihai91/flowstarter-monorepo) and must be re-linked to DMPResearch/flowstarter-monorepo under Site settings > Build & deploy > Continuous deployment.'
+              echo 'Check the **Staging deploy (PR)** run for this commit.'
             elif [ "$BASELINE_MISSING" = "true" ]; then
               echo 'No baselines committed yet for these pages; this run generated fresh screenshots and uploaded them as an artifact instead of comparing.'
               echo
@@ -326,7 +357,7 @@ jobs:
             echo
             echo "- Per-project results: ${SUMMARY:-see artifact}"
             echo '- Pages checked: 6 (/, /pricing, /about, /contact, /help, /login)'
-            echo "- Preview URL: ${NETLIFY_URL:-n/a}"
+            echo "- Slot URL: ${SLOT_URL:-n/a}"
             echo "- Run: ${RUN_URL}"
           } > comment-body.md
       - name: Post or update sticky comment
@@ -358,7 +389,7 @@ jobs:
       # in neither case (--update-snapshots always exits 0), so this only
       # trips on a genuine, comparison-mode failure.
       - name: Fail the job on a real visual diff
-        if: steps.netlify_creds.outputs.present == 'true' && steps.netlify.outputs.url != '' && steps.run_tests.outcome != 'success'
+        if: steps.ssh.outputs.present == 'true' && steps.wait.outputs.url != '' && steps.run_tests.outcome != 'success'
         run: |
           echo "Visual check failed — see the visual-check-report artifact and the sticky PR comment."
           exit 1

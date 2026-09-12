@@ -10,38 +10,41 @@
 # Runs on every PR and push to main / feature branches.
 #
 # For each commit, the job:
-#   1. Polls the Netlify API for a Deploy Preview / branch deploy whose
-#      commit_ref matches GITHUB_SHA, waiting until state=ready.
-#   2. Runs Playwright smoke tests against that preview URL.
+#   1. Resolves the Hetzner platform slot that serves this commit:
+#        pull request  → https://pr-<n>.staging.flowstarter.dev
+#        push to main  → vars.STAGING_URL (https://staging.flowstarter.dev)
+#      and waits for that slot's /api/health to report `"ok":true` and
+#      `"target":"local"`, for up to 15 minutes, which is the staging PR lane's
+#      own build-and-deploy budget.
+#   2. Runs Playwright smoke tests against that URL.
 #
-# What runs: every spec in the `chromium` project, which since this commit
-# includes `e2e/contract.spec.ts` (tier 1, the keyless contract checks). The
-# run command below takes no --project flag, so a new spec file needs no
-# change here; confirm with `pnpm exec playwright test --list --project
-# chromium`. The contract spec needs no Clerk session, no Stripe key and no
-# database, which is exactly why it can run against a keyless Deploy Preview.
-# The production synthetic is deliberately NOT here: it lives in the opt-in
+# There are no Netlify Deploy Previews anymore. A pull request's preview is its
+# Hetzner slot, deployed by .depot/workflows/staging-pr-deploy.yml, and unlike
+# a Netlify preview it has a real database behind it (the Supabase CLI stack on
+# the host). See docs/preview-environment.md.
+#
+# What runs: every spec in the `chromium` project, which includes
+# `e2e/contract.spec.ts` (tier 1, the keyless contract checks). The run command
+# below takes no --project flag, so a new spec file needs no change here;
+# confirm with `pnpm exec playwright test --list --project chromium`. The
+# production synthetic is deliberately NOT here: it lives in the opt-in
 # `prod-synthetic` project and runs from .depot/workflows/prod-synthetic.yml.
 #
-# This lane is advisory when no preview exists, and blocking only on a real
-# failure against a preview that did resolve. The wait step runs with
-# continue-on-error and a 10-minute budget (TIMEOUT_SECONDS=600); if no
-# preview shows up in that window the job logs a warning and ends green
-# instead of red. As of 2026-09 the Netlify site is linked to the old
-# repository address (dmihai91/flowstarter-monorepo) and builds no previews
-# for this repository's pull requests. Re-link it under Site settings ->
-# Build & deploy -> Continuous deployment to restore full coverage.
+# This lane is advisory when no slot exists, and blocking only on a real
+# failure against a slot that did answer. The wait step runs with
+# continue-on-error and a 15-minute budget; if the slot never becomes healthy
+# in that window the job logs a warning and ends green instead of red. When the
+# `STAGING_SSH_*` secrets are absent (dependabot and fork pull requests get no
+# secrets) there is no slot to wait for at all, so the job warns and skips, the
+# same convention the staging lanes use.
 #
-# Required GitHub Actions secrets:
-#   NETLIFY_AUTH_TOKEN  — personal access token (Netlify → User settings →
-#                         Applications → Personal access tokens) with read
-#                         access to the site.
-#   NETLIFY_SITE_ID     — UUID of the site (Netlify → Site settings → General
-#                         → API ID).
-#
-# Optional secrets:
-#   E2E_BASE_URL        — fallback URL used only as a last-resort `pages` test
-#                         target (not used while NETLIFY_AUTH_TOKEN is set).
+# Secrets:
+#   STAGING_SSH_HOST / STAGING_SSH_USER / STAGING_SSH_KEY
+#     Not used to connect from here. Their presence is the signal that the
+#     staging PR lane could deploy a slot for this commit; absent, there is
+#     nothing to smoke.
+# Vars:
+#   STAGING_URL   default https://staging.flowstarter.dev, used on pushes to main
 ##############################################################################
 
 name: E2E Smoke — Concierge Flow
@@ -64,7 +67,7 @@ jobs:
   platform-smoke:
     name: Platform Smoke — flowstarter-main routes
     runs-on: depot-ubuntu-latest # was: ubuntu-latest. Mapped standard GitHub runner to Depot equivalent.
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -76,58 +79,85 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Install Playwright browsers
         run: pnpm exec playwright install chromium --with-deps
-      # Is there a Netlify credential at all?
+      # Is there a Hetzner slot to smoke at all?
       #
-      # Dependabot pull requests are handed no secrets, so the wait script
-      # died on its `NETLIFY_AUTH_TOKEN is required` guard and painted every
-      # dependency bump red for a reason that had nothing to do with the bump.
-      # The `secrets` context is not readable from a step-level `if`, so turn
-      # presence into an output here and gate the two Netlify-dependent steps
-      # on it. A missing secret now skips with a warning instead of failing.
-      - name: Check the Netlify credentials
-        id: netlify_creds
+      # Dependabot and fork pull requests are handed no secrets, so the staging
+      # PR lane cannot have deployed a slot for them. The `secrets` context is
+      # not readable from a step-level `if`, so presence is turned into an
+      # output here and the remaining steps gate on it: a missing secret skips
+      # with a warning instead of failing.
+      - name: Check the staging SSH secrets
+        id: ssh
         env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          KEY: ${{ secrets.STAGING_SSH_KEY }}
         run: |
-          if [ -n "$NETLIFY_AUTH_TOKEN" ] && [ -n "$NETLIFY_SITE_ID" ]; then
+          if [ -n "$HOST" ] && [ -n "$SSH_USER" ] && [ -n "$KEY" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::NETLIFY_AUTH_TOKEN or NETLIFY_SITE_ID is not set (expected on dependabot pull requests); skipping the platform smoke run."
+            echo "::warning::STAGING_SSH_HOST / STAGING_SSH_USER / STAGING_SSH_KEY are not set (expected on dependabot and fork pull requests); no Hetzner slot is deployed for this commit, skipping the platform smoke run."
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
-      # ── Resolve the Netlify Deploy Preview for this commit ─────────────────
-      # continue-on-error: a missing preview is an infrastructure signal, not
-      # a code defect, so a timeout here must not redden the job. The next
-      # steps gate on steps.netlify.outputs.url being non-empty instead.
-      - name: Wait for Netlify Deploy Preview
-        id: netlify
-        if: steps.netlify_creds.outputs.present == 'true'
+      # ── Which slot serves this commit ──────────────────────────────────────
+      # A pull request has its own slot. A push to main lands on slot `main`.
+      # A push to a feature branch has no slot of its own, so there is nothing
+      # to smoke and the job says so instead of pointing at somebody else's
+      # deployment.
+      - name: Resolve the Hetzner slot URL
+        id: slot
+        if: steps.ssh.outputs.present == 'true'
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REF_NAME: ${{ github.ref_name }}
+          STAGING_URL: ${{ vars.STAGING_URL }}
+        run: |
+          set -euo pipefail
+          url=""
+          if [ "$EVENT" = "pull_request" ]; then
+            if [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+              url="https://pr-${PR_NUMBER}.staging.flowstarter.dev"
+            fi
+          elif [ "$REF_NAME" = "main" ] || [ "$REF_NAME" = "master" ]; then
+            url="${STAGING_URL:-https://staging.flowstarter.dev}"
+          fi
+          if [ -z "$url" ]; then
+            message="No Hetzner slot serves ${REF_NAME}; feature-branch pushes get no slot of their own. Skipping the platform smoke run."
+            echo "::warning::${message}"
+            echo "${message}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "url=${url%/}" >> "$GITHUB_OUTPUT"
+      # ── Wait for that slot to be healthy ───────────────────────────────────
+      # continue-on-error: a slot that never comes up is an infrastructure
+      # signal, not a code defect, so a timeout here must not redden the job.
+      # The next steps gate on steps.wait.outputs.url being non-empty instead.
+      - name: Wait for the Hetzner slot
+        id: wait
+        if: steps.ssh.outputs.present == 'true' && steps.slot.outputs.url != ''
         continue-on-error: true
-        run: bash .github/scripts/wait-for-netlify-deploy.sh
+        run: bash .github/scripts/wait-for-staging-slot.sh
         env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
-          # On pull_request, GITHUB_SHA is the merge ref; the branch tip SHA
-          # we need is in pull_request.head.sha.
-          COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          TIMEOUT_SECONDS: '600'
+          TARGET_URL: ${{ steps.slot.outputs.url }}
+          TIMEOUT_SECONDS: '900'
           POLL_INTERVAL: '15'
-      - name: No Netlify Deploy Preview available
-        if: steps.netlify_creds.outputs.present == 'true' && steps.netlify.outputs.url == ''
+          EXPECT_TARGET: local
+      - name: No healthy Hetzner slot
+        if: steps.ssh.outputs.present == 'true' && steps.slot.outputs.url != '' && steps.wait.outputs.url == ''
         env:
+          SLOT_URL: ${{ steps.slot.outputs.url }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          message="No Netlify Deploy Preview for ${SHA}; the Netlify site is linked to the old repository address (dmihai91/flowstarter-monorepo) and must be re-linked to DMPResearch/flowstarter-monorepo under Site settings > Build & deploy > Continuous deployment. Skipping."
+          message="${SLOT_URL} never reported \"ok\":true and \"target\":\"local\" for ${SHA} within 15 minutes. Check the Staging deploy (PR) run for this commit. Skipping."
           echo "::warning::${message}"
           echo "${message}" >> "$GITHUB_STEP_SUMMARY"
-      # ── Run smoke against the resolved Netlify preview URL ─────────────────
+      # ── Run smoke against the resolved slot URL ────────────────────────────
       - name: E2E — Platform smoke (landing, auth guards, pricing)
-        if: steps.netlify_creds.outputs.present == 'true' && steps.netlify.outputs.url != ''
+        if: steps.wait.outputs.url != ''
         run: pnpm exec playwright test --config playwright.config.ts
         env:
           CI: true
-          PLAYWRIGHT_BASE_URL: ${{ steps.netlify.outputs.url }}
+          PLAYWRIGHT_BASE_URL: ${{ steps.wait.outputs.url }}
       # How much of the application the run actually reached.
       #
       # `e2e/support/coverage-fixture.ts` writes one record per test; this

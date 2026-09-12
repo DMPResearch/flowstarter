@@ -1,7 +1,18 @@
 # Preview generation in production
 
 Where `POST /api/discovery/preview/live` (the free, live-sandbox preview the
-intake wizard kicks off) can actually run, and why it cannot on Netlify today.
+intake wizard kicks off) can actually run, and why it could not on Netlify.
+
+> **Outcome, 2026-09.** Shape A won. Production left Netlify Functions and now
+> runs as a long-lived Node container on the Hetzner box, the `prod` slot at
+> `flowstarter.net` (`docs/release-process.md`,
+> `deploy/hetzner-staging/README.md`). The execution-model objection below is
+> therefore settled: the route no longer runs under a function timeout. What
+> remains is the prerequisites half of the argument. The pipeline stays off
+> until `FLOWSTARTER_MCP_URL`, `FLOWSTARTER_MCP_INTERNAL_TOKEN`, the model key
+> and `DAYTONA_API_KEY` are present in `/etc/flowstarter/prod.env`;
+> `missingGenerationPrerequisites()` still tells the visitor the truth up front
+> while they are not. The analysis below is kept as the record of the decision.
 
 ## Can it run on Netlify Functions at all
 

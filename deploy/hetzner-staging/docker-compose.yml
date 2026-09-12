@@ -1,4 +1,5 @@
-# Platform staging for flowstarter-main on the Hetzner Caddy host.
+# Platform slots for flowstarter-main on the Hetzner Caddy host: staging
+# (`main`, `pr-N`) and production (`prod`).
 # Client sites stay under /var/www/sites via deploy-agent, do not mix them.
 #
 # network_mode: host on purpose. Every staging slot (main and pr-N) talks to
@@ -17,11 +18,18 @@
 #   sudo chmod +x /opt/flowstarter/staging/*.sh
 #   # Add `import /etc/caddy/platform/*.caddy` to /etc/caddy/Caddyfile
 #   sudo touch /etc/flowstarter/staging.env   # secrets; mode 600
+#   sudo touch /etc/flowstarter/prod.env      # secrets; mode 600 (prod slot)
 #
-# CI calls deploy-slot.sh / destroy-slot.sh over SSH. deploy-slot.sh runs
-# supabase-stack.sh ensure/migrate/write-env before `docker compose up`.
+# CI calls deploy-slot.sh / destroy-slot.sh over SSH. For staging slots
+# deploy-slot.sh runs supabase-stack.sh ensure/migrate/write-env before
+# `docker compose up`; the prod slot skips every one of those, because it talks
+# to the hosted Supabase project rather than the host's local stack.
 
 services:
+  # One service definition serves every slot. The name stays `flowstarter-staging`
+  # so existing staging projects keep their container identity; what changes per
+  # slot is the compose project name, the image, the container name, the port
+  # and the env file, all passed in by deploy-slot.sh.
   flowstarter-staging:
     image: ${FLOWSTARTER_IMAGE:-ghcr.io/dmpresearch/flowstarter-main:main}
     container_name: ${FLOWSTARTER_CONTAINER:-flowstarter-staging-main}
@@ -33,7 +41,12 @@ services:
       NODE_ENV: production
       PORT: '${FLOWSTARTER_HOST_PORT:-3000}'
       HOSTNAME: 127.0.0.1
-      FLOWSTARTER_ENV: staging
+      # FLOWSTARTER_ENV is deliberately NOT set here. It comes from the slot's
+      # env file (staging.env carries `FLOWSTARTER_ENV=staging`, prod.env
+      # carries `FLOWSTARTER_ENV=production`), because a value under
+      # `environment:` wins over `env_file:` and would pin every slot, prod
+      # included, to staging. deploy-slot.sh upserts the right line into the
+      # env file before it starts the container.
     healthcheck:
       test:
         [

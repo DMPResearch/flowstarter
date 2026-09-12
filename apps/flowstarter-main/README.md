@@ -1,6 +1,6 @@
 # Flowstarter — `flowstarter-main`
 
-The platform app for Flowstarter: marketing site, team admin dashboard, REST APIs, and the public-facing pages. Hosted on **Netlify**. Heavy compute (per-client Docker sandboxes, the multitenant editor, deploy/operator services) lives on **Hetzner** and is called from this app over an authenticated API.
+The platform app for Flowstarter: marketing site, team admin dashboard, REST APIs, and the public-facing pages. Hosted on the **Hetzner** box as the `prod` slot at `flowstarter.net` (see `deploy/hetzner-staging/README.md`). Heavy compute (per-client Docker sandboxes, the multitenant editor, deploy/operator services) lives on **Hetzner** and is called from this app over an authenticated API.
 
 For the strategic pivot context, see [`docs/CONCIERGE_PIVOT_PLAN.md`](../../docs/CONCIERGE_PIVOT_PLAN.md). Plan for the active build is in `~/.claude/plans/merry-jingling-bengio.md`.
 
@@ -23,7 +23,7 @@ It enqueues those jobs and reads their state.
 
 ## Stack
 
-- **Next.js 15** (App Router) on Netlify
+- **Next.js 16** (App Router), `output: 'standalone'`, in Docker on Hetzner
 - **Clerk** for auth (team members + client magic-link sessions)
 - **Supabase** (Postgres + RLS) — projects, commerce_products, leads, hosting state (Slice 2)
 - **TanStack Query** for client data
@@ -99,7 +99,7 @@ HETZNER_SSH_KEY_ID=...
 CLOUDFLARE_API_TOKEN=...
 CLOUDFLARE_DEFAULT_ZONE_ID=...
 HETZNER_OPERATOR_URL=https://operator.flowstarter.app
-HETZNER_OPERATOR_SECRET=...   # shared bearer between Netlify and the Hetzner operator
+HETZNER_OPERATOR_SECRET=...   # shared bearer between this app and the Hetzner operator
 ```
 
 `DAYTONA_API_KEY` is currently used by the **team-internal** generation flow (not client-facing). It will be removed when the per-client Docker pipeline replaces the current sandbox-based generation.
@@ -109,7 +109,7 @@ HETZNER_OPERATOR_SECRET=...   # shared bearer between Netlify and the Hetzner op
 ```
 Browser
    │
-   ├── Netlify (this app: flowstarter-main)
+   ├── Hetzner `prod` slot (this app: flowstarter-main)
    │     • Marketing pages, team admin, client dashboard
    │     • REST APIs (Clerk-authed)
    │     • Calls operator on Hetzner for long-running ops
@@ -126,7 +126,7 @@ Client traffic (`<platform-domain>` is resolved from `@flowstarter/platform-conf
 - `acme.preview.<platform-domain>` → that client's dev-server container (live preview)
 - `acme-customdomain.com` → that client's production output
 
-DNS via Cloudflare API (called from the Hetzner operator, not from Netlify functions, to avoid the 10–26s function timeout).
+DNS via Cloudflare API, called from the Hetzner operator rather than from this app.
 
 ## Project layout (high level)
 

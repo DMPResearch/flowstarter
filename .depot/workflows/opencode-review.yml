@@ -75,8 +75,9 @@
 #                       requests RW and Contents R. The review comment and the
 #                       "eyes" reaction cleanup run under it. Absent, the
 #                       workflow token posts instead.
-#   NETLIFY_AUTH_TOKEN  optional. Enables the live Deploy Preview lookup.
-#   NETLIFY_SITE_ID     optional. Same.
+#   STAGING_SSH_HOST / _USER / _KEY  optional. Their presence is what says a
+#                       Hetzner slot may exist for this pull request, which
+#                       enables the live preview lookup.
 #   vars.AI_REVIEW_SMALL_MODEL  optional. Default `ollama-cloud/glm-5.2`.
 #   vars.AI_REVIEW_BIG_MODEL    optional. Default `ollama-cloud/kimi-k3`.
 #   vars.AI_REVIEW_MODEL        legacy. Read only as a fallback for the big
@@ -255,12 +256,12 @@ jobs:
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
-      # Checked out before the Netlify lookup below, which runs a script out
-      # of this repository. It used to sit after that lookup, so the lookup
-      # died on "bash: .github/scripts/wait-for-netlify-deploy.sh: No such
-      # file or directory"; `continue-on-error` hid the exit code and the
-      # reviewer was simply told there was no Deploy Preview, on pull requests
-      # where the visual-check lane resolved one from the same secrets.
+      # Checked out before the slot lookup below, which runs a script out of
+      # this repository. It used to sit after that lookup, so the lookup died
+      # on "bash: .github/scripts/wait-for-staging-slot.sh: No such file or
+      # directory"; `continue-on-error` hid the exit code and the reviewer was
+      # simply told there was no preview, on pull requests where the
+      # visual-check lane resolved one from the same secrets.
       - name: Check out the pull request
         if: steps.creds.outputs.present == 'true'
         uses: actions/checkout@v4
@@ -271,50 +272,47 @@ jobs:
           # real history rather than a depth-1 cone.
           persist-credentials: true
           fetch-depth: 0
-      # Netlify builds a Deploy Preview per pull request. The `secrets`
-      # context is not readable from a step-level `if`, so presence is turned
-      # into an output here and gated on below.
-      - name: Check the Netlify credentials
-        id: netlify_creds
+      # The staging PR lane deploys a Hetzner slot per pull request. The
+      # `secrets` context is not readable from a step-level `if`, so presence
+      # is turned into an output here and gated on below.
+      - name: Check the staging SSH secrets
+        id: slot_creds
         if: steps.creds.outputs.present == 'true'
         env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          KEY: ${{ secrets.STAGING_SSH_KEY }}
         run: |
-          if [ -n "$NETLIFY_AUTH_TOKEN" ] && [ -n "$NETLIFY_SITE_ID" ]; then
+          if [ -n "$HOST" ] && [ -n "$SSH_USER" ] && [ -n "$KEY" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::NETLIFY_AUTH_TOKEN or NETLIFY_SITE_ID is not set (expected on dependabot/fork pull requests); the reviewer gets no live preview."
+            echo "::warning::STAGING_SSH_* are not set (expected on dependabot/fork pull requests); no slot is deployed for this pull request and the reviewer gets no live preview."
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
       # Reuses the same script the E2E smoke lane uses, on a shorter budget:
-      # smoke exists to test the preview and can afford to wait 15 minutes for
-      # one, this lane can review the diff without it. `continue-on-error`
-      # means a preview that never appears leaves `url` empty and the review
-      # still runs.
-      - name: Find this head's Netlify Deploy Preview
+      # smoke exists to test the slot and can afford to wait 15 minutes for it,
+      # this lane can review the diff without one. `continue-on-error` means a
+      # slot that never comes up leaves `url` empty and the review still runs.
+      - name: Find this pull request's Hetzner slot
         id: preview
-        if: steps.netlify_creds.outputs.present == 'true'
+        if: steps.slot_creds.outputs.present == 'true'
         continue-on-error: true
-        run: bash .github/scripts/wait-for-netlify-deploy.sh
+        run: bash .github/scripts/wait-for-staging-slot.sh
         env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
-          # On pull_request, GITHUB_SHA is the merge ref; the branch tip we
-          # want is pull_request.head.sha.
-          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
+          TARGET_URL: https://pr-${{ github.event.pull_request.number }}.staging.flowstarter.dev
           TIMEOUT_SECONDS: '600'
           POLL_INTERVAL: '15'
-      # The lookup runs with `continue-on-error`, so a script that fails for
-      # any reason leaves `url` empty and the reviewer silently loses the
-      # browser. Say so out loud instead.
-      - name: No Netlify Deploy Preview available
-        if: steps.netlify_creds.outputs.present == 'true' && steps.preview.outputs.url == ''
+          EXPECT_TARGET: local
+      # The lookup runs with `continue-on-error`, so a slot that fails for any
+      # reason leaves `url` empty and the reviewer silently loses the browser.
+      # Say so out loud instead.
+      - name: No Hetzner slot available
+        if: steps.slot_creds.outputs.present == 'true' && steps.preview.outputs.url == ''
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           LOOKUP_OUTCOME: ${{ steps.preview.outcome }}
         run: |
-          echo "::warning::No Netlify Deploy Preview resolved for ${HEAD_SHA} (lookup outcome: ${LOOKUP_OUTCOME}); the reviewer reviews the diff without a browser."
+          echo "::warning::No healthy Hetzner slot for ${HEAD_SHA} (lookup outcome: ${LOOKUP_OUTCOME}); the reviewer reviews the diff without a browser."
       # A URL alone only gives the reviewer curl. Pull a pinned, isolated
       # Chromium environment so the model can exercise the changed flow like a
       # user. The tag tracks @playwright/test in this repository (1.58.2); a
@@ -388,7 +386,7 @@ jobs:
             inventing something to report. Do not restate the diff and do not
             suggest stylistic rewrites.
 
-            A Netlify Deploy Preview of this exact head may be live (blank
+            A Hetzner staging slot for this pull request may be live (blank
             when none is):
             ${{ steps.preview.outputs.url }}
             Browser preparation result: ${{ steps.browser.outcome }}

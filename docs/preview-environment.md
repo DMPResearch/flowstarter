@@ -5,14 +5,15 @@ and what the owner has to do once to make that true.
 
 ## Topology
 
-- **Web.** Netlify builds every pull request into a Deploy Preview (context
-  `deploy-preview`) and every other non-production branch into a branch deploy
-  (context `branch-deploy`). Production keeps the `production` context and its
-  own variables. Nothing below changes production. Netlify Deploy Previews run
-  as Lambdas with no path back to the Hetzner host's loopback address, so they
-  have no database of their own; do not point their `NEXT_PUBLIC_SUPABASE_*`
-  variables at anything, production least of all. A pull request that needs a
-  real, working database uses its Hetzner staging slot instead (below).
+- **Web.** Netlify is gone. There are no Deploy Previews and no branch deploys.
+  A pull request's preview is its **Hetzner slot**: `staging-pr-deploy.yml`
+  builds an image from the PR head and deploys slot `pr-<n>` at
+  `https://pr-<n>.staging.flowstarter.dev` on host port `3000 + n`, then posts
+  the URL as a comment on the pull request. Closing the PR destroys the slot.
+  Unlike a Netlify Lambda preview, a slot has a real database behind it: it
+  runs on the same host as the Supabase CLI stack and reaches it over loopback.
+  Production is a slot on that same box too, `prod` at `flowstarter.net`; see
+  `docs/release-process.md`. Nothing on a pull request touches it.
 - **Database.** There is no cloud staging Supabase project. The staging
   database is the Supabase CLI local stack running ON THE HETZNER HOST,
   bound to loopback (`http://127.0.0.1:54321`), the same `supabase start`
@@ -65,31 +66,26 @@ the Supabase CLI stack on the Hetzner host itself.
    warn and end green rather than build against nothing. See
    `docs/ci/secrets.md`.
 
-3. Set the Netlify variables for Clerk, scoped to the two preview contexts so
-   production is untouched:
+3. Put the Clerk addresses the authenticated suite signs in as into
+   `/etc/flowstarter/staging.env` on the host, where every staging slot reads
+   them:
 
    ```sh
-   netlify env:set E2E_CLERK_OPERATOR_EMAIL operator+clerk_test@flowstarter.dev \
-     --context deploy-preview --context branch-deploy
-   netlify env:set E2E_CLERK_CLIENT_EMAIL client+clerk_test@example.com \
-     --context deploy-preview --context branch-deploy
+   E2E_CLERK_OPERATOR_EMAIL=operator+clerk_test@flowstarter.dev
+   E2E_CLERK_CLIENT_EMAIL=client+clerk_test@example.com
    ```
 
-   Do **not** set `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-   / `SUPABASE_SERVICE_ROLE_KEY` for these two contexts. There is no database
-   a Netlify Deploy Preview can reach, and setting them to production values
-   "to make the preview work" is exactly the mistake this setup exists to
-   rule out. A pull request that needs a database-backed preview gets one
-   automatically at `pr-<n>.staging.flowstarter.dev` (`staging-pr-deploy.yml`).
+   Do **not** put production `NEXT_PUBLIC_SUPABASE_URL` /
+   `NEXT_PUBLIC_SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` in that file.
+   Staging slots read the Supabase CLI stack's own keys, written there by
+   `supabase-stack.sh write-env`, and `deploy-slot.sh` refuses to expose a slot
+   whose `/api/health` does not say `"target":"local"`. The production values
+   live in `/etc/flowstarter/prod.env` and nowhere else on the box.
 
    The two `E2E_CLERK_*` addresses are what the seed script links its tenants
    to, and what the authenticated Playwright projects sign in as. Add
    `E2E_CLERK_OPERATOR_PASSWORD` the same way if the suite signs in with a
    password rather than a ticket.
-
-4. Re-link the Netlify site to `DMPResearch/flowstarter`. As of 2026-09 it
-   still points at the old repository address, so no pull request here builds
-   a preview at all and the E2E smoke lane skips with a warning.
 
 ## Migrations
 
@@ -155,15 +151,21 @@ node e2e/support/cleanup-e2e-tenants.mjs --all --dry-run
 
 ## How the E2E tiers use it
 
-- **Platform smoke** (`.depot/workflows/e2e-smoke.yml`) waits for the Deploy
-  Preview and runs the unauthenticated Playwright project against it. It needs
-  no seed.
+- **Platform smoke** (`.depot/workflows/e2e-smoke.yml`) waits up to 15 minutes
+  for the pull request's slot to report `"ok":true` and `"target":"local"` on
+  `/api/health`, then runs the unauthenticated Playwright project against it.
+  It needs no seed. A push to `main` smokes slot `main` at `vars.STAGING_URL`
+  instead; a feature-branch push has no slot of its own and skips. When the
+  `STAGING_SSH_*` secrets are absent (dependabot and fork pull requests) there
+  is no slot at all, so the lane warns and skips, green.
 - **Authenticated suite** (`*.auth.spec.ts`, project `chromium-auth`) needs the
   seed to have run against staging first, and the `E2E_CLERK_*` addresses to
   resolve to real Clerk users. It skips rather than fails when Clerk keys are
   absent.
 - **Visual check** (`.depot/workflows/visual-check.yml`) screenshots the same
-  preview and compares against committed Linux baselines.
+  slot and compares against committed Linux baselines. A dispatched baseline
+  refresh has no pull request, so it screenshots slot `main` at
+  `vars.STAGING_URL`.
 
 Run the seed before an authenticated tier and the cleanup after it, or leave
 cleanup to a scheduled `--older-than 24` pass so a failed run's rows still go.

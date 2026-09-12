@@ -437,7 +437,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Generation cannot run at all without Pi, the MCP template library and
-  // Daytona configured, which is the case on Netlify Functions today (see
+  // Daytona configured, which is the case in production today (see
   // docs/production-generation.md). Checked before a job exists, not after,
   // so the visitor is told the honest thing (their preview will be built by
   // hand and emailed) instead of watching a job that was never going to
@@ -950,8 +950,11 @@ export async function GET(req: NextRequest) {
   // Prewarm path: load the heavy codegen + sandbox module graph into this
   // container so the first real visitor doesn't pay the multi-second import
   // cost. No generation runs, no AI/Daytona calls are made — we only resolve
-  // the dynamic imports the POST handler depends on. Hit by the scheduled
-  // prewarm function (netlify/functions/prewarm.mjs).
+  // the dynamic imports the POST handler depends on. It was written for the
+  // Netlify scheduled prewarm function, which is gone: the prod slot is a
+  // long-lived container, so it pays this import once at start rather than per
+  // cold start. Kept because it is free, idempotent, and still useful to call
+  // by hand after a redeploy.
   if (req.nextUrl.searchParams.get('warm') === '1') {
     try {
       await Promise.all([

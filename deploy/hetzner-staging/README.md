@@ -1,33 +1,65 @@
-# Hetzner platform staging (flowstarter-main)
+# Hetzner platform slots (flowstarter-main)
 
 Runs the Next.js app in Docker on the **same Hetzner Caddy host** as client
-sites, but **isolated** from deploy-agent:
+sites, but **isolated** from deploy-agent. Three kinds of slot share one
+compose file and one pair of scripts: `main` and `pr-N` for staging, and `prod`
+for production at `flowstarter.net`.
 
-| Path                          | Owner                                |
-| ----------------------------- | ------------------------------------ |
-| `/var/www/sites/*`            | Client static sites (deploy-agent)   |
-| `/opt/flowstarter/staging`    | Platform staging compose + scripts   |
-| `/etc/caddy/platform/*.caddy` | Platform vhosts (`staging` + `pr-*`) |
+| Path                          | Owner                                        |
+| ----------------------------- | -------------------------------------------- |
+| `/var/www/sites/*`            | Client static sites (deploy-agent)           |
+| `/opt/flowstarter/staging`    | Platform compose + scripts (all slots)       |
+| `/etc/caddy/platform/*.caddy` | Platform vhosts (`main`, `pr-*`, `prod`)     |
+| `/etc/flowstarter/staging.env`| Staging secrets, mode 600                    |
+| `/etc/flowstarter/prod.env`   | Production secrets, mode 600                 |
+| `/etc/flowstarter/tls/`       | Optional Cloudflare Origin CA cert for prod  |
 
-## Hostnames
+The directory is still called `staging` so nothing that already references it
+breaks. It holds every slot.
 
-| Slot   | URL                                    | DNS                                                  |
-| ------ | -------------------------------------- | ---------------------------------------------------- |
-| `main` | `https://staging.flowstarter.dev`      | A/AAAA (or CNAME) → **Hetzner box IP**               |
-| `pr-N` | `https://pr-N.staging.flowstarter.dev` | covered by `*.staging.flowstarter.dev` → **Hetzner** |
+## Slots
 
-Do **not** CNAME these to the local Cloudflare tunnel (`flowstarter-dev`). That tunnel
-still owns `www`, `workflows`, apex, `admin`, and the generic `*.flowstarter.dev`
-catch-all for laptop demos — see `scripts/cloudflared-flowstarter-workflows.yml`.
+| Slot   | URL                                    | Port   | Env file      | Container                  | Supabase        |
+| ------ | -------------------------------------- | ------ | ------------- | -------------------------- | --------------- |
+| `main` | `https://staging.flowstarter.dev`      | 3000   | `staging.env` | `flowstarter-staging-main` | local CLI stack |
+| `pr-N` | `https://pr-N.staging.flowstarter.dev` | 3000+N | `staging.env` | `flowstarter-staging-pr-N` | local CLI stack |
+| `prod` | `https://flowstarter.net` (+ `www`)    | 3100   | `prod.env`    | `flowstarter-prod`         | hosted project  |
 
-Cloudflare DNS (example, dns-only so Caddy can terminate TLS):
+`deploy-slot.sh <slot> <image> [port]` deploys one; `destroy-slot.sh <slot>`
+tears it down. Destroying `prod` additionally needs `DESTROY_PROD=1` in the
+environment, because nothing in CI ever asks for it and a typo should not take
+the site down.
+
+### What is different about `prod`
+
+- It runs **none** of the Supabase CLI stack steps: no `ensure`, no `check`, no
+  `migrate`, no `write-env`. It talks to the hosted Supabase project. Schema
+  changes are applied to that project deliberately, by hand.
+- Its health gate asserts `"env":"production"` from `/api/health` instead of
+  `"target":"local"`. A staging image landed on port 3100 by mistake reports
+  `"env":"staging"` and never gets a Caddy snippet.
+- Its Caddy snippet serves two hostnames and 301-redirects `www` to the apex.
+
+## Hostnames and DNS
+
+Do **not** CNAME these to the local Cloudflare tunnel (`flowstarter-dev`). That
+tunnel still owns `www.flowstarter.dev`, `workflows`, the `flowstarter.dev`
+apex, `admin`, and the generic `*.flowstarter.dev` catch-all for laptop demos,
+see `scripts/cloudflared-flowstarter-workflows.yml`.
+
+Staging (dns-only, so Caddy terminates TLS with a public certificate):
 
 ```
-staging.flowstarter.dev      A      <HETZNER_IP>
-*.staging.flowstarter.dev    A      <HETZNER_IP>
+staging.flowstarter.dev      A      <HETZNER_IP>    DNS only
+*.staging.flowstarter.dev    A      <HETZNER_IP>    DNS only
 ```
 
-Leave `www.flowstarter.dev` / `workflows.flowstarter.dev` as CNAMEs to the tunnel.
+Production (**proxied**, orange cloud):
+
+```
+flowstarter.net              A      <HETZNER_IP>    Proxied
+www.flowstarter.net          A      <HETZNER_IP>    Proxied
+```
 
 Caddy base file must include:
 
@@ -36,6 +68,137 @@ import /etc/caddy/platform/*.caddy
 ```
 
 Do **not** put these snippets under `/etc/caddy/sites/` (deploy-agent owns that).
+
+## TLS for production
+
+Cloudflare proxies `flowstarter.net`, so Caddy never sees a Let's Encrypt
+HTTP-01 challenge and must not ask for a public certificate. `deploy-slot.sh`
+picks one of two modes when it writes `/etc/caddy/platform/prod.caddy`:
+
+1. **Cloudflare Origin CA (preferred).** If both
+   `/etc/flowstarter/tls/flowstarter.net.crt` and `.key` exist, the snippet
+   gets `tls <crt> <key>`. Set Cloudflare SSL/TLS to **Full (strict)**.
+
+   Mint the certificate in the Cloudflare dashboard, SSL/TLS, Origin Server,
+   Create Certificate, covering `flowstarter.net` and `*.flowstarter.net`, then:
+
+   ```bash
+   sudo mkdir -p /etc/flowstarter/tls
+   sudo install -m 600 /dev/null /etc/flowstarter/tls/flowstarter.net.key
+   sudo install -m 644 /dev/null /etc/flowstarter/tls/flowstarter.net.crt
+   # paste the certificate and the private key into those two files
+   sudo chown caddy:caddy /etc/flowstarter/tls/flowstarter.net.*
+   ```
+
+2. **`tls internal` (fallback).** With no Origin CA certificate on disk the
+   snippet uses Caddy's own local CA. Cloudflare cannot chain that to a public
+   root, so Cloudflare SSL/TLS must then be **Full**, *not* Full (strict). The
+   snippet carries that warning as a comment.
+
+Re-running `deploy-slot.sh prod` after dropping the certificate in place is
+what switches mode 2 to mode 1. Nothing else has to change.
+
+## The production env file
+
+`/etc/flowstarter/prod.env`, mode 600, owned by root. It is the only place on
+the box that holds production credentials, and it is never written by CI.
+
+```
+FLOWSTARTER_ENV=production          # upserted by deploy-slot.sh, do not fight it
+PLATFORM_DOMAIN=flowstarter.net     # @flowstarter/platform-config falls back to
+                                    # flowstarter.dev when this is unset
+NEXT_PUBLIC_SITE_URL=https://flowstarter.net
+NEXT_PUBLIC_SUPABASE_URL=https://<ref>.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<hosted project anon key>
+SUPABASE_SERVICE_ROLE_KEY=<hosted project service role key>
+CLERK_SECRET_KEY=<production Clerk secret>
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=<production Clerk publishable>
+STRIPE_SECRET_KEY=<test-mode key until launch>
+STRIPE_WEBHOOK_SECRET=<test-mode webhook secret until launch>
+HANDOFF_SECRET=<HMAC key>
+RESEND_API_KEY=<transactional email key>
+```
+
+The `NEXT_PUBLIC_*` values also exist as Depot secrets (`PROD_NEXT_PUBLIC_*`),
+because those are inlined into the client bundle at **build** time while the
+file above is read at **run** time. Keep the two in step; a mismatch shows up
+as a browser talking to one project and the server to another.
+
+`PLATFORM_DOMAIN` matters because `@flowstarter/platform-config` resolves the
+platform domain from the request hostname first and falls back to
+`flowstarter.dev`. That fallback is right for staging and wrong for production,
+so production names its domain explicitly. Staging needs no such line.
+
+`deploy-slot.sh` rewrites the `FLOWSTARTER_ENV` line on every deploy, so a slot
+cannot inherit the wrong environment from a stale file.
+
+## The DNS cutover (apex and www)
+
+This is the only step that moves live traffic, and it is the only step no
+workflow performs. Do it **after** the `prod` slot is deployed and answering,
+never before: the slot is reachable on the box long before DNS points at it.
+
+**Before you change anything, write the current records down.** They are the
+rollback. In the Cloudflare dashboard, DNS, export or screenshot the two rows:
+
+| Name                  | Type | Content                     | Proxy |
+| --------------------- | ---- | --------------------------- | ----- |
+| `flowstarter.net`     | ?    | record this before changing | ?     |
+| `www.flowstarter.net` | ?    | record this before changing | ?     |
+
+They currently point at Netlify. Netlify's shape is an apex `A` at its load
+balancer address and a `www` `CNAME` at `<site>.netlify.app`, but read the
+actual values rather than trusting that.
+
+Then:
+
+1. Confirm the slot answers on the box, with DNS still pointing at the old
+   host:
+
+   ```bash
+   curl -fsS http://127.0.0.1:3100/api/health
+   # expect {"ok":true,"supabase":{"env":"production",...}}
+   ```
+
+2. Confirm Caddy is serving both hostnames locally, bypassing DNS:
+
+   ```bash
+   curl -fsS -k --resolve flowstarter.net:443:127.0.0.1 https://flowstarter.net/api/health
+   curl -fsS -k -o /dev/null -w '%{http_code} %{redirect_url}\n' \
+     --resolve www.flowstarter.net:443:127.0.0.1 https://www.flowstarter.net/
+   # expect 301 https://flowstarter.net/
+   ```
+
+3. Set the Cloudflare SSL/TLS mode **first**, before the records move:
+   **Full (strict)** if the Origin CA certificate is installed, **Full**
+   otherwise. Getting this wrong is what produces a 526 after the cutover.
+
+4. Lower the TTL on both records to 60 seconds and wait out the old TTL. A
+   rollback is only as fast as the TTL you set before you needed it.
+
+5. Change both records to `A <HETZNER_IP>`, **Proxied**.
+
+6. Verify from outside the box:
+
+   ```bash
+   curl -fsS https://flowstarter.net/api/health
+   curl -fsS -o /dev/null -w '%{http_code} %{redirect_url}\n' https://www.flowstarter.net/
+   ```
+
+   Then run the synthetic:
+
+   ```sh
+   gh api repos/DMPResearch/flowstarter/dispatches -f event_type=prod-deploy-succeeded
+   ```
+
+7. Raise the TTL back to automatic once it has been healthy for a day.
+
+**Rollback.** Put the two recorded values back, restore the previous proxy
+setting, and set the SSL/TLS mode the old host needed (Netlify wanted Full
+(strict)). The `prod` slot can stay running; it is unreachable from the
+internet the moment DNS stops pointing at it. To roll back the application
+rather than the DNS, redeploy the previous release tag, see
+`docs/release-process.md`.
 
 ## Database
 
@@ -88,12 +251,17 @@ root):
 | `write-env` | Reads (or mints, if the CLI reports none) the anon/service_role keys and upserts them into `/etc/flowstarter/staging.env`. |
 | `check`     | Fails unless 54321/54322 are loopback-only and the REST endpoint answers.                                                  |
 
-**What CI does on every deploy** (`scripts/deploy-slot.sh`, see below): runs
-`ensure` before starting the container; for slot `main` only, also runs
+**What CI does on every staging deploy** (`scripts/deploy-slot.sh`, see below):
+runs `ensure` before starting the container; for slot `main` only, also runs
 `migrate` and `write-env`, since PR slots share the schema slot `main` last
 applied. The Caddy snippet that makes a slot reachable is written only after
 the container is healthy and its own `/api/health` reports it is talking to
 the local stack (`"target":"local"`), never a remote one.
+
+**Slot `prod` runs none of this.** It talks to the hosted Supabase project, so
+`ensure`, `check`, `migrate` and `write-env` are all skipped and its health
+gate asserts `"env":"production"` instead. Nothing on this box migrates the
+production database.
 
 **RAM.** The trimmed stack keeps gotrue, kong, postgrest, storage-api,
 postgres-meta, and postgres, and excludes studio, edge-runtime, logflare,
@@ -123,6 +291,10 @@ sudo install -m 600 /dev/null /etc/flowstarter/staging.env
 # Edit staging.env with Clerk/etc. for the staging Clerk application.
 # Supabase keys are written by supabase-stack.sh write-env below, not by hand.
 
+# Production slot only: its own env file, with the hosted project's values.
+# See "The production env file" above for the fields it needs.
+sudo install -m 600 /dev/null /etc/flowstarter/prod.env
+
 # Loopback-only Docker publishing (mandatory, see "Database" above).
 echo '{ "ip": "127.0.0.1" }' | sudo tee /etc/docker/daemon.json
 sudo systemctl restart docker
@@ -146,6 +318,22 @@ run first.
 - `.depot/workflows/staging-deploy.yml`: push to `main` deploys slot `main`
   (syncs `supabase/` to the host, runs migrations, refreshes staging.env)
 - `.depot/workflows/staging-pr-deploy.yml`: PR deploys slot `pr-<n>`; closed destroys it
+- `.depot/workflows/release.yml`: a release tag builds the production image and
+  deploys slot `prod`. It is the only lane that touches production, and it
+  fails rather than skips when a credential is missing. See
+  `docs/release-process.md`.
 
 Secrets: see `docs/ci/secrets.md` (`STAGING_SSH_*`, `STAGING_SUPABASE_ANON_KEY`,
-GHCR via `GITHUB_TOKEN`).
+`PROD_NEXT_PUBLIC_*`, `GHCR_TOKEN`).
+
+## Redeploying or rolling back production by hand
+
+```bash
+ssh <user>@<hetzner-host>
+sudo /opt/flowstarter/staging/deploy-slot.sh prod \
+  ghcr.io/dmpresearch/flowstarter-main:release-2026-09-07 3100
+```
+
+Name a release tag, never `:prod`: that tag is a moving pointer at whatever the
+release lane pushed last, so it cannot roll anything back. A deploy that fails
+its health gate leaves the running container's Caddy snippet untouched.
