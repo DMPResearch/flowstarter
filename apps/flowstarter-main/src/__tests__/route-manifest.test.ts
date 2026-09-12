@@ -138,6 +138,34 @@ describe('route manifest', () => {
     it('lists each route once', () => {
       expect(new Set(PUBLIC_ROUTES).size).toBe(PUBLIC_ROUTES.length);
     });
+
+    /**
+     * Three callers under `/api` are servers rather than people, and each one
+     * authenticates itself inside its own route. Leave any of them off this
+     * list and the middleware answers 401 before that check ever runs — which
+     * the caller cannot tell apart from a URL that is simply wrong, because
+     * neither Stripe nor Cal.com nor a client's own site reads our error
+     * bodies. Cal.com's was missing until 2026-09-13: bookings were being
+     * taken on real calendars and none of them ever reached a dashboard.
+     */
+    it('keeps the signature-authenticated webhooks reachable without a session', () => {
+      for (const entry of [
+        '/api/webhooks(.*)',
+        '/api/leads/capture/(.*)',
+        '/api/integrations/cal/(.*)',
+      ]) {
+        expect(PUBLIC_ROUTES, `${entry} must stay public`).toContain(entry);
+      }
+    });
+
+    it('does not open the rest of /api/integrations', () => {
+      // Only the Cal.com webhook is signature-authenticated. Anything else
+      // added under that prefix is a dashboard surface and keeps its session.
+      const integrations = PUBLIC_ROUTES.filter((entry) =>
+        entry.startsWith('/api/integrations')
+      );
+      expect(integrations).toEqual(['/api/integrations/cal/(.*)']);
+    });
   });
 
   describe('KNOWN_APP_ROUTES', () => {

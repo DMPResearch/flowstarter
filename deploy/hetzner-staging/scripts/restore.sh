@@ -49,6 +49,13 @@ SITE_SLUG=""
 DRY_RUN=0
 FORCE=0
 
+# Kept in step with backup.sh by hand, and named the same way so a `grep` for
+# either finds both.
+DEFAULT_POSTGRES_USER=postgres
+DEFAULT_POSTGRES_DB=postgres
+DEFAULT_TRUSTED_ROLE_CONTAINER_PATTERN='^supabase_db_'
+RESTORE_TRUSTED_ROLE_CONTAINER_PATTERN="${BACKUP_TRUSTED_ROLE_CONTAINER_PATTERN:-$DEFAULT_TRUSTED_ROLE_CONTAINER_PATTERN}"
+
 usage() {
   cat >&2 <<'EOF'
 Usage:
@@ -56,9 +63,11 @@ Usage:
   restore.sh --date YYYY-MM-DD --site [<slug>] [--dry-run] [--force]
 
   --date       required. The dated directory under $BACKUP_ROOT to restore from.
-  --database   restore one Supabase CLI stack's dump into its running
-               container (supabase_db_<project_id>). Mutually exclusive
-               with --site.
+  --database   restore one database dump into its running container. Takes a
+               Supabase project id (supabase_db_<project_id>) or an exact
+               container name, which is how the Cal.com database
+               (flowstarter-cal-db) is restored. Mutually exclusive with
+               --site.
   --site       restore the client sites tree, or one site's directory if
                <slug> is given. Mutually exclusive with --database.
   --dry-run    print the plan and exit; nothing is touched.
@@ -170,9 +179,57 @@ parse_args() {
   fi
 }
 
+# Which container a `--database` argument names.
+#
+# Historically this was only ever a Supabase CLI stack, so the argument was a
+# project id and the container name was built from it. The Cal.com database is
+# also backed up now, and its container is called `flowstarter-cal-db` — not
+# `supabase_db_anything` — so an exact container name is accepted too. Tried in
+# that order, because a project id is what the documented usage says and what
+# an operator under pressure is most likely to type.
+resolve_container() {
+  local candidate="supabase_db_${DATABASE}"
+  if docker ps --format '{{.Names}}' | grep -qxF "$candidate"; then
+    printf '%s' "$candidate"
+    return 0
+  fi
+  if docker ps --format '{{.Names}}' | grep -qxF "$DATABASE"; then
+    printf '%s' "$DATABASE"
+    return 0
+  fi
+  # Nothing running matches. Keep the historical shape so the "container is not
+  # running" warning below still names the thing the operator asked for.
+  printf '%s' "$candidate"
+}
+
+# The role and database to restore as, mirroring backup.sh exactly.
+#
+# The two halves have to agree or a restore silently targets the wrong
+# database: Cal's container is calcom/calcom, while a Supabase container
+# reports `POSTGRES_USER=supabase_admin` in its environment but can only be
+# reached over the socket as `postgres`. See the long comment on
+# BACKUP_TRUSTED_ROLE_CONTAINER_PATTERN in backup.sh.
+restore_role_for() {
+  local container="$1"
+  if printf '%s\n' "$container" | grep -qE "$RESTORE_TRUSTED_ROLE_CONTAINER_PATTERN"; then
+    printf '%s' "$DEFAULT_POSTGRES_USER"
+    return 0
+  fi
+  local user
+  user="$(docker exec "$container" printenv POSTGRES_USER 2>/dev/null || true)"
+  printf '%s' "${user:-$DEFAULT_POSTGRES_USER}"
+}
+
+restore_db_name_for() {
+  local container="$1" db
+  db="$(docker exec "$container" printenv POSTGRES_DB 2>/dev/null || true)"
+  printf '%s' "${db:-$DEFAULT_POSTGRES_DB}"
+}
+
 restore_database() {
   local dest_dir="$1"
-  local container="supabase_db_${DATABASE}"
+  local container
+  container="$(resolve_container)"
   local dump_file="db-${container}.dump"
   local dump_path="${dest_dir}/${dump_file}"
 
@@ -187,21 +244,27 @@ restore_database() {
     [[ "$DRY_RUN" -eq 0 ]] && exit 1
   fi
 
+  local user db
+  user="$(restore_role_for "$container")"
+  db="$(restore_db_name_for "$container")"
+
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "[dry-run] Would restore ${dump_path}"
-    echo "[dry-run]   into container ${container}, database postgres, via:"
-    echo "[dry-run]   docker exec -i ${container} pg_restore -U postgres -d postgres --clean --if-exists"
+    echo "[dry-run]   into container ${container}, database ${db}, as ${user}, via:"
+    echo "[dry-run]   docker exec -i ${container} pg_restore -w -U ${user} -d ${db} --clean --if-exists"
     echo "[dry-run] No changes made."
     return 0
   fi
 
   require_root
-  echo "Restoring ${dump_path} into ${container} (database postgres) ..."
+  echo "Restoring ${dump_path} into ${container} (user: ${user}, database: ${db}) ..."
   # --clean --if-exists drops the objects the dump recreates first, so a
   # restore is idempotent against a database that already has (possibly
   # stale) schema and data in it, which is the normal case for a disaster
   # recovery drill against a freshly started stack.
-  docker exec -i "$container" pg_restore -U postgres -d postgres --clean --if-exists <"$dump_path"
+  # `-w` for the same reason backup.sh passes it: a restore run from a
+  # terminal-less context must fail rather than sit on a password prompt.
+  docker exec -i "$container" pg_restore -w -U "$user" -d "$db" --clean --if-exists <"$dump_path"
   echo "Restore complete."
 }
 

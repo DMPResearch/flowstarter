@@ -267,7 +267,9 @@ describe('connecting a calendar', () => {
       params(WORKSPACE_A)
     );
     expect(response.status).toBe(400);
-    expect((await response.json()).error).toMatch(/Only cal.com links work/);
+    expect((await response.json()).error).toMatch(
+      /not a calendar we can embed/
+    );
     expect(calUrlOf(WORKSPACE_A)).toBeNull();
     expect(db.rows('project_events')).toHaveLength(0);
   });

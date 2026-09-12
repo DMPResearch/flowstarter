@@ -1,0 +1,31 @@
+# The only way into the self-hosted Cal.com. Installed to
+# /etc/caddy/platform/cal.caddy by ../scripts/cal-stack.sh install-caddy;
+# /etc/caddy/Caddyfile already carries `import /etc/caddy/platform/*.caddy`.
+#
+# The A record for this name is dns-only (not proxied) so Caddy can answer the
+# ACME challenge itself, the same as every other name on this box.
+#
+# SIGNUP IS CLOSED, TWICE. `NEXT_PUBLIC_DISABLE_SIGNUP=true` in cal.env turns
+# the route off inside the app; the two `handle` blocks below make sure that a
+# future image, a flipped env var or a route rename cannot quietly reopen
+# public account creation on a host whose whole purpose is accounts we created
+# ourselves. Clients never sign up here: they are provisioned through API v1
+# and set their password through Cal's own reset flow.
+#
+# Only the web app is proxied. API v1 (127.0.0.1:3203) is deliberately absent
+# from this file: the only thing that should ever hold the admin key is the app
+# slot on this same host, which reaches loopback directly.
+cal.flowstarter.dev {
+	encode gzip
+
+	handle /signup* {
+		respond "Signup is closed on this instance." 404
+	}
+	handle /api/auth/signup* {
+		respond "Signup is closed on this instance." 404
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3200
+	}
+}

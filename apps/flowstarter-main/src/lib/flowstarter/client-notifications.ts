@@ -76,7 +76,13 @@ export type ClientNotification =
   // Keys on the lead's id, so a client hears about each enquiry once. A
   // visitor who submits the same form twice is two enquiries and two emails;
   // a retry of one submission that already stored a row is neither.
-  | 'lead_captured';
+  | 'lead_captured'
+  // Keys on NOTHING: one per workspace, forever. The platform makes a client
+  // exactly one booking page, on one account, and this email is the only
+  // prompt they get to put a password on it. A retry that finds the page
+  // already there is not news, and a second copy of "here is your new booking
+  // page" would read as a second page they now have to look after.
+  | 'cal_provisioned';
 
 export type ClientNotifySkipReason =
   | 'already_sent'
