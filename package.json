@@ -18,6 +18,7 @@
     "stripe:setup": "tsx scripts/stripe-setup.ts",
     "stripe:setup:dry": "tsx scripts/stripe-setup.ts --dry-run",
     "anthropic:invite-users": "tsx scripts/anthropic-invite-users.ts",
+    "supabase:prod-backup": "node scripts/supabase-prod-backup.mjs",
     "stripe:listen": "stripe listen --forward-to localhost:3000/api/webhooks/stripe",
     "dev:deploy-agent": "bash scripts/dev-deploy-agent.sh",
     "dev:build-worker": "pnpm --dir apps/build-worker dev",

@@ -15,10 +15,18 @@
  *
  * Never throws, by `notifyClientOnce`'s contract, so a caller rendering a page
  * or handling a callback can await it without a guard.
+ *
+ * This is also where the operator hears about it. A stopped build is the
+ * worker's own "job ends failed" moment, and this function is the existing
+ * app-side hook that moment already drives — it just told the client, so it
+ * also tells whoever runs the product, through the same ops alert rules
+ * `notifyClientOnce`'s failed-send branch uses. `sendOpsAlert` cannot throw
+ * either, so this stays safe to await from a page render.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '@/lib/database.types';
 import { buildNeedsReviewEmail } from '@/lib/email-templates/client-notices';
+import { sendOpsAlert } from '@/lib/ops/send-ops-alert';
 import {
   notifyClientOnce,
   type ClientNotifyResult,
@@ -32,7 +40,7 @@ export async function notifyClientBuildNeedsReview(input: {
   /** `flowstarter_agent_jobs.error_code`, for the operator reading the ledger. */
   errorCode?: string | null;
 }): Promise<ClientNotifyResult> {
-  return notifyClientOnce({
+  const result = await notifyClientOnce({
     ...(input.supabase ? { supabase: input.supabase } : {}),
     workspaceId: input.workspaceId,
     notification: 'build_failed',
@@ -48,4 +56,19 @@ export async function notifyClientBuildNeedsReview(input: {
         businessName: recipient.businessName,
       }),
   });
+
+  await sendOpsAlert({
+    ...(input.supabase ? { supabase: input.supabase } : {}),
+    event: 'build_job_failed',
+    discriminator: input.jobId,
+    title: `Build job ${input.jobId} failed`,
+    detail: {
+      workspaceId: input.workspaceId,
+      jobId: input.jobId,
+      errorCode: input.errorCode ?? null,
+    },
+    workspaceId: input.workspaceId,
+  });
+
+  return result;
 }

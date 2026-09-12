@@ -31,8 +31,18 @@ vi.mock('@/supabase-clients/server', () => ({
   createSupabaseServiceRoleClient: () => db.client,
 }));
 
+// The operator alert is a separate module with its own tests
+// (lib/ops/__tests__/send-ops-alert.test.ts). Here it is a spy: these tests
+// only need to know that a failed send raises one, with the right shape, not
+// re-prove its dedupe or its email content.
+const sendOpsAlert = vi.fn().mockResolvedValue({ sent: true });
+vi.mock('@/lib/ops/send-ops-alert', () => ({
+  sendOpsAlert: (...args: unknown[]) => sendOpsAlert(...args),
+}));
+
 import {
   CLIENT_EMAIL_EVENT,
+  CLIENT_EMAIL_FAILED_EVENT,
   clientDashboardUrl,
   notifyClientOnce,
 } from '../client-notifications';
@@ -77,6 +87,8 @@ beforeEach(() => {
   db.reset();
   sendEmail.mockReset();
   sendEmail.mockResolvedValue({ success: true, id: 'em_1' });
+  sendOpsAlert.mockClear();
+  sendOpsAlert.mockResolvedValue({ sent: true });
   errors = [];
   warnings = [];
   vi.spyOn(console, 'error').mockImplementation((...a) =>
@@ -231,12 +243,63 @@ describe('notifyClientOnce', () => {
     const failed = await notify();
 
     expect(failed).toEqual({ sent: false, reason: 'send_failed' });
-    // Nothing recorded, so setting RESEND_API_KEY and replaying the event
-    // still reaches the client rather than being permanently swallowed.
-    expect(db.rows('project_events')).toHaveLength(0);
+    // Nothing recorded under CLIENT_EMAIL_EVENT, so setting RESEND_API_KEY
+    // and replaying the event still reaches the client rather than being
+    // permanently swallowed.
+    expect(
+      db.rows('project_events').filter((row) => row.kind === CLIENT_EMAIL_EVENT)
+    ).toHaveLength(0);
 
     const retried = await notify();
     expect(retried).toEqual({ sent: true });
+  });
+
+  it('records the failed attempt under a different event, so history survives even though the retry still works', async () => {
+    seedWorkspace();
+    sendEmail.mockResolvedValueOnce({
+      success: false,
+      error: 'Email service not configured',
+    });
+    await notify();
+
+    const failedRows = db
+      .rows('project_events')
+      .filter((row) => row.kind === CLIENT_EMAIL_FAILED_EVENT);
+    expect(failedRows).toHaveLength(1);
+    expect(failedRows[0]).toMatchObject({
+      workspace_id: WORKSPACE,
+      kind: CLIENT_EMAIL_FAILED_EVENT,
+    });
+    expect(failedRows[0]!.payload).toMatchObject({
+      notification: 'deposit_paid',
+      error: 'Email service not configured',
+    });
+  });
+
+  it('raises an operator alert when a client email fails to send', async () => {
+    seedWorkspace();
+    sendEmail.mockResolvedValueOnce({ success: false, error: 'rate limited' });
+    await notify({ notification: 'site_live', dedupeKey: 'v3' });
+
+    expect(sendOpsAlert).toHaveBeenCalledTimes(1);
+    expect(sendOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'client_email_failed',
+        workspaceId: WORKSPACE,
+        detail: expect.objectContaining({
+          workspaceId: WORKSPACE,
+          notification: 'site_live',
+          dedupeKey: 'v3',
+          error: 'rate limited',
+        }),
+      })
+    );
+  });
+
+  it('does not raise an operator alert when the email sends fine', async () => {
+    seedWorkspace();
+    await notify();
+    expect(sendOpsAlert).not.toHaveBeenCalled();
   });
 
   it('never throws when the workspace lookup fails', async () => {

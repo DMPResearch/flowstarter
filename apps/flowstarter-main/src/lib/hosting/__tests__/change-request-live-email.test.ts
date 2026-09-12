@@ -148,7 +148,14 @@ describe('notifyChangeRequestLive', () => {
     });
 
     expect(sent).toBe(false);
-    // Nothing recorded, so the notice is still retryable once the mailer works.
-    expect(db.rows('project_events')).toHaveLength(0);
+    // Nothing recorded under the "sent" kind, so the notice is still
+    // retryable once the mailer works. (The failed attempt IS recorded under
+    // a different kind, `client_email_failed`, so the workspace still has
+    // history; see client-notifications.test.ts for that contract.)
+    expect(
+      db
+        .rows('project_events')
+        .filter((row) => row.kind === 'client_email_sent')
+    ).toHaveLength(0);
   });
 });

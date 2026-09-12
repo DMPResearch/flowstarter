@@ -13,6 +13,8 @@ for production at `flowstarter.net`.
 | `/etc/flowstarter/staging.env`| Staging secrets, mode 600                    |
 | `/etc/flowstarter/prod.env`   | Production secrets, mode 600                 |
 | `/etc/flowstarter/tls/`       | Optional Cloudflare Origin CA cert for prod  |
+| `/etc/flowstarter/backup.env` | Backup config (retention, encryption, S3), mode 600 |
+| `/var/backups/flowstarter/`   | Nightly backups, see `docs/operations/backups.md`   |
 
 The directory is still called `staging` so nothing that already references it
 breaks. It holds every slot.
@@ -304,6 +306,21 @@ sudo REPO_DIR=/opt/flowstarter/staging/repo /opt/flowstarter/staging/supabase-st
 sudo REPO_DIR=/opt/flowstarter/staging/repo /opt/flowstarter/staging/supabase-stack.sh migrate
 sudo /opt/flowstarter/staging/supabase-stack.sh write-env
 sudo /opt/flowstarter/staging/supabase-stack.sh check
+
+# Nightly backups (backup.sh/restore.sh above are already copied by the *.sh
+# glob a few lines up). See docs/operations/backups.md for what is backed up,
+# how retention and encryption are chosen, and the restore drill.
+sudo install -m 600 /dev/null /etc/flowstarter/backup.env
+# Edit backup.env: at minimum an age recipient (BACKUP_AGE_RECIPIENT_FILE or
+# BACKUP_AGE_RECIPIENT) if `age` is installed, or a mode-600
+# BACKUP_GPG_PASSPHRASE_FILE if it is not; BACKUP_S3_* only if an
+# S3-compatible bucket for off-box copies exists yet (it does not by
+# default, see docs/operations/backups.md, "What still needs Darius").
+sudo apt-get install -y age || true  # falls back to gpg (already on the box) if this package is unavailable
+sudo cp deploy/hetzner-staging/systemd/flowstarter-backup.service /etc/systemd/system/
+sudo cp deploy/hetzner-staging/systemd/flowstarter-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now flowstarter-backup.timer
 ```
 
 `REPO_DIR` needs `supabase/config.toml` in it before `ensure`/`migrate` can

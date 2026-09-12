@@ -1,0 +1,18 @@
+[Unit]
+Description=Nightly timer for flowstarter-backup.service
+
+[Timer]
+# 03:00 UTC, a quiet hour for both staging and production traffic, plus up
+# to 30 minutes of jitter so a Hetzner host running several of these
+# platform boxes does not all hit Docker/pg_dump/the S3 endpoint at the same
+# instant.
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=1800
+# If the box was off (or the timer unit itself was down) at 03:00, run the
+# missed backup as soon as the timer is active again rather than silently
+# waiting for the next night; a skipped night is exactly the kind of gap
+# this whole feature exists to close.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

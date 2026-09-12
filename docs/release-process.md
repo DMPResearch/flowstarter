@@ -13,6 +13,11 @@ The whole thing lives in `.depot/workflows/release.yml`. Staging continuous
 deploys live in `.depot/workflows/staging-deploy.yml` (main) and
 `.depot/workflows/staging-pr-deploy.yml` (per-PR slots).
 
+Two related documents: `docs/operations/backups.md` (what is backed up,
+where, and how to restore it) and `docs/operations/alerts.md` (who gets told
+when a build, an email or the production health check fails, and how the
+noise stays bounded).
+
 ## Where production runs
 
 | Thing | Value |
@@ -99,7 +104,12 @@ Two things a rollback does **not** undo:
 
 - **Database migrations.** Production schema is applied by hand against the
   hosted project; rolling the image back does not roll the schema back. Write
-  migrations so the previous image can still run against the new schema.
+  migrations so the previous image can still run against the new schema. A
+  bad hand-applied migration is now recoverable from a backup rather than
+  unrecoverable outright, see `docs/operations/backups.md` and
+  `scripts/supabase-prod-backup.mjs` — but restoring a logical dump is still
+  slower and more destructive than a forward-fixing migration, so treat it as
+  the last resort it is.
 - **The `:prod` tag.** It is a moving pointer at whatever the release lane last
   pushed, so it is useless for rolling back. Always name the release tag.
 

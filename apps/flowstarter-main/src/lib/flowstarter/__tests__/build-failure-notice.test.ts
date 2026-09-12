@@ -25,7 +25,17 @@ vi.mock('@/supabase-clients/server', () => ({
   createSupabaseServiceRoleClient: () => db.client,
 }));
 
-import { CLIENT_EMAIL_EVENT } from '../client-notifications';
+// Covered on its own in lib/ops/__tests__/send-ops-alert.test.ts; here it is
+// a spy, so these tests only need to confirm a stopped build raises one.
+const sendOpsAlert = vi.fn().mockResolvedValue({ sent: true });
+vi.mock('@/lib/ops/send-ops-alert', () => ({
+  sendOpsAlert: (...args: unknown[]) => sendOpsAlert(...args),
+}));
+
+import {
+  CLIENT_EMAIL_EVENT,
+  CLIENT_EMAIL_FAILED_EVENT,
+} from '../client-notifications';
 import { notifyClientBuildNeedsReview } from '../build-failure-notice';
 
 const WORKSPACE = '11111111-1111-4111-8111-111111111111';
@@ -35,6 +45,8 @@ beforeEach(() => {
   db.reset();
   sendEmail.mockReset();
   sendEmail.mockResolvedValue({ success: true });
+  sendOpsAlert.mockClear();
+  sendOpsAlert.mockResolvedValue({ sent: true });
   db.seed('workspaces', [
     {
       id: WORKSPACE,
@@ -104,7 +116,7 @@ describe('notifyClientBuildNeedsReview', () => {
     expect(sendEmail).toHaveBeenCalledTimes(2);
   });
 
-  it('leaves nothing behind when the mailer refuses, so it can retry', async () => {
+  it('leaves nothing under CLIENT_EMAIL_EVENT when the mailer refuses, so it can retry', async () => {
     sendEmail.mockResolvedValue({
       success: false,
       error: 'API key is invalid',
@@ -113,7 +125,16 @@ describe('notifyClientBuildNeedsReview', () => {
     expect(
       await notifyClientBuildNeedsReview({ workspaceId: WORKSPACE, jobId: JOB })
     ).toEqual({ sent: false, reason: 'send_failed' });
-    expect(db.rows('project_events')).toEqual([]);
+    expect(
+      db.rows('project_events').filter((row) => row.kind === CLIENT_EMAIL_EVENT)
+    ).toEqual([]);
+    // It IS recorded under the failed-attempt kind, so the history is not
+    // lost even though the client-facing send can still be retried.
+    expect(
+      db
+        .rows('project_events')
+        .filter((row) => row.kind === CLIENT_EMAIL_FAILED_EVENT)
+    ).toHaveLength(1);
   });
 
   it('accepts an injected client rather than making its own', async () => {
@@ -124,5 +145,38 @@ describe('notifyClientBuildNeedsReview', () => {
     });
 
     expect(result).toEqual({ sent: true });
+  });
+
+  it('raises an operator alert for the stopped build, independent of whether the client email sent', async () => {
+    await notifyClientBuildNeedsReview({
+      workspaceId: WORKSPACE,
+      jobId: JOB,
+      errorCode: 'APPROVED_EDIT_DROPPED',
+    });
+
+    expect(sendOpsAlert).toHaveBeenCalledTimes(1);
+    expect(sendOpsAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'build_job_failed',
+        discriminator: JOB,
+        workspaceId: WORKSPACE,
+        detail: expect.objectContaining({
+          workspaceId: WORKSPACE,
+          jobId: JOB,
+          errorCode: 'APPROVED_EDIT_DROPPED',
+        }),
+      })
+    );
+  });
+
+  it('still raises the operator alert even when the client email is a repeat', async () => {
+    await notifyClientBuildNeedsReview({ workspaceId: WORKSPACE, jobId: JOB });
+    sendOpsAlert.mockClear();
+    await notifyClientBuildNeedsReview({ workspaceId: WORKSPACE, jobId: JOB });
+
+    // notifyClientOnce dedupes the CLIENT email; the operator alert is a
+    // different concern with its own dedupe window in sendOpsAlert itself,
+    // so this function must still call it every time it runs.
+    expect(sendOpsAlert).toHaveBeenCalledTimes(1);
   });
 });
