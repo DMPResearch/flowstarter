@@ -197,6 +197,16 @@ describe('listing what the client asked for', () => {
     // Operator-only: the price the rules would open with.
     expect(body.requests[0].suggestedQuoteMinor).toBe(19_000);
     expect(res.headers.get('Cache-Control')).toBe('private, no-store');
+
+    // The build card's picker needs the client's rights-confirmed pictures,
+    // labelled by the client's own caption.
+    expect(body.assets).toEqual([
+      {
+        id: 'b104b1e0-6d4c-4a3e-9230-13cc17b426a0',
+        label: 'The workshops room',
+        caption: 'The workshops room',
+      },
+    ]);
   });
 
   it('reports a failed read rather than an empty list', async () => {
@@ -473,13 +483,20 @@ describe('"Build this change": the button that does the work', () => {
     expect(jobs).toHaveLength(1);
     expect(jobs[0]!.kind).toBe('CHANGE_REQUEST_BUILD');
     const payload = jobs[0]!.payload as {
-      changeRequest: { request: string; operatorNote: string };
+      changeRequest: {
+        request: string;
+        operatorNote: string;
+        assetSelection: string;
+      };
     };
     // The client's own words, unedited, and the operator's note beside them.
     expect(payload.changeRequest.request).toBe(
       'Add a page for group workshops with its own booking calendar'
     );
     expect(payload.changeRequest.operatorNote).toBe('Three across on desktop');
+    // Nothing in the request names the workshops-room picture, so it goes
+    // over as a library the agents may use, not as one they must place.
+    expect(payload.changeRequest.assetSelection).toBe('library');
 
     expect(db.rows(TABLE)[0]!.status).toBe('paid');
     expect(db.rows(TABLE)[0]!.build_job_id).toBe(jobs[0]!.id);

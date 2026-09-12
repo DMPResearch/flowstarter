@@ -37,6 +37,7 @@ import {
   useChangeRequests,
   useQuoteChangeRequest,
   useSetChangeRequestStatus,
+  type ChangeRequestAssetOption,
   type ChangeRequestView,
 } from '@/hooks/useChangeRequests';
 import { BuildConversation } from './BuildConversation';
@@ -73,14 +74,17 @@ export function formatMoney(minor: number, currency: string): string {
   }).format(minor / 100);
 }
 
-function RequestCard({
+export function RequestCard({
   request,
   projectId,
   projectState,
+  assets = [],
 }: {
   request: ChangeRequestView;
   projectId: string;
   projectState: string;
+  /** The client's rights-confirmed pictures, for the picker on a paid card. */
+  assets?: ChangeRequestAssetOption[];
 }) {
   const quote = useQuoteChangeRequest(projectId);
   const setStatus = useSetChangeRequestStatus(projectId);
@@ -90,6 +94,9 @@ function RequestCard({
   );
   const [note, setNote] = useState(request.quoteNote ?? '');
   const [buildNote, setBuildNote] = useState('');
+  // Nothing ticked means "let the rule choose", which is what happened before
+  // this picker existed; ticking a box is an operator overriding that.
+  const [pickedAssetIds, setPickedAssetIds] = useState<string[]>([]);
   const [override, setOverride] = useState(false);
   const [reason, setReason] = useState('');
   const busy = quote.isPending || setStatus.isPending || build.isPending;
@@ -132,13 +139,21 @@ function RequestCard({
       toast.error(e instanceof Error ? e.message : 'Could not update');
     }
   };
+  const toggleAsset = (id: string) =>
+    setPickedAssetIds((current) =>
+      current.includes(id)
+        ? current.filter((picked) => picked !== id)
+        : [...current, id]
+    );
   const onBuild = async () => {
     try {
       const started = await build.mutateAsync({
         changeId: request.id,
         note: buildNote.trim(),
+        ...(pickedAssetIds.length > 0 ? { assetIds: pickedAssetIds } : {}),
       });
       setBuildNote('');
+      setPickedAssetIds([]);
       toast.success(
         started.created
           ? `Build queued with ${started.assets.length} of the client's files.`
@@ -152,6 +167,7 @@ function RequestCard({
   return (
     <li
       data-testid="change-request-card"
+      data-request-id={request.id}
       className="rounded-lg border border-[var(--fs-rule)] bg-[var(--fs-glass-bg)] p-3"
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -266,6 +282,36 @@ function RequestCard({
                 onChange={(e) => setBuildNote(e.target.value)}
                 placeholder="Put the gallery under the case study body, three across on desktop."
               />
+              {/* The client's own rights-confirmed pictures. Ticking none
+                  leaves the rule to choose, which is what happened before
+                  this list existed; ticking any is an operator overriding it
+                  with exactly those files and no others. */}
+              {assets.length > 0 && (
+                <fieldset
+                  data-testid="change-request-asset-picker"
+                  className="space-y-1"
+                >
+                  <legend className="text-xs text-[var(--fs-ink-dim)]">
+                    Pictures to hand the agents (optional; leaving these
+                    unticked lets the request&apos;s own words decide)
+                  </legend>
+                  {assets.map((asset) => (
+                    <label
+                      key={asset.id}
+                      className="flex items-start gap-2 text-xs text-[var(--fs-ink-dim)]"
+                    >
+                      <input
+                        type="checkbox"
+                        data-testid={`change-request-asset-${asset.id}`}
+                        checked={pickedAssetIds.includes(asset.id)}
+                        onChange={() => toggleAsset(asset.id)}
+                        className="mt-0.5"
+                      />
+                      <span>{asset.label}</span>
+                    </label>
+                  ))}
+                </fieldset>
+              )}
               <div className="flex flex-wrap justify-end gap-2">
                 <Button
                   size="sm"
@@ -392,6 +438,7 @@ export function ChangesTab({ project }: { project: Project }) {
               request={request}
               projectId={project.id}
               projectState={projectState}
+              assets={data.assets ?? []}
             />
           ))}
         </ul>

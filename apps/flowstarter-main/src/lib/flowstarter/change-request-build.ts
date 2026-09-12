@@ -77,29 +77,84 @@ export function changeRequestAssetPath(asset: UsableAsset): string {
 }
 
 /**
- * The client's pictures that this request should carry.
+ * What kind of work a request is, for the one question this file has to
+ * answer: would a picture help?
+ *
+ * Rules, not a model, and deliberately generous about saying "yes it might":
+ * anything that so much as mentions a photograph is `other`, because the cost
+ * of offering a picture to a request that did not need one is nothing, while
+ * the cost of withholding one from a request that did is a build that cannot
+ * do what was paid for. The two cases that get nothing are the two where a
+ * picture can only be noise:
+ *
+ *   - `removal`: the request takes something off the site.
+ *   - `copy-only`: the request is about wording.
+ */
+export type ChangeRequestPosture = 'removal' | 'copy-only' | 'other';
+
+const PICTURE_WORDS =
+  /\b(photos?|images?|pictures?|gallery|galleries|logos?|headshots?|screenshots?|banners?|thumbnails?|portraits?|shots?|uploads?|uploaded|attached?|attachments?)\b/i;
+const REMOVAL_WORDS =
+  /\b(remove|removing|delete|deleting|get\s+rid\s+of|drop|hide|unpublish|clear\s+out)\b/i;
+/** "Take the pricing section down": the words are rarely adjacent. */
+const TAKE_DOWN = /\btake\b[^.?!]{0,40}\bdown\b/i;
+const COPY_WORDS =
+  /\b(typos?|spelling|grammar|punctuation|wording|reword|rephrase|rewrite|copy|text|headlines?|headings?|paragraphs?|sentences?|titles?|renames?|rename|capitali[sz]ation)\b/i;
+
+export function changeRequestPosture(request: string): ChangeRequestPosture {
+  if (PICTURE_WORDS.test(request)) return 'other';
+  if (REMOVAL_WORDS.test(request) || TAKE_DOWN.test(request)) return 'removal';
+  if (COPY_WORDS.test(request)) return 'copy-only';
+  return 'other';
+}
+
+/** Why the pictures on a request are on it; the worker phrases the prompt from this. */
+export type ChangeRequestAssetHandover =
+  | 'operator'
+  | 'named'
+  | 'library'
+  | 'none';
+
+export interface ChangeRequestAssetChoice {
+  assets: ChangeRequestAsset[];
+  handover: ChangeRequestAssetHandover;
+}
+
+/**
+ * The client's pictures that this request should carry, and on what terms.
  *
  * `selectedAssetIds` is the operator's choice when they made one. With no
  * choice, every rights-confirmed picture the request's own text names by
- * caption is carried, and failing that all of them: a request that says "the
- * three screenshots I uploaded" should not need an operator to re-select them,
- * and an agent told about a picture it does not need simply does not use it.
+ * caption is carried: a request that says "the three screenshots I uploaded"
+ * should not need an operator to re-select them.
+ *
+ * With no caption match either, the old rule handed over the entire library
+ * under a prompt that said "use every one of these pictures". That is how a
+ * copy fix ends up with three unrelated photographs on it. Now the library is
+ * still handed over -- an agent that cannot see a file cannot use it, and
+ * re-queuing a build because the operator forgot to tick a box is worse -- but
+ * it is handed over as `library`, which the prompt renders as "available if
+ * the request calls for them", and a request that can only be a deletion or a
+ * wording change is handed nothing at all.
  *
  * Deliberately no model anywhere in this: the caption match is a plain
- * case-folded substring test on text the client wrote in both places.
+ * case-folded substring test on text the client wrote in both places, and the
+ * posture is the regexes above.
  */
 export function selectChangeRequestAssets(input: {
   assets: readonly UsableAsset[];
   request: string;
   selectedAssetIds?: readonly string[];
-}): ChangeRequestAsset[] {
+}): ChangeRequestAssetChoice {
   const { assets, request } = input;
   const selected = input.selectedAssetIds ?? [];
 
   let chosen: UsableAsset[];
+  let handover: ChangeRequestAssetHandover;
   if (selected.length > 0) {
     const wanted = new Set(selected);
     chosen = assets.filter((asset) => wanted.has(asset.id));
+    handover = 'operator';
   } else {
     const haystack = request.toLowerCase();
     const named = assets.filter((asset) => {
@@ -108,21 +163,33 @@ export function selectChangeRequestAssets(input: {
         caption && caption.length >= 4 && haystack.includes(caption)
       );
     });
-    chosen = named.length > 0 ? named : [...assets];
+    if (named.length > 0) {
+      chosen = named;
+      handover = 'named';
+    } else if (changeRequestPosture(request) === 'other') {
+      chosen = [...assets];
+      handover = 'library';
+    } else {
+      chosen = [];
+      handover = 'none';
+    }
   }
 
-  return chosen.slice(0, MAX_CHANGE_REQUEST_ASSETS).map((asset) => {
-    const publicPath = changeRequestAssetPath(asset);
-    return {
-      assetId: asset.id,
-      publicPath,
-      manifestPath: `public${publicPath}`,
-      caption: asset.caption?.trim() ?? '',
-      mime: asset.mime,
-      width: asset.width,
-      height: asset.height,
-    };
-  });
+  return {
+    handover,
+    assets: chosen.slice(0, MAX_CHANGE_REQUEST_ASSETS).map((asset) => {
+      const publicPath = changeRequestAssetPath(asset);
+      return {
+        assetId: asset.id,
+        publicPath,
+        manifestPath: `public${publicPath}`,
+        caption: asset.caption?.trim() ?? '',
+        mime: asset.mime,
+        width: asset.width,
+        height: asset.height,
+      };
+    }),
+  };
 }
 
 export interface ChangeRequestBuildPayload {
@@ -133,6 +200,8 @@ export interface ChangeRequestBuildPayload {
     operatorNote: string | null;
     seedVersion: number;
     assets: ChangeRequestAsset[];
+    /** On what terms the pictures are attached; the prompt reads this. */
+    assetSelection: ChangeRequestAssetHandover;
   };
 }
 
@@ -142,6 +211,7 @@ export function changeRequestBuildPayload(input: {
   operatorNote: string | null;
   seedVersion: number;
   assets: ChangeRequestAsset[];
+  assetSelection?: ChangeRequestAssetHandover;
 }): ChangeRequestBuildPayload {
   return {
     trigger: 'operator_build',
@@ -151,6 +221,7 @@ export function changeRequestBuildPayload(input: {
       operatorNote: input.operatorNote,
       seedVersion: input.seedVersion,
       assets: input.assets,
+      assetSelection: input.assetSelection ?? 'named',
     },
   };
 }
@@ -218,7 +289,7 @@ export async function enqueueChangeRequestBuild(input: {
     currentSiteVersion(supabase, workspaceId),
     loadUsableAssets(workspaceId),
   ]);
-  const assets = selectChangeRequestAssets({
+  const { assets, handover } = selectChangeRequestAssets({
     assets: usable,
     request: row.request,
     ...(input.selectedAssetIds
@@ -241,6 +312,7 @@ export async function enqueueChangeRequestBuild(input: {
         operatorNote: input.operatorNote,
         seedVersion,
         assets,
+        assetSelection: handover,
       }) as unknown as Json,
       updated_at: now,
     })

@@ -75,13 +75,17 @@ import { readSiteWorkspaceFiles } from './site-manifest';
 import {
   builtPageNames,
   changeRequestFeedback,
+  changeRequestSeedPages,
   changeRequestSummary,
   describeUnappliedChangeRequest,
   describeUncheckableChangeRequest,
   findChangeRequestPageIssue,
+  findChangeRequestRepairDamage,
   findUnappliedChangeRequest,
+  planChangeRequestPageRepair,
   unappliedChangeRequestFeedback,
   CHANGE_REQUEST_NOT_APPLIED,
+  CHANGE_REQUEST_REPAIR_DAMAGED_SITE,
   type ChangeRequestIntent,
 } from './change-request-build';
 
@@ -2530,7 +2534,16 @@ export class FullSiteBuildWorker {
       await applyIntegrationsToWorkspace(siteRoot, {
         booking: { provider: 'cal.com', url: job.calComUrl ?? null },
       });
-      const seedPages = builtPageNames(seeded.files.map((file) => file.path));
+      // The baseline, read off the manifest as source. `builtPageNames` was
+      // used here once and only counts paths ending in `.html`, which a
+      // published manifest -- `src/pages/*.astro`, `src/content/*.md`,
+      // `public/*` -- never contains: the seed always came back empty, and
+      // every request against a site with three or more routes failed as
+      // though the agent had invented all of them. Four paid builds died of
+      // that on 2026-09-12 before anyone read the empty array.
+      const seedPages = changeRequestSeedPages(
+        seeded.files.map((file) => file.path),
+      );
       await say('log', changeRequestSummary(intent), {
         changeRequestId: intent.changeRequestId,
         seedVersion: intent.seedVersion,
@@ -2598,21 +2611,44 @@ export class FullSiteBuildWorker {
         );
 
       await phase('Checking the change stayed inside the brief');
-      let pageIssue = findChangeRequestPageIssue(
+      const pagePlan = planChangeRequestPageRepair(
         seedPages,
         builtPageNames(await builtPaths()),
       );
-      if (pageIssue) {
-        await say('log', pageIssue);
-        await pass('Cutting back to what the request asked for', pageIssue);
+      await say('log', pagePlan.summary, {
+        seedPages,
+        action: pagePlan.action,
+      });
+      if (pagePlan.action === 'fail') {
+        throw new FullSiteBuildFailure(PAGE_BUDGET_EXCEEDED, pagePlan.summary);
+      }
+      if (pagePlan.action === 'repair') {
+        // The tree as it stands is the thing the repair pass is not allowed
+        // to damage, so it is read before the agent is told anything.
+        const beforeRepair = await readSiteWorkspaceFiles(siteRoot);
+        await pass(
+          'Removing only the pages the request did not ask for',
+          pagePlan.instruction,
+        );
         await check();
-        pageIssue = findChangeRequestPageIssue(
+        const damage = findChangeRequestRepairDamage(
+          seeded.files.map((file) => file.path),
+          beforeRepair,
+          await readSiteWorkspaceFiles(siteRoot),
+        );
+        if (damage) {
+          throw new FullSiteBuildFailure(
+            CHANGE_REQUEST_REPAIR_DAMAGED_SITE,
+            damage,
+          );
+        }
+        const pageIssue = findChangeRequestPageIssue(
           seedPages,
           builtPageNames(await builtPaths()),
         );
-      }
-      if (pageIssue) {
-        throw new FullSiteBuildFailure(PAGE_BUDGET_EXCEEDED, pageIssue);
+        if (pageIssue) {
+          throw new FullSiteBuildFailure(PAGE_BUDGET_EXCEEDED, pageIssue);
+        }
       }
 
       await phase('Checking for placeholder copy');

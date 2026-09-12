@@ -25,6 +25,7 @@ import {
   toChangeRequestView,
 } from './change-requests';
 import { enqueueChangeRequestBuild } from './change-request-build';
+import { loadUsableAssets } from './generation-assets';
 import { dispatchAgentJob } from './pipeline/dispatch';
 
 const UUID =
@@ -87,6 +88,21 @@ async function recordEvent(
 
 // ─── GET /projects/[id]/changes ─────────────────────────────────────────────
 
+/**
+ * One of the client's pictures, as the build card's picker needs to show it.
+ *
+ * `loadUsableAssets` and nothing else, for the same reason the build itself
+ * uses only that reader: an operator must not be able to tick a box on a file
+ * whose rights the client never confirmed. The label is the client's own
+ * caption, falling back to the file name, because those are the only two
+ * things about a picture we did not make up.
+ */
+export interface ChangeRequestAssetOption {
+  id: string;
+  label: string;
+  caption: string | null;
+}
+
 export async function listChangeRequestsHandler(
   _req: NextRequest,
   ctx: Ctx
@@ -94,12 +110,24 @@ export async function listChangeRequestsHandler(
   const op = await operator(ctx);
   if (!op.ok) return op.response;
   try {
-    const rows = await listChangeRequests(op.db, op.workspaceId);
+    const [rows, usable] = await Promise.all([
+      listChangeRequests(op.db, op.workspaceId),
+      loadUsableAssets(op.workspaceId),
+    ]);
+    const assets: ChangeRequestAssetOption[] = usable.map((asset) => ({
+      id: asset.id,
+      label:
+        asset.caption?.trim() ||
+        asset.storagePath.split('/').pop() ||
+        'Untitled picture',
+      caption: asset.caption?.trim() || null,
+    }));
     return NextResponse.json(
       {
         requests: rows.map((row) =>
           toChangeRequestView(row, { forOperator: true })
         ),
+        assets,
       },
       { headers: { 'Cache-Control': 'private, no-store' } }
     );
