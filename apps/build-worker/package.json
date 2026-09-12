@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@flowstarter/agentic-codegen": "workspace:*",
+    "@flowstarter/platform-config": "workspace:*",
     "@supabase/supabase-js": "2.95.3"
   },
   "devDependencies": {

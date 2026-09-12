@@ -51,6 +51,41 @@ describe('worker configuration', () => {
     ).toThrow(ConfigError);
   });
 
+  it('defaults the staging URL template to flowstarter.dev outside production', () => {
+    expect(loadConfig(validEnv({ FLOWSTARTER_ENV: 'development' })).stagingUrlTemplate).toBe(
+      'https://{projectId}.staging.flowstarter.dev',
+    );
+    expect(loadConfig(validEnv({ FLOWSTARTER_ENV: 'staging' })).stagingUrlTemplate).toBe(
+      'https://{projectId}.staging.flowstarter.dev',
+    );
+    expect(loadConfig(validEnv({ FLOWSTARTER_ENV: 'test' })).stagingUrlTemplate).toBe(
+      'https://{projectId}.staging.flowstarter.dev',
+    );
+  });
+
+  it('defaults the staging URL template to flowstarter.net in production', () => {
+    expect(loadConfig(validEnv({ FLOWSTARTER_ENV: 'production' })).stagingUrlTemplate).toBe(
+      'https://{projectId}.staging.flowstarter.net',
+    );
+  });
+
+  it('falls back to NODE_ENV for the staging URL template when FLOWSTARTER_ENV is unset', () => {
+    expect(loadConfig(validEnv({ NODE_ENV: 'production' })).stagingUrlTemplate).toBe(
+      'https://{projectId}.staging.flowstarter.net',
+    );
+  });
+
+  it('an explicit FLOWSTARTER_STAGING_URL_TEMPLATE always wins', () => {
+    expect(
+      loadConfig(
+        validEnv({
+          FLOWSTARTER_ENV: 'production',
+          FLOWSTARTER_STAGING_URL_TEMPLATE: 'https://{projectId}.staging.example.com',
+        }),
+      ).stagingUrlTemplate,
+    ).toBe('https://{projectId}.staging.example.com');
+  });
+
   it('refuses a staging template that cannot address the project or is not https', () => {
     expect(() =>
       loadConfig(

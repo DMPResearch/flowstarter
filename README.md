@@ -72,7 +72,7 @@ The pipeline is a state machine (see
 | `apps/flowstarter-editor` | A separate multi-tenant editor forked from T3 Code. Out of scope for most current work; not part of the active build/edit flow above. |
 | `apps/flowstarter-selfserve` | A separate, newer self-serve funnel experiment (its own pricing, Convex-backed live build state). Not the main product flow described above. |
 | `apps/shopify-landing` | Small marketing app. Out of scope for most changes. |
-| `packages/platform-config` | Single source of truth for domains/URLs. Never hardcode a domain; derive it from `PLATFORM_DOMAIN`/hostname. |
+| `packages/platform-config` | Single source of truth for domains/URLs. Never hardcode a domain; derive it from `PLATFORM_DOMAIN`/hostname, or from `resolvePlatformDomain()`'s env rule (`flowstarter.net` in production, `flowstarter.dev` in development/test/staging) when neither is available. |
 | `packages/flow-design-system`, `packages/daytona-utils`, `packages/build-engine`, `packages/build-orchestrator`, `packages/idea-validation`, `packages/supabase-utils` | Shared UI kit and supporting libraries used by the apps above. |
 
 Database: `supabase/migrations` is the schema. The local Supabase stack on

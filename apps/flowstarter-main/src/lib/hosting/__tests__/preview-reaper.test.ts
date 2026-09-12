@@ -27,7 +27,10 @@ vi.mock('@/supabase-clients/server', () => ({
   createSupabaseServiceRoleClient: () => db.client,
 }));
 
-import { previewsDeployAgentFromEnv } from '../preview-publisher';
+import {
+  PREVIEW_DOMAIN_SUFFIX,
+  previewsDeployAgentFromEnv,
+} from '../preview-publisher';
 import { reapExpiredPreviews } from '../preview-reaper';
 
 const WORKSPACE_ID = '0f4e1088-8d8f-4f18-83b1-406cc292b23c';
@@ -44,7 +47,7 @@ function expiredRow(n: number, overrides: Record<string, unknown> = {}) {
     brand_config: {},
     manifest: { files: [] },
     artifact_path: `funnel/${id}/site.tar.gz`,
-    hostname: `p-000000000000000${n}.preview.flowstarter.net`,
+    hostname: `p-000000000000000${n}.${PREVIEW_DOMAIN_SUFFIX}`,
     deploy_status: 'live',
     deployment_error: null,
     expires_at: new Date(Date.now() - 60_000).toISOString(),

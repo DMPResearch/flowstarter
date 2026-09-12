@@ -6,7 +6,35 @@
  * All domain logic derives from the current hostname or environment variables —
  * no domain strings are hardcoded. To run the platform on a new domain,
  * set PLATFORM_DOMAIN (e.g. "flowstarter.app") and everything adapts.
+ *
+ * The domain a running process mints hostnames under is decided by
+ * environment, not by hand: `resolvePlatformDomain` below is the one place
+ * that decides `flowstarter.net` (production) vs `flowstarter.dev`
+ * (development, test, staging, or anything else it does not recognise).
+ * Every preview subdomain, staging URL template and cookie domain the
+ * platform mints derives from it, directly or through `getPlatformDomain`,
+ * so the two zones can never drift out of step with each other.
  */
+
+// ---------------------------------------------------------------------------
+// Browser hostname (no `dom` lib required)
+// ---------------------------------------------------------------------------
+
+/**
+ * `window.location.hostname`, or undefined outside a browser.
+ *
+ * Written as a `globalThis` property access rather than the bare `window`
+ * identifier so this file type-checks under consumers that build without the
+ * `dom` lib (the build worker, the deploy-agent): those never run in a
+ * browser, so `window` genuinely does not exist there, and referencing the
+ * ambient `Window` type would make this whole module fail to compile for
+ * them the moment they import anything from it.
+ */
+function browserHostname(): string | undefined {
+  const win = (globalThis as { window?: { location?: { hostname?: string } } })
+    .window;
+  return win?.location?.hostname;
+}
 
 // ---------------------------------------------------------------------------
 // Core: extract the root domain from any hostname
@@ -63,21 +91,79 @@ export function getRootDomain(hostname: string): string | undefined {
 // Resolve the platform domain
 // ---------------------------------------------------------------------------
 
+/** The two live DNS zones. Never a third one, and never picked by hand. */
+const PRODUCTION_PLATFORM_DOMAIN = 'flowstarter.net';
+const DEFAULT_PLATFORM_DOMAIN = 'flowstarter.dev';
+
+function readProcessEnvVar(key: string): string | undefined {
+  return typeof process !== 'undefined' ? process.env[key] : undefined;
+}
+
+/** `PLATFORM_DOMAIN`, else `NEXT_PUBLIC_PLATFORM_DOMAIN`, from real env. */
+function readPlatformDomainOverrideFromEnv(): string | undefined {
+  return (
+    readProcessEnvVar('PLATFORM_DOMAIN') ||
+    readProcessEnvVar('NEXT_PUBLIC_PLATFORM_DOMAIN') ||
+    undefined
+  );
+}
+
+export interface ResolvePlatformDomainInput {
+  /**
+   * The app's own environment name (`development` | `test` | `staging` |
+   * `production`, e.g. from `resolveFlowstarterEnv()`). Authoritative when
+   * given: only an exact `"production"` mints the production zone. Any other
+   * value, including one this does not recognise, mints the dev zone.
+   */
+  flowstarterEnv?: string;
+  /** Falls back to this when `flowstarterEnv` is not given. */
+  nodeEnv?: string;
+  /** Wins over both, when set. Usually `PLATFORM_DOMAIN` from the caller. */
+  override?: string;
+}
+
+/**
+ * The one place that decides which of the two live zones a process mints
+ * hostnames under: `flowstarter.net` for production, `flowstarter.dev` for
+ * everything else (development, test, staging, or an environment value
+ * this does not recognise).
+ *
+ * Called with no arguments, it reads `PLATFORM_DOMAIN` /
+ * `NEXT_PUBLIC_PLATFORM_DOMAIN`, `FLOWSTARTER_ENV` and `NODE_ENV` straight
+ * from `process.env`, which is what every call site in this app wants: the
+ * process's own environment decides its own domain. Pass explicit fields
+ * (as the build worker does, since it validates a caller-supplied `env`
+ * object rather than trusting `process.env` directly) to make the decision
+ * a pure function of those fields instead.
+ */
+export function resolvePlatformDomain(
+  input: ResolvePlatformDomainInput = {
+    override: readPlatformDomainOverrideFromEnv(),
+    flowstarterEnv: readProcessEnvVar('FLOWSTARTER_ENV'),
+    nodeEnv: readProcessEnvVar('NODE_ENV'),
+  },
+): string {
+  if (input.override) return input.override;
+
+  const isProduction = input.flowstarterEnv
+    ? input.flowstarterEnv === 'production'
+    : input.nodeEnv === 'production';
+
+  return isProduction ? PRODUCTION_PLATFORM_DOMAIN : DEFAULT_PLATFORM_DOMAIN;
+}
+
 /**
  * Resolves the platform's root domain from (in priority order):
- *   1. PLATFORM_DOMAIN env var (or NEXT_PUBLIC_PLATFORM_DOMAIN)
- *   2. The current hostname (browser or request)
- *   3. The provided fallback (defaults to "flowstarter.dev")
+ *   1. `PLATFORM_DOMAIN` env var (or `NEXT_PUBLIC_PLATFORM_DOMAIN`)
+ *   2. `VITE_PLATFORM_DOMAIN`, in a Vite-bundled app
+ *   3. The current hostname (browser or request): what the process is
+ *      actually being reached on always wins over a guess
+ *   4. `resolvePlatformDomain()`, meaning `flowstarter.net` in production
+ *      and `flowstarter.dev` otherwise
  */
-export function getPlatformDomain(
-  hostname?: string,
-  fallback = 'flowstarter.dev',
-): string {
+export function getPlatformDomain(hostname?: string): string {
   // Check env vars (works in Node & Vite)
-  const envDomain =
-    typeof process !== 'undefined'
-      ? process.env.PLATFORM_DOMAIN ?? process.env.NEXT_PUBLIC_PLATFORM_DOMAIN
-      : undefined;
+  const envDomain = readPlatformDomainOverrideFromEnv();
   if (envDomain) return envDomain;
 
   // Vite env (safe access to avoid TS issues across bundlers)
@@ -90,16 +176,14 @@ export function getPlatformDomain(
   }
 
   // Derive from hostname
-  const host =
-    hostname ??
-    (typeof window !== 'undefined' ? window.location.hostname : undefined);
+  const host = hostname ?? browserHostname();
 
   if (host) {
     const root = getRootDomain(host);
     if (root) return root;
   }
 
-  return fallback;
+  return resolvePlatformDomain();
 }
 
 // ---------------------------------------------------------------------------
@@ -143,9 +227,7 @@ export function getLoginUrl(hostname?: string): string {
  * Returns undefined for localhost.
  */
 export function getSharedCookieDomain(hostname?: string): string | undefined {
-  const host =
-    hostname ??
-    (typeof window !== 'undefined' ? window.location.hostname : undefined);
+  const host = hostname ?? browserHostname();
 
   if (!host) return undefined;
 
@@ -288,9 +370,7 @@ export function isSafeRedirectUrl(
  * Returns true if running on a deployed platform domain (not localhost).
  */
 export function isDeployedHost(hostname?: string): boolean {
-  const host =
-    hostname ??
-    (typeof window !== 'undefined' ? window.location.hostname : undefined);
+  const host = hostname ?? browserHostname();
 
   if (!host) return false;
   return getRootDomain(host) !== undefined;

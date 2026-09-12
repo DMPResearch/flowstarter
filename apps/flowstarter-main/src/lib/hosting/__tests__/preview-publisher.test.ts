@@ -112,7 +112,11 @@ describe('preview slugs and hostnames', () => {
     expect(funnelPreviewHostname(slug)).toBe(
       `${slug}.${PREVIEW_DOMAIN_SUFFIX}`
     );
-    expect(PREVIEW_DOMAIN_SUFFIX).toBe('preview.flowstarter.net');
+    // Not hardcoded to one zone: it derives from resolvePlatformDomain(),
+    // so it reads `preview.flowstarter.dev` outside production and
+    // `preview.flowstarter.net` in it (see resolve-platform-domain tests in
+    // @flowstarter/platform-config for the per-env cases).
+    expect(PREVIEW_DOMAIN_SUFFIX).toMatch(/^preview\.flowstarter\.(dev|net)$/);
   });
 
   it('refuses to build a hostname from anything but a minted slug', () => {
@@ -127,7 +131,7 @@ describe('preview slugs and hostnames', () => {
       slug
     );
     expect(
-      slugFromPreviewHostname('calm-path.preview.flowstarter.net')
+      slugFromPreviewHostname('calm-path.preview.evil-zone.example')
     ).toBeNull();
     expect(slugFromPreviewHostname(`${slug}.evil.example.com`)).toBeNull();
   });
@@ -203,7 +207,7 @@ describe('publishFunnelPreview', () => {
       agent: configured(agent.client),
     });
     expect(result.hostname).toMatch(
-      /^p-[0-9a-f]{16}\.preview\.flowstarter\.net$/
+      /^p-[0-9a-f]{16}\.preview\.flowstarter\.(dev|net)$/
     );
     expect(result.hostname).not.toContain('calm');
     expect(result.hostname).not.toContain('therapy');

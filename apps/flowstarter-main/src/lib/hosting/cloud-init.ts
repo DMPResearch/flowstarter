@@ -22,6 +22,8 @@
  * agent, we'll fill the ExecStart in.
  */
 
+import { resolvePlatformDomain } from '@flowstarter/platform-config';
+
 const CLOUD_INIT_VERSION = 4;
 
 /**
@@ -71,9 +73,10 @@ export interface CloudInitOptions {
   previewsDeployAgentSharedSecret?: string | null;
   /**
    * The zone preview hostnames live under. Must match the wildcard DNS record
-   * (`*.preview.flowstarter.net`, dns-only so Caddy can answer the ACME
-   * HTTP-01 challenge itself) and `PREVIEW_DOMAIN_SUFFIX` in
-   * `lib/hosting/preview-publisher.ts`.
+   * (dns-only so Caddy can answer the ACME HTTP-01 challenge itself) and
+   * `PREVIEW_DOMAIN_SUFFIX` in `lib/hosting/preview-publisher.ts`. Defaults to
+   * `preview.${resolvePlatformDomain()}` when omitted: `preview.flowstarter.dev`
+   * outside production, `preview.flowstarter.net` in it.
    */
   previewsHostSuffix?: string;
 }
@@ -91,7 +94,6 @@ const PREVIEWS = {
   sitesRoot: '/var/www/previews',
   caddyDir: '/etc/caddy/previews',
   caddySitesDir: '/etc/caddy/previews/sites',
-  defaultHostSuffix: 'preview.flowstarter.net',
 } as const;
 
 export function getCloudInitVersion(): number {
@@ -118,8 +120,12 @@ export function buildCloudInit(opts: CloudInitOptions): string {
   const hostname = opts.hostname ?? 'flowstarter-host';
   const artifactUrl = opts.deployAgentArtifactUrl;
   const previewsSecret = opts.previewsDeployAgentSharedSecret?.trim() || null;
+  // Same env-driven rule as `previewDomainForSlug` and `PREVIEW_DOMAIN_SUFFIX`:
+  // a caller that provisions from a development or staging process gets
+  // `preview.flowstarter.dev` without having to pass `previewsHostSuffix`
+  // explicitly; production gets `preview.flowstarter.net`.
   const previewsSuffix =
-    opts.previewsHostSuffix?.trim() || PREVIEWS.defaultHostSuffix;
+    opts.previewsHostSuffix?.trim() || `preview.${resolvePlatformDomain()}`;
 
   const sshKeysYaml = sshKeys.length
     ? sshKeys.map((k) => `      - ${escapeYaml(k)}`).join('\n')

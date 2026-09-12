@@ -22,6 +22,7 @@ import { mkdir, readFile, writeFile, rename, rm, stat } from 'node:fs/promises';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { join, resolve } from 'node:path';
+import { resolvePlatformDomain } from '@flowstarter/platform-config';
 import { safeExtractTarball } from './tar-safety';
 import { buildCaddySnippet, buildPreviewCaddySnippet, type ServeTarget } from './caddy-snippet';
 import {
@@ -106,9 +107,19 @@ const DOCKER_READY_INTERVAL_MS = Number(
  */
 const SITE_PORT = Number(process.env.DEPLOY_AGENT_SITE_PORT ?? 9080);
 
-/** The zone preview hostnames must end in. Guards the TLS ask endpoint. */
+/**
+ * The zone preview hostnames must end in. Guards the TLS ask endpoint.
+ *
+ * Same env-driven rule as `previewDomainForSlug` and `PREVIEW_DOMAIN_SUFFIX`
+ * in flowstarter-main: `resolvePlatformDomain()` reads this process's own
+ * `FLOWSTARTER_ENV` / `NODE_ENV`, so a host bootstrapped for development or
+ * staging defaults to `preview.flowstarter.dev` and one bootstrapped for
+ * production defaults to `preview.flowstarter.net`, so an operator never has
+ * to set `DEPLOY_AGENT_PREVIEW_HOST_SUFFIX` by hand per environment.
+ */
 const PREVIEW_HOST_SUFFIX =
-  process.env.DEPLOY_AGENT_PREVIEW_HOST_SUFFIX ?? 'preview.flowstarter.net';
+  process.env.DEPLOY_AGENT_PREVIEW_HOST_SUFFIX?.trim() ||
+  `preview.${resolvePlatformDomain()}`;
 
 if (!SHARED_SECRET) {
   console.error(

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DeployError,
   DryRunDeployAgentClient,
@@ -131,10 +131,50 @@ describe('HttpDeployAgentClient', () => {
 });
 
 describe('previewDomainForSlug', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('returns a host without protocol prefix', () => {
     const out = previewDomainForSlug('acme');
     expect(out).not.toMatch(/^https?:\/\//);
     expect(out.startsWith('acme.preview.')).toBe(true);
+  });
+
+  it('mints a flowstarter.dev preview host in development', () => {
+    vi.stubEnv('PLATFORM_DOMAIN', '');
+    vi.stubEnv('NEXT_PUBLIC_PLATFORM_DOMAIN', '');
+    vi.stubEnv('FLOWSTARTER_ENV', 'development');
+    expect(previewDomainForSlug('acme')).toBe('acme.preview.flowstarter.dev');
+  });
+
+  it('mints a flowstarter.dev preview host in test', () => {
+    vi.stubEnv('PLATFORM_DOMAIN', '');
+    vi.stubEnv('NEXT_PUBLIC_PLATFORM_DOMAIN', '');
+    vi.stubEnv('FLOWSTARTER_ENV', 'test');
+    expect(previewDomainForSlug('acme')).toBe('acme.preview.flowstarter.dev');
+  });
+
+  it('mints a flowstarter.dev preview host in staging', () => {
+    vi.stubEnv('PLATFORM_DOMAIN', '');
+    vi.stubEnv('NEXT_PUBLIC_PLATFORM_DOMAIN', '');
+    vi.stubEnv('FLOWSTARTER_ENV', 'staging');
+    expect(previewDomainForSlug('acme')).toBe('acme.preview.flowstarter.dev');
+  });
+
+  it('mints a flowstarter.net preview host in production', () => {
+    vi.stubEnv('PLATFORM_DOMAIN', '');
+    vi.stubEnv('NEXT_PUBLIC_PLATFORM_DOMAIN', '');
+    vi.stubEnv('FLOWSTARTER_ENV', 'production');
+    expect(previewDomainForSlug('acme')).toBe('acme.preview.flowstarter.net');
+  });
+
+  it('an explicit PLATFORM_DOMAIN override wins over the environment', () => {
+    vi.stubEnv('PLATFORM_DOMAIN', 'flowstarter.example');
+    vi.stubEnv('FLOWSTARTER_ENV', 'production');
+    expect(previewDomainForSlug('acme')).toBe(
+      'acme.preview.flowstarter.example'
+    );
   });
 });
 
