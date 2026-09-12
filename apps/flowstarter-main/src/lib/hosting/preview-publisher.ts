@@ -40,7 +40,7 @@ import 'server-only';
  * preview as live that isn't.
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '../database.types';
 import {
@@ -323,6 +323,11 @@ export async function publishFunnelPreview(
   }
 
   const tarball = packPreviewTarball(deployFiles);
+  // Computed once, off the exact bytes that get uploaded/pushed below: the
+  // deploy-agent requires this digest and verifies extraction against it, so
+  // every `agent.client.push()` call below — dry-run or real, URL or bytes —
+  // carries it.
+  const tarballSha256 = createHash('sha256').update(tarball).digest('hex');
 
   const artifactPath = await uploadFunnelPreviewArtifact({
     previewId: input.previewId,
@@ -352,8 +357,16 @@ export async function publishFunnelPreview(
       sharedSecret: agent.sharedSecret,
       siteSlug: slug,
       artifact: artifactPath
-        ? { kind: 'url', url: `storage://${artifactPath}` }
-        : { kind: 'bytes', bytes: toArrayBuffer(tarball) },
+        ? {
+            kind: 'url',
+            url: `storage://${artifactPath}`,
+            sha256: tarballSha256,
+          }
+        : {
+            kind: 'bytes',
+            bytes: toArrayBuffer(tarball),
+            sha256: tarballSha256,
+          },
       primaryDomain: hostname,
       additionalDomains: [],
     });
@@ -385,10 +398,14 @@ export async function publishFunnelPreview(
     'bytes';
 
   let artifact:
-    | { kind: 'url'; url: string }
-    | { kind: 'bytes'; bytes: ArrayBuffer };
+    | { kind: 'url'; url: string; sha256: string }
+    | { kind: 'bytes'; bytes: ArrayBuffer; sha256: string };
   if (useBytesTransport) {
-    artifact = { kind: 'bytes', bytes: toArrayBuffer(tarball) };
+    artifact = {
+      kind: 'bytes',
+      bytes: toArrayBuffer(tarball),
+      sha256: tarballSha256,
+    };
   } else {
     const signed = artifactPath
       ? await signFunnelPreviewArtifact({
@@ -423,7 +440,7 @@ export async function publishFunnelPreview(
         published: false,
       };
     }
-    artifact = { kind: 'url', url: signed };
+    artifact = { kind: 'url', url: signed, sha256: tarballSha256 };
   }
 
   try {

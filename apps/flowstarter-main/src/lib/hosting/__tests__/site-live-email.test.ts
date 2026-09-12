@@ -198,7 +198,11 @@ describe('deploySite tells the client', () => {
       cloudflare: null,
       cloudflareDefaultZoneId: null,
       workspaceId: WS,
-      artifact: { kind: 'url' as const, url: 'https://artifacts/site.tar.gz' },
+      artifact: {
+        kind: 'url' as const,
+        url: 'https://artifacts/site.tar.gz',
+        sha256: 'ee'.repeat(32),
+      },
       deployedBy: 'user_operator_1',
       resolveSharedSecret: async () => 'agent-shared-secret',
       ...overrides,

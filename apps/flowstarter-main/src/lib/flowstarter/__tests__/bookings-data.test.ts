@@ -7,10 +7,12 @@
  * the `workspace_id` filter is the whole of the isolation. A recording fake is
  * the only way to assert a filter that was never sent.
  *
- * A WEBHOOK MUST NOT BE ABLE TO FAIL LOUDLY. Cal.com retries a non-2xx, so
- * every database problem in here has to come back as a value rather than a
- * throw, including the one that is not really a problem: the unique index
- * catching two copies of the same delivery that raced past the read.
+ * A GENUINE DATABASE FAILURE MUST NOT BE ACKNOWLEDGED AS HANDLED. A failed
+ * read, insert or update throws so the webhook route can answer 500 and let
+ * Cal.com retry a delivery that was never durably saved. The one database
+ * outcome that is not a failure is the unique index catching two copies of
+ * the same delivery that raced past the read — that comes back as an
+ * ordinary `skip`, not a throw.
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -154,7 +156,15 @@ describe('recordCalBooking', () => {
   it('does nothing when the same delivery arrives again', async () => {
     const db = fakeSupabase((query) =>
       query.mode === 'select'
-        ? { data: { id: 'row-1', status: 'booked' }, error: null }
+        ? {
+            data: {
+              id: 'row-1',
+              status: 'booked',
+              start_at: '2026-09-15T09:30:00.000Z',
+              end_at: '2026-09-15T10:00:00.000Z',
+            },
+            error: null,
+          }
         : ok()
     );
     const result = await recordCalBooking(db.client, {
@@ -164,6 +174,68 @@ describe('recordCalBooking', () => {
     });
 
     expect(result.action).toEqual({ kind: 'skip', reason: 'replayed' });
+    expect(db.queries.filter((query) => query.mode !== 'select')).toHaveLength(
+      0
+    );
+  });
+
+  // The fix for the top-of-review booking bug: two RESCHEDULED deliveries for
+  // the same uid are not the same event just because both say "rescheduled".
+  it('updates, not replays, a second reschedule that moved the time', async () => {
+    const db = fakeSupabase((query) =>
+      query.mode === 'select'
+        ? {
+            data: {
+              id: 'row-1',
+              status: 'rescheduled',
+              start_at: '2026-09-15T09:30:00.000Z',
+              end_at: '2026-09-15T10:00:00.000Z',
+            },
+            error: null,
+          }
+        : ok()
+    );
+    const result = await recordCalBooking(db.client, {
+      workspaceId: WORKSPACE,
+      event: event({
+        trigger: 'BOOKING_RESCHEDULED',
+        status: 'rescheduled',
+        startAt: '2026-09-16T14:00:00.000Z',
+        endAt: '2026-09-16T14:30:00.000Z',
+      }),
+      payload: {},
+    });
+
+    expect(result.action).toEqual({ kind: 'update' });
+    const writes = db.queries.filter((query) => query.mode !== 'select');
+    expect(writes).toHaveLength(1);
+    expect(writes[0].values).toMatchObject({
+      start_at: '2026-09-16T14:00:00.000Z',
+    });
+  });
+
+  // The other half: a late `booked` (BOOKING_CREATED) delivered after a
+  // reschedule must not overwrite the moved booking back to its old time.
+  it('refuses a late create that arrives after a reschedule', async () => {
+    const db = fakeSupabase((query) =>
+      query.mode === 'select'
+        ? {
+            data: {
+              id: 'row-1',
+              status: 'rescheduled',
+              start_at: '2026-09-16T14:00:00.000Z',
+              end_at: '2026-09-16T14:30:00.000Z',
+            },
+            error: null,
+          }
+        : ok()
+    );
+    const result = await recordCalBooking(db.client, {
+      workspaceId: WORKSPACE,
+      event: event(),
+      payload: {},
+    });
+    expect(result.action).toEqual({ kind: 'skip', reason: 'superseded' });
     expect(db.queries.filter((query) => query.mode !== 'select')).toHaveLength(
       0
     );
@@ -223,7 +295,10 @@ describe('recordCalBooking', () => {
     expect(result.action).toEqual({ kind: 'skip', reason: 'replayed' });
   });
 
-  it('swallows a failed read, a failed insert and a failed update', async () => {
+  // A genuine storage failure must not be acknowledged as "replayed" — the
+  // caller (the webhook route) needs to see this as a failure and answer 500
+  // so Cal.com retries a delivery that was never actually saved.
+  it('throws on a failed read, a failed insert and a failed update, rather than reporting a skip', async () => {
     const failing = { code: '08006', message: 'connection lost' };
 
     const onRead = fakeSupabase(() => ({ data: null, error: failing }));
@@ -233,7 +308,7 @@ describe('recordCalBooking', () => {
         event: event(),
         payload: {},
       })
-    ).resolves.toMatchObject({ action: { kind: 'skip' } });
+    ).rejects.toThrow(/could not read booking/);
 
     const onInsert = fakeSupabase((query) =>
       query.mode === 'insert' ? { data: null, error: failing } : ok()
@@ -244,11 +319,19 @@ describe('recordCalBooking', () => {
         event: event(),
         payload: {},
       })
-    ).resolves.toMatchObject({ action: { kind: 'skip' } });
+    ).rejects.toThrow(/could not record booking/);
 
     const onUpdate = fakeSupabase((query) => {
       if (query.mode === 'select')
-        return { data: { id: 'row-1', status: 'booked' }, error: null };
+        return {
+          data: {
+            id: 'row-1',
+            status: 'booked',
+            start_at: '2026-09-15T09:30:00.000Z',
+            end_at: '2026-09-15T10:00:00.000Z',
+          },
+          error: null,
+        };
       return { data: null, error: failing };
     });
     await expect(
@@ -257,7 +340,7 @@ describe('recordCalBooking', () => {
         event: event({ trigger: 'BOOKING_CANCELLED', status: 'cancelled' }),
         payload: {},
       })
-    ).resolves.toMatchObject({ action: { kind: 'skip' } });
+    ).rejects.toThrow(/could not update booking/);
   });
 
   it('stores an empty payload rather than null when none was given', async () => {

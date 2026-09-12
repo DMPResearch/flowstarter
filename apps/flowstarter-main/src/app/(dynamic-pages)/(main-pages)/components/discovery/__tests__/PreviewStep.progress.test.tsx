@@ -158,8 +158,17 @@ describe('SSE progress', () => {
       })
     );
 
-    expect(await screen.findByTitle('Live site preview')).toBeInTheDocument();
+    const frame = await screen.findByTitle('Live site preview');
+    expect(frame).toBeInTheDocument();
     expect(source.closed).toBe(true);
+
+    // The funnel iframe must never carry `allow-same-origin`: the local
+    // preview proxy re-hosts generated content on this app's own origin
+    // (see `local-preview-guard.ts`), so `allow-same-origin` would let that
+    // framed document read this page's cookies and storage.
+    const sandbox = frame.getAttribute('sandbox') ?? '';
+    expect(sandbox.split(' ')).not.toContain('allow-same-origin');
+    expect(sandbox.split(' ')).toContain('allow-scripts');
   });
 
   it('closes the stream on unmount', async () => {

@@ -221,6 +221,7 @@ describe('deployBuildArtifact', () => {
       supabase: db.client as never,
       workspaceId: WS,
       artifactUrl: 'https://artifacts.test/site.tar.gz',
+      artifactSha256: 'abc123',
       deployedBy: 'build-worker',
       env: {
         DEPLOY_AGENT_DRY_RUN: 'true',
@@ -236,6 +237,7 @@ describe('deployBuildArtifact', () => {
       supabase: db.client as never,
       workspaceId: WS,
       artifactUrl: 'http://127.0.0.1:8788/site.tar.gz',
+      artifactSha256: 'abc123',
       deployedBy: 'build-worker',
       env: {
         DEPLOY_AGENT_DRY_RUN: 'true',
@@ -265,6 +267,7 @@ describe('deployBuildArtifact', () => {
       supabase: deleteAfterDeploy,
       workspaceId: WS,
       artifactUrl: 'https://artifacts.test/site.tar.gz',
+      artifactSha256: 'abc123',
       deployedBy: 'build-worker',
       env: {
         DEPLOY_AGENT_DRY_RUN: 'true',
@@ -295,6 +298,7 @@ describe('deployBuildArtifact', () => {
         supabase: db.client as never,
         workspaceId: WS,
         artifactUrl: 'https://artifacts.test/site.tar.gz',
+        artifactSha256: 'abc123',
         deployedBy: 'build-worker',
         env: {
           DEPLOY_AGENT_DRY_RUN: 'true',

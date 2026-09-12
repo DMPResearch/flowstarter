@@ -22,7 +22,11 @@ describe('DryRunDeployAgentClient', () => {
       deployAgentUrl: 'https://10.0.0.1:8443',
       sharedSecret: 'shh',
       siteSlug: 'acme',
-      artifact: { kind: 'url', url: 'https://artifacts/abc.tar.gz' },
+      artifact: {
+        kind: 'url',
+        url: 'https://artifacts/abc.tar.gz',
+        sha256: 'ab'.repeat(32),
+      },
       primaryDomain: 'acme.com',
       additionalDomains: [],
     });
@@ -101,7 +105,7 @@ describe('HttpDeployAgentClient', () => {
         deployAgentUrl: 'https://10.0.0.1:8443',
         sharedSecret: 's',
         siteSlug: 'acme',
-        artifact: { kind: 'url', url: 'https://x' },
+        artifact: { kind: 'url', url: 'https://x', sha256: 'aa'.repeat(32) },
         primaryDomain: null,
         additionalDomains: [],
       })
@@ -121,7 +125,7 @@ describe('HttpDeployAgentClient', () => {
       deployAgentUrl: 'https://10.0.0.1:8443/',
       sharedSecret: 's',
       siteSlug: 'acme',
-      artifact: { kind: 'url', url: 'https://x' },
+      artifact: { kind: 'url', url: 'https://x', sha256: 'aa'.repeat(32) },
       primaryDomain: null,
       additionalDomains: [],
     });
@@ -281,7 +285,7 @@ describe('HttpDeployAgentClient with raw bytes', () => {
     expect(fetchSpy.mock.calls[0]![1]?.body).toBe(bytes);
   });
 
-  it('sends empty domain headers and no digest when there is nothing to send', async () => {
+  it('sends empty domain headers, but always sends the digest', async () => {
     const fetchSpy = vi.fn(
       async (_url: string | URL | Request, _init?: RequestInit) =>
         new Response('', { status: 200 })
@@ -293,12 +297,16 @@ describe('HttpDeployAgentClient with raw bytes', () => {
       deployAgentUrl: 'https://10.0.0.1:8443',
       sharedSecret: 's',
       siteSlug: 'acme',
-      artifact: { kind: 'bytes', bytes: new Uint8Array([9]).buffer },
+      artifact: {
+        kind: 'bytes',
+        bytes: new Uint8Array([9]).buffer,
+        sha256: 'a'.repeat(64),
+      },
       primaryDomain: null,
       additionalDomains: [],
     });
     // An empty body is not an error; the caller just learns nothing about the
-    // digest or the size.
+    // size the agent reports back.
     expect(out).toEqual({ ok: true, sha256: '', sizeBytes: 0 });
     const headers = fetchSpy.mock.calls[0]![1]?.headers as Record<
       string,
@@ -306,7 +314,9 @@ describe('HttpDeployAgentClient with raw bytes', () => {
     >;
     expect(headers['X-Site-Primary-Domain']).toBe('');
     expect(headers['X-Site-Additional-Domains']).toBe('');
-    expect(headers['X-Artifact-Sha256']).toBeUndefined();
+    // Required, not conditional: the agent will not extract an artifact it
+    // cannot verify, so this header is never skipped.
+    expect(headers['X-Artifact-Sha256']).toBe('a'.repeat(64));
   });
 
   it('reports a non-JSON agent failure with the body text', async () => {
@@ -322,7 +332,7 @@ describe('HttpDeployAgentClient with raw bytes', () => {
         deployAgentUrl: 'https://10.0.0.1:8443',
         sharedSecret: 's',
         siteSlug: 'acme',
-        artifact: { kind: 'url', url: 'https://x' },
+        artifact: { kind: 'url', url: 'https://x', sha256: 'aa'.repeat(32) },
         primaryDomain: null,
         additionalDomains: [],
       })
@@ -457,7 +467,11 @@ function deployOpts(
     cloudflare: null,
     cloudflareDefaultZoneId: null,
     workspaceId: WS,
-    artifact: { kind: 'url', url: 'https://artifacts/site.tar.gz' },
+    artifact: {
+      kind: 'url',
+      url: 'https://artifacts/site.tar.gz',
+      sha256: 'cc'.repeat(32),
+    },
     deployedBy: 'user_operator_1',
     resolveSharedSecret: async () => 'agent-shared-secret',
     ...overrides,

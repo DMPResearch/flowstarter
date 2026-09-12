@@ -24,7 +24,11 @@ import { spawn } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { resolvePlatformDomain } from '@flowstarter/platform-config';
 import { safeExtractTarball } from './tar-safety';
-import { buildCaddySnippet, buildPreviewCaddySnippet, type ServeTarget } from './caddy-snippet';
+import {
+  buildCaddySnippet,
+  buildPreviewCaddySnippet,
+  type ServeTarget,
+} from './caddy-snippet';
 import {
   SLUG_PLACEHOLDER,
   hostFromTemplate,
@@ -36,7 +40,10 @@ import {
   systemCommandRunner,
   httpReadinessCheck,
 } from './docker-runtime';
-import { loadSiteRuntimeTemplates, type SiteRuntimeTemplates } from './site-templates';
+import {
+  loadSiteRuntimeTemplates,
+  type SiteRuntimeTemplates,
+} from './site-templates';
 
 const PORT = Number(process.env.DEPLOY_AGENT_PORT ?? 8443);
 
@@ -58,7 +65,8 @@ const CADDY_SITES_DIR =
   process.env.DEPLOY_AGENT_CADDY_SITES_DIR ?? '/etc/caddy/sites';
 const CADDY_RELOAD_CMD =
   process.env.DEPLOY_AGENT_CADDY_RELOAD_CMD ?? 'systemctl reload caddy';
-const TEMP_ROOT = process.env.DEPLOY_AGENT_TEMP_ROOT ?? '/tmp/flowstarter-deploys';
+const TEMP_ROOT =
+  process.env.DEPLOY_AGENT_TEMP_ROOT ?? '/tmp/flowstarter-deploys';
 /**
  * Bumped for the `/health` change: it is authenticated now and carries
  * `siteRuntime`. An operator rolling the fleet needs to be able to tell,
@@ -85,7 +93,8 @@ const VERSION = '0.3.0';
  * Everything that differs between the two comes from env. There is no code
  * path in which a previews-configured agent writes into /var/www/sites.
  */
-const MODE = process.env.DEPLOY_AGENT_MODE === 'previews' ? 'previews' : 'sites';
+const MODE =
+  process.env.DEPLOY_AGENT_MODE === 'previews' ? 'previews' : 'sites';
 
 /**
  * `filesystem` (default) is the behaviour above: extract into
@@ -99,11 +108,31 @@ const SITE_RUNTIME =
   process.env.DEPLOY_AGENT_SITE_RUNTIME === 'docker' ? 'docker' : 'filesystem';
 
 const DOCKER_READY_TIMEOUT_MS = Number(
-  process.env.DEPLOY_AGENT_DOCKER_READY_TIMEOUT_MS ?? 10_000
+  process.env.DEPLOY_AGENT_DOCKER_READY_TIMEOUT_MS ?? 10_000,
 );
 const DOCKER_READY_INTERVAL_MS = Number(
-  process.env.DEPLOY_AGENT_DOCKER_READY_INTERVAL_MS ?? 250
+  process.env.DEPLOY_AGENT_DOCKER_READY_INTERVAL_MS ?? 250,
 );
+
+/**
+ * Bounds on fetching an artifact from a caller-supplied URL.
+ *
+ * This is a generated site's tarball, but the URL that points at it is not
+ * trusted the way the bytes are checked to be (that is `tar-safety.ts`'s
+ * job): nothing here stops a caller — or a compromised/spoofed origin behind
+ * a signed URL — from serving an enormous or slow response, or a redirect
+ * onto a host nobody meant to hand this bearer-authenticated fetch to.
+ */
+const MAX_ARTIFACT_DOWNLOAD_BYTES = Number(
+  process.env.DEPLOY_AGENT_MAX_ARTIFACT_BYTES ?? 256 * 1024 * 1024,
+);
+const ARTIFACT_FETCH_TIMEOUT_MS = Number(
+  process.env.DEPLOY_AGENT_ARTIFACT_FETCH_TIMEOUT_MS ?? 30_000,
+);
+/** A hex sha256 digest: exactly what `assertUsableArtifactUrl`'s caller and
+ * `packSiteTarball` producers always compute. Anything else is rejected
+ * before a byte is fetched. */
+const SHA256_HEX = /^[0-9a-f]{64}$/i;
 
 /**
  * Port the previews Caddy listens on. TLS for the preview zone is terminated
@@ -151,7 +180,7 @@ const PREVIEW_DOMAIN_TEMPLATE =
 
 if (!SHARED_SECRET) {
   console.error(
-    '[deploy-agent] DEPLOY_AGENT_SHARED_SECRET is not set. Refusing to start.'
+    '[deploy-agent] DEPLOY_AGENT_SHARED_SECRET is not set. Refusing to start.',
   );
   process.exit(1);
 }
@@ -227,7 +256,7 @@ function withSlugLock<T>(slug: string, fn: () => Promise<T>): Promise<T> {
   const run = previous.then(fn, fn);
   const tail = run.then(
     () => undefined,
-    () => undefined
+    () => undefined,
   );
   slugLocks.set(slug, tail);
   void tail.then(() => {
@@ -262,11 +291,13 @@ function siteSlugFromPath(pathname: string): string | null {
 
 async function shellOk(cmd: string): Promise<{ ok: boolean; stderr: string }> {
   return new Promise((resolveSpawn) => {
-    const child = spawn('sh', ['-c', cmd], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('sh', ['-c', cmd], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     let stderr = '';
     child.stderr.on('data', (chunk) => (stderr += String(chunk)));
     child.on('close', (code) =>
-      resolveSpawn({ ok: code === 0, stderr: stderr.trim() })
+      resolveSpawn({ ok: code === 0, stderr: stderr.trim() }),
     );
   });
 }
@@ -310,8 +341,8 @@ async function handleTlsAsk(domain: string | null): Promise<Response> {
   const slug =
     MODE === 'previews'
       ? slugFromTemplateHost(`${SLUG_PLACEHOLDER}.${PREVIEW_HOST_SUFFIX}`, host)
-      : slugFromTemplateHost(SITE_DOMAIN_TEMPLATE, host) ??
-        slugFromTemplateHost(PREVIEW_DOMAIN_TEMPLATE, host);
+      : (slugFromTemplateHost(SITE_DOMAIN_TEMPLATE, host) ??
+        slugFromTemplateHost(PREVIEW_DOMAIN_TEMPLATE, host));
 
   if (!slug) {
     return jsonResponse({ error: 'not a host served here' }, 404);
@@ -333,22 +364,137 @@ async function ensureDirs(): Promise<void> {
   }
 }
 
+/**
+ * `fetch`, but refusing to hop to a different host on a redirect.
+ *
+ * The default `redirect: 'follow'` would let an origin we were told to trust
+ * for one host silently hand the download to a different one — including one
+ * this agent's network position lets it reach but the caller never intended
+ * (an internal address, a different tenant's bucket, anything). Each hop is
+ * checked by hand instead: same scheme-and-host as the URL we were actually
+ * given, up to a small, fixed number of redirects.
+ */
+async function fetchSameHost(
+  url: URL,
+  init: RequestInit,
+  maxRedirects = 5,
+): Promise<Response> {
+  let current = url;
+  for (let hop = 0; ; hop++) {
+    const res = await fetch(current, { ...init, redirect: 'manual' });
+    if (res.status < 300 || res.status >= 400 || !res.headers.has('location')) {
+      return res;
+    }
+    if (hop >= maxRedirects) {
+      throw new Error('artifact fetch failed: too many redirects');
+    }
+    const location = new URL(res.headers.get('location')!, current);
+    if (location.host !== url.host) {
+      throw new Error('artifact fetch failed: redirected to a different host');
+    }
+    current = location;
+  }
+}
+
+/**
+ * Reads `res.body` up to `maxBytes`, aborting the underlying request the
+ * moment the limit is crossed rather than buffering an unbounded response
+ * first and checking afterwards — a `content-length` header is an origin's
+ * claim, not a guarantee, so the enforcement has to happen on the bytes that
+ * actually arrive.
+ */
+async function readBounded(
+  res: Response,
+  maxBytes: number,
+  abort: () => void,
+): Promise<Uint8Array> {
+  const declared = res.headers.get('content-length');
+  if (declared && Number(declared) > maxBytes) {
+    throw new Error('artifact exceeds the configured size limit');
+  }
+  const reader = res.body?.getReader();
+  if (!reader) {
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (buf.length > maxBytes) {
+      throw new Error('artifact exceeds the configured size limit');
+    }
+    return buf;
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      abort();
+      throw new Error('artifact exceeds the configured size limit');
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
 async function fetchAndVerify(
   url: string,
-  expectedSha256: string | null | undefined
+  expectedSha256: string,
 ): Promise<{ tarballPath: string; actualSha256: string; sizeBytes: number }> {
-  const res = await fetch(url, {
-    headers: { 'User-Agent': `flowstarter-deploy-agent/${VERSION}` },
-  });
-  if (!res.ok) {
-    throw new Error(`Fetch failed ${res.status}: ${url}`);
+  // Never reached with an empty/malformed digest — `handleDeploy` validates
+  // this before calling in here — but a defensive check costs nothing and
+  // means this function's contract does not depend on a caller remembering.
+  if (!SHA256_HEX.test(expectedSha256)) {
+    throw new Error('artifact_sha256 must be a 64-character hex sha256');
   }
-  const buf = new Uint8Array(await res.arrayBuffer());
+
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    // The URL itself may be a signed, capability-bearing link — never echo
+    // it back in an error a caller (or their logs) will see.
+    throw new Error('artifact fetch failed: invalid URL');
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    ARTIFACT_FETCH_TIMEOUT_MS,
+  );
+  let res: Response;
+  try {
+    res = await fetchSameHost(parsed, {
+      headers: { 'User-Agent': `flowstarter-deploy-agent/${VERSION}` },
+      signal: controller.signal,
+    });
+  } catch (e) {
+    if (e instanceof Error && e.name === 'AbortError') {
+      throw new Error('artifact fetch timed out');
+    }
+    // Rethrow our own redirect/host errors verbatim; wrap anything else
+    // (network errors from `fetch` itself often carry the URL in `cause`).
+    if (e instanceof Error && e.message.startsWith('artifact fetch failed')) {
+      throw e;
+    }
+    throw new Error('artifact fetch failed: could not reach the origin');
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!res.ok) {
+    throw new Error(`artifact fetch failed: origin returned ${res.status}`);
+  }
+
+  const buf = await readBounded(res, MAX_ARTIFACT_DOWNLOAD_BYTES, () =>
+    controller.abort(),
+  );
   const hash = createHash('sha256').update(buf).digest('hex');
-  if (expectedSha256 && expectedSha256.toLowerCase() !== hash) {
-    throw new Error(
-      `sha256 mismatch: expected ${expectedSha256}, got ${hash}`
-    );
+  if (expectedSha256.toLowerCase() !== hash) {
+    throw new Error(`sha256 mismatch: expected ${expectedSha256}, got ${hash}`);
   }
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const tarballPath = join(TEMP_ROOT, `${stamp}.tar.gz`);
@@ -356,15 +502,22 @@ async function fetchAndVerify(
   return { tarballPath, actualSha256: hash, sizeBytes: buf.length };
 }
 
-async function extractTarball(tarballPath: string, destDir: string): Promise<void> {
+async function extractTarball(
+  tarballPath: string,
+  destDir: string,
+): Promise<void> {
   // Extract into a fresh staging dir, validating every entry first (see
   // tar-safety.ts), then rename to destDir atomically.
   const stagingDir = `${destDir}.staging-${Date.now()}`;
   try {
     await safeExtractTarball(tarballPath, stagingDir);
   } catch (e) {
-    await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
-    throw new Error(`tar extract failed: ${e instanceof Error ? e.message : 'unknown'}`);
+    await rm(stagingDir, { recursive: true, force: true }).catch(
+      () => undefined,
+    );
+    throw new Error(
+      `tar extract failed: ${e instanceof Error ? e.message : 'unknown'}`,
+    );
   }
 
   // Atomically replace destDir with stagingDir.
@@ -377,7 +530,9 @@ async function extractTarball(tarballPath: string, destDir: string): Promise<voi
   await rename(stagingDir, destDir);
   if (backupDir) {
     // Best-effort cleanup of the previous version.
-    await rm(backupDir, { recursive: true, force: true }).catch(() => undefined);
+    await rm(backupDir, { recursive: true, force: true }).catch(
+      () => undefined,
+    );
   }
 }
 
@@ -421,10 +576,13 @@ async function readCaddySnippet(slug: string): Promise<string | null> {
  */
 async function stageUploadedArtifact(
   bytes: Uint8Array,
-  expectedSha256: string | null | undefined
+  expectedSha256: string,
 ): Promise<{ tarballPath: string; actualSha256: string; sizeBytes: number }> {
+  if (!SHA256_HEX.test(expectedSha256)) {
+    throw new Error('artifact_sha256 must be a 64-character hex sha256');
+  }
   const hash = createHash('sha256').update(bytes).digest('hex');
-  if (expectedSha256 && expectedSha256.toLowerCase() !== hash) {
+  if (expectedSha256.toLowerCase() !== hash) {
     throw new Error(`sha256 mismatch: expected ${expectedSha256}, got ${hash}`);
   }
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -435,10 +593,32 @@ async function stageUploadedArtifact(
 
 async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
   const uploaded = body.artifact_bytes ?? null;
-  if (!uploaded && (typeof body.artifact_url !== 'string' || !body.artifact_url)) {
+  if (
+    !uploaded &&
+    (typeof body.artifact_url !== 'string' || !body.artifact_url)
+  ) {
     return jsonResponse(
-      { error: 'artifact_url required (or POST the tarball as application/octet-stream)' },
-      400
+      {
+        error:
+          'artifact_url required (or POST the tarball as application/octet-stream)',
+      },
+      400,
+    );
+  }
+  // The caller always has this: `flowstarter-main`'s deploy path computes the
+  // hash before it ever sends a URL or bytes here (packaging a site tarball
+  // hashes it in the same step). Requiring it means nothing is extracted on
+  // this host — where a wrong or tampered artifact would be — without the
+  // caller having first committed, out of band from this one fetch, to what
+  // the bytes are supposed to be.
+  const sha256 = body.artifact_sha256 ?? '';
+  if (!SHA256_HEX.test(sha256)) {
+    return jsonResponse(
+      {
+        error:
+          'artifact_sha256 is required and must be a 64-character hex sha256',
+      },
+      400,
     );
   }
   await ensureDirs();
@@ -446,12 +626,12 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
   let fetched;
   try {
     fetched = uploaded
-      ? await stageUploadedArtifact(uploaded, body.artifact_sha256 ?? null)
-      : await fetchAndVerify(body.artifact_url, body.artifact_sha256 ?? null);
+      ? await stageUploadedArtifact(uploaded, sha256)
+      : await fetchAndVerify(body.artifact_url, sha256);
   } catch (e) {
     return jsonResponse(
       { error: e instanceof Error ? e.message : 'fetch failed' },
-      uploaded ? 400 : 502
+      uploaded ? 400 : 502,
     );
   }
 
@@ -463,7 +643,8 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
   // The publisher sends the unguessable hostname as primary_domain for a
   // preview. Custom domains are meaningless for a preview and are ignored
   // rather than trusted.
-  const previewHostname = body.primary_domain ?? `${slug}.${PREVIEW_HOST_SUFFIX}`;
+  const previewHostname =
+    body.primary_domain ?? `${slug}.${PREVIEW_HOST_SUFFIX}`;
   const buildSnippet = (target: ServeTarget): string =>
     MODE === 'previews'
       ? buildPreviewCaddySnippet(slug, target, previewHostname, SITE_PORT)
@@ -474,7 +655,7 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
           body.additional_domains ?? [],
           previewHost,
           EDITOR_UPSTREAM,
-          siteHost
+          siteHost,
         );
 
   if (SITE_RUNTIME === 'docker') {
@@ -484,8 +665,13 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
     } catch (e) {
       await rm(fetched.tarballPath, { force: true }).catch(() => undefined);
       return jsonResponse(
-        { error: e instanceof Error ? e.message : 'site runtime templates unavailable' },
-        500
+        {
+          error:
+            e instanceof Error
+              ? e.message
+              : 'site runtime templates unavailable',
+        },
+        500,
       );
     }
 
@@ -508,7 +694,7 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
           reloadCaddy,
           readyTimeoutMs: DOCKER_READY_TIMEOUT_MS,
           readyIntervalMs: DOCKER_READY_INTERVAL_MS,
-        }
+        },
       );
     } finally {
       await rm(fetched.tarballPath, { force: true }).catch(() => undefined);
@@ -534,7 +720,7 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
   } catch (e) {
     return jsonResponse(
       { error: e instanceof Error ? e.message : 'extract failed' },
-      500
+      500,
     );
   } finally {
     await rm(fetched.tarballPath, { force: true }).catch(() => undefined);
@@ -544,8 +730,10 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
     await writeCaddySnippet(slug, buildSnippet(siteServeTarget(siteDir)));
   } catch (e) {
     return jsonResponse(
-      { error: `caddy snippet write failed: ${e instanceof Error ? e.message : 'unknown'}` },
-      500
+      {
+        error: `caddy snippet write failed: ${e instanceof Error ? e.message : 'unknown'}`,
+      },
+      500,
     );
   }
 
@@ -553,7 +741,7 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
   if (!reload.ok) {
     return jsonResponse(
       { error: `caddy reload failed: ${reload.stderr}` },
-      500
+      500,
     );
   }
 
@@ -572,7 +760,10 @@ async function handleRemove(slug: string): Promise<Response> {
     await writeCaddySnippet(slug, '');
     const reload = await reloadCaddy();
     if (!reload.ok) {
-      return jsonResponse({ error: `caddy reload failed: ${reload.stderr}` }, 500);
+      return jsonResponse(
+        { error: `caddy reload failed: ${reload.stderr}` },
+        500,
+      );
     }
     return jsonResponse({ ok: true, slug });
   }
@@ -584,7 +775,7 @@ async function handleRemove(slug: string): Promise<Response> {
   if (!reload.ok) {
     return jsonResponse(
       { error: `caddy reload failed: ${reload.stderr}` },
-      500
+      500,
     );
   }
   return jsonResponse({ ok: true, slug });
@@ -770,7 +961,7 @@ async function startServers(): Promise<void> {
       templateSource = (await siteRuntimeTemplates()).source;
     } catch (e) {
       console.error(
-        `[deploy-agent] ${e instanceof Error ? e.message : 'site runtime templates unavailable'}`
+        `[deploy-agent] ${e instanceof Error ? e.message : 'site runtime templates unavailable'}`,
       );
       process.exit(1);
     }
@@ -804,11 +995,11 @@ async function startServers(): Promise<void> {
   console.info(
     `[deploy-agent] v${VERSION} mode=${MODE} runtime=${SITE_RUNTIME} templates=${templateSource} ` +
       `listening on ${BIND_ADDRESS}:${server.port} ` +
-      `(sites root ${SITES_ROOT}, caddy snippets ${CADDY_SITES_DIR})`
+      `(sites root ${SITES_ROOT}, caddy snippets ${CADDY_SITES_DIR})`,
   );
   if (staticServer) {
     console.info(
-      `[deploy-agent] serving extracted sites on http://localhost:${staticServer.port}/{slug}/`
+      `[deploy-agent] serving extracted sites on http://localhost:${staticServer.port}/{slug}/`,
     );
   }
 }

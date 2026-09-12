@@ -60,6 +60,7 @@ interface Call {
 function publisher(opts: {
   calls: Call[];
   respond?: () => Response;
+  onProgress?: (message: string) => void;
 }): LocalSitePublisher {
   return new LocalSitePublisher({
     store: new ArtifactStore({
@@ -70,6 +71,7 @@ function publisher(opts: {
     sharedSecret: 's'.repeat(48),
     outputDir: 'dist',
     stagingUrlTemplate: 'http://localhost:8788/{projectId}/',
+    onProgress: opts.onProgress,
     fetchImpl: (async (
       input: Parameters<typeof fetch>[0],
       init?: Parameters<typeof fetch>[1],
@@ -143,6 +145,30 @@ describe('LocalSitePublisher', () => {
     await expect(
       readFile(join(extracted, 'node_modules/left-pad/index.js'), 'utf8'),
     ).rejects.toThrow();
+  });
+
+  // The artifact URL's random path segment is a bearer credential — anyone
+  // who reads it can fetch the (possibly unpaid-for) site. Progress logs are
+  // the kind of thing that ends up in a CI log or an operator's terminal
+  // scrollback, so they must carry an id and a hash, never the URL itself.
+  it('never logs the artifact URL, only its size and hash', async () => {
+    const calls: Call[] = [];
+    const messages: string[] = [];
+    await publisher({ calls, onProgress: (m) => messages.push(m) }).create({
+      projectId: PROJECT_ID,
+      branch: `client/flowstarter-${PROJECT_ID}`,
+      worktreePath: join(scratch, 'worktree'),
+      commitSha: 'a'.repeat(40),
+      siteRoot,
+    });
+
+    const artifactUrl = String(calls[0]!.body['artifactUrl']);
+    const artifactSha256 = String(calls[0]!.body['artifactSha256']);
+    const joined = messages.join('\n');
+    expect(joined).not.toContain(artifactUrl);
+    expect(joined).not.toContain('http://127.0.0.1:8787');
+    expect(joined).toContain(artifactSha256);
+    expect(joined).toContain(PROJECT_ID);
   });
 
   it('upgrades the built booking page to the tenant live embed', async () => {

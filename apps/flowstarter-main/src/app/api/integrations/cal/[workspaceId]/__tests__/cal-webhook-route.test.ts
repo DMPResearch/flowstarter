@@ -181,12 +181,19 @@ describe('a signed caller with the wrong signature', () => {
     expect(response.status).toBe(401);
   });
 
-  it('is told the workspace is gone, which is what a stale webhook needs', async () => {
+  // The oracle case for a SIGNED caller: Cal.com's HMAC is per workspace, so
+  // a signature computed with one workspace's secret can never verify for a
+  // different (or nonexistent) workspace id. There is no secret behind a
+  // missing or malformed workspace id to have signed against, so both come
+  // back as the same 401 as any other wrong signature — never a distinct 404
+  // that would tell an unauthenticated-for-this-workspace caller which
+  // workspace ids exist.
+  it('cannot use a valid signature for one workspace to learn that another is missing', async () => {
     const missing = await deliver(MISSING, body(), SECRET_A);
-    expect(missing.status).toBe(404);
+    expect(missing.status).toBe(401);
 
     const malformed = await deliver('not-a-uuid', body(), SECRET_A);
-    expect(malformed.status).toBe(404);
+    expect(malformed.status).toBe(401);
   });
 
   it('reports a lookup failure as retryable rather than as a refusal', async () => {
@@ -252,6 +259,48 @@ describe('a genuine delivery', () => {
     });
   });
 
+  // The top-of-review booking bug: a second reschedule for the same uid is
+  // an update, not a replay, when the time actually changed.
+  it('treats a second reschedule to a different time as an update, not a replay', async () => {
+    await deliver(WORKSPACE_A, body(), SECRET_A);
+    await deliver(
+      WORKSPACE_A,
+      body('BOOKING_RESCHEDULED', { startTime: '2026-09-16T14:00:00Z' }),
+      SECRET_A
+    );
+    const second = await deliver(
+      WORKSPACE_A,
+      body('BOOKING_RESCHEDULED', { startTime: '2026-09-17T11:00:00Z' }),
+      SECRET_A
+    );
+
+    expect(await second.json()).toMatchObject({ action: 'update' });
+    expect(bookings()).toHaveLength(1);
+    expect(bookings()[0]).toMatchObject({
+      status: 'rescheduled',
+      start_at: '2026-09-17T11:00:00.000Z',
+    });
+  });
+
+  it('refuses a late create that arrives after a reschedule (not just after a cancel)', async () => {
+    await deliver(WORKSPACE_A, body(), SECRET_A);
+    await deliver(
+      WORKSPACE_A,
+      body('BOOKING_RESCHEDULED', { startTime: '2026-09-16T14:00:00Z' }),
+      SECRET_A
+    );
+
+    const late = await deliver(WORKSPACE_A, body(), SECRET_A);
+    expect(await late.json()).toMatchObject({
+      action: 'skip',
+      reason: 'superseded',
+    });
+    expect(bookings()[0]).toMatchObject({
+      status: 'rescheduled',
+      start_at: '2026-09-16T14:00:00.000Z',
+    });
+  });
+
   it('marks a cancellation, and refuses a late create that would undo it', async () => {
     await deliver(WORKSPACE_A, body(), SECRET_A);
     await deliver(WORKSPACE_A, body('BOOKING_CANCELLED'), SECRET_A);
@@ -285,10 +334,14 @@ describe('a genuine delivery', () => {
     expect(await response.json()).toMatchObject({ ignored: 'not_json' });
   });
 
-  it('still returns 200 when the write could not be saved', async () => {
+  // A verified delivery whose write genuinely fails is not "handled" — 500
+  // tells Cal.com to retry a delivery that was never actually saved, rather
+  // than acknowledging it as if it landed.
+  it('returns 500 when the write could not be saved, so Cal.com retries', async () => {
     db.failing.add('workspace_bookings');
     const response = await deliver(WORKSPACE_A, body(), SECRET_A);
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(500);
+    expect(bookings()).toHaveLength(0);
   });
 });
 
