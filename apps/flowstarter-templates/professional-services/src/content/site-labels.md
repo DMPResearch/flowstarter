@@ -350,6 +350,8 @@ contactPage:
     messagePlaceholder: "Briefly describe the decision, the problem, or the situation you would like a senior view on."
     submitLabel: "Send message"
     successMessage: "Thank you. Your email application should now be open with your message ready to send."
+    sentMessage: "Thank you. Your message has been received and you will get a reply shortly."
+    failureMessage: "That did not go through. Please email us directly and it will reach the same desk."
   details:
     emailLabel: "Email"
     emailValue: "hello@haldenandroe.com"

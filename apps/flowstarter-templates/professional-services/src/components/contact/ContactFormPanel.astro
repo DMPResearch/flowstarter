@@ -18,6 +18,8 @@ interface Props {
     messagePlaceholder: string;
     submitLabel: string;
     successMessage: string;
+    sentMessage: string;
+    failureMessage: string;
   };
   countryCodes: CountryCodeOption[];
   defaultCountry: CountryCodeOption;
@@ -25,6 +27,14 @@ interface Props {
 }
 
 const { form, countryCodes, defaultCountry, contactEmail } = Astro.props;
+
+/*
+  The no-JavaScript path. A form with nothing but a submit button is a form
+  that loses the message, so the action is a real mailto: with no script in
+  front of it. The lead capture script the platform injects intercepts submit
+  before this ever fires, and falls back to it when the network is gone.
+*/
+const mailtoAction = contactEmail ? `mailto:${contactEmail}` : undefined;
 ---
 
 <div class="contact-form-panel">
@@ -32,6 +42,9 @@ const { form, countryCodes, defaultCountry, contactEmail } = Astro.props;
     class="contact-form-panel__form"
     data-contact-form
     data-contact-email={contactEmail}
+    action={mailtoAction}
+    method="post"
+    enctype="text/plain"
     novalidate
   >
     <TextField label={form.fullNameLabel} name="fullName" placeholder={form.fullNamePlaceholder} required={true} />
@@ -49,10 +62,24 @@ const { form, countryCodes, defaultCountry, contactEmail } = Astro.props;
 
     <TextAreaField label={form.messageLabel} name="message" placeholder={form.messagePlaceholder} required={true} rows={7} />
 
+    <!--
+      Nobody sees this and nobody fills it in. A submission that carries it is
+      accepted with the same answer as any other and then dropped, because
+      telling a bot it was caught is telling it what to change next time.
+    -->
+    <p class="contact-form-panel__trap" aria-hidden="true">
+      <label>
+        Company website
+        <input type="text" name="company_website" tabindex="-1" autocomplete="off" />
+      </label>
+    </p>
+
     <div class="contact-form-panel__footer">
       <button type="submit" class="contact-form-panel__submit">{form.submitLabel}</button>
       <p class="contact-form-panel__note">{form.note}</p>
       <p class="contact-form-panel__success" data-contact-success hidden>{form.successMessage}</p>
+      <p class="contact-form-panel__success" data-contact-sent hidden>{form.sentMessage}</p>
+      <p class="contact-form-panel__failure" data-contact-error hidden>{form.failureMessage}</p>
     </div>
   </form>
 </div>
@@ -125,6 +152,22 @@ const { form, countryCodes, defaultCountry, contactEmail } = Astro.props;
     color: var(--bg-dark);
     line-height: 1.5;
     max-width: 520px;
+  }
+
+  .contact-form-panel__failure {
+    color: var(--bg-dark);
+    line-height: 1.5;
+    max-width: 520px;
+    font-weight: var(--fw-semibold);
+  }
+
+  /* Off screen rather than display:none, which some bots skip. */
+  .contact-form-panel__trap {
+    position: absolute;
+    left: -9999px;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
   }
 
   @media (max-width: 768px) {

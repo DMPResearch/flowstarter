@@ -416,6 +416,197 @@ export function injectCalCom(
   return { ...files, [targetPath]: after };
 }
 
+// ─── Lead capture ──────────────────────────────────────────────────────────
+
+/**
+ * The contact page, in the same preference order and for the same reason as
+ * `BOOKING_PAGE_CANDIDATES`: the `.astro` source first, so injecting before
+ * `astro build` puts the script in every built copy of the page for free, and
+ * the `dist`-shaped paths as the fallback for a tree that has already been
+ * built or was authored as plain HTML.
+ */
+const LEAD_CAPTURE_PAGE_CANDIDATES = [
+  'src/pages/contact.astro',
+  'contact/index.html',
+  'contact.html',
+];
+
+const findLeadCaptureBlock = (html: string) =>
+  findMarkedDiv(html, 'data-flowstarter-lead-capture="true"');
+const findLeadCaptureSlot = (html: string) =>
+  findMarkedDiv(html, 'data-flowstarter-lead-capture-slot');
+
+/**
+ * The endpoint, or null.
+ *
+ * Deliberately narrow. This string becomes the address every enquiry a client
+ * ever receives is posted to, written into a public page by a build nobody
+ * watches, so "looks like a URL" is not the bar: it has to be https and it has
+ * to be a capture path. Anything else is refused and the site keeps its mailto
+ * fallback, which is a worse contact form and not a leak.
+ */
+export function normalizeLeadCaptureEndpoint(
+  endpoint: string | null | undefined,
+): string | null {
+  if (!endpoint) return null;
+  const trimmed = endpoint.trim();
+  if (!trimmed) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'https:') return null;
+  if (!/^\/api\/leads\/capture\/[^/]+$/.test(url.pathname)) return null;
+  if (url.search || url.hash) return null;
+  return url.toString();
+}
+
+/**
+ * The whole of the site side of lead capture: one inline script.
+ *
+ * No framework, no bundler, no import. It has to survive `astro build`
+ * unchanged and be findable in the built HTML by a string search, which a
+ * bundled module script is not: Astro hoists those into `_astro/*.js` and
+ * leaves a `<script src>` behind, so a build gate could never prove the token
+ * shipped. `is:inline` is what stops that happening, and it is load-bearing.
+ *
+ * Progressive enhancement, in three layers:
+ *   - No JavaScript at all: the form keeps its `mailto:` action and the
+ *     browser hands the message to the visitor's mail client.
+ *   - This script: the submit is intercepted and posted as JSON.
+ *   - The network fails: the form is submitted natively, which is the mailto
+ *     again. An enquiry is never silently dropped.
+ *
+ * It also sets `data-lead-capture="on"` on the form, which is how the
+ * template's own bundled mailto handler knows to stand down. That runs later
+ * (a module script is deferred, this one is not), so the flag is always set
+ * before it looks.
+ */
+function renderLeadCaptureBlock(endpoint: string, astro: boolean): string {
+  const scriptOpen = astro ? '<script is:inline>' : '<script>';
+  return [
+    `<div class="flowstarter-lead-capture" data-flowstarter-lead-capture="true">`,
+    `  <!-- flowstarter:lead-capture — injected by injectLeadCapture(); re-running the injector updates this block in place -->`,
+    `  ${scriptOpen}`,
+    `    (function () {`,
+    `      var endpoint = ${JSON.stringify(endpoint)};`,
+    `      var form = document.querySelector('[data-contact-form]');`,
+    `      if (!form) return;`,
+    `      form.setAttribute('data-lead-capture', 'on');`,
+    `      var sent = form.querySelector('[data-contact-sent]') || form.querySelector('[data-contact-success]');`,
+    `      var failed = form.querySelector('[data-contact-error]');`,
+    `      var button = form.querySelector('[type="submit"]');`,
+    `      function show(el, text) { if (!el) return; if (text) el.textContent = text; el.hidden = false; }`,
+    `      function hide(el) { if (el) el.hidden = true; }`,
+    `      function value(data, key) { return String(data.get(key) || '').trim(); }`,
+    `      form.addEventListener('submit', function (event) {`,
+    `        event.preventDefault();`,
+    `        if (typeof form.reportValidity === 'function' && !form.reportValidity()) return;`,
+    `        hide(sent); hide(failed);`,
+    `        var data = new FormData(form);`,
+    `        var phone = (value(data, 'countryCode') + ' ' + value(data, 'phone')).trim();`,
+    `        var payload = {`,
+    `          name: value(data, 'name') || value(data, 'fullName'),`,
+    `          email: value(data, 'email'),`,
+    `          phone: phone,`,
+    `          message: value(data, 'message'),`,
+    `          page: window.location.pathname,`,
+    `          company_website: value(data, 'company_website')`,
+    `        };`,
+    `        if (button) button.disabled = true;`,
+    `        fetch(endpoint, {`,
+    `          method: 'POST',`,
+    `          headers: { 'Content-Type': 'application/json' },`,
+    `          body: JSON.stringify(payload)`,
+    `        }).then(function (response) {`,
+    `          return response.json().catch(function () { return {}; }).then(function (body) {`,
+    `            if (response.ok) { show(sent); form.reset(); }`,
+    `            else { show(failed, body && body.message); }`,
+    `            if (button) button.disabled = false;`,
+    `          });`,
+    `        }).catch(function () {`,
+    `          if (button) button.disabled = false;`,
+    `          if (form.getAttribute('action')) form.submit();`,
+    `          else show(failed);`,
+    `        });`,
+    `      });`,
+    `    })();`,
+    `  </script>`,
+    `</div>`,
+  ].join('\n');
+}
+
+function spliceLeadCaptureBlock(before: string, block: string): string | null {
+  const found = findLeadCaptureBlock(before) ?? findLeadCaptureSlot(before);
+  if (found) return spliceBlock(before, found, block);
+
+  const lastMain = before.lastIndexOf('</main>');
+  if (lastMain !== -1) {
+    return `${before.slice(0, lastMain)}${block}\n</main>${before.slice(lastMain + 7)}`;
+  }
+  return null;
+}
+
+/**
+ * Deletes any injected lead capture block from every file in the tree.
+ *
+ * The other half of `injectLeadCapture`'s contract, and it scans everything
+ * rather than the candidate list for the same reason `removeCalComPreviewDemo`
+ * does: the block's append-before-`</main>` fallback can land it on a page
+ * this list would not think to look at, and a build with no endpoint must not
+ * ship a script posting to a token that no longer resolves.
+ */
+export function removeLeadCapture(files: FileMap): FileMap {
+  let changed = false;
+  const next: FileMap = { ...files };
+  for (const [path, content] of Object.entries(files)) {
+    if (!content.includes('data-flowstarter-lead-capture="true"')) continue;
+    let stripped = content;
+    for (;;) {
+      const block = findLeadCaptureBlock(stripped);
+      if (!block) break;
+      stripped = spliceBlock(stripped, block, '');
+    }
+    if (stripped !== content) {
+      next[path] = stripped;
+      changed = true;
+    }
+  }
+  return changed ? next : files;
+}
+
+/**
+ * Injects (or, on re-run, updates) the lead capture script into a template's
+ * file tree. Pure and deterministic, like everything else here.
+ *
+ * The endpoint carries the workspace's public capture token, so this is also
+ * the thing that decides which tenant a site's enquiries belong to. A preview
+ * gets a preview token, which the endpoint refuses with a sentence the script
+ * shows; a paid build gets the real one.
+ *
+ * With no usable endpoint this removes rather than no-ops, for the reason
+ * `injectCalCom` does: a seeded preview block inherited by a paid build has to
+ * come back out even when there is nothing to put in its place.
+ */
+export function injectLeadCapture(
+  files: FileMap,
+  endpoint: string | null | undefined,
+): FileMap {
+  const url = normalizeLeadCaptureEndpoint(endpoint);
+  if (!url) return removeLeadCapture(files);
+
+  const targetPath = LEAD_CAPTURE_PAGE_CANDIDATES.find((path) => path in files);
+  if (!targetPath) return files;
+
+  const before = files[targetPath]!;
+  const block = renderLeadCaptureBlock(url, targetPath.endsWith('.astro'));
+  const after = spliceLeadCaptureBlock(before, block);
+  if (!after || after === before) return files;
+  return { ...files, [targetPath]: after };
+}
+
 export interface IntegrationsConfig {
   booking?: {
     provider: 'cal.com';
@@ -425,6 +616,14 @@ export interface IntegrationsConfig {
      */
     url: string | null;
     options?: CalComOptions;
+  };
+  leadCapture?: {
+    /**
+     * The full `https://<platform host>/api/leads/capture/<token>` URL, or
+     * `null` to remove any block a previous run left behind — see
+     * `injectLeadCapture`.
+     */
+    endpoint: string | null;
   };
 }
 
@@ -446,6 +645,9 @@ export function injectIntegrations(
   let next = files;
   if (config.booking?.provider === 'cal.com') {
     next = injectCalCom(next, config.booking.url, config.booking.options);
+  }
+  if (config.leadCapture) {
+    next = injectLeadCapture(next, config.leadCapture.endpoint);
   }
   return next;
 }
@@ -474,7 +676,13 @@ export async function applyIntegrationsToWorkspace(
   const { fileExists } = await import('./workspace');
 
   const before: FileMap = {};
-  for (const rel of BOOKING_PAGE_CANDIDATES) {
+  // The union, not the booking list. This loop is the only thing that decides
+  // which files reach `injectIntegrations` on the real build path, so a page
+  // missing from it is an integration that silently never runs.
+  const candidates = Array.from(
+    new Set([...BOOKING_PAGE_CANDIDATES, ...LEAD_CAPTURE_PAGE_CANDIDATES]),
+  );
+  for (const rel of candidates) {
     const abs = join(buildDir, rel);
     if (await fileExists(abs)) before[rel] = await readFile(abs, 'utf8');
   }

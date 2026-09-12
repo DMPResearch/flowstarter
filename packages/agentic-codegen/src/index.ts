@@ -52,8 +52,11 @@ export {
   injectCalCom,
   injectCalComPreviewDemo,
   injectIntegrations,
+  injectLeadCapture,
   normalizeCalLink,
+  normalizeLeadCaptureEndpoint,
   removeCalComPreviewDemo,
+  removeLeadCapture,
   applyIntegrationsToWorkspace,
 } from './integrations';
 export type {

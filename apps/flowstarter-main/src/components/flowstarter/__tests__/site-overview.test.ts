@@ -152,6 +152,28 @@ describe('the enquiries tile', () => {
     });
   });
 
+  it('links where it was given a link, live or not', () => {
+    // Not live is the state a client is most likely to click from: the tile
+    // is telling them nothing has arrived, and the next question is where the
+    // form even posts.
+    expect(
+      tile('enquiries', {
+        live: false,
+        enquiries: { total: 0, last30Days: 0, unread: 0, href: '/e' },
+      })?.href
+    ).toBe('/e');
+    expect(
+      tile('enquiries', {
+        enquiries: { total: 12, last30Days: 5, unread: 3, href: '/e/list' },
+      })?.href
+    ).toBe('/e/list');
+  });
+
+  it('carries no link when it was given none', () => {
+    expect(tile('enquiries')?.href).toBeUndefined();
+    expect(tile('enquiries', { live: false })?.href).toBeUndefined();
+  });
+
   it('says "1 enquiry", not "1 enquiries"', () => {
     expect(
       tile('enquiries', { enquiries: { total: 1, last30Days: 1, unread: 1 } })

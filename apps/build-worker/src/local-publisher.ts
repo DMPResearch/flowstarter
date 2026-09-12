@@ -22,6 +22,7 @@
 
 import {
   injectCalCom,
+  injectLeadCapture,
   packSiteTarball,
   type ArchiveFile,
   type FileMap,
@@ -66,6 +67,7 @@ export class LocalSitePublisher implements PullRequestPublisher {
     commitSha: string;
     siteRoot?: string;
     calComUrl?: string | null;
+    leadCaptureEndpoint?: string | null;
     changeRequestId?: string | null;
     siteVersion?: number | null;
   }): Promise<{ pullRequestUrl: string; stagingUrl: string }> {
@@ -75,7 +77,10 @@ export class LocalSitePublisher implements PullRequestPublisher {
       this.options.outputDir,
     );
     const collected = await collectSiteFiles(outputDir);
-    const files = withCalCom(collected, input.calComUrl ?? null);
+    const files = withIntegrations(collected, {
+      calComUrl: input.calComUrl ?? null,
+      leadCaptureEndpoint: input.leadCaptureEndpoint ?? null,
+    });
     this.options.onProgress?.(
       `packaging ${files.length} files from ${outputDir}`,
     );
@@ -177,23 +182,27 @@ export class LocalSitePublisher implements PullRequestPublisher {
 }
 
 /**
- * `injectCalCom` is a pure `FileMap` transform, and the archive carries binary
- * entries the map has no room for. Only text entries are handed to it, and
- * only the ones it changed are written back.
+ * `injectCalCom` and `injectLeadCapture` are pure `FileMap` transforms, and the
+ * archive carries binary entries the map has no room for. Only text entries are
+ * handed to them, and only the ones they changed are written back.
  *
- * Always runs, `calUrl` or not: with none, `injectCalCom` removes any
- * demo/embed block already in the output rather than leaving it be, which is
- * the behaviour a client with no booking link actually needs.
+ * Both always run, link or endpoint or not: with none, each removes the block
+ * already in the output rather than leaving it be, which is the behaviour a
+ * client with no booking link, or a build whose token could not be resolved,
+ * actually needs.
  */
-function withCalCom(
+function withIntegrations(
   files: readonly ArchiveFile[],
-  calUrl: string | null,
+  config: { calComUrl: string | null; leadCaptureEndpoint: string | null },
 ): ArchiveFile[] {
   const map: FileMap = {};
   for (const file of files) {
     if (file.encoding !== 'base64') map[file.path] = file.content;
   }
-  const injected = injectCalCom(map, calUrl);
+  const injected = injectLeadCapture(
+    injectCalCom(map, config.calComUrl),
+    config.leadCaptureEndpoint,
+  );
   return files.map((file) =>
     file.encoding !== 'base64' && injected[file.path] !== undefined
       ? { path: file.path, content: injected[file.path] as string }

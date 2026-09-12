@@ -1952,6 +1952,7 @@ export type Database = {
           is_founding: boolean
           last_deploy_id: string | null
           last_deployed_at: string | null
+          lead_capture_token: string
           monthly_fee: number | null
           name: string
           outstanding_payment: boolean
@@ -2023,6 +2024,7 @@ export type Database = {
           is_founding?: boolean
           last_deploy_id?: string | null
           last_deployed_at?: string | null
+          lead_capture_token?: string
           monthly_fee?: number | null
           name: string
           outstanding_payment?: boolean
@@ -2094,6 +2096,7 @@ export type Database = {
           is_founding?: boolean
           last_deploy_id?: string | null
           last_deployed_at?: string | null
+          lead_capture_token?: string
           monthly_fee?: number | null
           name?: string
           outstanding_payment?: boolean

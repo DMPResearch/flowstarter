@@ -379,6 +379,65 @@ export function newBookingEmail(input: {
 }
 
 /**
+ * Somebody filled in the contact form on the client's own site.
+ *
+ * The message is in the email on purpose. An enquiry is worth answering in the
+ * minutes after it arrives, and a notice that says only "you have an enquiry"
+ * makes the client open a dashboard to find out whether it was worth opening a
+ * dashboard for. The reply-to is set to the sender by the caller, so hitting
+ * reply works.
+ *
+ * Spam is never sent. The classifier decides, and a client told forty times a
+ * week that a casino wants to talk to them stops reading these.
+ */
+export function newEnquiryEmail(input: {
+  enquiriesUrl: string;
+  fromName: string;
+  fromEmail: string;
+  message: string;
+  phone?: string | null;
+  page?: string | null;
+  businessName?: string | null;
+  clientName?: string | null;
+}): RenderedEmail {
+  const where = input.page?.trim() ? ` from ${input.page.trim()}` : '';
+  return renderEmail({
+    subject: 'New enquiry from your site',
+    preheader: `${input.fromName} sent a message through ${projectPhrase(
+      input.businessName
+    )}.`,
+    blocks: [
+      { kind: 'heading', text: 'New enquiry from your site' },
+      greeting(input.clientName),
+      {
+        kind: 'paragraph',
+        content: `${
+          input.fromName
+        } sent this through the contact form on ${projectPhrase(
+          input.businessName
+        )}${where}.`,
+      },
+      { kind: 'quote', text: input.message },
+      {
+        kind: 'facts',
+        rows: [
+          { label: 'Email', value: input.fromEmail },
+          { label: 'Phone', value: input.phone?.trim() ?? '' },
+        ],
+      },
+      {
+        kind: 'note',
+        content:
+          'Replying to this email goes straight back to them. Your dashboard ' +
+          'keeps every enquiry, so nothing depends on this message surviving ' +
+          'your inbox.',
+      },
+      { kind: 'button', label: 'See your enquiries', href: input.enquiriesUrl },
+    ],
+  });
+}
+
+/**
  * The deploy finished and the site is being served.
  *
  * The address is the hero of this one, large and linked, because it is the

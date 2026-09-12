@@ -18,6 +18,7 @@ import {
   depositReceivedEmail,
   escapeHtml,
   newBookingEmail,
+  newEnquiryEmail,
   previewReadyEmail,
   readableDate,
   siteLiveEmail,
@@ -105,6 +106,16 @@ const ALL: Array<[string, RenderedEmail]> = [
       siteUrl: 'https://acme.example',
       dashboardUrl: DASHBOARD,
       version: 4,
+      businessName: 'Acme',
+    }),
+  ],
+  [
+    'newEnquiry',
+    newEnquiryEmail({
+      enquiriesUrl: `${DASHBOARD}/enquiries/list`,
+      fromName: 'Elena Popescu',
+      fromEmail: 'elena@salon.ro',
+      message: 'Doresc o programare pentru vineri',
       businessName: 'Acme',
     }),
   ],
@@ -412,5 +423,71 @@ describe('briefIncompleteEmail', () => {
     });
     expect(mail.html).not.toContain('<img src=x');
     expect(mail.html).toContain('&lt;img src=x');
+  });
+});
+
+/**
+ * The one email a visitor's own words end up in.
+ *
+ * `newEnquiryEmail` uses the shared block renderer rather than hand-rolled
+ * HTML, so the message goes through the `quote` block like every other
+ * quoted value in this file (see `changeRequestLiveEmail`): escaped, and
+ * preserved as separate lines in the text alternative rather than promised a
+ * literal `<br />` the block renderer does not produce.
+ */
+describe('newEnquiryEmail', () => {
+  const mail = newEnquiryEmail({
+    enquiriesUrl: `${DASHBOARD}/enquiries/list`,
+    fromName: 'Elena Popescu',
+    fromEmail: 'elena@salon.ro',
+    message: 'Line one\nLine two',
+    phone: '+40712345678',
+    page: '/contact',
+    businessName: 'Acme',
+    clientName: 'Dorin',
+  });
+
+  it('carries the message itself, so the client can act without opening a tab', () => {
+    expect(mail.subject).toBe('New enquiry from your site');
+    expect(mail.html).toContain('Line one');
+    expect(mail.html).toContain('Line two');
+    // The plain-text alternative keeps the message readable as two lines.
+    expect(mail.text).toContain('Line one');
+    expect(mail.text).toContain('Line two');
+  });
+
+  it('says who it is from, and where on the site it came from', () => {
+    expect(mail.html).toContain('Elena Popescu');
+    expect(mail.html).toContain('elena@salon.ro');
+    expect(mail.html).toContain('+40712345678');
+    expect(mail.html).toContain('/contact');
+  });
+
+  it('links to the client own enquiries list', () => {
+    expect(mail.html).toContain(`${DASHBOARD}/enquiries/list`);
+  });
+
+  it('lets a visitor-supplied name close no tag', () => {
+    const hostile = newEnquiryEmail({
+      enquiriesUrl: DASHBOARD,
+      fromName: '<img src=x onerror=alert(1)>',
+      fromEmail: 'x@example.com',
+      message: '<script>alert(1)</script>',
+    });
+    expect(hostile.html).not.toContain('<img src=x');
+    expect(hostile.html).not.toContain('<script>alert(1)</script>');
+    expect(hostile.html).toContain('&lt;img src=x');
+  });
+
+  it('leaves the phone and page lines out when there are none', () => {
+    const plain = newEnquiryEmail({
+      enquiriesUrl: DASHBOARD,
+      fromName: 'Elena',
+      fromEmail: 'elena@salon.ro',
+      message: 'Hello',
+    });
+    expect(plain.html).not.toContain('+4');
+    expect(plain.text).not.toContain('Phone:');
+    expect(plain.html).not.toContain('/contact');
   });
 });

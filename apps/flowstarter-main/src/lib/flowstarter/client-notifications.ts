@@ -72,7 +72,11 @@ export type ClientNotification =
   // fact about one workspace and not a thing that becomes true again: a
   // client who has been nudged and still has not finished needs a person,
   // not a second copy of the same email.
-  | 'brief_incomplete';
+  | 'brief_incomplete'
+  // Keys on the lead's id, so a client hears about each enquiry once. A
+  // visitor who submits the same form twice is two enquiries and two emails;
+  // a retry of one submission that already stored a row is neither.
+  | 'lead_captured';
 
 export type ClientNotifySkipReason =
   | 'already_sent'
@@ -157,6 +161,12 @@ export async function notifyClientOnce(input: {
   /** Set when the same notice may legitimately happen again later. */
   dedupeKey?: string;
   render: (recipient: ClientRecipient) => RenderedEmail;
+  /**
+   * Where a reply should go, when that is somebody other than us. Set for an
+   * enquiry, so the client can answer the visitor by hitting reply; unset
+   * everywhere else, where the sender is the right recipient.
+   */
+  replyTo?: string;
   /** Extra context written to the ledger row, for an operator reading it. */
   detail?: Record<string, unknown>;
 }): Promise<ClientNotifyResult> {
@@ -204,7 +214,13 @@ export async function notifyClientOnce(input: {
       dashboardUrl: clientDashboardUrl(workspaceId),
     });
 
-    const result = await sendEmail({ to, subject, html, text });
+    const result = await sendEmail({
+      to,
+      subject,
+      html,
+      text,
+      ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+    });
     if (!result.success) {
       const failureDetail = result.error ?? 'unknown error';
       // Not recorded under CLIENT_EMAIL_EVENT: an unconfigured or briefly

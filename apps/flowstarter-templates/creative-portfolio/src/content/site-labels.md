@@ -345,6 +345,8 @@ contactPage:
     messagePlaceholder: "What are you making, who is it for, and roughly when does it need to exist?"
     submitLabel: "Send it over"
     successMessage: "Thanks. Your email app should now be open with the message ready to send our way."
+    sentMessage: "Thanks. That is with us, and you will hear back from a person, usually within a day."
+    failureMessage: "That did not go through. Email us directly and it will reach the same place."
   details:
     emailLabel: "Email"
     emailValue: "studio@atelierverso.com"

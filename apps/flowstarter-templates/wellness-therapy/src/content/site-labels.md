@@ -365,6 +365,8 @@ contactPage:
     messagePlaceholder: "A sentence or two is plenty. You do not have to explain everything yet."
     submitLabel: "Send message"
     successMessage: "Thank you. Your email app should now be open with this ready to send, and it will come straight to me."
+    sentMessage: "Thank you. Your message came straight to me, and I will reply soon."
+    failureMessage: "That did not go through. Email me directly and it will still reach me."
   details:
     emailLabel: "Email"
     emailValue: "hello@example.com"

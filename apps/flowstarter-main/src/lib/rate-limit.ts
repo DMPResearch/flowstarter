@@ -151,3 +151,96 @@ export const discoveryPreviewLiveRateLimiter = new SlidingWindowRateLimiter({
   limit: discoveryPreviewLiveLimit(),
   windowMs: 60_000,
 });
+
+// ── Shared, when there is somewhere to share it ─────────────────────────────
+
+/**
+ * A fixed-window counter that survives more than one process when Upstash is
+ * configured, and falls back to the in-memory limiter when it is not.
+ *
+ * The limiter above is honest about what it is: one process's view. That is
+ * enough in development and enough on a single node, and it is not enough for
+ * the public lead capture endpoint on a platform running more than one
+ * instance, where "ten a minute" is ten a minute times however many instances
+ * happen to be up.
+ *
+ * So when `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are both set
+ * the count lives in Redis instead, over the REST API - no client library and
+ * no connection to keep open in a serverless handler. `INCR` the key, and set
+ * the expiry only if it has none, pipelined into one request.
+ *
+ * FAILING OPEN IS DELIBERATE. An unreachable Redis allows the request. A rate
+ * limiter that turns an outage of itself into an outage of every client's
+ * contact form has picked the wrong thing to protect.
+ */
+export interface SharedRateLimitConfig {
+  limit: number;
+  windowMs: number;
+}
+
+export interface UpstashCredentials {
+  url: string;
+  token: string;
+}
+
+export function upstashCredentials(
+  env: Record<string, string | undefined> = process.env
+): UpstashCredentials | null {
+  const url = env.UPSTASH_REDIS_REST_URL?.trim();
+  const token = env.UPSTASH_REDIS_REST_TOKEN?.trim();
+  return url && token ? { url, token } : null;
+}
+
+/**
+ * One limiter per (limit, window) pair rather than one per key: the limiter
+ * itself holds a map of keys, and a fresh instance per call would have no
+ * memory of the request before it.
+ */
+const fallbackLimiters = new Map<string, SlidingWindowRateLimiter>();
+
+function fallbackLimiter(
+  config: SharedRateLimitConfig
+): SlidingWindowRateLimiter {
+  const id = `${config.limit}:${config.windowMs}`;
+  let limiter = fallbackLimiters.get(id);
+  if (!limiter) {
+    limiter = new SlidingWindowRateLimiter(config);
+    fallbackLimiters.set(id, limiter);
+  }
+  return limiter;
+}
+
+/** True when this key has already had its allowance for the window. */
+export async function consumeRateLimit(
+  key: string,
+  config: SharedRateLimitConfig,
+  credentials: UpstashCredentials | null = upstashCredentials()
+): Promise<boolean> {
+  if (!credentials) {
+    return fallbackLimiter(config).check(key).limited;
+  }
+
+  const seconds = Math.max(1, Math.ceil(config.windowMs / 1000));
+  try {
+    const response = await fetch(
+      `${credentials.url.replace(/\/+$/, '')}/pipeline`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${credentials.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify([
+          ['INCR', key],
+          ['EXPIRE', key, String(seconds), 'NX'],
+        ]),
+      }
+    );
+    if (!response.ok) return false;
+    const body = (await response.json()) as { result?: unknown }[];
+    const count = Number(body?.[0]?.result ?? 0);
+    return Number.isFinite(count) && count > config.limit;
+  } catch {
+    return false;
+  }
+}
