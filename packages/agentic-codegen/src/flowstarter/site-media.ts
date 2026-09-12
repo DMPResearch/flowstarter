@@ -30,8 +30,15 @@ export const CONTENT_FILES = [
 ] as const;
 
 /** Keys whose value is a rendered image path. */
-const IMAGE_KEY =
-  /^(\s*)-?\s*(image|imageSrc|authorImage|logo|avatar):\s*(["'])(.*?)\3\s*$/;
+const IMAGE_KEYS = [
+  'image',
+  'imageSrc',
+  'authorImage',
+  'logo',
+  'avatar',
+] as const;
+/** Keys that carry the alt text sitting beside an image. */
+const ALT_KEYS = ['imageAlt', 'alt'] as const;
 /**
  * Some templates reuse `logo` for a text wordmark, so a key name alone does
  * not make a value an image. Only site-rooted image paths are offered for
@@ -42,7 +49,73 @@ const IMAGE_KEY =
 const IMAGE_VALUE = /^\/[\w\-./]+\.(png|jpe?g|webp|gif|avif|svg)$/i;
 /** Top-level YAML key, e.g. `caseStudies:` — used to label the slot's section. */
 const SECTION_KEY = /^([A-Za-z][A-Za-z0-9_]*):\s*$/;
-const ALT_KEY = /^\s*-?\s*(imageAlt|alt):\s*(["'])(.*?)\2\s*$/;
+
+/** Whitespace inside a line. Newlines are gone: the source is split on them. */
+function isLineSpace(ch: string | undefined): boolean {
+  return ch === ' ' || ch === '\t' || ch === '\r' || ch === '\f' || ch === '\v';
+}
+
+/** One `key: "value"` line, taken apart. */
+interface QuotedKeyLine {
+  /** The key, e.g. `imageSrc`. */
+  key: string;
+  /** The quote the value was wrapped in, so a rewrite can put back the same one. */
+  quote: string;
+  /** What sat between the quotes. */
+  value: string;
+}
+
+/**
+ * Reads a `key: "value"` line, with an optional indent and an optional YAML
+ * list marker in front of it.
+ *
+ * THIS USED TO BE A REGEX, and the regex was a liability. It opened
+ * `^(\s*)-?\s*(image|...)`: two whitespace repetitions with an optional marker
+ * between them, which is ambiguous, so a line of many spaces that then fails
+ * to match gives the engine a quadratic number of ways to split the run
+ * between the two. Template content is library input on this path
+ * (`parseSiteImageSlots` is handed whatever a template ships and whatever an
+ * agent wrote), so that is a polynomial denial of service with a file as the
+ * payload, and CodeQL was right to say so.
+ *
+ * A scan cannot backtrack at all. It walks the line once, left to right, and
+ * every step either advances or returns null. The same fix the repo made for
+ * heading detection in `invented-project.ts`.
+ *
+ * The behaviour is deliberately identical to the regex it replaces: the key
+ * must sit immediately before the colon, the value must be quoted, and nothing
+ * but whitespace may follow the closing quote, so `image: "a" # note` is not a
+ * slot any more than it was before.
+ */
+function readQuotedKeyLine(
+  line: string,
+  keys: readonly string[],
+): QuotedKeyLine | null {
+  let at = 0;
+  while (at < line.length && isLineSpace(line[at])) at += 1;
+  // An optional list marker, and the whitespace after it.
+  if (line[at] === '-') {
+    at += 1;
+    while (at < line.length && isLineSpace(line[at])) at += 1;
+  }
+
+  const colon = line.indexOf(':', at);
+  if (colon === -1) return null;
+  const key = line.slice(at, colon);
+  if (!keys.includes(key)) return null;
+
+  let valueAt = colon + 1;
+  while (valueAt < line.length && isLineSpace(line[valueAt])) valueAt += 1;
+  const quote = line[valueAt];
+  if (quote !== '"' && quote !== "'") return null;
+  const close = line.indexOf(quote, valueAt + 1);
+  if (close === -1) return null;
+  for (let after = close + 1; after < line.length; after += 1) {
+    if (!isLineSpace(line[after])) return null;
+  }
+
+  return { key, quote, value: line.slice(valueAt + 1, close) };
+}
 
 export interface SiteImageSlot {
   /** Stable address for this slot: content file plus 1-based line. */
@@ -84,21 +157,21 @@ export function parseSiteImageSlots(
       section = sectionMatch[1] as string;
       return;
     }
-    const match = IMAGE_KEY.exec(line);
-    if (!match) return;
-    const currentPath = match[4] as string;
+    const parsed = readQuotedKeyLine(line, IMAGE_KEYS);
+    if (!parsed) return;
+    const currentPath = parsed.value;
     if (!IMAGE_VALUE.test(currentPath)) return;
     // Alt text sits on an adjacent line in every template we ship.
     const altLine = lines[index + 1] ?? '';
-    const altMatch = ALT_KEY.exec(altLine);
+    const alt = readQuotedKeyLine(altLine, ALT_KEYS);
     slots.push({
       id: `${file}#${index + 1}`,
       file,
       line: index + 1,
       currentPath,
       section,
-      key: match[2] as string,
-      ...(altMatch ? { alt: altMatch[3] as string } : {}),
+      key: parsed.key,
+      ...(alt ? { alt: alt.value } : {}),
     });
   });
   return slots;
@@ -248,8 +321,8 @@ export async function replaceSiteImage(
   const line = lines[index];
   if (line === undefined) throw new Error('Image slot no longer exists');
 
-  const match = IMAGE_KEY.exec(line);
-  if (!match || match[4] !== input.slot.currentPath) {
+  const parsed = readQuotedKeyLine(line, IMAGE_KEYS);
+  if (!parsed || parsed.value !== input.slot.currentPath) {
     throw new Error(
       'The site changed since this image slot was read; reload and try again',
     );
@@ -267,23 +340,24 @@ export async function replaceSiteImage(
 
   const publicPath = `/flowstarter-media/${fileName}`;
   lines[index] = line.replace(
-    `${match[3]}${match[4]}${match[3]}`,
-    `${match[3]}${publicPath}${match[3]}`,
+    `${parsed.quote}${parsed.value}${parsed.quote}`,
+    `${parsed.quote}${publicPath}${parsed.quote}`,
   );
 
   if (input.alt !== undefined) {
     const altIndex = index + 1;
     const altLine = lines[altIndex];
-    const altMatch = altLine === undefined ? null : ALT_KEY.exec(altLine);
-    if (altMatch) {
+    const alt =
+      altLine === undefined ? null : readQuotedKeyLine(altLine, ALT_KEYS);
+    if (alt) {
       // Quotes and YAML meaning must survive whatever the client typed.
       const safeAlt = input.alt
         .replace(/["'\\\r\n]/g, ' ')
         .trim()
         .slice(0, 160);
       lines[altIndex] = altLine!.replace(
-        `${altMatch[2]}${altMatch[3]}${altMatch[2]}`,
-        `${altMatch[2]}${safeAlt}${altMatch[2]}`,
+        `${alt.quote}${alt.value}${alt.quote}`,
+        `${alt.quote}${safeAlt}${alt.quote}`,
       );
     }
   }

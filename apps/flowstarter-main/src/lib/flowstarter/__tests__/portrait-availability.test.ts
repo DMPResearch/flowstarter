@@ -17,11 +17,15 @@ import {
   portraitProviderAvailability,
   portraitProviderAvailabilityFor,
 } from '../portrait-availability';
+import { portraitTestCredentials } from './portrait-test-credentials';
 
-const LINKEDIN_ID = 'li-client-id-0001';
-const LINKEDIN_SECRET = 'li-client-secret-0001';
-const INSTAGRAM_ID = 'ig-app-id-0001';
-const INSTAGRAM_SECRET = 'ig-app-secret-0001';
+// Minted per run, never committed. See `portrait-test-credentials.ts` for why
+// a fixture that merely looks like a secret is still a problem worth removing.
+const CREDENTIALS = portraitTestCredentials();
+const LINKEDIN_ID = CREDENTIALS.LINKEDIN_CLIENT_ID;
+const LINKEDIN_SECRET = CREDENTIALS.LINKEDIN_CLIENT_SECRET;
+const INSTAGRAM_ID = CREDENTIALS.INSTAGRAM_APP_ID;
+const INSTAGRAM_SECRET = CREDENTIALS.INSTAGRAM_APP_SECRET;
 
 const BOTH = {
   LINKEDIN_CLIENT_ID: LINKEDIN_ID,

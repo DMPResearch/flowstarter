@@ -56,16 +56,23 @@ import {
   safeReturnTo,
   type ConnectFetch,
 } from '../portrait-connect';
+import {
+  portraitTestCredentials,
+  testCredential,
+} from './portrait-test-credentials';
 
-/** A deployment with both providers wired up. */
-const ENV: EnvLike = {
-  LINKEDIN_CLIENT_ID: 'li-client-id',
-  LINKEDIN_CLIENT_SECRET: 'li-client-secret',
-  INSTAGRAM_APP_ID: 'ig-app-id',
-  INSTAGRAM_APP_SECRET: 'ig-app-secret',
-};
+/**
+ * A deployment with both providers wired up, minted per run and never
+ * committed. See `portrait-test-credentials.ts` for why a fixture that merely
+ * looks like a secret is still a problem worth removing.
+ */
+const ENV: EnvLike = portraitTestCredentials();
 
-const SECRET = 'a-state-signing-secret';
+const LINKEDIN_ID = ENV.LINKEDIN_CLIENT_ID as string;
+const LINKEDIN_SECRET = ENV.LINKEDIN_CLIENT_SECRET as string;
+const INSTAGRAM_ID = ENV.INSTAGRAM_APP_ID as string;
+
+const SECRET = testCredential('portrait-state-signing');
 const CONNECTION_ID = 'c0ffee00-0000-4000-8000-000000000001';
 const PREVIEW_ID = '0f4e1088-8d8f-4f18-83b1-406cc292b23c';
 const TTL_MS = 10 * 60 * 1000;
@@ -226,7 +233,7 @@ describe('portraitAuthorizeUrl', () => {
     const url = new URL(
       portraitAuthorizeUrl({
         provider: 'linkedin',
-        clientId: 'li-client-id',
+        clientId: LINKEDIN_ID,
         redirectUri,
         state: 'the-signed-state',
       })
@@ -235,7 +242,7 @@ describe('portraitAuthorizeUrl', () => {
       PORTRAIT_PROVIDER_ENDPOINTS.linkedin.authorize
     );
     expect(url.searchParams.get('response_type')).toBe('code');
-    expect(url.searchParams.get('client_id')).toBe('li-client-id');
+    expect(url.searchParams.get('client_id')).toBe(LINKEDIN_ID);
     expect(url.searchParams.get('scope')).toBe('openid profile email');
     expect(url.searchParams.get('state')).toBe('the-signed-state');
     // The redirect URI is a URL inside a URL. It has to survive the round trip
@@ -251,7 +258,7 @@ describe('portraitAuthorizeUrl', () => {
     const url = new URL(
       portraitAuthorizeUrl({
         provider: 'instagram',
-        clientId: 'ig-app-id',
+        clientId: INSTAGRAM_ID,
         redirectUri,
         state: 'another-signed-state',
       })
@@ -260,7 +267,7 @@ describe('portraitAuthorizeUrl', () => {
       PORTRAIT_PROVIDER_ENDPOINTS.instagram.authorize
     );
     expect(url.searchParams.get('response_type')).toBe('code');
-    expect(url.searchParams.get('client_id')).toBe('ig-app-id');
+    expect(url.searchParams.get('client_id')).toBe(INSTAGRAM_ID);
     expect(url.searchParams.get('scope')).toBe('instagram_business_basic');
     expect(url.searchParams.get('state')).toBe('another-signed-state');
     expect(url.searchParams.get('redirect_uri')).toBe(redirectUri);
@@ -284,7 +291,7 @@ describe('portraitAuthorizeUrl', () => {
   it('escapes the redirect uri in the query string rather than inlining it', () => {
     const raw = portraitAuthorizeUrl({
       provider: 'linkedin',
-      clientId: 'li-client-id',
+      clientId: LINKEDIN_ID,
       redirectUri: 'https://app.flowstarter.dev/api/connect/linkedin/callback',
       state: 'a state with spaces & an ampersand',
     });
@@ -328,8 +335,8 @@ describe('isSafeReturnTo', () => {
   it('refuses a control character anywhere in the path', () => {
     expect(isSafeReturnTo('/ok\nLocation: https://evil.test')).toBe(false);
     expect(isSafeReturnTo('/ok\r\n')).toBe(false);
-    expect(isSafeReturnTo('/ok ')).toBe(false);
-    expect(isSafeReturnTo('/ok')).toBe(false);
+    expect(isSafeReturnTo('/ok\u0000')).toBe(false);
+    expect(isSafeReturnTo('/ok\u007f')).toBe(false);
   });
 
   // A cap, because a signed state is not a place to park data.
@@ -1316,8 +1323,8 @@ describe('exchangePortraitCode', () => {
     expect(form.get('grant_type')).toBe('authorization_code');
     expect(form.get('code')).toBe('AQT1abcDEF');
     expect(form.get('redirect_uri')).toBe(REDIRECT_URI);
-    expect(form.get('client_id')).toBe('li-client-id');
-    expect(form.get('client_secret')).toBe('li-client-secret');
+    expect(form.get('client_id')).toBe(LINKEDIN_ID);
+    expect(form.get('client_secret')).toBe(LINKEDIN_SECRET);
 
     expect(profileCall.url).toBe(PORTRAIT_PROVIDER_ENDPOINTS.linkedin.profile);
     expect(profileCall.method).toBe('GET');
@@ -1353,7 +1360,7 @@ describe('exchangePortraitCode', () => {
     ];
     expect(tokenCall.url).toBe(PORTRAIT_PROVIDER_ENDPOINTS.instagram.token);
     expect(new URLSearchParams(tokenCall.body).get('client_id')).toBe(
-      'ig-app-id'
+      INSTAGRAM_ID
     );
 
     const profileUrl = new URL(profileCall.url);

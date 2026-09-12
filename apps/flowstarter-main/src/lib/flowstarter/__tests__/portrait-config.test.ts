@@ -56,14 +56,28 @@ import {
   positiveIntFromEnv,
   type EnvLike,
 } from '../portrait-config';
+import {
+  BLANK_CREDENTIAL,
+  WHITESPACE_ONLY_CREDENTIAL,
+  portraitTestCredentials,
+  testCredential,
+} from './portrait-test-credentials';
 
-/** A deployment with both providers wired up. */
-const BOTH_PROVIDERS: EnvLike = {
-  LINKEDIN_CLIENT_ID: 'li-client-id',
-  LINKEDIN_CLIENT_SECRET: 'li-client-secret',
-  INSTAGRAM_APP_ID: 'ig-app-id',
-  INSTAGRAM_APP_SECRET: 'ig-app-secret',
-};
+/**
+ * A deployment with both providers wired up, minted per run and never
+ * committed. See `portrait-test-credentials.ts` for why a fixture that merely
+ * looks like a secret is still a problem worth removing.
+ */
+const BOTH_PROVIDERS: EnvLike = portraitTestCredentials();
+
+const LINKEDIN_ID = BOTH_PROVIDERS.LINKEDIN_CLIENT_ID as string;
+const LINKEDIN_SECRET = BOTH_PROVIDERS.LINKEDIN_CLIENT_SECRET as string;
+const INSTAGRAM_ID = BOTH_PROVIDERS.INSTAGRAM_APP_ID as string;
+const INSTAGRAM_SECRET = BOTH_PROVIDERS.INSTAGRAM_APP_SECRET as string;
+
+/** The two ways an operator can name the key the connect state is signed with. */
+const EXPLICIT_STATE_SECRET = testCredential('portrait-state-explicit');
+const LIVE_STATE_SECRET = testCredential('portrait-state-live');
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -257,14 +271,14 @@ describe('portraitProviderCredentials', () => {
   it('reports a provider configured when both halves are present', () => {
     expect(portraitProviderCredentials('linkedin', BOTH_PROVIDERS)).toEqual({
       provider: 'linkedin',
-      clientId: 'li-client-id',
-      clientSecret: 'li-client-secret',
+      clientId: LINKEDIN_ID,
+      clientSecret: LINKEDIN_SECRET,
       configured: true,
     });
     expect(portraitProviderCredentials('instagram', BOTH_PROVIDERS)).toEqual({
       provider: 'instagram',
-      clientId: 'ig-app-id',
-      clientSecret: 'ig-app-secret',
+      clientId: INSTAGRAM_ID,
+      clientSecret: INSTAGRAM_SECRET,
       configured: true,
     });
   });
@@ -273,9 +287,9 @@ describe('portraitProviderCredentials', () => {
   // button that will fail after the person has left our site.
   it('refuses to call a provider configured on the id alone', () => {
     const credentials = portraitProviderCredentials('linkedin', {
-      LINKEDIN_CLIENT_ID: 'li-client-id',
+      LINKEDIN_CLIENT_ID: LINKEDIN_ID,
     });
-    expect(credentials.clientId).toBe('li-client-id');
+    expect(credentials.clientId).toBe(LINKEDIN_ID);
     expect(credentials.clientSecret).toBe('');
     expect(credentials.configured).toBe(false);
   });
@@ -283,10 +297,10 @@ describe('portraitProviderCredentials', () => {
   // The same on the other side: a secret with nothing to identify us with.
   it('refuses to call a provider configured on the secret alone', () => {
     const credentials = portraitProviderCredentials('instagram', {
-      INSTAGRAM_APP_SECRET: 'ig-app-secret',
+      INSTAGRAM_APP_SECRET: INSTAGRAM_SECRET,
     });
     expect(credentials.clientId).toBe('');
-    expect(credentials.clientSecret).toBe('ig-app-secret');
+    expect(credentials.clientSecret).toBe(INSTAGRAM_SECRET);
     expect(credentials.configured).toBe(false);
   });
 
@@ -304,8 +318,8 @@ describe('portraitProviderCredentials', () => {
   // to count as absent rather than as a credential made of whitespace.
   it('treats whitespace-only credentials as absent', () => {
     const credentials = portraitProviderCredentials('linkedin', {
-      LINKEDIN_CLIENT_ID: '   ',
-      LINKEDIN_CLIENT_SECRET: '\n ',
+      LINKEDIN_CLIENT_ID: BLANK_CREDENTIAL,
+      LINKEDIN_CLIENT_SECRET: WHITESPACE_ONLY_CREDENTIAL,
     });
     expect(credentials.clientId).toBe('');
     expect(credentials.clientSecret).toBe('');
@@ -316,11 +330,11 @@ describe('portraitProviderCredentials', () => {
   // exchange would fail byte for byte if we sent it on.
   it('trims a credential that was pasted with padding', () => {
     const credentials = portraitProviderCredentials('instagram', {
-      INSTAGRAM_APP_ID: '  ig-app-id\n',
-      INSTAGRAM_APP_SECRET: ' ig-app-secret ',
+      INSTAGRAM_APP_ID: `  ${INSTAGRAM_ID}\n`,
+      INSTAGRAM_APP_SECRET: ` ${INSTAGRAM_SECRET} `,
     });
-    expect(credentials.clientId).toBe('ig-app-id');
-    expect(credentials.clientSecret).toBe('ig-app-secret');
+    expect(credentials.clientId).toBe(INSTAGRAM_ID);
+    expect(credentials.clientSecret).toBe(INSTAGRAM_SECRET);
     expect(credentials.configured).toBe(true);
   });
 
@@ -363,9 +377,9 @@ describe('configuredPortraitProviders', () => {
   it('lists only the provider that has both halves', () => {
     expect(
       configuredPortraitProviders({
-        LINKEDIN_CLIENT_ID: 'li-client-id',
-        LINKEDIN_CLIENT_SECRET: 'li-client-secret',
-        INSTAGRAM_APP_ID: 'ig-app-id',
+        LINKEDIN_CLIENT_ID: LINKEDIN_ID,
+        LINKEDIN_CLIENT_SECRET: LINKEDIN_SECRET,
+        INSTAGRAM_APP_ID: INSTAGRAM_ID,
       })
     ).toEqual(['linkedin']);
   });
@@ -374,8 +388,8 @@ describe('configuredPortraitProviders', () => {
   it('lists nothing when only ids are set', () => {
     expect(
       configuredPortraitProviders({
-        LINKEDIN_CLIENT_ID: 'li-client-id',
-        INSTAGRAM_APP_ID: 'ig-app-id',
+        LINKEDIN_CLIENT_ID: LINKEDIN_ID,
+        INSTAGRAM_APP_ID: INSTAGRAM_ID,
       })
     ).toEqual([]);
   });
@@ -384,8 +398,8 @@ describe('configuredPortraitProviders', () => {
   it('lists nothing when only secrets are set', () => {
     expect(
       configuredPortraitProviders({
-        LINKEDIN_CLIENT_SECRET: 'li-client-secret',
-        INSTAGRAM_APP_SECRET: 'ig-app-secret',
+        LINKEDIN_CLIENT_SECRET: LINKEDIN_SECRET,
+        INSTAGRAM_APP_SECRET: INSTAGRAM_SECRET,
       })
     ).toEqual([]);
   });
@@ -399,8 +413,8 @@ describe('configuredPortraitProviders', () => {
   it('lists nothing when the credentials are whitespace', () => {
     expect(
       configuredPortraitProviders({
-        LINKEDIN_CLIENT_ID: ' ',
-        LINKEDIN_CLIENT_SECRET: ' ',
+        LINKEDIN_CLIENT_ID: WHITESPACE_ONLY_CREDENTIAL,
+        LINKEDIN_CLIENT_SECRET: WHITESPACE_ONLY_CREDENTIAL,
       })
     ).toEqual([]);
   });
@@ -408,8 +422,8 @@ describe('configuredPortraitProviders', () => {
   // The result is sent to a browser, so it must carry names and never values.
   it('returns names only, never a credential value', () => {
     const providers = configuredPortraitProviders(BOTH_PROVIDERS);
-    expect(JSON.stringify(providers)).not.toContain('li-client-secret');
-    expect(JSON.stringify(providers)).not.toContain('ig-app-secret');
+    expect(JSON.stringify(providers)).not.toContain(LINKEDIN_SECRET);
+    expect(JSON.stringify(providers)).not.toContain(INSTAGRAM_SECRET);
   });
 
   // The intake calls this with no argument.
@@ -531,9 +545,9 @@ describe('portraitStateSecret', () => {
     expect(
       portraitStateSecret('linkedin', {
         ...BOTH_PROVIDERS,
-        [PORTRAIT_STATE_SECRET_ENV_VAR]: 'explicit-signing-secret',
+        [PORTRAIT_STATE_SECRET_ENV_VAR]: EXPLICIT_STATE_SECRET,
       })
-    ).toBe('explicit-signing-secret');
+    ).toBe(EXPLICIT_STATE_SECRET);
   });
 
   // Without one, the provider's own client secret is already a shared secret
@@ -541,10 +555,10 @@ describe('portraitStateSecret', () => {
   // default that anybody could guess.
   it('falls back to the provider client secret, per provider', () => {
     expect(portraitStateSecret('linkedin', BOTH_PROVIDERS)).toBe(
-      'li-client-secret'
+      LINKEDIN_SECRET
     );
     expect(portraitStateSecret('instagram', BOTH_PROVIDERS)).toBe(
-      'ig-app-secret'
+      INSTAGRAM_SECRET
     );
   });
 
@@ -554,9 +568,9 @@ describe('portraitStateSecret', () => {
     expect(
       portraitStateSecret('linkedin', {
         ...BOTH_PROVIDERS,
-        [PORTRAIT_STATE_SECRET_ENV_VAR]: '   ',
+        [PORTRAIT_STATE_SECRET_ENV_VAR]: BLANK_CREDENTIAL,
       })
-    ).toBe('li-client-secret');
+    ).toBe(LINKEDIN_SECRET);
   });
 
   // With nothing at all there is deliberately no default: the caller sees an
@@ -564,13 +578,13 @@ describe('portraitStateSecret', () => {
   it('is empty when there is neither an explicit secret nor a client secret', () => {
     expect(portraitStateSecret('linkedin', {})).toBe('');
     expect(
-      portraitStateSecret('instagram', { INSTAGRAM_APP_ID: 'ig-app-id' })
+      portraitStateSecret('instagram', { INSTAGRAM_APP_ID: INSTAGRAM_ID })
     ).toBe('');
   });
 
   // The connect route calls this with no environment argument.
   it('reads the live environment when no environment is passed', () => {
-    vi.stubEnv(PORTRAIT_STATE_SECRET_ENV_VAR, 'live-signing-secret');
-    expect(portraitStateSecret('instagram')).toBe('live-signing-secret');
+    vi.stubEnv(PORTRAIT_STATE_SECRET_ENV_VAR, LIVE_STATE_SECRET);
+    expect(portraitStateSecret('instagram')).toBe(LIVE_STATE_SECRET);
   });
 });

@@ -122,6 +122,25 @@ function responding(status: number, body: Buffer | string): Response {
   } as unknown as Response;
 }
 
+/**
+ * True when a recorded request went to a domain or one of its subdomains.
+ *
+ * Parsed, never matched as a substring. `url.includes('linkedin.com')` reads
+ * as the same assertion and is not one: `https://linkedin.com.evil.test/`
+ * contains it and `https://API.LinkedIn.com/` does not. A test that is wrong
+ * in the same direction as the bug it guards cannot catch the bug, so the host
+ * is parsed and compared whole, the way `portrait-auto.ts` compares one.
+ */
+function wentTo(url: string, domain: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return host === domain || host.endsWith(`.${domain}`);
+}
+
 /** Every URL that answers, and what it answers with. Anything else 404s. */
 function router(routes: Record<string, () => Response | Promise<Response>>) {
   const seen: Array<{ url: string; headers: Record<string, string> }> = [];
@@ -215,7 +234,7 @@ describe('readAutomaticPortraitSources', () => {
     );
     // LinkedIn is a consent flow or it is nothing. No automatic request.
     expect(
-      seen.filter((entry) => entry.url.includes('linkedin.com'))
+      seen.filter((entry) => wentTo(entry.url, 'linkedin.com'))
     ).toHaveLength(0);
   });
 

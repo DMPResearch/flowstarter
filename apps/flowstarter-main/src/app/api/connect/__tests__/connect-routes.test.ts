@@ -45,14 +45,21 @@ import { GET as instagramCallback } from '../instagram/callback/route';
 import { GET as instagramStart } from '../instagram/start/route';
 import { GET as linkedinCallback } from '../linkedin/callback/route';
 import { GET as linkedinStart } from '../linkedin/start/route';
+import {
+  portraitTestCredentials,
+  testCredential,
+} from '@/lib/flowstarter/__tests__/portrait-test-credentials';
 
 const ORIGIN = 'https://app.flowstarter.test';
 
-const LINKEDIN_ID = 'li-client-id-0001';
-const LINKEDIN_SECRET = 'li-client-secret-0001';
-const INSTAGRAM_ID = 'ig-app-id-0001';
-const INSTAGRAM_SECRET = 'ig-app-secret-0001';
-const STATE_SECRET = 'state-secret-0001';
+// Minted per run, never committed. See `portrait-test-credentials.ts` for why
+// a fixture that merely looks like a secret is still a problem worth removing.
+const CREDENTIALS = portraitTestCredentials();
+const LINKEDIN_ID = CREDENTIALS.LINKEDIN_CLIENT_ID;
+const LINKEDIN_SECRET = CREDENTIALS.LINKEDIN_CLIENT_SECRET;
+const INSTAGRAM_ID = CREDENTIALS.INSTAGRAM_APP_ID;
+const INSTAGRAM_SECRET = CREDENTIALS.INSTAGRAM_APP_SECRET;
+const STATE_SECRET = testCredential('portrait-state-signing');
 
 /** The preview the state is bound to, and the one an attacker would rather we used. */
 const STATE_PREVIEW = '11111111-1111-4111-8111-111111111111';
