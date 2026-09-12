@@ -7,6 +7,8 @@
  * dispatches of the same Stripe redelivery cannot both start a build.
  */
 
+import { randomBytes } from 'node:crypto';
+import { hostname } from 'node:os';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   ProjectState,
@@ -35,6 +37,17 @@ import {
   loadTenantAssetFiles,
   withChangeRequestAssets,
 } from './change-request-assets';
+import {
+  CLAIMABLE_KINDS,
+  claimVerdict,
+  leaseOwner,
+  nextRunAfter,
+  publishedResult,
+  staleLeaseAction,
+  type BackoffRules,
+  type LeasedJobRow,
+  type PublishedResult,
+} from './leases';
 import { withTenant } from './tenancy';
 
 const UUID =
@@ -55,26 +68,6 @@ const UUID =
  * it from the absence of activity.
  */
 export const WAITING_BRIEF = 'waiting_brief';
-
-/**
- * States a job may be claimed from. Anything else is a no-op.
- *
- * `waiting_brief` is claimable because the gate below is re-read on every
- * claim: a job that was parked is claimed the moment the brief allows it, and
- * one that is still parked is simply parked again.
- */
-const CLAIMABLE = new Set(['queued', 'failed', WAITING_BRIEF]);
-
-/**
- * Kinds this worker knows how to run. Both are dispatched to the same
- * endpoint, because they are the same pipeline with different halves of it
- * enabled; the worker branches on the kind, not on the route.
- */
-const CLAIMABLE_KINDS = new Set([
-  'FULL_SITE_BUILD',
-  'SITE_REBUILD',
-  'CHANGE_REQUEST_BUILD',
-]);
 
 /** The two columns of `workspace_briefs` a claim decision is made from. */
 interface WorkspaceBriefRow {
@@ -119,7 +112,7 @@ const WAITING_ON_BRIEF_BODY =
 
 export class JobArtifactError extends Error {}
 
-export interface JobLedgerRow {
+export interface JobLedgerRow extends LeasedJobRow {
   id: string;
   workspace_id: string;
   kind: string;
@@ -128,6 +121,11 @@ export interface JobLedgerRow {
   payload: unknown;
 }
 
+/** Every column a claim or a recovery decision is made from. */
+const LEDGER_COLUMNS =
+  'id, workspace_id, kind, status, attempt_count, max_attempts, run_after, ' +
+  'started_at, leased_by, lease_expires_at, payload';
+
 export interface ProjectArtifactRow {
   intake_payload: unknown;
   brand_config: unknown;
@@ -135,15 +133,33 @@ export interface ProjectArtifactRow {
 }
 
 /**
- * True when the ledger row is in a state a worker may take over. `running`,
- * `succeeded` and `canceled` are deliberately excluded so Stripe redeliveries
- * and duplicate dispatches collapse into a no-op rather than a second build.
+ * True when the ledger row is in a state a worker may take over.
+ *
+ * `succeeded` and `canceled` are still excluded outright, so a Stripe
+ * redelivery collapses into a no-op rather than a second build. `running` is
+ * no longer excluded outright — it is excluded *while its lease holds*, which
+ * is the whole point of the lease: a worker that died mid-build leaves a
+ * `running` row whose lease stops being renewed, and the next worker (or an
+ * operator re-dispatch) may take it back rather than leaving a paid job
+ * stranded forever. The rule itself lives in `leases.ts`.
  */
-export function isClaimable(row: JobLedgerRow, maxAttempts: number): boolean {
-  if (!CLAIMABLE_KINDS.has(row.kind)) return false;
-  if (!CLAIMABLE.has(row.status)) return false;
-  return row.attempt_count < maxAttempts;
+export function isClaimable(
+  row: JobLedgerRow,
+  maxAttempts: number,
+  rules: { now?: number; leaseTtlMs?: number } = {},
+): boolean {
+  return claimVerdict(row, {
+    now: rules.now ?? Date.now(),
+    maxAttempts,
+    leaseTtlMs: rules.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
+  }).claimable;
 }
+
+/**
+ * The TTL used when a caller does not supply one. Matches the config default
+ * so a two-argument `isClaimable` answers the same question the worker does.
+ */
+export const DEFAULT_LEASE_TTL_MS = 120_000;
 
 function asRecord(value: unknown, field: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -486,6 +502,30 @@ export function changeRequestFor(
 
 export interface SupabaseJobStoreOptions {
   maxAttempts: number;
+  /** How long a claim is good for without a heartbeat. */
+  leaseTtlMs?: number;
+  /** Who this process says it is on the rows it holds. */
+  owner?: string;
+  /** Retry scheduling, written onto `run_after` when an attempt fails. */
+  backoff?: BackoffRules;
+  /** Injected in tests. */
+  now?: () => number;
+}
+
+/** Recovery/backoff defaults, matched to `config.ts`. */
+const DEFAULT_BACKOFF: BackoffRules = { baseMs: 30_000, maxMs: 900_000 };
+
+/** Rows one reconciliation pass will look at. Bounded on purpose. */
+const RECONCILE_LIMIT = 100;
+
+/** What one startup reconciliation did, for the operator log. */
+export interface ReconciliationReport {
+  /** Rows that were `running` with a dead lease and are queued again. */
+  requeued: string[];
+  /** Rows whose site had already shipped; finished without rebuilding. */
+  completed: string[];
+  /** Rows out of attempts; failed so an operator sees them. */
+  abandoned: string[];
 }
 
 /** Notes read per pass; anything beyond waits for the next boundary. */
@@ -495,10 +535,207 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
   /** Workspace per claimed job, so events do not re-read the ledger row. */
   private readonly workspaceByJob = new Map<string, string>();
 
+  /** Identity written into `leased_by`. Stable for the life of the process. */
+  private readonly owner: string;
+  private readonly leaseTtlMs: number;
+  private readonly backoff: BackoffRules;
+  private readonly now: () => number;
+
   constructor(
     private readonly client: SupabaseClient,
     private readonly options: SupabaseJobStoreOptions,
-  ) {}
+  ) {
+    this.owner =
+      options.owner ??
+      leaseOwner({
+        hostname: hostname(),
+        pid: process.pid,
+        nonce: randomBytes(4).toString('hex'),
+      });
+    this.leaseTtlMs = options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
+    this.backoff = options.backoff ?? DEFAULT_BACKOFF;
+    this.now = options.now ?? (() => Date.now());
+  }
+
+  /** Who this worker says it is. Exposed so the boot log can name it. */
+  get leaseHolder(): string {
+    return this.owner;
+  }
+
+  /**
+   * Attempts on a job this worker claimed, remembered from the claim rather
+   * than re-read. Backoff grows with the attempt number, and re-reading it in
+   * the failure path would cost a query at exactly the moment things are
+   * already going wrong. Unknown (a failure recorded for a job this process
+   * never claimed) reads as the first attempt, which is the gentler answer.
+   */
+  private readonly attemptsByJob = new Map<string, number>();
+
+  private attemptsSoFar(jobId: string): number {
+    return this.attemptsByJob.get(jobId) ?? 1;
+  }
+
+  private leaseRules(): {
+    now: number;
+    maxAttempts: number;
+    leaseTtlMs: number;
+  } {
+    return {
+      now: this.now(),
+      maxAttempts: this.options.maxAttempts,
+      leaseTtlMs: this.leaseTtlMs,
+    };
+  }
+
+  /** The lease columns a claim or a renewal writes. */
+  private leaseFields(now: number): Record<string, unknown> {
+    return {
+      leased_by: this.owner,
+      lease_expires_at: new Date(now + this.leaseTtlMs).toISOString(),
+    };
+  }
+
+  /**
+   * Pushes this worker's lease forward while a build is genuinely running.
+   *
+   * Guarded on `leased_by`, so a worker whose lease already expired and was
+   * taken by somebody else cannot claw it back and end up writing the same
+   * worktree as the process that now owns it. Returns false in that case,
+   * which is the caller's signal to stop.
+   */
+  async heartbeat(jobId: string): Promise<boolean> {
+    const now = this.now();
+    const { data, error } = await this.client
+      .from('flowstarter_agent_jobs')
+      .update({
+        ...this.leaseFields(now),
+        updated_at: new Date(now).toISOString(),
+      })
+      .eq('id', jobId)
+      .eq('status', 'running')
+      .eq('leased_by', this.owner)
+      .select('id')
+      .maybeSingle();
+    if (error) throw error;
+    return Boolean(data);
+  }
+
+  /**
+   * Startup reconciliation: the thing that was missing.
+   *
+   * Every `running` row whose lease has died is a build whose worker is gone.
+   * One of three things is true of it, and the rule in `leases.ts` says which:
+   * the site already shipped and only the ledger is behind (finish it, publish
+   * nothing twice); attempts remain (queue it again, due now); or the budget is
+   * spent (fail it, so it appears on the operator board instead of looping).
+   *
+   * Returns what it did rather than logging it, so the caller can say it once
+   * in the worker's own voice and tests can assert on it.
+   */
+  async reconcileStaleLeases(): Promise<ReconciliationReport> {
+    const report: ReconciliationReport = {
+      requeued: [],
+      completed: [],
+      abandoned: [],
+    };
+    const { data, error } = await this.client
+      .from('flowstarter_agent_jobs')
+      .select(LEDGER_COLUMNS)
+      .eq('status', 'running')
+      .in('kind', Array.from(CLAIMABLE_KINDS))
+      .order('updated_at', { ascending: true })
+      .limit(RECONCILE_LIMIT);
+    if (error) throw error;
+
+    for (const raw of (data ?? []) as unknown as JobLedgerRow[]) {
+      const decision = staleLeaseAction(raw, this.leaseRules());
+      if (decision.action === 'leave') continue;
+      if (decision.action === 'complete') {
+        // Idempotent publication. The build already pushed its commit and
+        // opened its PR; all that is missing is the row that says so.
+        await this.completePublished(raw, decision.published);
+        report.completed.push(raw.id);
+        continue;
+      }
+      if (decision.action === 'abandon') {
+        await this.markFailed(raw.id, {
+          code: 'BUILD_LEASE_EXPIRED',
+          detail:
+            'The worker holding this build stopped without finishing it, and ' +
+            'its retry budget is spent. Re-dispatch it to grant one more attempt.',
+        });
+        report.abandoned.push(raw.id);
+        continue;
+      }
+      const requeued = await this.requeueExpired(raw);
+      if (requeued) report.requeued.push(raw.id);
+    }
+    return report;
+  }
+
+  /**
+   * Puts one abandoned build back in the queue.
+   *
+   * Guarded on the exact lease it was reconciled from, so two workers starting
+   * at once cannot both re-queue it — and a worker that came back to life
+   * between the read and the write keeps its job.
+   */
+  private async requeueExpired(row: JobLedgerRow): Promise<boolean> {
+    const now = this.now();
+    const update = this.client
+      .from('flowstarter_agent_jobs')
+      .update({
+        status: 'queued',
+        started_at: null,
+        leased_by: null,
+        lease_expires_at: null,
+        // Due immediately: the wait already happened, in the form of a build
+        // that ran and died. Backoff is for attempts that failed, not for
+        // attempts that were interrupted.
+        run_after: new Date(now).toISOString(),
+        error_code: 'BUILD_LEASE_EXPIRED',
+        error_detail:
+          'The worker holding this build stopped without finishing it. It was ' +
+          'returned to the queue by startup reconciliation.',
+        updated_at: new Date(now).toISOString(),
+      })
+      .eq('id', row.id)
+      .eq('status', 'running');
+    const guarded = row.leased_by
+      ? update.eq('leased_by', row.leased_by)
+      : update.is('leased_by', null);
+    const { data, error } = await guarded.select('id').maybeSingle();
+    if (error) throw error;
+    return Boolean(data);
+  }
+
+  /**
+   * Finishes a row whose build already published, without rebuilding it.
+   *
+   * The three completion paths differ in what else they touch — a full build
+   * moves the workspace to HUMAN_QA, a rebuild moves nothing — so this
+   * delegates to the same methods the happy path uses rather than writing a
+   * fourth variant of "succeeded". A change-request build is deliberately not
+   * completed here: its last step also flips the request paid -> done and
+   * stamps a site version, and guessing at those from a payload is how a
+   * client gets told a change shipped that did not. Those are re-queued and
+   * rebuilt instead, which their own compare-and-set makes safe.
+   */
+  private async completePublished(
+    row: JobLedgerRow,
+    published: PublishedResult,
+  ): Promise<void> {
+    this.workspaceByJob.set(row.id, row.workspace_id);
+    if (row.kind === 'FULL_SITE_BUILD') {
+      await this.markHumanQa(row.id, published);
+      return;
+    }
+    if (row.kind === 'SITE_REBUILD') {
+      await this.markRebuilt(row.id, published);
+      return;
+    }
+    await this.requeueExpired(row);
+  }
 
   private async workspaceFor(jobId: string): Promise<string> {
     const known = this.workspaceByJob.get(jobId);
@@ -644,7 +881,17 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
         const now = new Date().toISOString();
         const { error } = await this.client
           .from('flowstarter_agent_jobs')
-          .update({ status: WAITING_BRIEF, updated_at: now })
+          .update({
+            status: WAITING_BRIEF,
+            updated_at: now,
+            // Ordinarily already null. Not so for the one row that can reach
+            // here holding a lease: a build recovered from a dead worker whose
+            // client has since re-opened their brief. Parking it while a dead
+            // holder is still named on it would make the next sweep read it
+            // as somebody else's.
+            leased_by: null,
+            lease_expires_at: null,
+          })
           .eq('id', row.id)
           .eq('status', row.status);
         if (error) throw error;
@@ -706,12 +953,29 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
   async claim(jobId: string): Promise<FullSiteBuildJob | null> {
     const { data: row, error } = await this.client
       .from('flowstarter_agent_jobs')
-      .select('id, workspace_id, kind, status, attempt_count, payload')
+      .select(LEDGER_COLUMNS)
       .eq('id', jobId)
       .maybeSingle<JobLedgerRow>();
     if (error) throw error;
     if (!row) return null;
-    if (!isClaimable(row, this.options.maxAttempts)) return null;
+
+    const rules = this.leaseRules();
+    const verdict = claimVerdict(row, rules);
+    if (!verdict.claimable) return null;
+
+    // Taking over a dead lease is not the same as starting fresh. If the
+    // worker that held it got as far as publishing, the commit is pushed, the
+    // PR is open and the client's site exists; the only thing missing is the
+    // row that says so. Finishing it here is what makes publication
+    // idempotent — building it again would open a second PR for work that
+    // already shipped.
+    if (verdict.recovered) {
+      const published = publishedResult(row.payload);
+      if (published) {
+        await this.completePublished(row, published);
+        return null;
+      }
+    }
 
     // The brief gate, before the compare-and-set and not after it: a job that
     // is waiting on its client must be left exactly as it is, `queued`, with
@@ -731,10 +995,12 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
       }
     }
 
-    const now = new Date().toISOString();
+    const now = new Date(rules.now).toISOString();
     // Guarding on the exact (status, attempt_count) we read makes this an
-    // atomic compare-and-set: a concurrent dispatch updates zero rows.
-    const { data: claimed, error: claimError } = await this.client
+    // atomic compare-and-set: a concurrent dispatch updates zero rows. The
+    // lease is written in the same statement, so there is no window where a
+    // row reads `running` with nobody named on it.
+    const claimQuery = this.client
       .from('flowstarter_agent_jobs')
       .update({
         status: 'running',
@@ -744,15 +1010,23 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
         error_code: null,
         error_detail: null,
         updated_at: now,
+        ...this.leaseFields(rules.now),
       })
       .eq('id', jobId)
       .eq('status', row.status)
-      .eq('attempt_count', row.attempt_count)
+      .eq('attempt_count', row.attempt_count);
+    // Recovering a dead lease guards on the dead holder too, so two workers
+    // reconciling the same abandoned build cannot both take it.
+    const guarded = row.leased_by
+      ? claimQuery.eq('leased_by', row.leased_by)
+      : claimQuery.is('leased_by', null);
+    const { data: claimed, error: claimError } = await guarded
       .select('id')
       .maybeSingle();
     if (claimError) throw claimError;
     if (!claimed) return null;
     this.workspaceByJob.set(jobId, row.workspace_id);
+    this.attemptsByJob.set(jobId, row.attempt_count + 1);
 
     // Past this point the row reads `running`. FullSiteBuildWorker only starts
     // its own error handling once claim() returns, so anything that throws
@@ -841,40 +1115,49 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
    * listening.
    *
    * So the queue is read from the database rather than remembered in this
-   * process. Two kinds of row come back:
+   * process. Four kinds of row come back:
    *
    *   - `queued` and due (`run_after` has passed), which is a dispatch that
    *     did not arrive.
+   *   - `failed` and due, which is a retry whose backoff has elapsed. The
+   *     backoff is on the row (`markFailed` writes it), so a worker that
+   *     restarted between attempts still honours it.
    *   - `waiting_brief` whose workspace now allows a build. Those are promoted
    *     to `queued` here, guarded on the status that was read, so of two
    *     workers sweeping at once exactly one takes each job and the board
    *     never shows a build as parked while it is running.
+   *   - `running` whose lease has expired, which is a build whose worker died.
+   *     They are handed over as they are: `claim()` re-reads the row, refuses
+   *     it if the holder started checking in again, and finishes it without
+   *     rebuilding if it turns out to have published already. Promoting them
+   *     here would throw away the lease that makes that decision possible.
    *
-   * `running` is deliberately absent: recovering a job whose worker died
-   * mid-build needs leases and heartbeats, which is its own piece of work.
+   * Every one of these is a rule in `leases.ts` rather than a condition
+   * written twice: this asks the database for the candidates and `claimVerdict`
+   * says which of them this worker may take.
    */
   async readyForClaim(limit: number): Promise<string[]> {
+    const rules = this.leaseRules();
     const { data, error } = await this.client
       .from('flowstarter_agent_jobs')
-      .select('id, workspace_id, kind, status, attempt_count, run_after')
-      .in('status', ['queued', WAITING_BRIEF])
+      .select(LEDGER_COLUMNS)
+      .in('status', ['queued', 'failed', 'running', WAITING_BRIEF])
       .in('kind', Array.from(CLAIMABLE_KINDS))
       .order('created_at', { ascending: true })
       .limit(limit);
     if (error) throw error;
 
-    const rows = (data ?? []) as unknown as (JobLedgerRow & {
-      run_after: string | null;
-    })[];
-    const now = Date.now();
+    const rows = (data ?? []) as unknown as JobLedgerRow[];
     const ready: string[] = [];
 
     for (const row of rows) {
-      if (row.attempt_count >= this.options.maxAttempts) continue;
-      if (row.status === 'queued') {
-        // A backoff window is not a stall; a job is not due until it says so.
-        const due = row.run_after ? Date.parse(row.run_after) : 0;
-        if (Number.isFinite(due) && due > now) continue;
+      // One rule, asked once: attempts, backoff, and whether anybody still
+      // holds this job. A `waiting_brief` row passes it the same way a queued
+      // one does, because the thing that decides a parked job is the brief,
+      // not the lease.
+      if (!claimVerdict(row, rules).claimable) continue;
+
+      if (row.status !== WAITING_BRIEF) {
         ready.push(row.id);
         continue;
       }
@@ -956,11 +1239,14 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
         },
         finished_at: now,
         updated_at: now,
+        leased_by: null,
+        lease_expires_at: null,
       })
       .eq('id', jobId)
       .select('workspace_id')
       .single<{ workspace_id: string }>();
     if (error) throw error;
+    this.attemptsByJob.delete(jobId);
 
     const { error: stateError } = await this.client
       .from('workspaces')
@@ -1010,9 +1296,12 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
         },
         finished_at: now,
         updated_at: now,
+        leased_by: null,
+        lease_expires_at: null,
       })
       .eq('id', jobId);
     if (error) throw error;
+    this.attemptsByJob.delete(jobId);
   }
 
   async markChangeRequestBuildStarted(
@@ -1148,9 +1437,12 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
         },
         finished_at: now,
         updated_at: now,
+        leased_by: null,
+        lease_expires_at: null,
       })
       .eq('id', jobId);
     if (error) throw error;
+    this.attemptsByJob.delete(jobId);
 
     const { data: done, error: doneError } = await withTenant(
       this.client,
@@ -1180,11 +1472,25 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
     }
   }
 
+  /**
+   * A failed attempt, with its next one scheduled.
+   *
+   * `run_after` is the backoff, recorded on the row rather than held in a
+   * timer: a worker that restarts between attempts still honours it, and an
+   * operator can see when the next try is due. The status stays `failed` — the
+   * operator board reads that word and offers a re-dispatch — and the claim
+   * rule already treats `failed` as claimable once the row is due and attempts
+   * remain, so the retry needs no separate scheduler.
+   *
+   * The lease is dropped in the same write. A failed row nobody holds is what
+   * lets the very next sweep pick the retry up.
+   */
   async markFailed(
     jobId: string,
     failure: { code: string; detail: string },
   ): Promise<void> {
-    const now = new Date().toISOString();
+    const at = this.now();
+    const now = new Date(at).toISOString();
     const { data, error } = await this.client
       .from('flowstarter_agent_jobs')
       .update({
@@ -1193,6 +1499,9 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
         error_detail: failure.detail.slice(0, 2_000),
         finished_at: now,
         updated_at: now,
+        leased_by: null,
+        lease_expires_at: null,
+        run_after: nextRunAfter(at, this.attemptsSoFar(jobId), this.backoff),
       })
       .eq('id', jobId)
       .select('workspace_id')

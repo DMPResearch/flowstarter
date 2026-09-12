@@ -91,6 +91,9 @@ export interface PipelineJobRow {
   finished_at: string | null;
   error_code: string | null;
   error_detail: string | null;
+  /** The worker process holding this job, and until when. See `./lease`. */
+  leased_by?: string | null;
+  lease_expires_at?: string | null;
 }
 
 export interface PipelineEventRow {

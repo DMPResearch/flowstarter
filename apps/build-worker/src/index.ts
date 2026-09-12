@@ -45,7 +45,7 @@ import { LocalSitePublisher } from './local-publisher';
 import { ensureLocalSitesRepository } from './local-repo';
 import { GitHubPullRequestPublisher } from './pull-requests';
 import { BuildQueue } from './queue';
-import { BuildReconciler } from './reconcile';
+import { BuildReconciler, withHeartbeat } from './reconcile';
 import { createStubFullSiteAgent } from './stub-agent';
 import { CommandSiteValidator, NoopSiteValidator } from './validator';
 
@@ -82,6 +82,11 @@ const supabase = createClient(
 
 const store = new SupabaseFullSiteBuildJobStore(supabase, {
   maxAttempts: config.maxAttempts,
+  leaseTtlMs: config.lease.ttlMs,
+  backoff: {
+    baseMs: config.lease.backoffBaseMs,
+    maxMs: config.lease.backoffMaxMs,
+  },
 });
 const worktrees = new SafeGitWorktreeManager({
   repositoryRoot: config.git.repositoryRoot,
@@ -177,7 +182,27 @@ const queue = new BuildQueue({
     runWithJob(jobId, async () => {
       report(`job ${jobId} started`);
       try {
-        await worker.run(jobId);
+        // The lease is renewed for as long as this build is genuinely
+        // running. It is what tells a restarted worker, minutes from now,
+        // that this job is alive rather than abandoned.
+        await withHeartbeat(
+          {
+            store,
+            jobId,
+            intervalMs: config.lease.heartbeatMs,
+            onLost: (lost) =>
+              console.warn(
+                `[build-worker] lost the lease on job ${lost}; another worker ` +
+                  'has taken it. This build will be refused when it tries to finish.',
+              ),
+            onError: (beat, error) =>
+              console.warn(
+                `[build-worker] heartbeat failed for job ${beat}:`,
+                error instanceof Error ? error.message : error,
+              ),
+          },
+          () => worker.run(jobId),
+        );
         report(`job ${jobId} finished`);
       } catch (error) {
         // Recorded here, where the job's log is still attached. The console
@@ -208,6 +233,11 @@ const queue = new BuildQueue({
  * Started after the server is listening rather than before: the first sweep
  * may enqueue a build, and a build that starts before this process can answer
  * /health is a build an operator cannot see.
+ *
+ * It sweeps for two things now. What nobody dispatched — a lost nudge, a brief
+ * a client finished overnight — and what nobody is running any more: a
+ * `running` row whose lease has stopped being renewed is a build whose worker
+ * died, and recovering it is the first thing each sweep does.
  */
 const reconciler = new BuildReconciler({
   store,
@@ -308,7 +338,9 @@ async function start(): Promise<void> {
     console.info(
       `[build-worker] v${VERSION} listening on ${config.hostname}:${config.port} ` +
         `(mode ${config.publishMode}, model ${config.pi.modelId}, ` +
-        `concurrency ${config.concurrency}, validation ${validation}, ${target})`,
+        `concurrency ${config.concurrency}, validation ${validation}, ${target}, ` +
+        `lease ${config.lease.ttlMs}ms as ${store.leaseHolder}, ` +
+        `sweep every ${config.pollIntervalMs}ms)`,
     );
   });
 }

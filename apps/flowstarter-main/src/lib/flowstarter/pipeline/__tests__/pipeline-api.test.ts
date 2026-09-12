@@ -485,9 +485,15 @@ describe('re-dispatching a build', () => {
     expect(tables.flowstarter_agent_jobs[0].id).toBe(JOB_ID);
   });
 
-  it('refuses to touch a build that is already running, and creates nothing', async () => {
+  it('refuses to touch a build whose worker is still checking in', async () => {
     seedWorkspace();
-    seedJob({ status: 'running', started_at: '2026-08-30T11:00:00.000Z' });
+    seedJob({
+      status: 'running',
+      started_at: new Date().toISOString(),
+      leased_by: 'build-1:42:abcd',
+      // A live lease: the worker beat on this row seconds ago.
+      lease_expires_at: new Date(Date.now() + 90_000).toISOString(),
+    });
 
     const res = await redispatchBuildHandler(post({}), ctx());
 
@@ -498,6 +504,55 @@ describe('re-dispatching a build', () => {
     expect(tables.flowstarter_agent_jobs).toHaveLength(1);
     expect(tables.flowstarter_agent_jobs[0].status).toBe('running');
     expect(tables.project_events).toHaveLength(0);
+  });
+
+  it('recovers a running build whose worker died, which used to be unreachable', async () => {
+    // Codex risk 4, from the operator's side. This row is the wreckage of a
+    // crashed worker: it says `running`, nobody is holding it, and before
+    // leases existed this endpoint refused it and the claim rule skipped it,
+    // so a paid build sat here until somebody noticed.
+    seedWorkspace();
+    seedJob({
+      status: 'running',
+      attempt_count: 1,
+      started_at: new Date(Date.now() - 3_600_000).toISOString(),
+      leased_by: 'build-0:9:dead',
+      lease_expires_at: new Date(Date.now() - 600_000).toISOString(),
+    });
+
+    const res = await redispatchBuildHandler(
+      post({ reason: 'worker died' }),
+      ctx()
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      job: { id: JOB_ID, status: 'queued', previousStatus: 'running' },
+    });
+    const job = tables.flowstarter_agent_jobs[0];
+    expect(job.status).toBe('queued');
+    // The dead worker's hold goes with it, or the next claim would see a
+    // queued row somebody still appears to own.
+    expect(job.leased_by).toBeNull();
+    expect(job.lease_expires_at).toBeNull();
+    expect(job.started_at).toBeNull();
+    expect(tables.project_events[0]).toMatchObject({
+      kind: 'build_redispatched',
+      payload: { previousStatus: 'running', recoveredExpiredLease: true },
+    });
+  });
+
+  it('offers the recovery on the board itself, not only through the endpoint', async () => {
+    seedWorkspace();
+    seedJob({
+      status: 'running',
+      leased_by: 'build-0:9:dead',
+      lease_expires_at: new Date(Date.now() - 1_000).toISOString(),
+    });
+
+    const detail = await pipelineDetailHandler(post({}), ctx());
+    const body = await detail.json();
+    expect(body.jobs[0]).toMatchObject({ id: JOB_ID, canRedispatch: true });
   });
 
   it('refuses when the build already succeeded', async () => {

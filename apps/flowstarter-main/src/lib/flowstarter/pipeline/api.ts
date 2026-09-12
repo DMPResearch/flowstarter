@@ -30,6 +30,7 @@ import {
   type PipelineWorkspaceRow,
 } from './board';
 import { DispatchError, dispatchAgentJob } from './dispatch';
+import { abandonedByWorker } from './lease';
 import {
   allowedNextStates,
   asProjectState,
@@ -47,7 +48,8 @@ const WORKSPACE_COLUMNS =
 
 const JOB_COLUMNS =
   'id, workspace_id, kind, status, attempt_count, max_attempts, run_after, ' +
-  'created_at, started_at, finished_at, error_code, error_detail';
+  'created_at, started_at, finished_at, error_code, error_detail, ' +
+  'leased_by, lease_expires_at';
 
 const EVENT_COLUMNS = 'id, workspace_id, kind, actor, payload, created_at';
 
@@ -57,7 +59,14 @@ const BOARD_JOB_LIMIT = 2_000;
 const BOARD_EVENT_LIMIT = 2_000;
 const TIMELINE_EVENT_LIMIT = 200;
 
-/** Statuses a re-dispatch may legally reset. `running` is deliberately absent. */
+/**
+ * Statuses a re-dispatch may always reset.
+ *
+ * `running` is not one of them, but it is no longer refused outright either:
+ * a running row whose worker lease has expired is the wreckage of a crashed
+ * build, and re-queueing it is exactly what an operator is here to do. See
+ * `abandonedByWorker` and the check below.
+ */
 const REDISPATCHABLE_STATUSES = ['queued', 'failed', 'canceled'] as const;
 // `waiting_brief` is cancellable: a project an operator is abandoning must not
 // leave a build parked on a brief nobody will ever finish.
@@ -362,7 +371,13 @@ export async function pipelineDetailHandler(
         lastReply: headlines.get(job.id)?.lastReply ?? null,
         canRedispatch:
           (REDISPATCHABLE_KINDS as readonly string[]).includes(job.kind) &&
-          (REDISPATCHABLE_STATUSES as readonly string[]).includes(job.status),
+          ((REDISPATCHABLE_STATUSES as readonly string[]).includes(
+            job.status
+          ) ||
+            // A running build nobody is holding any more. Offering the button
+            // is the point: the operator is the recovery path for a worker
+            // that died between two heartbeats.
+            abandonedByWorker(job)),
         canCancel: (CANCELLABLE_STATUSES as readonly string[]).includes(
           job.status
         ),
@@ -443,12 +458,20 @@ export async function redispatchBuildHandler(
     );
   }
 
-  if (!(REDISPATCHABLE_STATUSES as readonly string[]).includes(job.status)) {
+  // A running build whose lease has expired is one whose worker is gone. That
+  // is the case this endpoint used to refuse, and refusing it is what left a
+  // paid build with nothing willing to pick it up.
+  const recoverable = abandonedByWorker(job);
+  if (
+    !(REDISPATCHABLE_STATUSES as readonly string[]).includes(job.status) &&
+    !recoverable
+  ) {
     return NextResponse.json(
       {
         error:
           job.status === 'running'
-            ? 'That build is already running. Cancel it first if it is stuck.'
+            ? 'That build is running and its worker is still checking in. ' +
+              'Cancel it first if it is stuck.'
             : `A ${job.status} build cannot be re-dispatched.`,
         code:
           job.status === 'running'
@@ -467,7 +490,7 @@ export async function redispatchBuildHandler(
   // on the client having handed us a detached copy.
   const previousStatus = job.status;
   const now = new Date().toISOString();
-  const update = await db
+  const requeue = db
     .from('flowstarter_agent_jobs')
     .update({
       status: 'queued',
@@ -481,13 +504,29 @@ export async function redispatchBuildHandler(
       // the history of how many times this has failed is the useful part.
       max_attempts: Math.max(job.max_attempts, job.attempt_count + 1),
       updated_at: now,
+      // The dead worker's hold goes with it, or the next claim would see a
+      // queued row somebody still appears to own.
+      leased_by: null,
+      lease_expires_at: null,
     })
     .eq('id', job.id)
     // A worker that claimed the job between the read and the write wins; we
-    // must not yank a running build back into the queue.
-    .in('status', REDISPATCHABLE_STATUSES as unknown as string[])
-    .select('id, status')
-    .maybeSingle();
+    // must not yank a *live* build back into the queue. Recovering an expired
+    // lease guards on the exact holder we read instead, so a worker that came
+    // back to life in that window keeps its job.
+    .in(
+      'status',
+      recoverable
+        ? ['running']
+        : (REDISPATCHABLE_STATUSES as unknown as string[])
+    );
+  // Recovery also guards on the exact holder we read, so a worker that started
+  // checking in again between the read and the write keeps its build.
+  const guarded =
+    recoverable && job.leased_by
+      ? requeue.eq('leased_by', job.leased_by)
+      : requeue;
+  const update = await guarded.select('id, status').maybeSingle();
 
   if (update.error) {
     console.error('[pipeline] redispatch update failed:', update.error);
@@ -536,6 +575,8 @@ export async function redispatchBuildHandler(
       jobKind: job.kind,
       previousStatus,
       attemptCount: job.attempt_count,
+      /** Recorded so an operator can see this was a crash recovery, not a retry. */
+      recoveredExpiredLease: recoverable,
       dispatched,
       dispatchError,
       reason: parsed.data.reason ?? null,
@@ -712,6 +753,9 @@ export async function cancelJobHandler(
       error_code: 'operator_canceled',
       error_detail: parsed.data.reason,
       updated_at: now,
+      // A cancelled job is nobody's any more, so the hold goes too.
+      leased_by: null,
+      lease_expires_at: null,
     })
     .eq('id', job.id)
     .in('status', CANCELLABLE_STATUSES as unknown as string[])

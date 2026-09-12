@@ -12,7 +12,8 @@ is the listener.
 
 ```
 POST /jobs/full-site  { "jobId": "<uuid>" }
-  -> claim the ledger row (queued|failed -> running, atomic compare-and-set)
+  -> claim the ledger row (unleased queued|failed|waiting_brief, or running
+     with a dead lease -> running + this worker's lease, compare-and-set)
   -> refuse unless the workspace is DEPOSIT_PAID
   -> git worktree  client/flowstarter-<uuid>  off the sites repo
   -> materialize the approved preview files into generated-sites/<uuid>/
@@ -60,19 +61,25 @@ Required:
 
 Optional:
 
-| Variable                                                          | Default                                                                             |
-| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `FLOWSTARTER_BUILD_WORKER_PORT`                                   | `8787`                                                                              |
-| `FLOWSTARTER_BUILD_WORKER_HOST`                                   | `0.0.0.0`                                                                           |
-| `PI_PROVIDER` / `PI_MODEL`                                        | `openrouter` / `z-ai/glm-5.2`                                                       |
-| `PI_THINKING_LEVEL` / `PI_TIMEOUT_MS`                             | `medium` / `1800000`                                                                |
-| `FLOWSTARTER_SITES_BASE_REF` / `FLOWSTARTER_SITES_REMOTE`         | `main` / `origin`                                                                   |
-| `FLOWSTARTER_STAGING_URL_TEMPLATE`                                | `https://{projectId}.staging.flowstarter.net`                                       |
-| `FLOWSTARTER_BUILD_VALIDATE_COMMANDS`                             | `[["pnpm","install","--ignore-scripts","--prefer-offline"],["pnpm","run","build"]]` |
-| `FLOWSTARTER_BUILD_VALIDATE_ISOLATION`                            | `native` — see below                                                                |
-| `FLOWSTARTER_BUILD_TIMEOUT_MS`                                    | `900000` (per command)                                                              |
-| `FLOWSTARTER_BUILD_MAX_ATTEMPTS`                                  | `3`                                                                                 |
-| `FLOWSTARTER_BUILD_CONCURRENCY` / `FLOWSTARTER_BUILD_QUEUE_LIMIT` | `1` / `32`                                                                          |
+| Variable                                                              | Default                                                                             |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `FLOWSTARTER_BUILD_WORKER_PORT`                                       | `8787`                                                                              |
+| `FLOWSTARTER_BUILD_WORKER_HOST`                                       | `0.0.0.0`                                                                           |
+| `PI_PROVIDER` / `PI_MODEL`                                            | `openrouter` / `z-ai/glm-5.2`                                                       |
+| `PI_THINKING_LEVEL` / `PI_TIMEOUT_MS`                                 | `medium` / `1800000`                                                                |
+| `FLOWSTARTER_SITES_BASE_REF` / `FLOWSTARTER_SITES_REMOTE`             | `main` / `origin`                                                                   |
+| `FLOWSTARTER_STAGING_URL_TEMPLATE`                                    | `https://{projectId}.staging.flowstarter.net`                                       |
+| `FLOWSTARTER_BUILD_VALIDATE_COMMANDS`                                 | `[["pnpm","install","--ignore-scripts","--prefer-offline"],["pnpm","run","build"]]` |
+| `FLOWSTARTER_BUILD_ISOLATION`                                         | `docker` in staging/production, `native` in development — see below                 |
+| `FLOWSTARTER_BUILD_VALIDATE_ISOLATION`                                | the name that setting shipped under; still honoured, and must not disagree          |
+| `FLOWSTARTER_BUILD_TIMEOUT_MS`                                        | `900000` (per command)                                                              |
+| `FLOWSTARTER_BUILD_MAX_ATTEMPTS`                                      | `3`                                                                                 |
+| `FLOWSTARTER_BUILD_CONCURRENCY` / `FLOWSTARTER_BUILD_QUEUE_LIMIT`     | `1` / `32`                                                                          |
+| `FLOWSTARTER_BUILD_POLL_INTERVAL_MS` / `FLOWSTARTER_BUILD_POLL_LIMIT` | `60000` / `25` — how often the ledger is swept, and how many rows one sweep takes   |
+| `FLOWSTARTER_BUILD_LEASE_TTL_MS`                                      | `120000` — how long a claim is good for without a heartbeat                         |
+| `FLOWSTARTER_BUILD_LEASE_HEARTBEAT_MS`                                | `30000` — at most half the TTL, or the service refuses to start                     |
+| `FLOWSTARTER_BUILD_RETRY_BACKOFF_MS`                                  | `30000` — the first retry's wait; doubles per attempt                               |
+| `FLOWSTARTER_BUILD_RETRY_BACKOFF_MAX_MS`                              | `900000` — the cap on that doubling                                                 |
 
 The service refuses to start if any required value is missing or malformed.
 
@@ -92,23 +99,86 @@ host, nothing else provisioned. It is what `pnpm run dev:local` sets.
 | `FLOWSTARTER_BUILD_OUTPUT_DIR`                               | No                                               | `dist`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `FLOWSTARTER_REPOSITORY_ROOT` / `FLOWSTARTER_WORKTREES_ROOT` | No, in local mode                                | `/tmp/flowstarter-local/repository` / `/tmp/flowstarter-local/worktrees`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
+## Durable queue
+
+The in-process queue is an array of promises and dies with this process. It is
+not the _record_ of what work exists: the ledger is, and one sweep every
+`FLOWSTARTER_BUILD_POLL_INTERVAL_MS` reads it back.
+
+```
+claim        one compare-and-set writes running + leased_by + lease_expires_at
+heartbeat    every 30s while the build runs, expiry moves out by 120s
+sweep        recover every dead lease, then enqueue everything runnable
+fail         status failed, lease dropped, run_after = now + 30s x 2^(attempt-1)
+```
+
+A sweep asks the database two questions in that order.
+
+**What has a dead worker abandoned?** A `running` row whose lease has stopped
+being renewed is a build whose worker is gone. Before leases existed nothing
+ever looked at such a row again — the claim rule excluded `running` outright and
+the operator board refused to re-dispatch it — so a paid build sat there until a
+client asked where their site was. Recovery does one of three things with it,
+and says which on the console:
+
+- **complete** — the build had already pushed its commit and opened its PR, and
+  only the ledger was behind. It is finished from its own payload and nothing is
+  rebuilt or re-published. Not applied to `CHANGE_REQUEST_BUILD`, whose last
+  step also stamps a site version and moves the request `paid -> done`; those
+  are rebuilt, which their own compare-and-set makes safe.
+- **requeue** — nothing shipped and attempts remain. Due immediately: the wait
+  already happened, as a build that ran and died.
+- **abandon** — the retry budget is spent, so the row reads `failed` and appears
+  on the operator board instead of looping.
+
+**What is runnable now?** Everything `queued` and due, every `failed` retry
+whose backoff has elapsed, and every `waiting_brief` job whose client has since
+finished their brief (promoted to `queued` here, guarded on the status that was
+read). Recovery runs first so a build it just re-queued is picked up by the same
+sweep rather than waiting out another interval.
+
+`waiting_brief` is never treated as abandoned. Nobody is holding it and nothing
+is wrong with it; the thing that ends its wait is a client filling in a form.
+
+`POST /api/admin/projects/[id]/pipeline/redispatch` may re-queue a `running` job
+whose lease has expired, guarded on the exact dead holder. A job whose worker is
+still checking in is still refused.
+
+Migration: `supabase/migrations/20260912170000_agent_job_leases.sql`.
+
 ## Validation isolation
 
 Validation is the one step that executes generated code for real: an Astro build
 runs the site's own config, its integrations and whatever the install resolved.
-`FLOWSTARTER_BUILD_VALIDATE_ISOLATION` decides where that happens.
+In `native` mode all of that runs as this service's user, with this service's
+filesystem — so a generated `astro.config.mjs` can read a neighbouring client's
+worktree, `/etc/flowstarter/*`, or this worker's own `.env`. Scrubbing the child
+environment removes the credentials from the _process_; it does nothing about
+the ones on _disk_.
 
-`native` (default) runs the commands on the build host as this service's user —
-the historical behaviour, and the only option on a host with no Docker daemon.
+So `FLOWSTARTER_BUILD_ISOLATION` is a rule of the environment, not a preference:
 
-`docker` runs each command inside a disposable container. It is opt-in per host
-rather than automatic: it needs a working daemon, and a half-configured one must
-fail loudly instead of silently falling back to building next to the
-service-role key. Each command gets its own container, and the container is
-given:
+| Resolved `FLOWSTARTER_ENV` | Default  | `native` allowed?                     |
+| -------------------------- | -------- | ------------------------------------- |
+| `development`, `test`      | `native` | yes — a laptop may have no daemon     |
+| `staging`, `production`    | `docker` | **no** — the service refuses to start |
+
+There is no fallback. A staging or production host that cannot run the isolated
+validator must fail loudly rather than quietly build a client's generated code
+next to every other client's worktree. The rule is a pure module,
+`src/isolation.ts`, and is unit-tested there.
+
+Each command gets its own disposable container, and the container is given:
 
 - **one** bind mount, the site workspace, at `/site` — no host home directory,
   no Docker socket, no path outside the workspace;
+- a `--read-only` root filesystem: `/site` and the `/tmp` tmpfs are the only
+  writable paths, and the tmpfs dies with the container;
+- `--network=none` for every command except the install step, which is the one
+  that legitimately needs a registry (see below);
+- a non-root `--user`, this service's own uid:gid by default so build output in
+  the mount stays readable. Running the build as root is refused, not accepted:
+  set `FLOWSTARTER_BUILD_VALIDATE_DOCKER_USER` if this service runs as root;
 - `--cap-drop=ALL --security-opt=no-new-privileges`, a memory cap and a pids
   cap, `--init` so a timeout actually stops the build, `--rm` plus a
   `docker rm --force` by name for the one case `--rm` cannot cover (a killed
@@ -125,15 +195,37 @@ start if something else is. The image must be public or already pulled: the
 Docker CLI is invoked with `PATH`, `HOME`, `DOCKER_HOST` and `DOCKER_CONTEXT`
 and no registry credentials.
 
-| Variable                                       | Default                                         |
-| ---------------------------------------------- | ----------------------------------------------- |
-| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_BIN`        | `docker` (bare executable name)                 |
-| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_IMAGE`      | `node:22-bookworm-slim`                         |
-| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_NETWORK`    | `bridge` (`none` for a pre-populated workspace) |
-| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_MEMORY`     | `4g`                                            |
-| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_TMPFS_SIZE` | `2g` (holds `HOME` and the pnpm store)          |
-| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_PIDS_LIMIT` | `1024`                                          |
-| `FLOWSTARTER_BUILD_VALIDATE_PNPM_VERSION`      | `10.29.2`                                       |
+| Variable                                          | Default                                                                                                          |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_BIN`           | `docker` (bare executable name)                                                                                  |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_IMAGE`         | `node:22-bookworm-slim`                                                                                          |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_NETWORK`       | `bridge` — the **install** step's egress; a named network routes it through a registry proxy. `host` is refused. |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_BUILD_NETWORK` | `none` when pnpm is baked into the image, otherwise the install network                                          |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_PNPM_BAKED`    | `false` — `true` when the image already has the pinned pnpm prepared                                             |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_USER`          | this service's own `uid:gid`. May not be uid 0.                                                                  |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_MEMORY`        | `4g`                                                                                                             |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_TMPFS_SIZE`    | `2g` (holds `HOME` and the pnpm store)                                                                           |
+| `FLOWSTARTER_BUILD_VALIDATE_DOCKER_PIDS_LIMIT`    | `1024`                                                                                                           |
+| `FLOWSTARTER_BUILD_VALIDATE_PNPM_VERSION`         | `10.29.2`                                                                                                        |
+
+### Network, per command
+
+Only the install step may reach a registry. Everything after it —
+`pnpm run build` above all — gets `--network=none`, because a generated site has
+no business calling out from its own build.
+
+That is only possible if the image can supply pnpm by itself: corepack downloads
+the pinned version on first use, into a corepack home that lives on the
+container's tmpfs and dies with it, so a stock image needs a registry for
+_every_ command. `docker/validation-runtime.Dockerfile` bakes it in — build that
+image, point `FLOWSTARTER_BUILD_VALIDATE_DOCKER_IMAGE` at it, and set
+`FLOWSTARTER_BUILD_VALIDATE_DOCKER_PNPM_BAKED=true`; the file's own header has
+the exact command.
+
+Without it the worker grants the build step the same egress as the install and
+names that in the boot log — an honest default rather than a broken one. Asking
+for `FLOWSTARTER_BUILD_VALIDATE_DOCKER_BUILD_NETWORK=none` on an image with no
+baked pnpm is refused at boot, with that command in the message.
 
 Build output is logged the same way in both modes, and the `dist/` gate is still
 checked on the host — the bind mount is where the container wrote it.
@@ -155,7 +247,9 @@ checked on the host — the bind mount is where the container wrote it.
   stored on the ledger.
 - Duplicate dispatch is safe twice over: the queue collapses an in-flight job
   id, and the ledger claim is an atomic compare-and-set on
-  `(status, attempt_count)`.
+  `(status, attempt_count, leased_by)`.
+- Two workers cannot write one worktree: a lease is refused while its holder is
+  still checking in, and recovery guards on the exact dead holder it read.
 
 ## Tests
 
@@ -166,3 +260,13 @@ pnpm --dir apps/build-worker typecheck
 
 Nothing in the suite touches the network, Supabase, GitHub or a real Pi model —
 every one of those is an injected seam.
+
+One test is opt-in, because it needs a live Docker daemon: an adversarial
+"build" that tries to read a neighbouring workspace's secret,
+`/etc/flowstarter/*`, this worker's `.env` and `/var/run/docker.sock`, run for
+real under the isolated validator and asserted to be refused all four — and run
+natively and asserted to reach all four, which is the defect stated as a passing
+test. Build the validation image, then set `FLOWSTARTER_BUILD_DOCKER_PROOF=1`
+and run `test/docker-isolation-proof.test.ts`. The same four targets are
+asserted against the container's argument vector in `test/validator.test.ts`,
+which runs everywhere.
