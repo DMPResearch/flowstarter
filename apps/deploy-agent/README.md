@@ -11,9 +11,9 @@ Bootstrap is handled by the cloud-init script in `apps/flowstarter-main/src/lib/
 | `GET` | `/health` | Liveness and configuration; authenticated |
 | `POST` | `/sites/:slug/deploy` | Fetch artifact, extract, write snippet, reload Caddy |
 | `DELETE` | `/sites/:slug` | Remove site dir + snippet, reload Caddy |
-| `GET` | `/tls-ask?domain=…` | Previews mode only; no auth. 200 if this agent serves that preview hostname |
+| `GET` | `/tls-ask?domain=…` | No auth. 200 if this agent serves that hostname: a final `{slug}` name in sites mode, a preview name in previews mode |
 
-Every endpoint except `/tls-ask` requires `Authorization: Bearer <DEPLOY_AGENT_SHARED_SECRET>`, `/health` included: reaching it is how a connecting host proves the two sides hold the same secret, so an endpoint that answered everybody would prove nothing. `/tls-ask` stays open because Caddy's on-demand TLS ask cannot send a bearer token; it is loopback-only and reveals nothing but whether a preview hostname is being served.
+Every endpoint except `/tls-ask` requires `Authorization: Bearer <DEPLOY_AGENT_SHARED_SECRET>`, `/health` included: reaching it is how a connecting host proves the two sides hold the same secret, so an endpoint that answered everybody would prove nothing. `/tls-ask` stays open because Caddy's on-demand TLS ask cannot send a bearer token; it is loopback-only and reveals nothing but whether a hostname is being served. It answers only for names this agent's own templates produce AND that have a snippet on disk, so pointing a DNS record at the box is not enough to have a certificate minted on your behalf.
 
 `GET /health` answers:
 
@@ -60,7 +60,8 @@ Optional:
 - `DEPLOY_AGENT_CADDY_SITES_DIR` (default `/etc/caddy/sites`)
 - `DEPLOY_AGENT_CADDY_RELOAD_CMD` (default `systemctl reload caddy`)
 - `DEPLOY_AGENT_TEMP_ROOT` (default `/tmp/flowstarter-deploys`)
-- `DEPLOY_AGENT_PREVIEW_DOMAIN_TEMPLATE` — e.g. `{slug}.preview.flowstarter.app` to auto-add the preview host to the snippet.
+- `DEPLOY_AGENT_SITE_DOMAIN_TEMPLATE` — e.g. `{slug}.flowstarter.net`. The site's FINAL hostname, the one a paying client was sold. Set this on every sites-mode agent: a workspace with no custom domain attached has no other name, and without the template the agent writes an empty Caddy snippet and the deploy reports success for a site nobody can open.
+- `DEPLOY_AGENT_PREVIEW_DOMAIN_TEMPLATE` — e.g. `{slug}.preview.flowstarter.net` to also add the preview host to the snippet. Kept for hosts already answering on one; it is not a substitute for the site template, because a preview name is temporary by design.
 
 ## Site runtime
 
@@ -122,8 +123,8 @@ Set `DEPLOY_AGENT_MODE=previews` and the instance:
   `header X-Robots-Tag "noindex, nofollow, noarchive"`, a static file server,
   and **no** editor reverse-proxy;
 - exposes `GET /tls-ask?domain=…` (unauthenticated, loopback-only) so the front
-  Caddy's `on_demand_tls` only issues certificates for preview hostnames this
-  agent is actually serving.
+  Caddy's `on_demand_tls` only issues certificates for hostnames this agent is
+  actually serving.
 
 Extra env in previews mode:
 

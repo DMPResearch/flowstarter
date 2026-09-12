@@ -36,6 +36,12 @@ export interface LiveJob {
   hostedPreviewUrl?: string;
   /** 'pending' | 'live' | 'failed' | 'removed', straight off funnel_previews. */
   hostedPreviewStatus?: string;
+  /**
+   * ISO instant the hosted preview stops being served, from
+   * `funnel_previews.expires_at`. A preview is temporary by rule, so the
+   * visitor is told when it ends at the same moment they are given the link.
+   */
+  hostedPreviewExpiresAt?: string;
   sandboxId?: string;
   /**
    * FLOWSTARTER_LOCAL_PREVIEW mode: absolute path of the on-disk workspace the

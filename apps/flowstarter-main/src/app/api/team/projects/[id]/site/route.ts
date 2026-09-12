@@ -1,21 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireTeamAuth } from '@/lib/api-auth';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
-import { getSubdomainUrl } from '@flowstarter/platform-config';
-
-const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?$/;
+import { finalHostname, isValidSiteLabel } from '@/lib/hosting/site-hostnames';
 
 function sanitizeSlug(input: unknown): string | null {
   if (typeof input !== 'string') return null;
   const lower = input.trim().toLowerCase();
-  if (!SLUG_RE.test(lower)) return null;
-  return lower;
+  return isValidSiteLabel(lower) ? lower : null;
 }
 
-function previewDomainFor(slug: string): string {
-  // Reuse the platform-config so we never hardcode a base domain.
-  const url = getSubdomainUrl(`${slug}.preview`);
-  return url.replace(/^https?:\/\//, '');
+/**
+ * The site's own name, `{slug}.{platformDomain}` — not a preview name.
+ *
+ * This endpoint used to answer `previewDomain`, and the operator's hosting tab
+ * labelled it "Preview domain", for a workspace that had been paid for and
+ * deployed. One rule now, in `site-hostnames.ts`, for the deploy, the DNS
+ * record, the Caddy snippet and this.
+ */
+function siteDomainFor(slug: string | null): string | null {
+  const clean = sanitizeSlug(slug);
+  return clean ? finalHostname(clean) : null;
 }
 
 /**
@@ -72,12 +76,12 @@ export async function GET(
     .order('version', { ascending: false })
     .limit(10);
 
-  const previewDomain = previewDomainFor(workspace.slug);
+  const siteDomain = siteDomainFor(workspace.slug);
 
   return NextResponse.json({
     workspace,
     server,
-    previewDomain,
+    siteDomain,
     deployments: deployments ?? [],
   });
 }

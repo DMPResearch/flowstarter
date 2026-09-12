@@ -17,7 +17,11 @@ import {
   projectStateFrom,
   stageStatus,
 } from '../project-progress';
-import { resolveSiteLink } from '../site-link';
+import {
+  formatPreviewExpiry,
+  resolvePreviewLink,
+  resolveSiteLink,
+} from '../site-link';
 
 const WORKSPACE = '0f4e1088-8d8f-4f18-83b1-406cc292b23c';
 
@@ -174,18 +178,20 @@ describe('site link', () => {
     expect(link).toMatchObject({ kind: 'live', href: 'https://acmedental.ie' });
   });
 
-  it('falls back to the derived preview subdomain', () => {
+  it("falls back to the site's own final hostname, never a preview name", () => {
     const link = resolveSiteLink({
       slug: 'acme',
       deployStatus: 'live',
       hosts: [],
       env: { NODE_ENV: 'production' },
     });
-    expect(link?.kind).toBe('preview');
-    expect(link?.hostname.startsWith('acme.preview.')).toBe(true);
+    expect(link?.kind).toBe('live');
+    expect(link?.hostname).toBe('acme.flowstarter.net');
+    expect(link?.href).toBe('https://acme.flowstarter.net');
+    expect(link?.hostname).not.toContain('preview');
   });
 
-  it('points at the local deploy agent when there is no preview host', () => {
+  it('points at the local deploy agent when there is no public host', () => {
     // A full end-to-end run on one machine published the site to the local
     // deploy agent and the dashboard still offered
     // `<slug>.preview.flowstarter.dev`, a name that resolves nowhere. The one
@@ -202,7 +208,7 @@ describe('site link', () => {
       },
     });
     expect(link).toMatchObject({
-      kind: 'preview',
+      kind: 'live',
       href: 'http://127.0.0.1:8842/acme/',
       hostname: '127.0.0.1:8842/acme',
     });
@@ -225,5 +231,89 @@ describe('site link', () => {
     expect(
       resolveSiteLink({ slug: null, deployStatus: 'live', hosts: [] })
     ).toBeNull();
+  });
+});
+
+/**
+ * The preview link is a second link, not a fallback for the first.
+ *
+ * They are different things with different lifetimes, and the difference is
+ * the whole hosting model: the site is permanent and unlocked, the preview is
+ * temporary and blurred. Showing the preview URL without the date it stops
+ * working is how a client ends up with a dead link and no explanation.
+ */
+describe('preview link', () => {
+  const HOSTNAME = 'p-0123456789abcdef.preview.flowstarter.net';
+  const NOW = new Date('2026-09-12T00:00:00.000Z');
+
+  it('quotes the date the link stops working', () => {
+    const link = resolvePreviewLink({
+      hostname: HOSTNAME,
+      expiresAt: '2026-09-26T09:30:00.000Z',
+      deployStatus: 'live',
+      now: NOW,
+    });
+    expect(link).toMatchObject({
+      href: `https://${HOSTNAME}`,
+      hostname: HOSTNAME,
+      expired: false,
+    });
+    expect(link?.expiryNote).toBe(
+      'Your preview link works until 26 September 2026'
+    );
+  });
+
+  it('says so, without a link, once it has expired', () => {
+    const link = resolvePreviewLink({
+      hostname: HOSTNAME,
+      expiresAt: '2026-09-01T00:00:00.000Z',
+      deployStatus: 'live',
+      now: NOW,
+    });
+    expect(link?.expired).toBe(true);
+    expect(link?.expiryNote).toContain('expired');
+    // And it does not claim the full site went with it.
+    expect(link?.expiryNote).toContain('full site is not affected');
+  });
+
+  it('offers nothing for a preview that was never actually hosted', () => {
+    for (const status of ['pending', 'failed', 'removed', null]) {
+      expect(
+        resolvePreviewLink({
+          hostname: HOSTNAME,
+          expiresAt: '2026-09-26T00:00:00.000Z',
+          deployStatus: status,
+          now: NOW,
+        })
+      ).toBeNull();
+    }
+  });
+
+  it('offers nothing without a hostname or a readable expiry', () => {
+    expect(
+      resolvePreviewLink({
+        hostname: null,
+        expiresAt: '2026-09-26T00:00:00.000Z',
+        deployStatus: 'live',
+        now: NOW,
+      })
+    ).toBeNull();
+    expect(
+      resolvePreviewLink({
+        hostname: HOSTNAME,
+        expiresAt: 'not a date',
+        deployStatus: 'live',
+        now: NOW,
+      })
+    ).toBeNull();
+  });
+
+  it('formats the expiry in UTC, so it reads the same everywhere', () => {
+    // The reaper works in UTC. A date that shifts by a day depending on where
+    // the reader is sitting is a date we cannot be held to.
+    expect(formatPreviewExpiry('2026-09-26T23:30:00.000Z')).toBe(
+      '26 September 2026'
+    );
+    expect(formatPreviewExpiry('nonsense')).toBe('');
   });
 });

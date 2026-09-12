@@ -40,6 +40,12 @@ import {
   slugFromPreviewHostname,
   unpublishFunnelPreview,
 } from '../preview-publisher';
+import { previewZone } from '../site-hostnames';
+import {
+  PREVIEW_TEASER_MARKER,
+  findPreviewTeaserReferences,
+  stripPreviewTeaserFromFiles,
+} from '@flowstarter/agentic-codegen';
 
 const PREVIEW_ID = 'a1b2c3d4-1111-4111-8111-111111111111';
 
@@ -107,16 +113,29 @@ describe('preview slugs and hostnames', () => {
     }
   });
 
-  it('builds the hostname under the pinned preview zone', () => {
+  it('builds the hostname under the preview zone for this environment', () => {
     const slug = funnelPreviewSlug();
     expect(funnelPreviewHostname(slug)).toBe(
       `${slug}.${PREVIEW_DOMAIN_SUFFIX}`
     );
-    // Not hardcoded to one zone: it derives from resolvePlatformDomain(),
-    // so it reads `preview.flowstarter.dev` outside production and
-    // `preview.flowstarter.net` in it (see resolve-platform-domain tests in
-    // @flowstarter/platform-config for the per-env cases).
-    expect(PREVIEW_DOMAIN_SUFFIX).toMatch(/^preview\.flowstarter\.(dev|net)$/);
+    // The suite runs as `test`, so the zone is the development one. Naming it
+    // is the point: a preview minted here must never land in the production
+    // zone, which is where the paid client sites live.
+    expect(PREVIEW_DOMAIN_SUFFIX).toBe('preview.flowstarter.dev');
+  });
+
+  it('puts the preview zone on .net in production, and pins it when told to', () => {
+    expect(previewZone({ env: { FLOWSTARTER_ENV: 'production' } })).toBe(
+      'preview.flowstarter.net'
+    );
+    expect(
+      previewZone({
+        env: {
+          FLOWSTARTER_ENV: 'development',
+          FLOWSTARTER_PREVIEW_DOMAIN_SUFFIX: 'preview.flowstarter.net',
+        },
+      })
+    ).toBe('preview.flowstarter.net');
   });
 
   it('refuses to build a hostname from anything but a minted slug', () => {
@@ -206,9 +225,15 @@ describe('publishFunnelPreview', () => {
       brandConfig: { business: { name: 'Calm Path Therapy' } },
       agent: configured(agent.client),
     });
-    expect(result.hostname).toMatch(
-      /^p-[0-9a-f]{16}\.preview\.flowstarter\.(dev|net)$/
-    );
+    // Two plain assertions rather than a regex built by escaping the zone
+    // into a pattern. That escape only handled `.` and left a backslash in
+    // the zone alone, so it was the incomplete-sanitization shape CodeQL
+    // flags — and the honest question here is not "does this match a
+    // pattern" but "is the label 16 hex bytes and is the zone ours", which
+    // is what these two say.
+    const [label, ...zone] = result.hostname.split('.');
+    expect(label).toMatch(/^p-[0-9a-f]{16}$/);
+    expect(zone.join('.')).toBe(PREVIEW_DOMAIN_SUFFIX);
     expect(result.hostname).not.toContain('calm');
     expect(result.hostname).not.toContain('therapy');
     expect(result.hostname).not.toContain(PREVIEW_ID);
@@ -287,7 +312,7 @@ describe('publishFunnelPreview', () => {
     expect(row.expires_at).toBeTypeOf('string');
   });
 
-  it('gives the preview a TTL roughly a week out', async () => {
+  it('gives the preview a TTL two weeks out, the temporary half of the model', async () => {
     const agent = recordingAgent();
     await publishFunnelPreview({
       previewId: PREVIEW_ID,
@@ -298,8 +323,8 @@ describe('publishFunnelPreview', () => {
       String(db.rows('funnel_previews')[0].expires_at)
     );
     const days = (expiresAt - Date.now()) / 86_400_000;
-    expect(days).toBeGreaterThan(6.9);
-    expect(days).toBeLessThan(7.1);
+    expect(days).toBeGreaterThan(13.9);
+    expect(days).toBeLessThan(14.1);
   });
 
   it('records PENDING, not live, when the previews agent is unconfigured', async () => {
@@ -691,5 +716,97 @@ describe('a dry run with no Storage at all', () => {
     expect(artifact.bytes).toBeInstanceOf(ArrayBuffer);
     expect(artifact.bytes.byteLength).toBeGreaterThan(0);
     expect(agent.calls[0]!.args.deployAgentUrl).toBe('dry-run://previews');
+  });
+});
+
+/**
+ * The teaser is what makes a preview a preview.
+ *
+ * Darius's model has two halves and they only make sense together: "the
+ * preview should have the parts blurred and the final site should unlock all
+ * the sections." PR #97 gates the second half — a paid build whose compiled
+ * output still carries the teaser fails outright. This is the first half,
+ * asserted on the path that actually publishes one: what goes out under a
+ * `preview.` hostname is allowed, and expected, to carry the marker, and the
+ * seed a paid build is rebuilt from never does.
+ */
+describe('a preview carries the teaser; a paid build cannot', () => {
+  /**
+   * What `injectPreviewTeaser` leaves behind: the asset pair under `public/`
+   * and the link/script it splices into the document head. The `fs-teaser-*`
+   * overlay classes are not here because the teaser's own script puts them in
+   * the DOM at runtime; the gate looks for both, the stripper only has the
+   * source to work with.
+   */
+  const TEASED = [
+    {
+      path: 'index.html',
+      content:
+        '<head><link rel="stylesheet" href="/flowstarter-preview-teaser.css">\n' +
+        '<script src="/flowstarter-preview-teaser.js"></script></head>' +
+        '<body><h1>Calm Path Therapy</h1></body>',
+    },
+    {
+      path: 'public/flowstarter-preview-teaser.css',
+      content: '.fs-teaser-veil{}',
+    },
+  ];
+
+  it('keeps the teaser in the manifest it stores for a published preview', async () => {
+    const agent = recordingAgent();
+    await publishFunnelPreview({
+      previewId: PREVIEW_ID,
+      files: TEASED,
+      builtFiles: TEASED,
+      agent: configured(agent.client),
+    });
+
+    const manifest = db.rows('funnel_previews')[0]!.manifest as {
+      files: Array<{ path: string; content: string }>;
+    };
+    const serialized = JSON.stringify(manifest.files);
+    expect(serialized).toContain(PREVIEW_TEASER_MARKER);
+    expect(findPreviewTeaserReferences(manifest.files).length).toBeGreaterThan(
+      0
+    );
+  });
+
+  it('is published under a preview hostname, never a final one', async () => {
+    const agent = recordingAgent();
+    const result = await publishFunnelPreview({
+      previewId: PREVIEW_ID,
+      files: TEASED,
+      builtFiles: TEASED,
+      agent: configured(agent.client),
+    });
+    // The blurring and the temporary hostname are the same promise. A site
+    // with locked sections must never be reachable at the name a client was
+    // sold, and the only way to be sure is that this path cannot mint one.
+    expect(result.hostname.endsWith(`.${PREVIEW_DOMAIN_SUFFIX}`)).toBe(true);
+    expect(result.expiresAt).toBeTypeOf('string');
+  });
+
+  it('strips every trace of it from the seed a paid build rebuilds from', () => {
+    const seed = stripPreviewTeaserFromFiles(TEASED);
+    expect(findPreviewTeaserReferences(seed.files)).toEqual([]);
+    expect(seed.removedPaths).toContain(
+      'public/flowstarter-preview-teaser.css'
+    );
+    expect(seed.cleanedPaths).toContain('index.html');
+    // And nothing else was taken with it.
+    const index = seed.files.find((file) => file.path === 'index.html');
+    expect(index?.content).toContain('Calm Path Therapy');
+    expect(index?.content).toContain('<head>');
+  });
+
+  it('catches the overlay markup even when the asset was renamed', () => {
+    // The gate PR #97 added is the backstop: a compiled page that carries the
+    // runtime classes was rendered with the teaser whatever the file is
+    // called, and a paid build carrying it is refused.
+    expect(
+      findPreviewTeaserReferences([
+        { path: 'index.html', content: '<div class="fs-teaser-gate"></div>' },
+      ])
+    ).toEqual(['index.html']);
   });
 });

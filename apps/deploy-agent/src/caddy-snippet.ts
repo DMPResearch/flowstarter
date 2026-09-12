@@ -42,10 +42,26 @@ export function buildCaddySnippet(
   primary: string | null,
   additional: string[],
   previewHost: string | null,
-  editorUpstream: string
+  editorUpstream: string,
+  /**
+   * The site's FINAL hostname, `{slug}.{platformDomain}`, from
+   * `DEPLOY_AGENT_SITE_DOMAIN_TEMPLATE`. Every paid site has one whether or
+   * not the client ever attaches a domain of their own; it comes before the
+   * preview host because it is the name that is meant to outlive it.
+   */
+  siteHost: string | null = null
 ): string {
-  const hosts = [primary, ...additional, previewHost].filter(
-    (h): h is string => !!h && h.length > 0
+  const seen = new Set<string>();
+  const hosts = [primary, ...additional, siteHost, previewHost].filter(
+    (h): h is string => {
+      if (!h || h.length === 0) return false;
+      const key = h.toLowerCase();
+      // A client whose custom domain happens to be the site domain must not
+      // produce `acme.net, acme.net {` — Caddy refuses a duplicated host.
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }
   );
   if (hosts.length === 0) return '';
 

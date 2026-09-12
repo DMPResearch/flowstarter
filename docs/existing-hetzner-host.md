@@ -14,8 +14,22 @@ Existing platform Caddy snippets are preserved.
 2. Prepare two root-readable environment files with distinct random
    `DEPLOY_AGENT_SHARED_SECRET` values. Both use
    `DEPLOY_AGENT_SITE_RUNTIME=docker` and
-   `DEPLOY_AGENT_BIND_ADDRESS=127.0.0.1`. The paid
-   agent listens on 8443. The preview agent listens on 8444 and additionally uses:
+   `DEPLOY_AGENT_BIND_ADDRESS=127.0.0.1`.
+
+   The two agents serve two different hostname families and neither one may
+   serve the other's. A final site is what a client paid for: permanent,
+   indexed, named after their workspace. A preview is temporary, unguessable,
+   noindexed and deleted on a schedule.
+
+   The paid agent listens on 8443 and needs the final hostname template. Without
+   it the agent writes an empty Caddy snippet for a workspace that has no custom
+   domain, which is a deploy that reports success and a site nobody can open:
+
+   ```dotenv
+   DEPLOY_AGENT_SITE_DOMAIN_TEMPLATE={slug}.example.com
+   ```
+
+   The preview agent listens on 8444 and additionally uses:
 
    ```dotenv
    DEPLOY_AGENT_MODE=previews
@@ -32,9 +46,16 @@ Existing platform Caddy snippets are preserved.
    `scripts/install-existing-host-agent.sh` to a private directory on the host.
    Run the installer as root with that directory and the preview suffix as its
    two arguments. It validates Caddy before reloading and starts both agents.
-4. Point a DNS-only wildcard A record, `*.preview.example.com`, at the host.
-   Caddy issues certificates only after the preview agent's `/tls-ask` endpoint
-   confirms that it owns the requested preview hostname.
+4. Point a DNS-only wildcard A record, `*.preview.example.com`, at the host for
+   previews. Final site names are **not** a wildcard: the app writes one A
+   record per site, `{slug}.example.com`, at deploy time, and refuses to
+   overwrite a record that already points somewhere else.
+
+   Caddy issues certificates only after the relevant agent's `/tls-ask`
+   endpoint confirms it owns the requested hostname. Each agent answers only
+   for names its own templates produce and that have a snippet on disk, so the
+   paid agent answers for `{slug}.example.com` and the preview agent answers
+   for `{slug}.preview.example.com`.
 5. Configure Flowstarter's server-only `FLOWSTARTER_EXISTING_HOST_ID`,
    `FLOWSTARTER_EXISTING_HOST_AGENT_URL`, and
    `FLOWSTARTER_EXISTING_HOST_SECRET_REF`. The last value names another

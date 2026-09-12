@@ -5,8 +5,9 @@ import {
   HttpDeployAgentClient,
   allocateHostingServer,
   deploySite,
-  previewDomainForSlug,
 } from '../deploy';
+import { finalHostname, previewHostname } from '../site-hostnames';
+import { CloudflareRecordConflictError } from '../cloudflare';
 import type {
   CloudflareClient,
   CloudflareUpsertRecordInput,
@@ -130,51 +131,63 @@ describe('HttpDeployAgentClient', () => {
   });
 });
 
-describe('previewDomainForSlug', () => {
+describe('the name a paid site is deployed under', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
 
-  it('returns a host without protocol prefix', () => {
-    const out = previewDomainForSlug('acme');
+  it('is the final hostname, with no protocol and no preview namespace', () => {
+    const out = finalHostname('acme');
     expect(out).not.toMatch(/^https?:\/\//);
-    expect(out.startsWith('acme.preview.')).toBe(true);
+    expect(out).toBe('acme.flowstarter.dev');
+    expect(out).not.toContain('preview');
   });
 
-  it('mints a flowstarter.dev preview host in development', () => {
+  it('mints a flowstarter.dev site host in development', () => {
     vi.stubEnv('PLATFORM_DOMAIN', '');
     vi.stubEnv('NEXT_PUBLIC_PLATFORM_DOMAIN', '');
     vi.stubEnv('FLOWSTARTER_ENV', 'development');
-    expect(previewDomainForSlug('acme')).toBe('acme.preview.flowstarter.dev');
+    expect(finalHostname('acme')).toBe('acme.flowstarter.dev');
   });
 
-  it('mints a flowstarter.dev preview host in test', () => {
+  it('mints a flowstarter.dev site host in test', () => {
     vi.stubEnv('PLATFORM_DOMAIN', '');
     vi.stubEnv('NEXT_PUBLIC_PLATFORM_DOMAIN', '');
     vi.stubEnv('FLOWSTARTER_ENV', 'test');
-    expect(previewDomainForSlug('acme')).toBe('acme.preview.flowstarter.dev');
+    expect(finalHostname('acme')).toBe('acme.flowstarter.dev');
   });
 
-  it('mints a flowstarter.dev preview host in staging', () => {
+  it('mints a flowstarter.dev site host in staging', () => {
     vi.stubEnv('PLATFORM_DOMAIN', '');
     vi.stubEnv('NEXT_PUBLIC_PLATFORM_DOMAIN', '');
     vi.stubEnv('FLOWSTARTER_ENV', 'staging');
-    expect(previewDomainForSlug('acme')).toBe('acme.preview.flowstarter.dev');
+    expect(finalHostname('acme')).toBe('acme.flowstarter.dev');
   });
 
-  it('mints a flowstarter.net preview host in production', () => {
+  it('mints a flowstarter.net site host in production', () => {
     vi.stubEnv('PLATFORM_DOMAIN', '');
     vi.stubEnv('NEXT_PUBLIC_PLATFORM_DOMAIN', '');
     vi.stubEnv('FLOWSTARTER_ENV', 'production');
-    expect(previewDomainForSlug('acme')).toBe('acme.preview.flowstarter.net');
+    // The shape `lebadusul.flowstarter.net` already has. A record that
+    // already exists is the strongest statement of what the rule must be.
+    expect(finalHostname('acme')).toBe('acme.flowstarter.net');
   });
 
   it('an explicit PLATFORM_DOMAIN override wins over the environment', () => {
     vi.stubEnv('PLATFORM_DOMAIN', 'flowstarter.example');
     vi.stubEnv('FLOWSTARTER_ENV', 'production');
-    expect(previewDomainForSlug('acme')).toBe(
-      'acme.preview.flowstarter.example'
-    );
+    expect(finalHostname('acme')).toBe('acme.flowstarter.example');
+  });
+
+  it('and the preview family stays in its own namespace in every one', () => {
+    for (const env of ['development', 'test', 'staging', 'production']) {
+      vi.stubEnv('PLATFORM_DOMAIN', '');
+      vi.stubEnv('NEXT_PUBLIC_PLATFORM_DOMAIN', '');
+      vi.stubEnv('FLOWSTARTER_ENV', env);
+      const preview = previewHostname('p-0123456789abcdef');
+      expect(preview).toContain('.preview.');
+      expect(preview).not.toBe(finalHostname('p-0123456789abcdef'));
+    }
   });
 });
 
@@ -416,14 +429,21 @@ function recordingAgent(behaviour: 'ok' | 'throw' = 'ok') {
   return { pushes, client };
 }
 
-function fakeCloudflare(behaviour: 'ok' | 'throw' = 'ok') {
-  const upsertRecord = vi.fn(async (_input: CloudflareUpsertRecordInput) => {
+function fakeCloudflare(behaviour: 'ok' | 'throw' | 'conflict' = 'ok') {
+  const claimRecord = vi.fn(async (input: CloudflareUpsertRecordInput) => {
     if (behaviour === 'throw') throw new Error('cloudflare 403: bad token');
-    return { id: 'rec-1' };
+    if (behaviour === 'conflict') {
+      throw new CloudflareRecordConflictError(
+        input.name,
+        input.content,
+        '198.51.100.7'
+      );
+    }
+    return { record: { id: 'rec-1' }, created: true };
   });
   return {
-    upsertRecord,
-    client: { upsertRecord } as unknown as CloudflareClient,
+    claimRecord,
+    client: { claimRecord } as unknown as CloudflareClient,
   };
 }
 
@@ -477,9 +497,13 @@ describe('deploySite', () => {
       additionalDomains: ['www.acme.com'],
     });
 
-    const dns = cf.upsertRecord.mock.calls[0]![0];
+    const dns = cf.claimRecord.mock.calls[0]![0];
     expect(dns.zoneId).toBe('zone-1');
-    expect(dns.name.startsWith('acme.preview.')).toBe(true);
+    // The site's own name, not a preview name and not a wildcard.
+    expect(dns.name).toBe('acme.flowstarter.dev');
+    expect(dns.name).not.toContain('preview');
+    expect(dns.name).not.toContain('*');
+    expect(dns.type).toBe('A');
     expect(dns.content).toBe('203.0.113.10');
     expect(dns.proxied).toBe(false);
 
@@ -711,6 +735,33 @@ describe('deploySite', () => {
     warn.mockRestore();
   });
 
+  it('never overwrites a record that belongs to somebody else', async () => {
+    // The zone already serves live client sites and the platform's own
+    // records. A deploy that repointed one of them would look like a success
+    // and read like an outage. The deploy still stands — the artifact is on
+    // the server — but the conflict is recorded where an operator reads it,
+    // not only in a log line nobody tails.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const db = createFakeHostingSupabase();
+    db.seed('workspaces', [workspaceRow()]);
+    db.seed('hosting_servers', [activeServer()]);
+    const cf = fakeCloudflare('conflict');
+
+    const out = await deploySite(
+      deployOpts(db, {
+        cloudflare: cf.client,
+        cloudflareDefaultZoneId: 'zone-1',
+      })
+    );
+
+    expect(out.status).toBe('live');
+    expect(out.detail).toContain('acme.flowstarter.dev');
+    expect(out.detail).toContain('198.51.100.7');
+    expect(out.detail).toContain('Refusing to overwrite');
+    expect(db.rows('deployments')[0]!.status_detail).toBe(out.detail);
+    warn.mockRestore();
+  });
+
   it('skips DNS entirely when the server has no ipv4 yet', async () => {
     const db = createFakeHostingSupabase();
     db.seed('workspaces', [workspaceRow()]);
@@ -723,7 +774,7 @@ describe('deploySite', () => {
       })
     );
     expect(out.status).toBe('live');
-    expect(cf.upsertRecord).not.toHaveBeenCalled();
+    expect(cf.claimRecord).not.toHaveBeenCalled();
   });
 
   it('skips DNS when no default zone is configured', async () => {
@@ -732,7 +783,7 @@ describe('deploySite', () => {
     db.seed('hosting_servers', [activeServer()]);
     const cf = fakeCloudflare();
     await deploySite(deployOpts(db, { cloudflare: cf.client }));
-    expect(cf.upsertRecord).not.toHaveBeenCalled();
+    expect(cf.claimRecord).not.toHaveBeenCalled();
   });
 
   it('carries the caller-supplied digest onto the pending deployment row', async () => {
@@ -782,7 +833,7 @@ describe('the slug is validated on every path, not only when allocating', () => 
       // Nothing reached the host, no DNS was written, and no deployment row
       // was opened for a site that could never have a directory.
       expect(agent.pushes).toEqual([]);
-      expect(cf.upsertRecord).not.toHaveBeenCalled();
+      expect(cf.claimRecord).not.toHaveBeenCalled();
       expect(db.rows('deployments')).toEqual([]);
     });
   }

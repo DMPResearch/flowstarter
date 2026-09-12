@@ -47,6 +47,10 @@ function expiredRow(n: number, overrides: Record<string, unknown> = {}) {
     brand_config: {},
     manifest: { files: [] },
     artifact_path: `funnel/${id}/site.tar.gz`,
+    // Derived, not spelled out: the preview zone follows the environment
+    // (`preview.flowstarter.dev` here, `preview.flowstarter.net` in
+    // production), and a fixture that hardcoded one of them would only ever
+    // exercise the reaper against the other environment's names.
     hostname: `p-000000000000000${n}.${PREVIEW_DOMAIN_SUFFIX}`,
     deploy_status: 'live',
     deployment_error: null,

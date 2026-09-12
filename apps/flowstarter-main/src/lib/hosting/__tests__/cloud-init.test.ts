@@ -92,6 +92,34 @@ describe('buildCloudInit', () => {
     });
     expect(out).toContain(`cloud_init_version=${getCloudInitVersion()}`);
   });
+
+  it('gives the paid agent the final hostname template, not a preview one', () => {
+    // A host provisioned without it writes an empty Caddy snippet for any
+    // workspace with no custom domain, and the deploy reports success for a
+    // site nobody can open. The default is the platform domain for this
+    // environment, so an operator has to do nothing to get a working host.
+    const out = buildCloudInit({
+      deployAgentSharedSecret: 'x',
+      caddyAcmeEmail: 'a@b.c',
+    });
+    expect(out).toContain(
+      'DEPLOY_AGENT_SITE_DOMAIN_TEMPLATE={slug}.flowstarter.dev'
+    );
+    expect(out).not.toContain(
+      'DEPLOY_AGENT_SITE_DOMAIN_TEMPLATE={slug}.preview.'
+    );
+  });
+
+  it('lets an operator override the site domain template', () => {
+    const out = buildCloudInit({
+      deployAgentSharedSecret: 'x',
+      caddyAcmeEmail: 'a@b.c',
+      siteDomainTemplate: '{slug}.sites.example.com',
+    });
+    expect(out).toContain(
+      'DEPLOY_AGENT_SITE_DOMAIN_TEMPLATE={slug}.sites.example.com'
+    );
+  });
 });
 
 /**

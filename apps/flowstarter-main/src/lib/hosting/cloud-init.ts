@@ -22,9 +22,9 @@
  * agent, we'll fill the ExecStart in.
  */
 
-import { resolvePlatformDomain } from '@flowstarter/platform-config';
+import { previewZone, siteRootDomain } from './site-hostnames';
 
-const CLOUD_INIT_VERSION = 4;
+const CLOUD_INIT_VERSION = 5;
 
 /**
  * Pinned versions for the host's coding-agent stack. Bump these together
@@ -79,6 +79,17 @@ export interface CloudInitOptions {
    * outside production, `preview.flowstarter.net` in it.
    */
   previewsHostSuffix?: string;
+  /**
+   * The FINAL hostname template a paid site is served at, `{slug}.{domain}`.
+   *
+   * Defaults to the platform domain for this environment. It is written to the
+   * paid agent's env file rather than left to an operator because without it
+   * the agent produces an empty Caddy snippet for any workspace with no custom
+   * domain attached, and the deploy reports success for a site nobody can
+   * open. The name has no `preview.` in it: that namespace is for the
+   * temporary funnel previews, which expire.
+   */
+  siteDomainTemplate?: string;
 }
 
 /**
@@ -124,8 +135,9 @@ export function buildCloudInit(opts: CloudInitOptions): string {
   // a caller that provisions from a development or staging process gets
   // `preview.flowstarter.dev` without having to pass `previewsHostSuffix`
   // explicitly; production gets `preview.flowstarter.net`.
-  const previewsSuffix =
-    opts.previewsHostSuffix?.trim() || `preview.${resolvePlatformDomain()}`;
+  const previewsSuffix = opts.previewsHostSuffix?.trim() || previewZone();
+  const siteDomainTemplate =
+    opts.siteDomainTemplate?.trim() || `{slug}.${siteRootDomain()}`;
 
   const sshKeysYaml = sshKeys.length
     ? sshKeys.map((k) => `      - ${escapeYaml(k)}`).join('\n')
@@ -172,6 +184,9 @@ write_files:
       DEPLOY_AGENT_SHARED_SECRET=${opts.deployAgentSharedSecret}
       DEPLOY_AGENT_PORT=8443
       DEPLOY_AGENT_SITE_RUNTIME=${opts.siteRuntime ?? 'docker'}
+      # The name a paying client was sold. Without it the agent writes an
+      # empty snippet for any site with no custom domain yet.
+      DEPLOY_AGENT_SITE_DOMAIN_TEMPLATE=${siteDomainTemplate}
     owner: root:root
     permissions: '0600'
   - path: /etc/flowstarter/anthropic.env

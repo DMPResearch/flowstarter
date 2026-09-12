@@ -28,7 +28,11 @@ import 'server-only';
  *    preview URL.
  *  - NOINDEX, twice. `<meta name="robots">` in every HTML file of the manifest
  *    (see `site-archive.ts`) and `X-Robots-Tag` from the Caddy snippet.
- *  - a TTL. Recorded on the row; `preview-reaper.ts` acts on it.
+ *  - a TTL. Recorded on the row as `expires_at`, returned to the caller so the
+ *    wizard and the dashboard can print "your preview link works until
+ *    <date>", and acted on by `preview-reaper.ts`. This is the half of
+ *    Darius's model that says a preview is temporary: the paid site, on
+ *    `{slug}.{platformDomain}`, has no expiry and never goes near this path.
  *
  * When the previews agent is not configured — which is true right now, because
  * no host exists yet — this uses `DryRunDeployAgentClient` and records
@@ -38,7 +42,6 @@ import 'server-only';
 
 import { randomBytes } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { resolvePlatformDomain } from '@flowstarter/platform-config';
 import type { Database } from '../database.types';
 import {
   DryRunDeployAgentClient,
@@ -48,6 +51,7 @@ import {
 import {
   markFunnelPreviewDeployment,
   loadFunnelPreview,
+  previewTtlMs,
   saveFunnelPreview,
   signFunnelPreviewArtifact,
   uploadFunnelPreviewArtifact,
@@ -55,27 +59,30 @@ import {
 } from './funnel-previews';
 import { NOINDEX_HEADER_VALUE, packPreviewTarball } from './site-archive';
 import type { ArchiveFile } from './site-archive';
+import {
+  labelFromPreviewHostname,
+  previewHostname,
+  previewZone,
+} from './site-hostnames';
 
 type Client = SupabaseClient<Database>;
 
 /**
- * The DNS zone every preview hostname sits under. It has to match the wildcard
- * A record (dns-only so Caddy can answer the ACME HTTP-01 challenge itself)
- * and the previews Caddy's wildcard site block, so it is one constant rather
- * than three.
+ * The DNS zone every preview hostname sits under: `preview.{platformDomain}`.
  *
- * Defaults from `resolvePlatformDomain()`, the same env-driven rule
- * `previewDomainForSlug` (`deploy.ts`) and the deploy-agent's own preview
- * suffix default derive from, so a development or staging process mints
- * `preview.flowstarter.dev` and production mints `preview.flowstarter.net`
- * with nobody having to remember to set an env var per environment.
- * `FLOWSTARTER_PREVIEW_DOMAIN_SUFFIX` still overrides it explicitly, for the
- * case where the previews wildcard is pinned to a zone that genuinely
- * differs from the app's own domain.
+ * It has to match the wildcard A record (dns-only so Caddy can answer the ACME
+ * HTTP-01 challenge itself) and the previews Caddy's wildcard site block, so it
+ * is one value rather than three. The domain comes from `resolvePlatformDomain`
+ * through `previewZone`, the same rule `finalHostname` uses, so a development
+ * or staging process mints `preview.flowstarter.dev` and production mints
+ * `preview.flowstarter.net` with nobody having to set an env var per
+ * environment.
+ *
+ * `FLOWSTARTER_PREVIEW_DOMAIN_SUFFIX` still overrides it, for the case where
+ * the previews wildcard is pinned to a zone that genuinely differs from the
+ * app's own domain.
  */
-export const PREVIEW_DOMAIN_SUFFIX =
-  process.env.FLOWSTARTER_PREVIEW_DOMAIN_SUFFIX?.trim() ||
-  `preview.${resolvePlatformDomain()}`;
+export const PREVIEW_DOMAIN_SUFFIX = previewZone();
 
 /** `p-` + 16 hex chars. Matches the deploy-agent's slug grammar. */
 const SLUG_PATTERN = /^p-[0-9a-f]{16}$/;
@@ -112,20 +119,25 @@ export function isFunnelPreviewSlug(slug: string): boolean {
   return SLUG_PATTERN.test(slug);
 }
 
-/** `{slug}.preview.flowstarter.net`. */
+/**
+ * `{slug}.preview.{platformDomain}`.
+ *
+ * The shape comes from `site-hostnames.ts`, which every hostname in the
+ * platform now comes from; the extra `isFunnelPreviewSlug` check on top of it
+ * is this module's own rule that a funnel preview hostname is unguessable
+ * rather than merely well-formed.
+ */
 export function funnelPreviewHostname(slug: string): string {
   if (!isFunnelPreviewSlug(slug)) {
     throw new PreviewPublishError(`"${slug}" is not a preview slug`);
   }
-  return `${slug}.${PREVIEW_DOMAIN_SUFFIX}`;
+  return previewHostname(slug);
 }
 
 /** The slug back out of a hostname we minted, for teardown. */
 export function slugFromPreviewHostname(hostname: string): string | null {
-  const suffix = `.${PREVIEW_DOMAIN_SUFFIX}`;
-  if (!hostname.endsWith(suffix)) return null;
-  const slug = hostname.slice(0, -suffix.length);
-  return isFunnelPreviewSlug(slug) ? slug : null;
+  const slug = labelFromPreviewHostname(hostname);
+  return slug && isFunnelPreviewSlug(slug) ? slug : null;
 }
 
 export interface PreviewAgentConfig {
@@ -198,6 +210,13 @@ export interface PublishFunnelPreviewResult {
   slug: string;
   hostname: string;
   url: string;
+  /**
+   * ISO instant this preview stops being served. Returned, not merely stored,
+   * because the sentence the visitor is shown next to the URL ("your preview
+   * link works until <date>") has to quote the same instant the reaper acts
+   * on, and re-reading the row to find out would let the two drift.
+   */
+  expiresAt: string;
   status: FunnelPreviewDeployStatus;
   /** Null when live; the reason otherwise. Never a secret. */
   detail: string | null;
@@ -236,6 +255,13 @@ export async function publishFunnelPreview(
   const hostname = funnelPreviewHostname(slug);
   const url = `https://${hostname}`;
 
+  // Every publish restarts the clock. A visitor who regenerates their preview
+  // on day six has not been given a link that dies in one.
+  const expiresAt = new Date(
+    (input.now?.getTime() ?? Date.now()) + previewTtlMs()
+  );
+  const expiresAtIso = expiresAt.toISOString();
+
   // What actually goes out to the deploy-agent. `files` (source) is never a
   // valid deploy target on its own — see PublishFunnelPreviewInput.builtFiles.
   const deployFiles = input.builtFiles ?? input.files;
@@ -263,6 +289,7 @@ export async function publishFunnelPreview(
       brandConfig: input.brandConfig ?? existing?.brandConfig ?? {},
       manifest: { ...existingManifest, files: input.files },
       artifactPath,
+      expiresAt,
       ...(input.supabase ? { supabase: input.supabase } : {}),
     });
 
@@ -287,6 +314,7 @@ export async function publishFunnelPreview(
       slug,
       hostname,
       url,
+      expiresAt: expiresAtIso,
       status: 'failed',
       detail,
       artifactPath: null,
@@ -334,6 +362,7 @@ export async function publishFunnelPreview(
       slug,
       hostname,
       url,
+      expiresAt: expiresAtIso,
       status: 'pending',
       detail,
       artifactPath,
@@ -387,6 +416,7 @@ export async function publishFunnelPreview(
         slug,
         hostname,
         url,
+        expiresAt: expiresAtIso,
         status: 'failed',
         detail,
         artifactPath,
@@ -420,6 +450,7 @@ export async function publishFunnelPreview(
       slug,
       hostname,
       url,
+      expiresAt: expiresAtIso,
       status: 'failed',
       detail,
       artifactPath,
@@ -440,6 +471,7 @@ export async function publishFunnelPreview(
     slug,
     hostname,
     url,
+    expiresAt: expiresAtIso,
     status: 'live',
     detail: null,
     artifactPath,

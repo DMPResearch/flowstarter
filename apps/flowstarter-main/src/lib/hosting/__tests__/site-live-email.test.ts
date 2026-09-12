@@ -131,7 +131,7 @@ describe('notifySiteLive', () => {
     expect(sentHtml()).toContain('http://127.0.0.1:8842/acme/');
   });
 
-  it('falls back to the derived preview subdomain', async () => {
+  it("falls back to the site's own final hostname", async () => {
     await notifySiteLive({
       supabase: db.client as never,
       workspaceId: WS,
@@ -139,7 +139,8 @@ describe('notifySiteLive', () => {
       slug: 'acme',
       env: { NODE_ENV: 'production' },
     });
-    expect(sentHtml()).toContain('https://acme.preview.');
+    expect(sentHtml()).toContain('https://acme.flowstarter.net');
+    expect(sentHtml()).not.toContain('acme.preview.');
   });
 
   it('records the version and the resolved URL for an operator', async () => {

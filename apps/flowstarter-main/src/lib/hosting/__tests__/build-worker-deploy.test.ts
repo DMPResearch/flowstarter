@@ -136,10 +136,16 @@ describe('deployedSiteUrl', () => {
     ).toBe('http://localhost:8788/calm-path/');
   });
 
-  it('falls back to the preview subdomain the deploy upserts DNS for', () => {
-    expect(deployedSiteUrl({ slug: 'calm-path', env: {} })).toMatch(
-      /^https:\/\/calm-path\.preview\./
-    );
+  it("falls back to the site's own final hostname, never a preview name", () => {
+    const url = deployedSiteUrl({ slug: 'calm-path', env: {} });
+    expect(url).toBe('https://calm-path.flowstarter.dev');
+    expect(url).not.toContain('preview');
+  });
+
+  it('uses the production zone in production', () => {
+    expect(
+      deployedSiteUrl({ slug: 'calm-path', env: { NODE_ENV: 'production' } })
+    ).toBe('https://calm-path.flowstarter.net');
   });
 
   it('never serves the local base URL in production', () => {
@@ -202,10 +208,10 @@ describe('deployBuildArtifact', () => {
     expect(db.rows('deployments')[0]!.artifact_url).toBe(
       'https://artifacts.test/site.tar.gz'
     );
-    expect(siteUrl).toMatch(/^https:\/\/acme\.preview\./);
+    expect(siteUrl).toBe('https://acme.flowstarter.dev');
   });
 
-  it('prefers the workspace primary domain over the preview subdomain', async () => {
+  it('prefers the workspace primary domain over the platform hostname', async () => {
     const db = seeded();
     db.seed('workspace_hosts', [
       { workspace_id: WS, hostname: 'www.acme.com', is_primary: false },

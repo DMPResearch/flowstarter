@@ -77,6 +77,29 @@ export class CloudflareApiError extends Error {
   }
 }
 
+/**
+ * A record with this name already exists and points somewhere else.
+ *
+ * Thrown instead of a PATCH. The zone holds live client sites and the
+ * platform's own records, and "make this name point at my new box" is exactly
+ * the operation that takes one of them down.
+ */
+export class CloudflareRecordConflictError extends Error {
+  constructor(
+    public readonly recordName: string,
+    public readonly wanted: string,
+    public readonly found: string,
+    message?: string
+  ) {
+    super(
+      message ??
+        `DNS record ${recordName} already exists and points at ${found}, not ${wanted}. ` +
+          'Refusing to overwrite it; point it by hand, or free the name first.'
+    );
+    this.name = 'CloudflareRecordConflictError';
+  }
+}
+
 interface CloudflareEnvelope<T> {
   success: boolean;
   errors: Array<{ code: number; message: string }>;
@@ -208,6 +231,61 @@ export class CloudflareClient {
       proxied: input.proxied,
       comment: input.comment,
     });
+  }
+
+  /**
+   * The same idea as {@link upsertRecord}, minus the half that overwrites.
+   *
+   * A final site name is a per-site A record in a zone that already serves
+   * real traffic: `lebadusul.flowstarter.net` is a client's live site, and the
+   * apex, `www` and the mail records belong to the platform. `upsertRecord`
+   * would happily point any of them at a freshly provisioned box, and the only
+   * warning would be a 200. So the paid deploy uses this instead:
+   *
+   *   - no record        → create it
+   *   - record, same IP  → leave it alone (a redeploy must be idempotent)
+   *   - record, other IP → refuse, and say whose it is
+   *
+   * Wildcards are refused outright. One site, one name; a `*` record would
+   * hand every unclaimed subdomain of the platform to one customer's box.
+   */
+  async claimRecord(
+    input: CloudflareUpsertRecordInput
+  ): Promise<{ record: CloudflareDnsRecord; created: boolean }> {
+    if (input.name.includes('*')) {
+      throw new CloudflareRecordConflictError(
+        input.name,
+        input.content,
+        input.content,
+        `Refusing to write the wildcard record "${input.name}". A site gets its own name, never a wildcard.`
+      );
+    }
+    const existing = await this.listRecords(input.zoneId, {
+      name: input.name,
+      type: input.type,
+    });
+    const match = existing.find(
+      (record) => record.name.toLowerCase() === input.name.toLowerCase()
+    );
+    if (!match) {
+      const record = await this.createRecord(input.zoneId, {
+        type: input.type,
+        name: input.name,
+        content: input.content,
+        ttl: input.ttl,
+        proxied: input.proxied,
+        comment: input.comment,
+      });
+      return { record, created: true };
+    }
+    if (match.content !== input.content) {
+      throw new CloudflareRecordConflictError(
+        input.name,
+        input.content,
+        match.content
+      );
+    }
+    return { record: match, created: false };
   }
 
   private async request<T>(
