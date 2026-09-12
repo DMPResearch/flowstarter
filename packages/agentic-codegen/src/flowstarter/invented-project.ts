@@ -98,8 +98,37 @@ export const GENERIC_HEADINGS: ReadonlySet<string> = new Set([
   'frequently asked questions',
 ]);
 
-/** `<h2>`/`<h3>` and their text, in document order. */
-const HEADING = /<h([23])\b[^>]*>([\s\S]*?)<\/h\1\s*>/gi;
+/**
+ * `<h2>`/`<h3>` inner markup, in document order, found with a forward scan.
+ * A regular expression here backtracks polynomially on hostile input (CodeQL
+ * js/polynomial-redos), and the built output is a string an agent wrote.
+ */
+export function headingMarkups(html: string): string[] {
+  const out: string[] = [];
+  const lower = html.toLowerCase();
+  let at = 0;
+  while (at < lower.length) {
+    const open = lower.indexOf('<h', at);
+    if (open < 0) break;
+    const level = lower[open + 2];
+    const after = lower[open + 3] ?? '';
+    const isHeading =
+      (level === '2' || level === '3') && !/[a-z0-9-]/.test(after);
+    if (!isHeading) {
+      at = open + 2;
+      continue;
+    }
+    const tagEnd = lower.indexOf('>', open);
+    if (tagEnd < 0) break;
+    const close = lower.indexOf(`</h${level}`, tagEnd + 1);
+    if (close < 0) break;
+    const closeEnd = lower.indexOf('>', close);
+    if (closeEnd < 0) break;
+    out.push(html.slice(tagEnd + 1, close));
+    at = closeEnd + 1;
+  }
+  return out;
+}
 
 /** The few entities a heading actually contains once a template renders it. */
 const ENTITIES: Readonly<Record<string, string>> = {
@@ -207,8 +236,8 @@ export function findInventedProjects(
     // `Array.from` rather than iterating the iterator directly: this package
     // is consumed as raw TypeScript by flowstarter-main, whose tsconfig target
     // predates iterator spreading.
-    for (const match of Array.from(region.matchAll(HEADING))) {
-      const heading = headingText(match[2] as string);
+    for (const markup of headingMarkups(region)) {
+      const heading = headingText(markup);
       if (!heading) continue;
       if (GENERIC_HEADINGS.has(canonical(heading))) continue;
       if (matchesBriefProject(heading, names)) continue;

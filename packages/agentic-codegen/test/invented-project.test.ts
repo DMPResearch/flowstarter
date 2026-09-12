@@ -4,6 +4,7 @@ import {
   findInventedProjects,
   GENERIC_HEADINGS,
   INVENTED_PROJECT,
+  headingMarkups,
 } from '../src/flowstarter/invented-project';
 
 /** A built work page carrying the headings under test. */
@@ -144,5 +145,20 @@ describe('describeInventedProjectFindings', () => {
     expect(message).toContain('Project 7');
     expect(message).not.toContain('Project 8');
     expect(message).toContain('and 4 more');
+  });
+});
+
+describe('headingMarkups', () => {
+  it('finds h2 and h3 inner markup in order and ignores h1 and h4', () => {
+    const html =
+      '<h1>Title</h1><h2 class="x">Alpha <em>one</em></h2><p>x</p><H3>Beta</H3><h4>no</h4>';
+    expect(headingMarkups(html)).toEqual(['Alpha <em>one</em>', 'Beta']);
+  });
+
+  it('stays linear on a long run of angle brackets', () => {
+    const hostile = '<'.repeat(200_000) + '<h2>ok</h2>';
+    const started = Date.now();
+    expect(headingMarkups(hostile)).toEqual(['ok']);
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 });
