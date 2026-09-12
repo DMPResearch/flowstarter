@@ -16,6 +16,24 @@
  *     /etc/caddy/sites/*.caddy
  *   - Bumps cloud_init_version label so we can track which servers need
  *     a re-bootstrap when the script changes
+ *   - Runs a final self-check that fails loudly (writes
+ *     /etc/flowstarter/bootstrap-failed and exits non-zero) if Caddy,
+ *     Docker, Node or the deploy-agent unit did not come up, so a
+ *     half-installed host cannot report `cloud-init status: done` clean.
+ *
+ * Ordering note (the reason this file looks the way it does): every file
+ * that lives under a path a package installed by `runcmd` owns — the Caddy
+ * config chief among them — is written FROM runcmd, after that package's
+ * `apt-get install`, never from `write_files`. `write_files` runs before
+ * `runcmd`, so a `write_files` entry at `/etc/caddy/Caddyfile` lands before
+ * dpkg unpacks the `caddy` package's own copy of that path. dpkg then treats
+ * our file as a locally-modified conffile and stops to prompt for a decision
+ * it can never get an answer to during unattended boot — which aborts the
+ * apt transaction (and, with it, every apt-get that runs later in the same
+ * `runcmd`: Docker, Node, npm, the Claude CLI) while leaving Caddy without
+ * the system user its postinst creates. `cloud-init status` still reports
+ * `done` because cloud-init only checks whether its own modules ran, not
+ * whether the commands inside them succeeded — hence the self-check below.
  *
  * The deploy-agent binary itself isn't built yet — for now this script
  * leaves a placeholder unit that's disabled. When Slice 2.8 lands the
@@ -24,7 +42,7 @@
 
 import { previewZone, siteRootDomain } from './site-hostnames';
 
-const CLOUD_INIT_VERSION = 5;
+const CLOUD_INIT_VERSION = 6;
 
 /**
  * Pinned versions for the host's coding-agent stack. Bump these together
@@ -32,6 +50,19 @@ const CLOUD_INIT_VERSION = 5;
  */
 const NODE_MAJOR = 22;
 const CLAUDE_CODE_NPM_PACKAGE = '@anthropic-ai/claude-code';
+
+/**
+ * Marks the `on_demand_tls` block this file writes into the base Caddyfile
+ * as the platform's own policy. `scripts/install-existing-host-agent.sh`
+ * greps for this exact string before it decides whether an on-demand TLS
+ * block it finds already on a host is ours to integrate with, or a foreign
+ * policy it must refuse to touch. Keep the two in sync by hand — the shell
+ * script cannot import this module.
+ */
+export const ON_DEMAND_TLS_MARKER = 'flowstarter-managed-on-demand-tls';
+
+const CADDYFILE_HEREDOC_MARKER = 'FLOWSTARTER_CADDYFILE';
+const PREVIEWS_CADDYFILE_HEREDOC_MARKER = 'FLOWSTARTER_PREVIEWS_CADDYFILE';
 
 export interface CloudInitOptions {
   /** New hosts serve each built site in its own restricted static container. */
@@ -143,6 +174,24 @@ export function buildCloudInit(opts: CloudInitOptions): string {
     ? sshKeys.map((k) => `      - ${escapeYaml(k)}`).join('\n')
     : '';
 
+  const runcmd = [
+    caddyInstallRuncmd(),
+    heredocRuncmdStep(
+      '/etc/caddy/Caddyfile',
+      CADDYFILE_HEREDOC_MARKER,
+      baseCaddyfileContent(opts.caddyAcmeEmail, previewsSecret, previewsSuffix)
+    ),
+    dockerInstallRuncmd(),
+    nodeAndClaudeInstallRuncmd(),
+    sitesDirRuncmd(),
+    previewsSecret ? previewsRuncmd() : '',
+    firewallRuncmd(),
+    deployAgentInstallRuncmd(artifactUrl, previewsSecret),
+    selfCheckRuncmd(Boolean(artifactUrl), Boolean(previewsSecret)),
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
   // Note: heredoc must keep tab/space indentation correct for YAML.
   return `#cloud-config
 #
@@ -196,58 +245,6 @@ write_files:
       ANTHROPIC_API_KEY=${opts.anthropicApiKey ?? ''}
     owner: root:root
     permissions: '0600'
-  - path: /etc/caddy/Caddyfile
-    content: |
-      # Base Caddyfile — per-site vhosts live in /etc/caddy/sites/*.caddy${
-        previewsSecret
-          ? `
-      #
-      # This file and that glob are the PAID-SITE Caddy instance, and it never
-      # imports anything the previews agent writes. Preview snippets live under
-      # ${PREVIEWS.caddySitesDir}/*.caddy, a different directory loaded by a
-      # different Caddy process (caddy-previews.service). A preview snippet
-      # that does not parse takes that process down and leaves every customer
-      # site on this box serving.`
-          : ''
-      }
-      {
-        email ${opts.caddyAcmeEmail}${
-    previewsSecret
-      ? `
-        # Certificates for preview hostnames are issued on demand and only for
-        # hostnames the previews agent confirms it is actually serving — the
-        # ask endpoint is what stops a stranger pointing DNS at this box and
-        # making us mint certificates for them. (Caddy removed the older
-        # \`interval\`/\`burst\` rate limiters; \`ask\` is the control now,
-        # which is why it is not optional here.)
-        on_demand_tls {
-          ask http://127.0.0.1:${PREVIEWS.agentPort}/tls-ask
-        }`
-      : ''
-  }
-      }
-      import /etc/caddy/sites/*.caddy${
-        previewsSecret
-          ? `
-
-      # ─── Previews ────────────────────────────────────────────────────────
-      # ONE static block, written once at boot and never touched again by any
-      # agent. It terminates TLS for the whole preview zone and hands the
-      # request to the previews Caddy on loopback. Nothing here is generated,
-      # so nothing generated can break it.
-      *.${previewsSuffix} {
-        tls {
-          on_demand
-        }
-        # Belt to the meta tag's braces: every HTML file in a preview also
-        # carries <meta name="robots" content="noindex, ...">.
-        header X-Robots-Tag "noindex, nofollow, noarchive"
-        reverse_proxy 127.0.0.1:${PREVIEWS.caddyHttpPort}
-      }`
-          : ''
-      }
-    owner: root:root
-    permissions: '0644'
   - path: /etc/systemd/system/flowstarter-deploy-agent.service
     content: |
       [Unit]
@@ -275,73 +272,7 @@ ${
     : ''
 }
 runcmd:
-  # ─── Caddy install (official repo) ────────────────────────────────────
-  - curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  - curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt | tee /etc/apt/sources.list.d/caddy-stable.list
-  - apt-get update
-  - apt-get install -y caddy
-
-  # ─── Docker install (official convenience script) ─────────────────────
-  - curl -fsSL https://get.docker.com | sh
-  - systemctl enable docker
-  - systemctl start docker
-
-  # ─── Node.js ${NODE_MAJOR} + Claude Code CLI ──────────────────────────
-  # NodeSource ships current LTS; Debian's own apt is too stale for the
-  # CLI's engine requirement. Globally installs ${CLAUDE_CODE_NPM_PACKAGE}
-  # so editor-spawned subprocesses on the host can run \`claude\` directly.
-  - curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash -
-  - apt-get install -y nodejs
-  - npm install -g ${CLAUDE_CODE_NPM_PACKAGE}
-  - claude --version || true
-
-  # ─── Sites dir + Caddy reload ─────────────────────────────────────────
-  - mkdir -p /etc/caddy/sites
-  - mkdir -p /var/www/sites
-  - chown -R caddy:caddy /var/www/sites
-  - systemctl reload caddy
-${
-  previewsSecret
-    ? `
-  # ─── Previews: separate roots, separate Caddy ─────────────────────────
-  # Different directories from the paid sites above, owned by the same user
-  # only so Caddy can read them. The previews agent is the only writer.
-  - mkdir -p ${PREVIEWS.caddySitesDir}
-  - mkdir -p ${PREVIEWS.sitesRoot}
-  - chown -R caddy:caddy ${PREVIEWS.sitesRoot}
-  - systemctl daemon-reload
-  - systemctl enable --now caddy-previews
-`
-    : ''
-}
-  # ─── Firewall ─────────────────────────────────────────────────────────
-  - ufw default deny incoming
-  - ufw default allow outgoing
-  - ufw allow 22/tcp
-  - ufw allow 80/tcp
-  - ufw allow 443/tcp
-  - ufw --force enable
-
-  # ─── Deploy-agent install (placeholder until artifact is published) ───
-${
-  artifactUrl
-    ? `  - curl -fsSL ${escapeShell(
-        artifactUrl
-      )} -o /usr/local/bin/flowstarter-deploy-agent
-  - chmod +x /usr/local/bin/flowstarter-deploy-agent
-  - systemctl daemon-reload
-  - systemctl enable --now flowstarter-deploy-agent${
-    previewsSecret
-      ? `
-  # Same binary, second instance: everything that differs (port, secret,
-  # sites root, Caddy dir, reload command, snippet shape) comes from
-  # /etc/flowstarter/preview-deploy-agent.env.
-  - systemctl enable --now flowstarter-preview-deploy-agent`
-      : ''
-  }`
-    : `  # Deploy-agent artifact URL not provided. Service unit installed but disabled.
-  - systemctl daemon-reload`
-}
+${runcmd}
 
 final_message: "Flowstarter host bootstrap complete (cloud_init_version=${CLOUD_INIT_VERSION}). Caddy + Docker + Node ${NODE_MAJOR} + Claude Code CLI installed. Deploy-agent ${
     artifactUrl ? 'started' : 'disabled (no artifact url)'
@@ -351,6 +282,248 @@ final_message: "Flowstarter host bootstrap complete (cloud_init_version=${CLOUD_
       : 'placeholder (drop key in /etc/flowstarter/anthropic.env)'
   }."
 `;
+}
+
+function caddyInstallRuncmd(): string {
+  return `  # ─── Caddy install (official repo) ────────────────────────────────────
+  - curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  - curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt | tee /etc/apt/sources.list.d/caddy-stable.list
+  - apt-get update
+  # --force-confold: belt to the ordering-fix braces above. If a stray
+  # conffile ever ends up on disk before this runs again, keep our copy
+  # instead of dropping into an unattended prompt that never resolves.
+  - apt-get install -y -o Dpkg::Options::=--force-confold caddy`;
+}
+
+function dockerInstallRuncmd(): string {
+  return `  # ─── Docker install (official convenience script) ─────────────────────
+  - curl -fsSL https://get.docker.com | sh
+  - systemctl enable docker
+  - systemctl start docker`;
+}
+
+function nodeAndClaudeInstallRuncmd(): string {
+  return `  # ─── Node.js ${NODE_MAJOR} + Claude Code CLI ──────────────────────────
+  # NodeSource ships current LTS; Debian's own apt is too stale for the
+  # CLI's engine requirement. Globally installs ${CLAUDE_CODE_NPM_PACKAGE}
+  # so editor-spawned subprocesses on the host can run \`claude\` directly.
+  - curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash -
+  - apt-get install -y nodejs
+  - npm install -g ${CLAUDE_CODE_NPM_PACKAGE}
+  - claude --version || true`;
+}
+
+function sitesDirRuncmd(): string {
+  return `  # ─── Sites dir + Caddy reload ─────────────────────────────────────────
+  - mkdir -p /etc/caddy/sites
+  - mkdir -p /var/www/sites
+  - chown -R caddy:caddy /var/www/sites
+  - systemctl reload caddy`;
+}
+
+function firewallRuncmd(): string {
+  return `  # ─── Firewall ─────────────────────────────────────────────────────────
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow 22/tcp
+  - ufw allow 80/tcp
+  - ufw allow 443/tcp
+  - ufw --force enable`;
+}
+
+function deployAgentInstallRuncmd(
+  artifactUrl: string | null | undefined,
+  previewsSecret: string | null
+): string {
+  const header = `  # ─── Deploy-agent install (placeholder until artifact is published) ───`;
+  if (!artifactUrl) {
+    return `${header}
+  # Deploy-agent artifact URL not provided. Service unit installed but disabled.
+  - systemctl daemon-reload`;
+  }
+  const previewsLine = previewsSecret
+    ? `
+  # Same binary, second instance: everything that differs (port, secret,
+  # sites root, Caddy dir, reload command, snippet shape) comes from
+  # /etc/flowstarter/preview-deploy-agent.env.
+  - systemctl enable --now flowstarter-preview-deploy-agent`
+    : '';
+  return `${header}
+  - curl -fsSL ${escapeShell(
+    artifactUrl
+  )} -o /usr/local/bin/flowstarter-deploy-agent
+  - chmod +x /usr/local/bin/flowstarter-deploy-agent
+  - systemctl daemon-reload
+  - systemctl enable --now flowstarter-deploy-agent${previewsLine}`;
+}
+
+/**
+ * The previews half of the host's `runcmd`: the second Caddy's own config
+ * (written here, after `caddy` is installed, for the same conffile reason
+ * as the paid Caddyfile above) plus its directories and service.
+ */
+function previewsRuncmd(): string {
+  return `  # ─── Previews: separate roots, separate Caddy ─────────────────────────
+  # Different directories from the paid sites above, owned by the same user
+  # only so Caddy can read them. The previews agent is the only writer.
+  - mkdir -p ${PREVIEWS.caddySitesDir}
+${heredocRuncmdStep(
+  `${PREVIEWS.caddyDir}/Caddyfile`,
+  PREVIEWS_CADDYFILE_HEREDOC_MARKER,
+  previewsCaddyfileContent()
+)}
+  - mkdir -p ${PREVIEWS.sitesRoot}
+  - chown -R caddy:caddy ${PREVIEWS.sitesRoot}
+  - systemctl daemon-reload
+  - systemctl enable --now caddy-previews`;
+}
+
+/**
+ * Final `runcmd` step. A `cloud-init status` of `done` only means every
+ * module ran, not that the commands inside `runcmd` succeeded — the exact
+ * gap that let a dpkg conffile prompt poison apt for the rest of boot while
+ * cloud-init reported a clean finish. This step checks the things that
+ * actually make the host usable and fails the boot loudly, in a place an
+ * operator will find, when any of them did not come up.
+ *
+ * The deploy-agent unit is only required to be active when an artifact URL
+ * was actually provided — with none, leaving it installed-but-disabled is
+ * the intended placeholder state, not a failure.
+ */
+function selfCheckRuncmd(hasArtifact: boolean, hasPreviews: boolean): string {
+  const checks: string[] = [
+    'command -v caddy >/dev/null 2>&1 || flowstarter_bootstrap_fail "caddy is not installed"',
+    'systemctl is-active --quiet caddy || flowstarter_bootstrap_fail "caddy.service is not active"',
+    'command -v docker >/dev/null 2>&1 || flowstarter_bootstrap_fail "docker is not installed"',
+    'systemctl is-active --quiet docker || flowstarter_bootstrap_fail "docker.service is not active"',
+    'command -v node >/dev/null 2>&1 || flowstarter_bootstrap_fail "node is not installed"',
+  ];
+  if (hasArtifact) {
+    checks.push(
+      'systemctl is-active --quiet flowstarter-deploy-agent || flowstarter_bootstrap_fail "flowstarter-deploy-agent.service is not active"'
+    );
+  }
+  if (hasPreviews) {
+    checks.push(
+      'systemctl is-active --quiet caddy-previews || flowstarter_bootstrap_fail "caddy-previews.service is not active"'
+    );
+    if (hasArtifact) {
+      checks.push(
+        'systemctl is-active --quiet flowstarter-preview-deploy-agent || flowstarter_bootstrap_fail "flowstarter-preview-deploy-agent.service is not active"'
+      );
+    }
+  }
+  const script = [
+    'flowstarter_bootstrap_fail() {',
+    '  mkdir -p /etc/flowstarter',
+    '  printf \'%s\\n\' "$1" > /etc/flowstarter/bootstrap-failed',
+    '  echo "flowstarter bootstrap self-check failed: $1" >&2',
+    '  exit 1',
+    '}',
+    ...checks,
+    'rm -f /etc/flowstarter/bootstrap-failed',
+    'echo "flowstarter bootstrap self-check passed"',
+  ].join('\n');
+  return `  # ─── Self-check: a half-installed host must not look healthy ──────────
+  - |
+${script
+  .split('\n')
+  .map((line) => `    ${line}`)
+  .join('\n')}`;
+}
+
+/** One `runcmd` item that heredocs `content` into `path`, quoted so nothing in it re-expands. */
+function heredocRuncmdStep(
+  path: string,
+  marker: string,
+  content: string
+): string {
+  const indented = content
+    .split('\n')
+    .map((line) => (line.length ? `    ${line}` : ''))
+    .join('\n');
+  return `  - |
+    cat <<'${marker}' > ${path}
+${indented}
+    ${marker}`;
+}
+
+/**
+ * The paid-site base Caddyfile's content, unindented — callers place it into
+ * a `runcmd` heredoc (after `caddy` is installed) rather than `write_files`.
+ */
+function baseCaddyfileContent(
+  caddyAcmeEmail: string,
+  previewsSecret: string | null,
+  previewsSuffix: string
+): string {
+  return `# Base Caddyfile — per-site vhosts live in /etc/caddy/sites/*.caddy${
+    previewsSecret
+      ? `
+#
+# This file and that glob are the PAID-SITE Caddy instance, and it never
+# imports anything the previews agent writes. Preview snippets live under
+# ${PREVIEWS.caddySitesDir}/*.caddy, a different directory loaded by a
+# different Caddy process (caddy-previews.service). A preview snippet
+# that does not parse takes that process down and leaves every customer
+# site on this box serving.`
+      : ''
+  }
+{
+  email ${caddyAcmeEmail}${
+    previewsSecret
+      ? `
+  # Certificates for preview hostnames are issued on demand and only for
+  # hostnames the previews agent confirms it is actually serving — the
+  # ask endpoint is what stops a stranger pointing DNS at this box and
+  # making us mint certificates for them. (Caddy removed the older
+  # \`interval\`/\`burst\` rate limiters; \`ask\` is the control now,
+  # which is why it is not optional here.)
+  # ${ON_DEMAND_TLS_MARKER}
+  on_demand_tls {
+    ask http://127.0.0.1:${PREVIEWS.agentPort}/tls-ask
+  }`
+      : ''
+  }
+}
+import /etc/caddy/sites/*.caddy${
+    previewsSecret
+      ? `
+
+# ─── Previews ────────────────────────────────────────────────────────
+# ONE static block, written once at boot and never touched again by any
+# agent. It terminates TLS for the whole preview zone and hands the
+# request to the previews Caddy on loopback. Nothing here is generated,
+# so nothing generated can break it.
+*.${previewsSuffix} {
+  tls {
+    on_demand
+  }
+  # Belt to the meta tag's braces: every HTML file in a preview also
+  # carries <meta name="robots" content="noindex, ...">.
+  header X-Robots-Tag "noindex, nofollow, noarchive"
+  reverse_proxy 127.0.0.1:${PREVIEWS.caddyHttpPort}
+}`
+      : ''
+  }`;
+}
+
+/** The previews Caddy's own config, unindented. Nothing in it varies by call. */
+function previewsCaddyfileContent(): string {
+  return `# PREVIEWS Caddy — a different process from the one in /etc/caddy.
+#
+# TLS is terminated by the paid Caddy on 443 and the request arrives here
+# over loopback, so this instance speaks plain HTTP and auto_https is off.
+# It imports ONLY its own snippet directory; nothing in here can be
+# reached from /etc/caddy/Caddyfile's import glob.
+{
+  admin 127.0.0.1:2020
+  default_bind 127.0.0.1
+  auto_https off
+  http_port ${PREVIEWS.caddyHttpPort}
+  https_port ${PREVIEWS.caddyHttpsPort}
+}
+import ${PREVIEWS.caddySitesDir}/*.caddy`;
 }
 
 /**
@@ -378,6 +551,10 @@ final_message: "Flowstarter host bootstrap complete (cloud_init_version=${CLOUD_
  * The one thing they share is the public listener: the paid Caddy owns 80/443
  * because only one process can, and hands the preview zone to the previews
  * Caddy over loopback through a single static block that no agent ever writes.
+ *
+ * The previews Caddyfile itself is NOT written here — it lives under
+ * /etc/caddy, a package-owned path, so it is written from `runcmd` by
+ * `previewsRuncmd()` instead, after `caddy` is installed.
  */
 function previewsWriteFiles(
   sharedSecret: string,
@@ -400,24 +577,6 @@ function previewsWriteFiles(
       DEPLOY_AGENT_PREVIEW_HOST_SUFFIX=${hostSuffix}
     owner: root:root
     permissions: '0600'
-  - path: ${PREVIEWS.caddyDir}/Caddyfile
-    content: |
-      # PREVIEWS Caddy — a different process from the one in /etc/caddy.
-      #
-      # TLS is terminated by the paid Caddy on 443 and the request arrives here
-      # over loopback, so this instance speaks plain HTTP and auto_https is off.
-      # It imports ONLY its own snippet directory; nothing in here can be
-      # reached from /etc/caddy/Caddyfile's import glob.
-      {
-        admin 127.0.0.1:2020
-        default_bind 127.0.0.1
-        auto_https off
-        http_port ${PREVIEWS.caddyHttpPort}
-        https_port ${PREVIEWS.caddyHttpsPort}
-      }
-      import ${PREVIEWS.caddySitesDir}/*.caddy
-    owner: root:root
-    permissions: '0644'
   - path: /etc/systemd/system/caddy-previews.service
     content: |
       [Unit]
