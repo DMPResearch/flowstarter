@@ -214,7 +214,15 @@ jobs:
           PLAYWRIGHT_BASE_URL: ${{ steps.staging.outputs.url }}
           PLAYWRIGHT_JSON_OUTPUT_NAME: release-results/staging-journey.json
         run: |
-          pnpm exec playwright test "e2e/**/*.journey.spec.ts" \
+          # A positional argument to `playwright test` is a REGEX matched
+          # against the test file path, not a glob. `e2e/**/*.journey.spec.ts`
+          # is not a valid regex — `**` is "nothing to repeat" — so this step
+          # threw SyntaxError on every run, staging-journey always failed, and
+          # deploy-prod (which needs it to succeed) always skipped. The release
+          # lane could therefore never publish production at all.
+          # The naming convention is unchanged; only the filter is now
+          # expressed the way Playwright reads it.
+          pnpm exec playwright test "e2e/.*\.journey\.spec\.ts" \
             --project chromium --reporter=list,json --pass-with-no-tests
       - name: Upload Playwright report
         if: always() && steps.staging.outputs.present == 'true'
