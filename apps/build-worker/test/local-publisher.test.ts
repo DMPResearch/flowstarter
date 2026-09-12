@@ -1,5 +1,12 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -20,7 +27,11 @@ beforeEach(async () => {
   siteRoot = join(scratch, 'site');
   artifactsRoot = join(scratch, 'artifacts');
   await mkdir(join(siteRoot, 'dist/book'), { recursive: true });
-  await writeFile(join(siteRoot, 'dist/index.html'), '<h1>Calm Path</h1>', 'utf8');
+  await writeFile(
+    join(siteRoot, 'dist/index.html'),
+    '<h1>Calm Path</h1>',
+    'utf8',
+  );
   await writeFile(
     join(siteRoot, 'dist/book/index.html'),
     '<main><div class="book-page__calendar">placeholder</div></main>',
@@ -28,7 +39,11 @@ beforeEach(async () => {
   );
   // Debris that must never reach a client's host.
   await mkdir(join(siteRoot, 'node_modules/left-pad'), { recursive: true });
-  await writeFile(join(siteRoot, 'node_modules/left-pad/index.js'), 'x', 'utf8');
+  await writeFile(
+    join(siteRoot, 'node_modules/left-pad/index.js'),
+    'x',
+    'utf8',
+  );
 });
 
 afterEach(async () => {
@@ -56,7 +71,7 @@ function publisher(opts: {
     stagingUrlTemplate: 'http://localhost:8788/{projectId}/',
     fetchImpl: (async (
       input: Parameters<typeof fetch>[0],
-      init?: Parameters<typeof fetch>[1]
+      init?: Parameters<typeof fetch>[1],
     ) => {
       opts.calls.push({
         url: String(input),
@@ -82,7 +97,12 @@ async function extractOnlyArtifact(): Promise<string> {
   expect(tarball).toBeDefined();
   const out = join(scratch, 'extracted');
   await mkdir(out, { recursive: true });
-  await execFileAsync('tar', ['-xzf', join(artifactsRoot, tarball!), '-C', out]);
+  await execFileAsync('tar', [
+    '-xzf',
+    join(artifactsRoot, tarball!),
+    '-C',
+    out,
+  ]);
   return out;
 }
 
@@ -98,7 +118,9 @@ describe('LocalSitePublisher', () => {
     });
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toBe('http://127.0.0.1:3000/api/internal/build/deploy');
+    expect(calls[0]!.url).toBe(
+      'http://127.0.0.1:3000/api/internal/build/deploy',
+    );
     expect(calls[0]!.authorization).toBe(`Bearer ${'s'.repeat(48)}`);
     expect(calls[0]!.body).toMatchObject({
       workspaceId: PROJECT_ID,
@@ -138,6 +160,36 @@ describe('LocalSitePublisher', () => {
     expect(booking).toContain('data-flowstarter-cal-embed="true"');
     expect(booking).toContain('cal.com/acme/intro/embed');
     expect(booking).not.toContain('data-flowstarter-cal-preview');
+  });
+
+  it('strips a leaked preview demo from the packaged output when there is no booking link', async () => {
+    // The approved-preview seed the worker started from already carried the
+    // blurred demo — the shape that shipped on a paid site once, because
+    // nothing downstream ever ran to take it back out.
+    await writeFile(
+      join(siteRoot, 'dist/book/index.html'),
+      '<main><div class="flowstarter-cal-preview" data-flowstarter-cal-preview="true">' +
+        '<!-- flowstarter:cal-preview — blurred demo; injectCalCom() replaces this on the full site -->' +
+        '<div style="filter:blur(7px)">calendar</div></div></main>',
+      'utf8',
+    );
+
+    const calls: Call[] = [];
+    await publisher({ calls }).create({
+      projectId: PROJECT_ID,
+      branch: `client/flowstarter-${PROJECT_ID}`,
+      worktreePath: join(scratch, 'worktree'),
+      commitSha: 'a'.repeat(40),
+      siteRoot,
+      calComUrl: null,
+    });
+
+    const extracted = await extractOnlyArtifact();
+    const booking = await readFile(join(extracted, 'book/index.html'), 'utf8');
+    expect(booking).not.toContain('data-flowstarter-cal-preview');
+    expect(booking).not.toContain('flowstarter:cal-preview');
+    expect(booking).not.toContain('filter:blur');
+    expect(booking).not.toContain('data-flowstarter-cal-embed');
   });
 
   it('falls back to the staging template when the deploy reports no URL', async () => {
@@ -224,7 +276,9 @@ describe('artifactTokenFromPath', () => {
     const token = `${PROJECT_ID}-${'a'.repeat(32)}`;
     expect(artifactTokenFromPath(`/artifacts/${token}.tar.gz`)).toBe(token);
     expect(artifactTokenFromPath(`/artifacts/${token}`)).toBeNull();
-    expect(artifactTokenFromPath('/artifacts/../../etc/passwd.tar.gz')).toBeNull();
+    expect(
+      artifactTokenFromPath('/artifacts/../../etc/passwd.tar.gz'),
+    ).toBeNull();
     expect(artifactTokenFromPath('/health')).toBeNull();
   });
 });

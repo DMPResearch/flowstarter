@@ -191,6 +191,38 @@ describe('CommandSiteValidator', () => {
     ).toBe(true);
   });
 
+  it('fails a paid build whose output still carries the blurred cal preview demo', async () => {
+    const root = await siteWorkspace();
+    const output: Array<{ command: string; lines: string[] }> = [];
+    const validator = new CommandSiteValidator({
+      commands: [
+        {
+          bin: 'node',
+          args: [
+            '-e',
+            'const fs=require("node:fs");fs.mkdirSync("dist/contact",{recursive:true});' +
+              'fs.writeFileSync("dist/contact/index.html",' +
+              '"<div class=\\"flowstarter-cal-preview\\" data-flowstarter-cal-preview=\\"true\\">' +
+              '<!-- flowstarter:cal-preview --></div>","utf8")',
+          ],
+        },
+      ],
+      timeoutMs: 30_000,
+      onOutput: (command, lines) => output.push({ command, lines }),
+    });
+
+    await expect(validator.validate(root, 'full')).rejects.toThrow(
+      /CAL_PREVIEW_IN_PAID_BUILD/,
+    );
+    expect(
+      output.some(
+        (entry) =>
+          entry.command === 'cal-preview-gate' &&
+          entry.lines.join(' ').includes('contact/index.html'),
+      ),
+    ).toBe(true);
+  });
+
   it('kills a command that hangs past the build timeout', async () => {
     const root = await siteWorkspace();
     const validator = new CommandSiteValidator({
@@ -229,7 +261,7 @@ describe('CommandSiteValidator', () => {
     );
   });
 
-  it('runs the build with a scrubbed environment, not the worker\'s own', async () => {
+  it("runs the build with a scrubbed environment, not the worker's own", async () => {
     const root = await siteWorkspace();
     const secrets = {
       SUPABASE_SERVICE_ROLE_KEY: 'service-role-leak',
@@ -479,9 +511,9 @@ describe('dockerRunArgs', () => {
     expect(mounts).toEqual([
       '--mount=type=bind,source=/srv/worktrees/client-1,target=/site',
     ]);
-    expect(args.filter((arg) => arg === '-v' || arg.startsWith('--volume'))).toEqual(
-      [],
-    );
+    expect(
+      args.filter((arg) => arg === '-v' || arg.startsWith('--volume')),
+    ).toEqual([]);
     expect(args.some((arg) => arg.includes('docker.sock'))).toBe(false);
     expect(args.some((arg) => arg.includes('--privileged'))).toBe(false);
 
@@ -608,9 +640,7 @@ describe('CommandSiteValidator under Docker isolation', () => {
     // The last command the fake saw is the build, wrapped by corepack.
     const args = await docker.runArgs();
     expect(args[0]).toBe('run');
-    expect(args).toContain(
-      `--mount=type=bind,source=${root},target=/site`,
-    );
+    expect(args).toContain(`--mount=type=bind,source=${root},target=/site`);
     expect(args).toContain('--entrypoint=corepack');
     expect(args.slice(-3)).toEqual(['pnpm@10.29.2', 'run', 'build']);
     // Operators reading a build log should see where it ran.

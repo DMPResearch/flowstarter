@@ -27,6 +27,7 @@ import { promisify } from 'node:util';
 import type { SiteValidator } from '@flowstarter/agentic-codegen';
 import {
   describeAssetProblems,
+  describeCalPreviewIssue,
   describePreviewTeaserIssue,
 } from '@flowstarter/agentic-codegen';
 import {
@@ -34,6 +35,7 @@ import {
   type DockerValidationConfig,
   type ValidatorCommand,
 } from './config';
+import { findCalPreviewInDir } from './output-cal-preview';
 import { findNonBinaryAssetsInDir } from './output-assets';
 import { findPreviewTeaserInDir } from './output-teaser';
 
@@ -456,6 +458,17 @@ export class CommandSiteValidator implements SiteValidator {
     if (teaser.length > 0) {
       const message = describePreviewTeaserIssue(teaser);
       this.options.onOutput?.('preview-teaser-gate', [message]);
+      throw new SiteValidationError(message);
+    }
+
+    // Same shape, same reason: the funnel preview's blurred calendar demo is
+    // a teaser, not a promise, and it shipped on a delivered portfolio's
+    // contact page because nothing removed it once the workspace turned out
+    // to have no booking link to back a real one.
+    const calPreview = await findCalPreviewInDir(output);
+    if (calPreview.length > 0) {
+      const message = describeCalPreviewIssue(calPreview);
+      this.options.onOutput?.('cal-preview-gate', [message]);
       throw new SiteValidationError(message);
     }
   }

@@ -9,14 +9,23 @@
  * endpoint, same `deployments` ledger row — so the thing this proves on a
  * laptop is the thing that runs in production.
  *
- * The tenant's Cal.com embed is re-applied over the packaged output. The
- * worker already injects it into `src/pages/book.astro` before the agent runs,
- * which is what a real `astro build` carries through; re-running it over the
- * output covers the tree that was never built from Astro sources, so a client
- * never gets the blurred preview demo on the site they paid for.
+ * The tenant's Cal.com integration is reconciled over the packaged output,
+ * unconditionally, whether or not a link is set. The worker already runs
+ * `injectCalCom` into `src/pages/book.astro` before the agent runs, which is
+ * what a real `astro build` carries through; re-running it here over the
+ * output covers the tree that was never built from Astro sources. With a
+ * validated link that wires the live embed; with none it removes whatever
+ * demo or embed block the packaged output still carries, so a client never
+ * gets the blurred preview demo — or a stale calendar for a link they have
+ * since removed — on the site they paid for.
  */
 
-import { injectCalCom, packSiteTarball, type ArchiveFile, type FileMap } from '@flowstarter/agentic-codegen';
+import {
+  injectCalCom,
+  packSiteTarball,
+  type ArchiveFile,
+  type FileMap,
+} from '@flowstarter/agentic-codegen';
 import type { PullRequestPublisher } from '@flowstarter/agentic-codegen';
 import { ArtifactStore } from './artifacts';
 import { collectSiteFiles, resolveSiteOutputDir } from './site-output';
@@ -40,7 +49,11 @@ export interface LocalSitePublisherOptions {
 
 interface DeployResponse {
   siteUrl?: string | null;
-  deployment?: { deploymentId?: string; status?: string; detail?: string | null };
+  deployment?: {
+    deploymentId?: string;
+    status?: string;
+    detail?: string | null;
+  };
 }
 
 export class LocalSitePublisher implements PullRequestPublisher {
@@ -148,12 +161,15 @@ export class LocalSitePublisher implements PullRequestPublisher {
  * `injectCalCom` is a pure `FileMap` transform, and the archive carries binary
  * entries the map has no room for. Only text entries are handed to it, and
  * only the ones it changed are written back.
+ *
+ * Always runs, `calUrl` or not: with none, `injectCalCom` removes any
+ * demo/embed block already in the output rather than leaving it be, which is
+ * the behaviour a client with no booking link actually needs.
  */
 function withCalCom(
   files: readonly ArchiveFile[],
   calUrl: string | null,
 ): ArchiveFile[] {
-  if (!calUrl) return [...files];
   const map: FileMap = {};
   for (const file of files) {
     if (file.encoding !== 'base64') map[file.path] = file.content;
