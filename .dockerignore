@@ -30,7 +30,16 @@ flowstarter
 readiness
 supabase
 apps/flowstarter-editor
-apps/flowstarter-library
+# The library workspace is excluded except for the two pieces the `previews`
+# stage of deploy/hetzner-staging/Dockerfile needs: its package.json, so
+# `pnpm install --filter @flowstarter/library` can resolve astro, and the Astro
+# templates it builds. reference/, showcase/ and mcp-server/ stay out.
+apps/flowstarter-library/**
+!apps/flowstarter-library/package.json
+!apps/flowstarter-library/templates/**
+apps/flowstarter-library/templates/**/node_modules/**
+apps/flowstarter-library/templates/**/.astro/**
+apps/flowstarter-library/templates/**/dist/**
 apps/flowstarter-templates
 apps/flowstarter-selfserve
 apps/shopify-landing

@@ -15,29 +15,18 @@
 # Triggers
 #   workflow_dispatch     run it by hand, optionally against another origin
 #   schedule              every 6 hours, so a silent outage is found within 6h
-#   repository_dispatch   event type `netlify-deploy-succeeded`, fired by
-#                         Netlify once a production deploy finishes
+#   repository_dispatch   event type `prod-deploy-succeeded`
 #
-# Wiring the Netlify hook (a human does this once, in the Netlify UI; this
-# workflow does not configure it):
-#   1. Create a GitHub fine-grained personal access token with
-#      "Contents: read and write" on DMPResearch/flowstarter. That scope is
-#      what the repository_dispatch API requires.
-#   2. Netlify -> Site settings -> Build & deploy -> Deploy notifications ->
-#      Add notification -> Outgoing webhook.
-#        Event:       Deploy succeeded
-#        URL:         https://api.github.com/repos/DMPResearch/flowstarter/dispatches
-#        JSON payload:
-#          {"event_type":"netlify-deploy-succeeded",
-#           "client_payload":{"base_url":"$DEPLOY_PRIME_URL"}}
-#      Netlify's outgoing webhooks cannot set an Authorization header, so put
-#      the token in the URL's userinfo, or route the hook through a small
-#      proxy (a Cloudflare Worker) that adds
-#      `Authorization: Bearer <token>` and `Accept: application/vnd.github+json`.
-#      Keep the token in Netlify's environment, never in this file.
-#   3. Confirm with a manual dispatch first:
-#        gh api repos/DMPResearch/flowstarter/dispatches \
-#          -f event_type=netlify-deploy-succeeded
+# Production is the Hetzner `prod` slot, published by release.yml on a release
+# tag; that lane already runs this synthetic against flowstarter.net in its
+# `full-e2e` job, so nothing has to fire the dispatch for an ordinary release.
+# The dispatch stays for the out-of-band case: a host agent that redeploys or
+# rolls back the slot by hand can announce it with
+#
+#   gh api repos/DMPResearch/flowstarter/dispatches \
+#     -f event_type=prod-deploy-succeeded
+#
+# optionally with a `client_payload.base_url` to check a different origin.
 #
 # The base URL is resolved in this order: the dispatch input, then the
 # repository_dispatch client_payload, then the PROD_URL repository variable,
@@ -59,7 +48,7 @@ on:
     # Every 6 hours, on the hour.
     - cron: '0 */6 * * *'
   repository_dispatch:
-    types: [netlify-deploy-succeeded]
+    types: [prod-deploy-succeeded]
 concurrency:
   group: prod-synthetic-depot
   cancel-in-progress: true
