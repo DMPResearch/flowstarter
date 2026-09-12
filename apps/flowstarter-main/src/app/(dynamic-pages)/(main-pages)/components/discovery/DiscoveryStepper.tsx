@@ -116,11 +116,18 @@ export function DiscoveryStepper({
       </ol>
 
       {/* Below `lg` the circles carry no labels, so this one line names the
-          current stage instead. */}
+          current stage instead.
+          While the scripted conversation is still running, its denominator
+          must be the same `total` the progress line below draws from
+          (`conversationProgress`, ultimately the quick phase's own question
+          count — see the readiness review's "Step 1 of 6" vs "0 of 4
+          questions answered" finding). Past the quick phase there is no
+          question count on screen to contradict, so the line falls back to
+          naming the visitor's place among the wizard's own stages. */}
       <p className="mt-2 text-center text-xs text-[var(--fs-ink-faint)] lg:hidden">
         {interpolate(t('landing.discovery.stepper.position'), {
           n: current,
-          total: steps.length,
+          total: showsProgress ? total : steps.length,
           label: currentLabel,
         })}
       </p>

@@ -56,36 +56,48 @@ export function CookieConsent() {
 
   return (
     <div
-      className={`fixed bottom-0 left-0 right-0 z-[100] p-4 sm:p-6 transition-all duration-300 ${
+      data-testid="cookie-consent-banner"
+      className={`fixed bottom-0 left-0 right-0 z-[100] p-2 sm:p-6 transition-all duration-300 ${
         isClosing ? 'translate-y-full opacity-0' : 'translate-y-0 opacity-100'
       }`}
     >
       <div className="max-w-3xl mx-auto">
-        <div className="relative bg-white/90 dark:bg-[var(--glass-surface)]/90 backdrop-blur-2xl backdrop-saturate-150 rounded-2xl border-t border-l border-white/50 dark:border-white/[0.08] border-b border-r border-black/[0.06] dark:border-black/[0.2] shadow-[0_12px_48px_rgba(0,0,0,0.12),0_1px_0_rgba(255,255,255,0.9)_inset] dark:shadow-[0_12px_48px_rgba(0,0,0,0.5),0_1px_0_rgba(255,255,255,0.06)_inset] overflow-hidden">
-          <div className="p-5 sm:p-6">
-            <div className="flex items-start gap-4">
-              {/* Icon */}
-              <div className="w-10 h-10 rounded-xl bg-[var(--purple)]/10 flex items-center justify-center flex-shrink-0">
-                <Cookie className="w-5 h-5 text-[var(--purple)]" />
+        {/* The shared liquid glass material on its near-opaque `--overlay`
+            fill: this pane floats over page content that is not behind a
+            scrim (see the class's own doc comment in
+            packages/flow-design-system/src/styles/index.css), so the text
+            beneath must not read through. `.fs-glass` supplies its own
+            background, radius, blur and refractive edge, so the old flat
+            white/dark fill, border and shadow are dropped rather than
+            layered underneath it. */}
+        <div className="fs-glass fs-glass--overlay relative overflow-hidden">
+          <div className="p-2 sm:p-6">
+            <div className="flex items-start gap-3 sm:gap-4">
+              {/* Icon — dropped on phones, where every row of height matters;
+                  restored from `sm:` up. */}
+              <div className="hidden h-10 w-10 flex-shrink-0 rounded-xl bg-[var(--purple)]/10 sm:flex sm:items-center sm:justify-center">
+                <Cookie className="h-5 w-5 text-[var(--purple)]" />
               </div>
 
               {/* Content */}
               <div className="flex-1 min-w-0 pr-6">
-                <h3 className="text-sm font-semibold text-[var(--fs-ink)] mb-1">
+                <h3 className="text-sm font-semibold text-[var(--fs-ink)] mb-0 sm:mb-1">
                   {t('cookie.title')}
                 </h3>
-                <p className="text-sm text-gray-500 dark:text-white/60 leading-relaxed mb-4">
-                  {t('cookie.description')}{' '}
-                  <Link
-                    href="/cookies"
-                    className="text-[var(--purple)] hover:underline"
-                  >
-                    {t('cookie.learnMore')}
-                  </Link>
+                {/* Clamped to a single line on phones only, where the
+                    banner's full height can cover the hero CTA underneath
+                    it (see the Playwright proof in __tests__). "Learn more"
+                    moves into the button row below rather than staying
+                    inline in this paragraph, so clamping the description can
+                    never clip the link out of the hit area. */}
+                <p className="text-sm text-gray-500 dark:text-white/60 leading-relaxed mb-1 line-clamp-1 sm:mb-2 sm:line-clamp-none">
+                  {t('cookie.description')}
                 </p>
 
-                {/* Buttons */}
-                <div className="flex items-center gap-2">
+                {/* Buttons + the "Learn more" link, one compact row on
+                    phones so the banner never grows tall enough to reach a
+                    CTA sitting higher up the page. */}
+                <div className="flex flex-wrap items-center gap-2">
                   <Button onClick={handleAccept} variant="default" size="sm">
                     {t('cookie.acceptAll')}
                   </Button>
@@ -96,13 +108,19 @@ export function CookieConsent() {
                   >
                     {t('cookie.essentialOnly')}
                   </Button>
+                  <Link
+                    href="/cookies"
+                    className="text-sm text-[var(--purple)] hover:underline"
+                  >
+                    {t('cookie.learnMore')}
+                  </Link>
                 </div>
               </div>
 
               {/* Close button */}
               <button
                 onClick={handleEssentialOnly}
-                className="absolute top-4 right-4 p-1.5 rounded-lg text-gray-300 dark:text-white/30 hover:text-gray-500 dark:hover:text-white/60 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors"
+                className="absolute top-2 right-2 p-1.5 rounded-lg text-gray-300 dark:text-white/30 hover:text-gray-500 dark:hover:text-white/60 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors sm:top-4 sm:right-4"
                 aria-label="Close"
               >
                 <X className="w-4 h-4" />

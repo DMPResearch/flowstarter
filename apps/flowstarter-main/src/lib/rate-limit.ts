@@ -132,3 +132,22 @@ export const contactRateLimiter = new SlidingWindowRateLimiter({
   limit: 5,
   windowMs: 60_000,
 });
+
+/**
+ * MVP readiness review, "Security": `/api/discovery/preview/live` — a real
+ * Pi generation run, `maxDuration = 300` — had no rate limit at all. A
+ * genuine visitor calls this once per completed intake, so this stays
+ * deliberately tight; env-overridable rather than a bare literal in the
+ * route, same as the funnel spend cap's `DISCOVERY_FUNNEL_BUDGET_EUR`.
+ */
+function discoveryPreviewLiveLimit(): number {
+  const raw = Number(process.env.DISCOVERY_PREVIEW_LIVE_RATE_LIMIT);
+  return Number.isFinite(raw) && raw > 0 ? raw : 5;
+}
+
+/** Rate limiter for `POST /api/discovery/preview/live`: 5 per minute per IP
+ * by default (see {@link discoveryPreviewLiveLimit}). */
+export const discoveryPreviewLiveRateLimiter = new SlidingWindowRateLimiter({
+  limit: discoveryPreviewLiveLimit(),
+  windowMs: 60_000,
+});

@@ -76,6 +76,11 @@ export function AdminDashboardSidebar() {
       href: '/admin/dashboard/inquiries',
       icon: MessageSquare,
     },
+    {
+      labelKey: 'admin.nav.contactMessages',
+      href: '/admin/dashboard/contact-messages',
+      icon: Inbox,
+    },
   ];
 
   const infrastructureItems: ReadonlyArray<NavItem> = [

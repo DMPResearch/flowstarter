@@ -9,14 +9,59 @@ import { createClient } from '@supabase/supabase-js';
  * Before an expensive call the route asks {@link funnelBudgetState}:
  *   - `ok`       — proceed normally
  *   - `degrade`  — over the soft threshold; caller should use a cheaper model
- *   - `blocked`  — over the monthly cap; caller fails open to the
- *                  deterministic template demo (the funnel never dead-ends)
+ *   - `blocked`  — over the monthly cap, or the accounting itself is broken;
+ *                  caller fails open to the deterministic template demo (the
+ *                  funnel never dead-ends), and the response's `reason`
+ *                  field says which of the two it was.
  *
- * FAIL-SAFE: any failure here (no env, missing table, query error) returns
- * `ok`. We never block the funnel because our own accounting is unavailable.
+ * MVP readiness review, "Security": this used to fail OPEN on any accounting
+ * error (no service key, missing table, query error, a throw) — the cap
+ * existed on paper but a broken query silently spent without limit. It now
+ * fails CLOSED (`blocked`, `reason: 'accounting-error'`) outside development,
+ * so a broken cost query stops spend instead of hiding it. In development —
+ * where the local stack routinely has no `demo_generation_costs` row seeded,
+ * or no service key at all — it still fails open, with a logged warning, so
+ * a clean checkout is not blocked from ever seeing a live preview.
  */
 
 export type FunnelBudgetState = 'ok' | 'degrade' | 'blocked';
+
+/**
+ * Why a `blocked` state was returned: over the real monthly cap, or because
+ * the accounting query itself failed and the cap could not be checked. The
+ * caller (`/api/discovery/preview/live`) surfaces this in its own `reason`
+ * field so the two are never confused with each other or with the
+ * unrelated `not-configured` skip.
+ */
+export type FunnelBudgetBlockedReason = 'over-cap' | 'accounting-error';
+
+export interface FunnelBudgetResult {
+  state: FunnelBudgetState;
+  spentEur: number;
+  capEur: number;
+  reason?: FunnelBudgetBlockedReason;
+}
+
+/** `NODE_ENV=test` (CI, the unit suite) is deliberately NOT development here:
+ * a test that wants fail-open behaviour mocks this module, same as every
+ * existing caller already does. */
+function isDevelopment(): boolean {
+  return process.env.NODE_ENV === 'development';
+}
+
+let costLedgerWriteFailures = 0;
+
+/** For the routes/observability surface that want to alert on this; see the
+ * readiness review's "nothing tells anyone when something breaks". */
+export function costLedgerWriteFailureCount(): number {
+  return costLedgerWriteFailures;
+}
+
+/** Test-only reset — the counter is module-level so it survives across
+ * tests in the same file otherwise. */
+export function _resetCostLedgerWriteFailureCountForTests(): void {
+  costLedgerWriteFailures = 0;
+}
 
 export interface FunnelUsage {
   inputTokens?: number;
@@ -80,7 +125,13 @@ function serviceClient() {
   return createClient(url, key, { auth: { persistSession: false } });
 }
 
-/** Best-effort cost write. Never throws. */
+/**
+ * Cost write. Never throws — a write failure must not fail the generation it
+ * is billing for — but unlike before, a failure is no longer silent: it is
+ * logged and counted via {@link costLedgerWriteFailureCount} so an operator
+ * (or an alert, once one exists) can see the ledger is unreliable instead of
+ * the cap quietly going blind.
+ */
 export async function recordGenerationCost(input: {
   kind: GenerationKind;
   model?: string;
@@ -98,13 +149,19 @@ export async function recordGenerationCost(input: {
 }): Promise<void> {
   try {
     const sb = serviceClient();
-    if (!sb) return;
+    if (!sb) {
+      costLedgerWriteFailures += 1;
+      console.error(
+        '[funnel-cost] cost ledger write skipped: no Supabase service client configured'
+      );
+      return;
+    }
     const { tokensIn, tokensOut } = normalizeUsage(input.usage);
     const cost =
       typeof input.costUsd === 'number' && input.costUsd > 0
         ? input.costUsd
         : estimateCostEur(input.model, input.usage);
-    await sb.from('demo_generation_costs').insert({
+    const { error } = await sb.from('demo_generation_costs').insert({
       demo_id: input.demoId ?? null,
       kind: input.kind,
       model: input.model ?? null,
@@ -114,21 +171,56 @@ export async function recordGenerationCost(input: {
       ip: input.ip ?? null,
       lead_email: input.leadEmail ?? null,
     });
-  } catch {
-    /* accounting is best-effort */
+    if (error) {
+      costLedgerWriteFailures += 1;
+      console.error('[funnel-cost] cost ledger write failed', error);
+    }
+  } catch (err) {
+    costLedgerWriteFailures += 1;
+    console.error('[funnel-cost] cost ledger write threw', err);
   }
 }
 
-/** Month-to-date funnel state. Fail-safe → 'ok'. */
-export async function funnelBudgetState(): Promise<{
-  state: FunnelBudgetState;
-  spentEur: number;
-  capEur: number;
-}> {
+/** The one place a failed accounting query decides open vs. closed. */
+function accountingUnavailable(
+  cap: number,
+  detail: unknown
+): FunnelBudgetResult {
+  if (isDevelopment()) {
+    console.warn(
+      '[funnel-cost] budget accounting unavailable in development; failing open',
+      detail
+    );
+    return { state: 'ok', spentEur: 0, capEur: cap };
+  }
+  console.error(
+    '[funnel-cost] budget accounting unavailable; failing closed',
+    detail
+  );
+  return {
+    state: 'blocked',
+    spentEur: 0,
+    capEur: cap,
+    reason: 'accounting-error',
+  };
+}
+
+/**
+ * Month-to-date funnel state.
+ *
+ * Fails OPEN only in development (see the module doc comment above); every
+ * other environment fails CLOSED so a broken query cannot silently remove
+ * the spend cap.
+ */
+export async function funnelBudgetState(): Promise<FunnelBudgetResult> {
   const cap = capEur();
   try {
     const sb = serviceClient();
-    if (!sb) return { state: 'ok', spentEur: 0, capEur: cap };
+    if (!sb)
+      return accountingUnavailable(
+        cap,
+        'no Supabase service client configured'
+      );
     const since = new Date();
     since.setUTCDate(1);
     since.setUTCHours(0, 0, 0, 0);
@@ -136,7 +228,8 @@ export async function funnelBudgetState(): Promise<{
       .from('demo_generation_costs')
       .select('cost_eur')
       .gte('created_at', since.toISOString());
-    if (error || !data) return { state: 'ok', spentEur: 0, capEur: cap };
+    if (error) return accountingUnavailable(cap, error);
+    if (!data) return accountingUnavailable(cap, 'query returned no data');
     const spent = data.reduce(
       (s, r) => s + Number((r as { cost_eur: number }).cost_eur || 0),
       0
@@ -147,8 +240,13 @@ export async function funnelBudgetState(): Promise<{
         : spent >= cap * SOFT_FRACTION
         ? 'degrade'
         : 'ok';
-    return { state, spentEur: spent, capEur: cap };
-  } catch {
-    return { state: 'ok', spentEur: 0, capEur: cap };
+    return {
+      state,
+      spentEur: spent,
+      capEur: cap,
+      ...(state === 'blocked' ? { reason: 'over-cap' as const } : {}),
+    };
+  } catch (err) {
+    return accountingUnavailable(cap, err);
   }
 }

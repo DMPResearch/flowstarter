@@ -23,6 +23,7 @@ import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import { deriveBusinessName } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/quick-defaults';
 import { funnelBudgetState, recordGenerationCost } from '@/lib/ai/funnel-cost';
+import { discoveryPreviewLiveRateLimiter } from '@/lib/rate-limit';
 import { llmActionConfig, recordLlmUsage } from '@/lib/ai/llm';
 import { missingGenerationPrerequisites } from '@/lib/discovery/generation-availability';
 import { createJob, getJob, updateJob } from '@/lib/discovery/live-jobs';
@@ -506,6 +507,18 @@ export function hasPreviewIdentity(spec: {
 }
 
 export async function POST(req: NextRequest) {
+  // Per-IP rate limit: this is the funnel's most expensive endpoint (a real
+  // Pi generation run, `maxDuration = 300`), and until now had no limit at
+  // all — see the MVP readiness review, "Security". Computed once and reused
+  // below for the job's own `ip` field.
+  const ip = clientIp(req);
+  if (discoveryPreviewLiveRateLimiter.check(ip).limited) {
+    return NextResponse.json(
+      { skip: true, reason: 'rate-limited' },
+      { status: 429 }
+    );
+  }
+
   let body: unknown;
   try {
     body = await req.json();
@@ -537,27 +550,31 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Budget kill-switch: over the monthly cap → deterministic demo instead.
-  // Over the soft threshold → 'degrade' so the orchestrator runs in lite mode
-  // (single Kimi pass, no Sonnet brain) to keep spending bounded.
+  // Budget kill-switch: over the monthly cap, or the accounting itself is
+  // broken (see funnel-cost.ts — outside development this now fails CLOSED,
+  // not open) → deterministic demo instead. Over the soft threshold →
+  // 'degrade' so the orchestrator runs in lite mode (single Kimi pass, no
+  // Sonnet brain) to keep spending bounded. `reason` tells the two blocked
+  // cases apart from each other and from `not-configured` above —
+  // `funnelBudgetState` itself never throws, so there is nothing left for
+  // this call site to fail open on.
   let budgetState: 'ok' | 'degrade' | 'blocked' = 'ok';
-  try {
-    const budget = await funnelBudgetState();
-    if (budget.state === 'blocked') {
-      return NextResponse.json({ skip: true }, { status: 200 });
-    }
-    budgetState = budget.state;
-  } catch {
-    /* fail-safe: continue */
+  const budget = await funnelBudgetState();
+  if (budget.state === 'blocked') {
+    return NextResponse.json(
+      { skip: true, reason: budget.reason ?? 'over-cap' },
+      { status: 200 }
+    );
   }
+  budgetState = budget.state;
 
   const demoId = randomUUID();
   createJob(demoId);
-  const ip = clientIp(req);
   // Every downstream reader of `spec.businessName` — the Pi evidence, the
   // scrape corpus, the job record the "preview is ready" email is sent
   // from — gets the derived value from here on, computed once rather than
-  // re-derived (and potentially re-decided) at each call site.
+  // re-derived (and potentially re-decided) at each call site. `ip` was
+  // already computed above for the rate limiter and is reused as-is.
   const spec = {
     ...parsed.data,
     businessName:
