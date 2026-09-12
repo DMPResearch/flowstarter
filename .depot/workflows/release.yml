@@ -23,8 +23,11 @@
 #   verification job fails:
 #     - `staging-journey`  the full-journey tier on staging (when configured).
 #     - `deploy-prod`      production image build and `prod` slot deploy.
-#     - `full-e2e`         contract + production synthetic (+ auth journey)
-#                          against flowstarter.net after deploy-prod.
+#     - `full-e2e`         verifies the prod slot just deployed (directly, via
+#                          curl --resolve, never skipped), then contract +
+#                          production synthetic (+ auth journey) against
+#                          flowstarter.net — those only once the apex is
+#                          actually served by the box rather than Netlify.
 #   A job that SKIPS does not block. Missing Clerk credentials and an
 #   unconfigured staging URL warn and skip. A job that RUNS and fails always
 #   blocks. `deploy-prod` never skips: publishing production is the point of a
@@ -154,7 +157,18 @@ jobs:
             fi
           fi
 
-          release_id=$(gh api "repos/${REPO}/releases/tags/${TAG}" --jq '.id')
+          # NOT `releases/tags/${TAG}`: that endpoint only resolves PUBLISHED
+          # releases. The release this job just opened is a DRAFT, and a draft
+          # is not attached to its tag until it is published, so the by-tag
+          # lookup answers 404 and `set -e` kills the job — every first release
+          # of a tag, which is every release. Listing and matching on
+          # `tag_name` sees drafts too.
+          release_id=$(gh api "repos/${REPO}/releases" --paginate \
+            --jq "[.[] | select(.tag_name==\"${TAG}\")][0].id // empty")
+          if [ -z "$release_id" ]; then
+            echo "::error::No release found for tag ${TAG}, draft or published."
+            exit 1
+          fi
           echo "release_id=${release_id}" >> "$GITHUB_OUTPUT"
           echo "created=${created}" >> "$GITHUB_OUTPUT"
 
@@ -203,7 +217,15 @@ jobs:
           PLAYWRIGHT_BASE_URL: ${{ steps.staging.outputs.url }}
           PLAYWRIGHT_JSON_OUTPUT_NAME: release-results/staging-journey.json
         run: |
-          pnpm exec playwright test "e2e/**/*.journey.spec.ts" \
+          # A positional argument to `playwright test` is a REGEX matched
+          # against the test file path, not a glob. `e2e/**/*.journey.spec.ts`
+          # is not a valid regex — `**` is "nothing to repeat" — so this step
+          # threw SyntaxError on every run, staging-journey always failed, and
+          # deploy-prod (which needs it to succeed) always skipped. The release
+          # lane could therefore never publish production at all.
+          # The naming convention is unchanged; only the filter is now
+          # expressed the way Playwright reads it.
+          pnpm exec playwright test "e2e/.*\.journey\.spec\.ts" \
             --project chromium --reporter=list,json --pass-with-no-tests
       - name: Upload Playwright report
         if: always() && steps.staging.outputs.present == 'true'
@@ -388,7 +410,73 @@ jobs:
           url="${url%/}"
           echo "url=${url}" >> "$GITHUB_OUTPUT"
           echo "Production URL: ${url}" >> "$GITHUB_STEP_SUMMARY"
+          host="$(printf '%s' "$url" | sed -E 's#^[a-zA-Z]+://##; s#[/:].*$##')"
+          echo "host=${host}" >> "$GITHUB_OUTPUT"
+
+      # ── Verify the slot this run actually deployed ─────────────────────────
+      # PROD_URL is a DNS fact; the slot is a fact about this box. Until the
+      # apex is cut over they are two different machines, and every check below
+      # this point would otherwise pass against whatever the old host still
+      # serves while claiming the release was verified. That is exactly what
+      # happened with release-2026-09-12: it published green having tested
+      # Netlify, not the image it had just deployed.
+      #
+      # --resolve pins the apex hostname to the box's IP, so Caddy answers on
+      # the flowstarter.net vhost by SNI regardless of DNS. -k because that
+      # vhost uses `tls internal` until a Cloudflare Origin CA certificate is
+      # installed. This step is NOT allowed to skip: it is the only check in
+      # this job that is guaranteed to be looking at the release being made.
+      - name: Verify the prod slot this release deployed
+        env:
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          PROD_HOST: ${{ steps.prod.outputs.host }}
+        run: |
+          set -euo pipefail
+          body="$(curl -fsS -k --max-time 20 \
+            --resolve "${PROD_HOST}:443:${HOST}" \
+            "https://${PROD_HOST}/api/health")"
+          echo "Slot /api/health: ${body}"
+          if ! printf '%s' "$body" | grep -Eq '"ok"[[:space:]]*:[[:space:]]*true'; then
+            echo "::error::The prod slot on ${HOST} did not report \"ok\":true."
+            exit 1
+          fi
+          if ! printf '%s' "$body" | grep -Eq '"env"[[:space:]]*:[[:space:]]*"production"'; then
+            echo "::error::The prod slot on ${HOST} did not report \"env\":\"production\"."
+            exit 1
+          fi
+          echo "Prod slot on ${HOST} verified: \"ok\":true, \"env\":\"production\"." >> "$GITHUB_STEP_SUMMARY"
+
+      # Is PROD_URL the box yet, or still Netlify?
+      #
+      # NOT by comparing resolved IPs: Cloudflare proxies this zone, so the
+      # apex resolves to Cloudflare edge addresses both before and after the
+      # cutover and an IP comparison would say "not the box" forever.
+      #
+      # Netlify stamps `x-nf-request-id` on every response it serves and the
+      # box does not, so that header is the discriminator, and it retires
+      # itself: the day the apex stops being Netlify the suites below start
+      # running again with no edit here. Comparing /api/health bodies would not
+      # work — Netlify serves the same app against the same hosted Supabase
+      # project, so both sides answer "env":"production" and look identical.
+      - name: Is the apex served by this box yet?
+        id: apex
+        env:
+          URL: ${{ steps.prod.outputs.url }}
+        run: |
+          set -euo pipefail
+          headers="$(curl -sSI --max-time 20 "${URL}/" || true)"
+          if printf '%s' "$headers" | grep -qi '^x-nf-request-id:'; then
+            echo "on_box=false" >> "$GITHUB_OUTPUT"
+            msg="${URL} is still served by Netlify (x-nf-request-id present), not the prod slot this release deployed. The production Playwright suites are SKIPPED rather than run against something this release did not build. The slot itself WAS verified directly, in the step above. Cut the apex over to the box to turn these back on."
+            echo "::warning::${msg}"
+            echo "${msg}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "on_box=true" >> "$GITHUB_OUTPUT"
+            echo "${URL} is served by the box; running the production suites against it." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: E2E - keyless contract checks against production
+        if: steps.apex.outputs.on_box == 'true'
         env:
           CI: true
           PLAYWRIGHT_BASE_URL: ${{ steps.prod.outputs.url }}
@@ -398,6 +486,7 @@ jobs:
           pnpm exec playwright test e2e/contract.spec.ts \
             --project chromium --reporter=list,json
       - name: E2E - production synthetic
+        if: steps.apex.outputs.on_box == 'true'
         env:
           CI: true
           PROD_SYNTHETIC: '1'
@@ -408,6 +497,7 @@ jobs:
           pnpm exec playwright test --project prod-synthetic --reporter=list,json
       - name: Check the operator credentials
         id: clerk
+        if: steps.apex.outputs.on_box == 'true'
         env:
           EMAIL: ${{ secrets.E2E_CLERK_OPERATOR_EMAIL }}
           PASSWORD: ${{ secrets.E2E_CLERK_OPERATOR_PASSWORD }}
@@ -422,7 +512,7 @@ jobs:
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
       - name: E2E - authenticated operator journey
-        if: steps.clerk.outputs.present == 'true'
+        if: steps.apex.outputs.on_box == 'true' && steps.clerk.outputs.present == 'true'
         env:
           CI: true
           PLAYWRIGHT_BASE_URL: ${{ steps.prod.outputs.url }}

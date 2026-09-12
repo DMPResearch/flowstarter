@@ -57,13 +57,27 @@ applied deliberately, by hand, against the hosted project.
    values and `BUILD_LIBRARY_PREVIEWS=true`, pushes
    `ghcr.io/<owner>/flowstarter-main:<tag>` and `:prod`, then runs
    `deploy-slot.sh prod <image> 3100` over SSH.
-4. **full-e2e** runs contract + production synthetic (+ optional auth) against `vars.PROD_URL` (default `https://flowstarter.net`).
+4. **full-e2e** first verifies the `prod` slot this run deployed, directly, with
+   `curl --resolve <apex>:443:<box-ip>` — that check never skips, because it is
+   the only one guaranteed to be looking at the image just built. It then runs
+   contract + production synthetic (+ optional auth) against `vars.PROD_URL`,
+   **but only once the apex is actually served by the box**. While Netlify
+   still answers there (detected by its `x-nf-request-id` header) those suites
+   skip with a loud warning rather than test the old host and report it as
+   production verification.
 5. **publish** appends verification notes and publishes or holds the draft.
 
-`BUILD_LIBRARY_PREVIEWS=true` is set only by this lane. It builds the Astro
-library templates into `public/preview/<slug>/` inside the image, because the
-public `/library` pages iframe them. Staging leaves it false and ships empty
-iframes on purpose, to keep PR images cheap.
+`BUILD_LIBRARY_PREVIEWS=true` is set by **every** lane that builds an image —
+this one and both staging lanes. It builds the Astro library templates into
+`public/preview/<slug>/` inside the image, because the public `/library` pages
+iframe them.
+
+Staging used to leave it false, to keep PR images cheap. That was changed on
+2026-09-12: a slot with empty iframes is not a rehearsal of production, and
+`e2e/templates-audit.spec.ts` requires `/preview/<slug>/` to answer 2xx for
+every template marked `hasPreview`. No staging slot could satisfy that, which
+only ever looked fine because the smoke lane was skipping for want of a healthy
+slot to point at.
 
 ## Rollback
 

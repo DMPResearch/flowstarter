@@ -234,9 +234,30 @@ cmd_ensure() {
 cmd_migrate() {
   require_repo_dir
   echo "Applying migrations against the local stack..."
-  supabase migration up --workdir "$REPO_DIR"
+  # --include-all, because a migration's timestamp is when it was WRITTEN and
+  # the order they reach `main` is when they were MERGED, and the two disagree
+  # the moment two pull requests are open at once. Without it, a migration
+  # stamped earlier than one already applied makes `supabase migration up`
+  # refuse outright ("Found local migration files to be inserted before the
+  # last migration on remote database"), which reds this lane for every commit
+  # afterwards until somebody logs into the box by hand.
+  #
+  # This is staging: one shared, disposable stack that CI owns. If an
+  # out-of-order apply ever leaves it visibly different from a clean one, the
+  # remedy is `supabase db reset --workdir /opt/flowstarter/staging/repo` on
+  # the host, not a red deploy lane. Production is not migrated from here at
+  # all (slot `prod` runs none of this), so nothing about this relaxes the
+  # care taken with the hosted project.
+  supabase migration up --include-all --workdir "$REPO_DIR"
   echo "Migration status:"
-  supabase migration list --workdir "$REPO_DIR"
+  # --local, because the bare `migration list` compares the local stack
+  # against a LINKED remote project and exits 1 with "Cannot find project ref.
+  # Have you run supabase link?" when there is none. The Hetzner host is
+  # deliberately never linked to a hosted project, so without this flag the
+  # last command of this function always fails, `set -e` propagates it, and
+  # deploy-slot.sh aborts every deploy of slot `main` after the migrations
+  # have already been applied successfully.
+  supabase migration list --local --workdir "$REPO_DIR"
 }
 
 cmd_write_env() {
