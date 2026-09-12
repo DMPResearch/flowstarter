@@ -62,6 +62,12 @@ import {
   INVENTED_PROJECT,
 } from './invented-project';
 import {
+  describePlaceholderImageIssue,
+  findPlaceholderImageReferencesInFiles,
+  isGatedPlaceholderImageRole,
+  PLACEHOLDER_IMAGE_SHIPPED,
+} from './placeholder-images';
+import {
   stripPreviewTeaserFromFiles,
   TEASER_IN_PAID_BUILD,
 } from './teaser-rule';
@@ -1032,6 +1038,36 @@ export function findInventedProjectIssue(
   const findings = findInventedProjects(files, briefProjectNames);
   return findings.length > 0
     ? describeInventedProjectFindings(findings, briefProjectNames)
+    : undefined;
+}
+
+/**
+ * The placeholder-*image* gate, over the same rendered files.
+ *
+ * The invented-project gate above asks whether a case study's *words* claim
+ * work that never happened. This asks a narrower, image-shaped question that
+ * stays relevant even once every case study is real: does the page still
+ * point at one of the template's own stand-in images — a design-review guide
+ * graphic, a stock screenshot of somebody else's product — rather than the
+ * client's own content or an honest "there is nothing here yet" layout. Text
+ * is the only thing this layer can see (the built site's HTML, CSS and
+ * content are read, never its binary images), which is enough: a placeholder
+ * image only matters once something on the page points at it, and that
+ * reference is a string — `/images/about-me-photo.svg` in an `img` tag's
+ * `src`, or the `data-flowstarter-placeholder` marker a template puts on a
+ * stand-in it still renders inline. The worker's `output-placeholder-images`
+ * re-checks the compiled `dist/` by content hash as well, which this cannot
+ * do without the bytes; that is the gate of record; this is the one repair
+ * pass that tries to avoid needing it.
+ */
+export function findPlaceholderImageIssue(
+  files: readonly { path: string; content: string }[],
+): string | undefined {
+  const findings = findPlaceholderImageReferencesInFiles(files).filter(
+    (finding) => isGatedPlaceholderImageRole(finding.role),
+  );
+  return findings.length > 0
+    ? describePlaceholderImageIssue(findings)
     : undefined;
 }
 
@@ -2382,9 +2418,9 @@ export class FullSiteBuildWorker {
         );
       }
 
-      // The last output gate, and the one that protects the client's name
-      // rather than the site's shape: every project the work section presents
-      // has to be one the client actually told us about.
+      // The output gate that protects the client's name rather than the
+      // site's shape: every project the work section presents has to be one
+      // the client actually told us about.
       const briefProjectNames = (job.intake.projects ?? []).map(
         (project) => project.name,
       );
@@ -2406,6 +2442,35 @@ export class FullSiteBuildWorker {
         if (inventedIssue) {
           throw new FullSiteBuildFailure(INVENTED_PROJECT, inventedIssue);
         }
+      }
+
+      // Same shape, over images rather than words: a client whose brief had
+      // no photo and no project screenshot must get a site that says so
+      // honestly (no portrait, or a typographic card) rather than one
+      // wearing the template's own stand-in art as if it were theirs. This
+      // stays relevant even once every case study above is confirmed real,
+      // because the defect it catches is a specific stock image, not an
+      // invented name.
+      await phase('Checking for placeholder images');
+      let placeholderImageIssue = findPlaceholderImageIssue(
+        await collectBuiltSiteText(siteRoot),
+      );
+      if (placeholderImageIssue) {
+        await say('log', placeholderImageIssue);
+        await pass(
+          'Removing placeholder images',
+          withApproved(placeholderImageIssue),
+        );
+        await check();
+        placeholderImageIssue = findPlaceholderImageIssue(
+          await collectBuiltSiteText(siteRoot),
+        );
+      }
+      if (placeholderImageIssue) {
+        throw new FullSiteBuildFailure(
+          PLACEHOLDER_IMAGE_SHIPPED,
+          placeholderImageIssue,
+        );
       }
 
       await phase('Committing the site');
@@ -2634,6 +2699,27 @@ export class FullSiteBuildWorker {
         throw new FullSiteBuildFailure(
           PLACEHOLDER_COPY_SHIPPED,
           placeholderIssue,
+        );
+      }
+
+      // Same shape, over images: a change request is as paid-for as the
+      // first build, so it gets the same rule about honest gaps in content.
+      await phase('Checking for placeholder images');
+      let placeholderImageIssue = findPlaceholderImageIssue(
+        await collectBuiltSiteText(siteRoot),
+      );
+      if (placeholderImageIssue) {
+        await say('log', placeholderImageIssue);
+        await pass('Removing placeholder images', placeholderImageIssue);
+        await check();
+        placeholderImageIssue = findPlaceholderImageIssue(
+          await collectBuiltSiteText(siteRoot),
+        );
+      }
+      if (placeholderImageIssue) {
+        throw new FullSiteBuildFailure(
+          PLACEHOLDER_IMAGE_SHIPPED,
+          placeholderImageIssue,
         );
       }
 

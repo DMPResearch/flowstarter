@@ -142,7 +142,7 @@ vi.mock('@flowstarter/agentic-codegen', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@flowstarter/agentic-codegen')>()),
   PiSdkFlowstarterAgents: class {
     constructor(
-      readonly options: { usageSink?: (usage: AgentUsage) => void }
+      readonly options: { usageSink?: (usage: AgentUsage) => void },
     ) {}
     async editInline(request: Record<string, unknown>) {
       inlineEdit.calls.push(request);
@@ -390,7 +390,7 @@ function manifestOf(workspaceId: string): { files: Array<Row> } {
 
 function contentOf(workspaceId: string): string {
   const file = manifestOf(workspaceId).files.find(
-    (entry) => entry.path === 'src/content/site-labels.md'
+    (entry) => entry.path === 'src/content/site-labels.md',
   );
   return String(file?.content ?? '');
 }
@@ -426,7 +426,7 @@ describe('a workspace that is not yours', () => {
         () =>
           EDIT(
             post('/x', { targetId: LABEL_TARGET, instruction: 'warmer' }),
-            params(WORKSPACE_B)
+            params(WORKSPACE_B),
           ),
       ],
       [
@@ -438,7 +438,7 @@ describe('a workspace that is not yours', () => {
               originalContent: 'Operations consultancy',
               replacementContent: 'Anything at all',
             }),
-            params(WORKSPACE_B)
+            params(WORKSPACE_B),
           ),
       ],
       ['images:list', () => LIST_IMAGES(get('/x'), params(WORKSPACE_B))],
@@ -447,7 +447,7 @@ describe('a workspace that is not yours', () => {
         () =>
           SWAP_IMAGE(
             post('/x', { slotId: IMAGE_SLOT, assetId: ASSET_CONFIRMED }),
-            params(WORKSPACE_B)
+            params(WORKSPACE_B),
           ),
       ],
       ['revert', () => REVERT(post('/x', { version: 1 }), params(WORKSPACE_B))],
@@ -462,7 +462,7 @@ describe('a workspace that is not yours', () => {
         () =>
           RESPOND(
             post('/x', { decision: 'accept' }),
-            changeParams(WORKSPACE_B, CHANGE_REQUEST)
+            changeParams(WORKSPACE_B, CHANGE_REQUEST),
           ),
       ],
     ];
@@ -520,7 +520,7 @@ describe('policy, decided on the server', () => {
         targetId: 'src/components/Hero.astro#1',
         instruction: 'make the hero taller',
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(403);
     const body = await response.json();
@@ -538,7 +538,7 @@ describe('policy, decided on the server', () => {
         originalContent: ':root { --ink: #101014; }',
         replacementContent: 'a warmer ink',
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(403);
     expect(db.rows('site_versions')).toEqual([]);
@@ -549,7 +549,7 @@ describe('policy, decided on the server', () => {
     seedWorkspace('past_due');
     const response = await EDIT(
       post('/x', { targetId: LABEL_TARGET, instruction: 'warmer' }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(402);
     const body = await response.json();
@@ -567,7 +567,7 @@ describe('proposing a change', () => {
         targetId: LABEL_TARGET,
         instruction: 'name the strategy work too',
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(200);
     const body = await response.json();
@@ -598,12 +598,12 @@ describe('proposing a change', () => {
         actor: 'user_client_a',
         payload: {},
         created_at: new Date().toISOString(),
-      }))
+      })),
     );
 
     const response = await EDIT(
       post('/x', { targetId: LABEL_TARGET, instruction: 'one more' }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(429);
     const body = await response.json();
@@ -613,7 +613,7 @@ describe('proposing a change', () => {
     expect(
       db
         .rows('project_events')
-        .filter((row) => row.kind === 'site_edit_proposed')
+        .filter((row) => row.kind === 'site_edit_proposed'),
     ).toHaveLength(25);
   });
 
@@ -627,12 +627,12 @@ describe('proposing a change', () => {
         actor: 'user_client_a',
         payload: {},
         created_at: new Date().toISOString(),
-      }))
+      })),
     );
 
     const response = await EDIT(
       post('/x', { targetId: LABEL_TARGET, instruction: 'warmer' }),
-      params(WORKSPACE_CREDITS)
+      params(WORKSPACE_CREDITS),
     );
     expect(response.status).toBe(200);
     const body = await response.json();
@@ -656,12 +656,12 @@ describe('proposing a change', () => {
         actor: 'user_client_a',
         payload: {},
         created_at: new Date().toISOString(),
-      }))
+      })),
     );
 
     const response = await EDIT(
       post('/x', { targetId: LABEL_TARGET, instruction: 'one more' }),
-      params(WORKSPACE_CREDITS)
+      params(WORKSPACE_CREDITS),
     );
     expect(response.status).toBe(429);
     const body = await response.json();
@@ -669,7 +669,7 @@ describe('proposing a change', () => {
     // told the thing that is actually true rather than "come back tomorrow".
     expect(body.code).toBe('CREDITS_EXHAUSTED');
     expect(body.error).toMatch(
-      /You have used all 50 edits in your plan this month\./
+      /You have used all 50 edits in your plan this month\./,
     );
     expect(body.error).toMatch(/Your allowance resets on \d{1,2} \w+\./);
     expect(body.allowance.credits).toMatchObject({
@@ -683,14 +683,14 @@ describe('proposing a change', () => {
     expect(
       db
         .rows('project_events')
-        .filter((row) => row.workspace_id === WORKSPACE_CREDITS)
+        .filter((row) => row.workspace_id === WORKSPACE_CREDITS),
     ).toHaveLength(50);
   });
 
   it('refuses an instruction longer than the cap', async () => {
     const response = await EDIT(
       post('/x', { targetId: LABEL_TARGET, instruction: 'x'.repeat(5_000) }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(400);
     expect(inlineEdit.calls).toHaveLength(0);
@@ -705,7 +705,7 @@ describe('applying a change', () => {
         originalContent: 'Operations consultancy',
         replacementContent: 'Operations and strategy consultancy',
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(200);
     expect((await response.json()).version).toBe(2);
@@ -720,7 +720,7 @@ describe('applying a change', () => {
     // The artifact row — what the worker builds and the deploy path ships —
     // now mirrors the new version.
     expect(contentOf(WORKSPACE_A)).toContain(
-      'label: "Operations and strategy consultancy"'
+      'label: "Operations and strategy consultancy"',
     );
 
     const audit = db
@@ -740,7 +740,7 @@ describe('applying a change', () => {
         originalContent: 'Operations consultancy',
         replacementContent: 'Operations and strategy consultancy',
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
 
     // A second tab still holding the text from before the first apply.
@@ -750,13 +750,13 @@ describe('applying a change', () => {
         originalContent: 'Operations consultancy',
         replacementContent: 'Something entirely different',
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(409);
     expect((await response.json()).error).toMatch(/changed since you started/);
     // The losing write did not land.
     expect(contentOf(WORKSPACE_A)).toContain(
-      'label: "Operations and strategy consultancy"'
+      'label: "Operations and strategy consultancy"',
     );
     expect(db.rows('site_versions')).toHaveLength(2);
   });
@@ -768,7 +768,7 @@ describe('applying a change', () => {
         originalContent: 'Operations consultancy',
         replacementContent: '<img src=x onerror=alert(1)>',
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(400);
     expect(db.rows('site_versions')).toEqual([]);
@@ -785,15 +785,15 @@ describe('reverting', () => {
         originalContent: 'Operations consultancy',
         replacementContent: 'Operations and strategy consultancy',
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(contentOf(WORKSPACE_A)).toContain(
-      'label: "Operations and strategy consultancy"'
+      'label: "Operations and strategy consultancy"',
     );
 
     const response = await REVERT(
       post('/x', { version: 1 }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ version: 3, revertedTo: 1 });
@@ -821,7 +821,7 @@ describe('reverting', () => {
     ]);
     const response = await REVERT(
       post('/x', { version: 9 }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(404);
   });
@@ -857,7 +857,7 @@ describe('swapping a picture', () => {
     db.downloads.length = 0;
     const response = await SWAP_IMAGE(
       post('/x', { slotId: IMAGE_SLOT, assetId: ASSET_UNCONFIRMED }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(400);
     expect((await response.json()).code).toBe('RIGHTS_NOT_CONFIRMED');
@@ -881,7 +881,7 @@ describe('swapping a picture', () => {
         slotId: IMAGE_SLOT,
         assetId: '33333333-3333-4333-8333-333333333333',
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(404);
     expect(db.downloads).toEqual([]);
@@ -890,7 +890,7 @@ describe('swapping a picture', () => {
   it('puts a confirmed picture into the slot and versions the result', async () => {
     const response = await SWAP_IMAGE(
       post('/x', { slotId: IMAGE_SLOT, assetId: ASSET_CONFIRMED }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(200);
     const body = await response.json();
@@ -899,17 +899,17 @@ describe('swapping a picture', () => {
     expect(body.version).toBe(2);
 
     expect(contentOf(WORKSPACE_A)).toContain(
-      'image: "/flowstarter-media/hero-13.png"'
+      'image: "/flowstarter-media/hero-13.png"',
     );
     const files = manifestOf(WORKSPACE_A).files;
     const media = files.find(
-      (file) => file.path === 'public/flowstarter-media/hero-13.png'
+      (file) => file.path === 'public/flowstarter-media/hero-13.png',
     );
     expect(media?.encoding).toBe('base64');
     expect(
       db
         .rows('project_events')
-        .some((row) => row.kind === 'site_image_replaced')
+        .some((row) => row.kind === 'site_image_replaced'),
     ).toBe(true);
   });
 });
@@ -931,11 +931,11 @@ describe('serving the site into the frame', () => {
   it('serves a stored asset with the right content type', async () => {
     const response = await PREVIEW(
       get('/x'),
-      params(WORKSPACE_A, ['styles', 'site.css'])
+      params(WORKSPACE_A, ['styles', 'site.css']),
     );
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe(
-      'text/css; charset=utf-8'
+      'text/css; charset=utf-8',
     );
     expect(response.headers.get('x-content-type-options')).toBe('nosniff');
     expect(await response.text()).toContain('--ink');
@@ -945,11 +945,11 @@ describe('serving the site into the frame', () => {
     const response = await PREVIEW(get('/x'), params(WORKSPACE_A, []));
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe(
-      'text/html; charset=utf-8'
+      'text/html; charset=utf-8',
     );
     // Sandboxed into an opaque origin: the frame cannot touch the dashboard.
     expect(response.headers.get('content-security-policy')).toContain(
-      'sandbox allow-scripts'
+      'sandbox allow-scripts',
     );
     const html = await response.text();
     expect(html).toContain(`data-flowstarter-id="${LABEL_TARGET}"`);
@@ -959,7 +959,7 @@ describe('serving the site into the frame', () => {
   it('does not serve a file that is not in the manifest', async () => {
     const response = await PREVIEW(
       get('/x'),
-      params(WORKSPACE_A, ['not-a-file.txt'])
+      params(WORKSPACE_A, ['not-a-file.txt']),
     );
     expect(response.status).toBe(404);
   });
@@ -1011,7 +1011,7 @@ describe('publishing', () => {
     expect(
       db
         .rows('project_events')
-        .some((row) => row.kind === 'site_publish_requested')
+        .some((row) => row.kind === 'site_publish_requested'),
     ).toBe(true);
   });
 
@@ -1041,6 +1041,36 @@ describe('publishing', () => {
     const body = await response.json();
     expect(body.code).toBe('ASSET_NOT_BINARY');
     expect(body.paths).toEqual(['public/hero.png']);
+    // Nothing is stamped and no build is queued: the publish never happened.
+    expect(db.rows('flowstarter_agent_jobs')).toEqual([]);
+    expect(dispatched).toEqual([]);
+  });
+
+  /**
+   * The same incident, over images: a paid site shipped the template's own
+   * design-review guide graphic as the client's About-page photo. The
+   * manifest this route would build from is the last place that path is
+   * still ours to refuse, mirroring the `ASSET_NOT_BINARY` check above.
+   */
+  function withAPortraitPlaceholder(): void {
+    const artifact = db
+      .rows('flowstarter_project_artifacts')
+      .find((row) => row.workspace_id === WORKSPACE_A);
+    (artifact?.['preview_manifest'] as { files: Row[] }).files.push({
+      path: 'src/pages/about.astro',
+      content: '<img src="/images/about-me-photo.svg" alt="About" />',
+    });
+  }
+
+  it('refuses to publish a manifest that still carries a placeholder image', async () => {
+    hostThePublishedSite();
+    withAPortraitPlaceholder();
+
+    const response = await PUBLISH(post('/x'), params(WORKSPACE_A));
+    expect(response.status).toBe(422);
+    const body = await response.json();
+    expect(body.code).toBe('PLACEHOLDER_IMAGE_SHIPPED');
+    expect(body.paths).toEqual(['src/pages/about.astro']);
     // Nothing is stamped and no build is queued: the publish never happened.
     expect(db.rows('flowstarter_agent_jobs')).toEqual([]);
     expect(dispatched).toEqual([]);
@@ -1204,7 +1234,7 @@ describe('escalating a bigger change', () => {
       post('/x', {
         request: 'Add a page for group workshops with a booking calendar',
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(201);
     const body = await response.json();
@@ -1223,14 +1253,14 @@ describe('escalating a bigger change', () => {
   it('points a wording request back at the editor without filing anything', async () => {
     const response = await ESCALATE(
       post('/x', { request: 'Fix the typo in the about paragraph please' }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.classification).toBe('content');
     expect(body.escalated).toBe(false);
     expect(
-      db.rows('project_messages').some((row) => row.kind === 'change_request')
+      db.rows('project_messages').some((row) => row.kind === 'change_request'),
     ).toBe(false);
   });
 
@@ -1240,19 +1270,19 @@ describe('escalating a bigger change', () => {
         request: 'Fix the typo in the about paragraph please',
         force: true,
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(201);
     expect((await response.json()).escalated).toBe(true);
     expect(
-      db.rows('project_messages').some((row) => row.kind === 'change_request')
+      db.rows('project_messages').some((row) => row.kind === 'change_request'),
     ).toBe(true);
   });
 
   it('is 404 on a workspace that is not yours, and files nothing', async () => {
     const response = await ESCALATE(
       post('/x', { request: 'Add a booking page to this site' }),
-      params(WORKSPACE_B)
+      params(WORKSPACE_B),
     );
     expect(response.status).toBe(404);
     expect(db.rows('project_messages')).toHaveLength(0);
@@ -1263,7 +1293,7 @@ describe('escalating a bigger change', () => {
     seedWorkspace('past_due');
     const response = await ESCALATE(
       post('/x', { request: 'Add a booking page to this site' }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(402);
     const body = await response.json();
@@ -1289,7 +1319,7 @@ describe('a team member at a client editor', () => {
         () =>
           SWAP_IMAGE(
             post('/x', { slotId: IMAGE_SLOT, assetId: ASSET_CONFIRMED }),
-            params(WORKSPACE_A)
+            params(WORKSPACE_A),
           ),
       ],
       ['revert', () => REVERT(post('/x', { version: 1 }), params(WORKSPACE_A))],
@@ -1299,7 +1329,7 @@ describe('a team member at a client editor', () => {
         () =>
           EDIT(
             post('/x', { targetId: LABEL_TARGET, instruction: 'warmer' }),
-            params(WORKSPACE_A)
+            params(WORKSPACE_A),
           ),
       ],
     ];
@@ -1374,7 +1404,7 @@ describe('the picture swap, when it cannot happen', () => {
   it('asks for a slot and a file when the body names neither', async () => {
     const response = await SWAP_IMAGE(
       post('/x', { slotId: '', assetId: 'not-a-uuid' }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(400);
     expect((await response.json()).code).toBe('INVALID');
@@ -1401,7 +1431,7 @@ describe('the picture swap, when it cannot happen', () => {
         slotId: IMAGE_SLOT,
         assetId: '44444444-4444-4444-8444-444444444444',
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(500);
     expect((await response.json()).code).toBe('INTERNAL');
@@ -1425,7 +1455,7 @@ describe('the picture swap, when it cannot happen', () => {
         slotId: IMAGE_SLOT,
         assetId: '55555555-5555-4555-8555-555555555555',
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(404);
     expect((await response.json()).error).toBe('That file has no stored copy');
@@ -1435,7 +1465,7 @@ describe('the picture swap, when it cannot happen', () => {
     db.objects.delete(`tenant/${WORKSPACE_A}/assets/abc.png`);
     const response = await SWAP_IMAGE(
       post('/x', { slotId: IMAGE_SLOT, assetId: ASSET_CONFIRMED }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(404);
     expect((await response.json()).error).toBe('That file could not be read');
@@ -1448,7 +1478,7 @@ describe('the picture swap, when it cannot happen', () => {
         slotId: 'src/content/site-labels.md#999',
         assetId: ASSET_CONFIRMED,
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(404);
     expect((await response.json()).error).toMatch(/image slot is not part/);
@@ -1462,7 +1492,7 @@ describe('the picture swap, when it cannot happen', () => {
     db.objects.set(`tenant/${WORKSPACE_A}/assets/abc.png`, pngBytes(120, 80));
     const response = await SWAP_IMAGE(
       post('/x', { slotId: IMAGE_SLOT, assetId: ASSET_CONFIRMED }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(400);
     const body = await response.json();
@@ -1478,11 +1508,11 @@ describe('the picture swap, when it cannot happen', () => {
         assetId: ASSET_CONFIRMED,
         alt: 'The studio on Carr Lane',
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(200);
     expect(contentOf(WORKSPACE_A)).toContain(
-      'imageAlt: "The studio on Carr Lane"'
+      'imageAlt: "The studio on Carr Lane"',
     );
   });
 });
@@ -1497,7 +1527,7 @@ describe('reverting, when the request does not make sense', () => {
         headers: { 'Content-Type': 'application/json' },
         body: 'version three please',
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(400);
     expect((await response.json()).error).toBe('Send a JSON body');
@@ -1517,16 +1547,16 @@ describe('reverting, when the request does not make sense', () => {
         originalContent: 'Operations consultancy',
         replacementContent: 'Operations and strategy consultancy',
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
 
     const response = await REVERT(
       post('/x', { version: 2 }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(400);
     expect((await response.json()).error).toBe(
-      'That is already the current version.'
+      'That is already the current version.',
     );
     // No fourth version was appended for a change that was not one.
     expect(db.rows('site_versions')).toHaveLength(2);
@@ -1547,7 +1577,7 @@ describe('what an edit costs and when it cannot run', () => {
 
     const response = await EDIT(
       post('/x', { targetId: LABEL_TARGET, instruction: 'warmer' }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(200);
 
@@ -1571,7 +1601,7 @@ describe('what an edit costs and when it cannot run', () => {
           targetId: LABEL_TARGET,
           instruction: `change number ${attempt}`,
         }),
-        params(WORKSPACE_BURST)
+        params(WORKSPACE_BURST),
       );
       attempts.push(response.status);
       if (response.status === 429) {
@@ -1594,7 +1624,7 @@ describe('what an edit costs and when it cannot run', () => {
     delete process.env.OPENROUTER_API_KEY;
     const response = await EDIT(
       post('/x', { targetId: LABEL_TARGET, instruction: 'warmer' }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(503);
     const body = await response.json();
@@ -1605,7 +1635,7 @@ describe('what an edit costs and when it cannot run', () => {
     expect(
       db
         .rows('project_events')
-        .filter((row) => row.kind === 'site_edit_proposed')
+        .filter((row) => row.kind === 'site_edit_proposed'),
     ).toHaveLength(1);
   });
 
@@ -1615,7 +1645,7 @@ describe('what an edit costs and when it cannot run', () => {
     try {
       const response = await EDIT(
         post('/x', { targetId: LABEL_TARGET, instruction: 'warmer' }),
-        params(WORKSPACE_A)
+        params(WORKSPACE_A),
       );
       expect(response.status).toBe(200);
       expect(inlineEdit.calls).toHaveLength(1);
@@ -1626,11 +1656,11 @@ describe('what an edit costs and when it cannot run', () => {
 
   it('does not leak the provider’s error text when a run fails', async () => {
     inlineEdit.failure = new Error(
-      'openrouter 401: key sk-or-v1-abcdef is invalid'
+      'openrouter 401: key sk-or-v1-abcdef is invalid',
     );
     const response = await EDIT(
       post('/x', { targetId: LABEL_TARGET, instruction: 'warmer' }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
     expect(response.status).toBe(500);
     const body = await response.json();
@@ -1647,7 +1677,7 @@ describe('what an edit costs and when it cannot run', () => {
 
 describe('publishing when the build cannot be started', () => {
   function hostThePublishedSite(
-    deployAgentUrl: string | null = 'https://agent.test'
+    deployAgentUrl: string | null = 'https://agent.test',
   ): void {
     db.seed('hosting_servers', [
       { id: 'host-1', deploy_agent_url: deployAgentUrl },
@@ -1738,7 +1768,7 @@ describe('publishing when the build cannot be started', () => {
         originalContent: 'Operations consultancy',
         replacementContent: 'Operations and strategy consultancy',
       }),
-      params(WORKSPACE_A)
+      params(WORKSPACE_A),
     );
 
     const body = await (await PUBLISH(post('/x'), params(WORKSPACE_A))).json();
@@ -1782,11 +1812,11 @@ describe('serving a manifest that has been built', () => {
     withABuiltIndex();
     const response = await PREVIEW(
       get('/x'),
-      params(WORKSPACE_A, ['index.html'])
+      params(WORKSPACE_A, ['index.html']),
     );
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe(
-      'text/html; charset=utf-8'
+      'text/html; charset=utf-8',
     );
     const html = await response.text();
     expect(html).toContain('Decisions that hold');
@@ -1816,7 +1846,7 @@ describe('serving a manifest that has been built', () => {
 
     const response = await PREVIEW(
       get('/x'),
-      params(WORKSPACE_A, ['flowstarter-media', 'hero-13.png'])
+      params(WORKSPACE_A, ['flowstarter-media', 'hero-13.png']),
     );
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('image/png');
@@ -1861,7 +1891,7 @@ function seedChangeRequest(overrides: Row = {}): Row {
 function respond(
   changeId: string,
   body?: unknown,
-  origin?: string
+  origin?: string,
 ): NextRequest {
   return new NextRequest('http://localhost/x', {
     method: 'POST',
@@ -1929,7 +1959,7 @@ describe('answering a quote', () => {
     db.queries.length = 0;
     const response = await RESPOND(
       respond(CHANGE_OTHER_TENANT, { decision: 'accept' }),
-      changeParams(WORKSPACE_B, CHANGE_OTHER_TENANT)
+      changeParams(WORKSPACE_B, CHANGE_OTHER_TENANT),
     );
     expect(response.status).toBe(404);
     expect(dataQueries()).toEqual([]);
@@ -1940,7 +1970,7 @@ describe('answering a quote', () => {
   it('refuses an id that is not an id', async () => {
     const response = await RESPOND(
       respond('nope', { decision: 'accept' }),
-      changeParams(WORKSPACE_A, 'nope')
+      changeParams(WORKSPACE_A, 'nope'),
     );
     expect(response.status).toBe(400);
     expect((await response.json()).code).toBe('INVALID');
@@ -1950,7 +1980,7 @@ describe('answering a quote', () => {
     seedChangeRequest();
     const response = await RESPOND(
       respond(CHANGE_QUOTED, { decision: 'maybe' }),
-      changeParams(WORKSPACE_A, CHANGE_QUOTED)
+      changeParams(WORKSPACE_A, CHANGE_QUOTED),
     );
     expect(response.status).toBe(400);
     expect((await response.json()).error).toMatch(/accept or decline/);
@@ -1963,7 +1993,7 @@ describe('answering a quote', () => {
     seedChangeRequest({ id: CHANGE_OTHER_TENANT, workspace_id: WORKSPACE_B });
     const response = await RESPOND(
       respond(CHANGE_OTHER_TENANT, { decision: 'accept' }),
-      changeParams(WORKSPACE_A, CHANGE_OTHER_TENANT)
+      changeParams(WORKSPACE_A, CHANGE_OTHER_TENANT),
     );
     expect(response.status).toBe(404);
     expect(checkout.calls).toHaveLength(0);
@@ -1974,7 +2004,7 @@ describe('answering a quote', () => {
     seedChangeRequest({ status: 'requested', quote_minor: null });
     const response = await RESPOND(
       respond(CHANGE_QUOTED, { decision: 'accept' }),
-      changeParams(WORKSPACE_A, CHANGE_QUOTED)
+      changeParams(WORKSPACE_A, CHANGE_QUOTED),
     );
     expect(response.status).toBe(409);
     const body = await response.json();
@@ -1987,7 +2017,7 @@ describe('answering a quote', () => {
     seedChangeRequest({ status: 'paid', paid_at: '2026-09-02T09:00:00.000Z' });
     const response = await RESPOND(
       respond(CHANGE_QUOTED, { decision: 'decline' }),
-      changeParams(WORKSPACE_A, CHANGE_QUOTED)
+      changeParams(WORKSPACE_A, CHANGE_QUOTED),
     );
     expect(response.status).toBe(409);
     expect((await response.json()).error).toBe('This request is already paid.');
@@ -1997,7 +2027,7 @@ describe('answering a quote', () => {
     seedChangeRequest();
     const response = await RESPOND(
       respond(CHANGE_QUOTED, { decision: 'decline' }),
-      changeParams(WORKSPACE_A, CHANGE_QUOTED)
+      changeParams(WORKSPACE_A, CHANGE_QUOTED),
     );
     expect(response.status).toBe(200);
     expect((await response.json()).request).toMatchObject({
@@ -2022,7 +2052,7 @@ describe('answering a quote', () => {
     });
     const response = await RESPOND(
       respond(CHANGE_QUOTED, { decision: 'decline' }),
-      changeParams(WORKSPACE_A, CHANGE_QUOTED)
+      changeParams(WORKSPACE_A, CHANGE_QUOTED),
     );
     expect(response.status).toBe(409);
     expect((await response.json()).error).toMatch(/cannot be declined here/);
@@ -2033,7 +2063,7 @@ describe('answering a quote', () => {
     seedChangeRequest({ quote_minor: 0 });
     const response = await RESPOND(
       respond(CHANGE_QUOTED, { decision: 'accept' }),
-      changeParams(WORKSPACE_A, CHANGE_QUOTED)
+      changeParams(WORKSPACE_A, CHANGE_QUOTED),
     );
     expect(response.status).toBe(200);
     expect((await response.json()).request).toMatchObject({
@@ -2052,7 +2082,7 @@ describe('answering a quote', () => {
     seedChangeRequest({ quote_minor: 0, status: 'accepted' });
     const response = await RESPOND(
       respond(CHANGE_QUOTED, { decision: 'accept' }),
-      changeParams(WORKSPACE_A, CHANGE_QUOTED)
+      changeParams(WORKSPACE_A, CHANGE_QUOTED),
     );
     expect(response.status).toBe(409);
     expect((await response.json()).code).toBe('CHANGE_REQUEST_TRANSITION');
@@ -2067,7 +2097,7 @@ describe('answering a quote', () => {
 
     const response = await RESPOND(
       respond(CHANGE_QUOTED, { decision: 'accept' }),
-      changeParams(WORKSPACE_A, CHANGE_QUOTED)
+      changeParams(WORKSPACE_A, CHANGE_QUOTED),
     );
     expect(response.status).toBe(201);
     expect(await response.json()).toEqual({
@@ -2086,7 +2116,7 @@ describe('answering a quote', () => {
     try {
       await RESPOND(
         respond(CHANGE_QUOTED, { decision: 'accept' }, 'https://attacker.test'),
-        changeParams(WORKSPACE_A, CHANGE_QUOTED)
+        changeParams(WORKSPACE_A, CHANGE_QUOTED),
       );
       expect(checkout.calls[0]).toMatchObject({
         origin: 'https://app.flowstarter.test',
@@ -2101,7 +2131,7 @@ describe('answering a quote', () => {
     delete process.env.NEXT_PUBLIC_SITE_URL;
     await RESPOND(
       respond(CHANGE_QUOTED, { decision: 'accept' }, 'https://studio.example/'),
-      changeParams(WORKSPACE_A, CHANGE_QUOTED)
+      changeParams(WORKSPACE_A, CHANGE_QUOTED),
     );
     expect(checkout.calls[0]).toMatchObject({
       origin: 'https://studio.example',
@@ -2114,7 +2144,7 @@ describe('answering a quote', () => {
     try {
       await RESPOND(
         respond(CHANGE_QUOTED, { decision: 'accept' }),
-        changeParams(WORKSPACE_A, CHANGE_QUOTED)
+        changeParams(WORKSPACE_A, CHANGE_QUOTED),
       );
       expect(checkout.calls[0]).toMatchObject({
         origin: 'http://localhost:3000',
@@ -2132,7 +2162,7 @@ describe('answering a quote', () => {
     try {
       await RESPOND(
         respond(CHANGE_QUOTED, { decision: 'accept' }),
-        changeParams(WORKSPACE_A, CHANGE_QUOTED)
+        changeParams(WORKSPACE_A, CHANGE_QUOTED),
       );
       expect(checkout.calls[0]).toMatchObject({ origin: 'http://localhost' });
     } finally {
@@ -2146,7 +2176,7 @@ describe('answering a quote', () => {
     try {
       await RESPOND(
         respond(CHANGE_QUOTED, { decision: 'accept' }),
-        changeParams(WORKSPACE_A, CHANGE_QUOTED)
+        changeParams(WORKSPACE_A, CHANGE_QUOTED),
       );
       expect(checkout.calls[0]).toMatchObject({ origin: 'http://localhost' });
     } finally {
@@ -2159,11 +2189,11 @@ describe('answering a quote', () => {
     checkout.failure = new ChangeRequestError(
       'Payments are not configured.',
       'STRIPE_UNCONFIGURED',
-      503
+      503,
     );
     const response = await RESPOND(
       respond(CHANGE_QUOTED, { decision: 'accept' }),
-      changeParams(WORKSPACE_A, CHANGE_QUOTED)
+      changeParams(WORKSPACE_A, CHANGE_QUOTED),
     );
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({
@@ -2184,7 +2214,7 @@ describe('answering a quote', () => {
     });
     const response = await RESPOND(
       respond(CHANGE_QUOTED, { decision: 'decline' }),
-      changeParams(WORKSPACE_A, CHANGE_QUOTED)
+      changeParams(WORKSPACE_A, CHANGE_QUOTED),
     );
     expect(response.status).toBe(409);
     const body = await response.json();
@@ -2201,7 +2231,7 @@ describe('answering a quote', () => {
         headers: { 'Content-Type': 'application/json' },
         body: 'yes please',
       }),
-      changeParams(WORKSPACE_A, CHANGE_QUOTED)
+      changeParams(WORKSPACE_A, CHANGE_QUOTED),
     );
     expect(response.status).toBe(400);
     expect((await response.json()).error).toBe('Send a JSON body');

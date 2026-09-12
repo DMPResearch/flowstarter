@@ -28,6 +28,7 @@ import type { SiteValidator } from '@flowstarter/agentic-codegen';
 import {
   describeAssetProblems,
   describeCalPreviewIssue,
+  describePlaceholderImageIssue,
   describePreviewTeaserIssue,
 } from '@flowstarter/agentic-codegen';
 import {
@@ -37,6 +38,7 @@ import {
 } from './config';
 import { findCalPreviewInDir } from './output-cal-preview';
 import { findNonBinaryAssetsInDir } from './output-assets';
+import { findPlaceholderImagesInDir } from './output-placeholder-images';
 import { findPreviewTeaserInDir } from './output-teaser';
 
 const execFileAsync = promisify(execFile);
@@ -469,6 +471,18 @@ export class CommandSiteValidator implements SiteValidator {
     if (calPreview.length > 0) {
       const message = describeCalPreviewIssue(calPreview);
       this.options.onOutput?.('cal-preview-gate', [message]);
+      throw new SiteValidationError(message);
+    }
+
+    // The gate of record for placeholder images: the agent-side repair pass
+    // in `workflows.ts` can only see the site's text and so can miss a
+    // renamed copy or a fallback the agent never touched. This reads the
+    // actual bytes in `dist/`, so a portrait or work-thumb placeholder is
+    // caught by hash even if nothing referencing it survived as a string.
+    const placeholderImages = await findPlaceholderImagesInDir(output);
+    if (placeholderImages.length > 0) {
+      const message = describePlaceholderImageIssue(placeholderImages);
+      this.options.onOutput?.('placeholder-image-gate', [message]);
       throw new SiteValidationError(message);
     }
   }

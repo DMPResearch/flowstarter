@@ -14,7 +14,7 @@ const { title, category, color, imageSrc, imageScale = 1, href = '#', className 
 
 <a href={href} class={`ds-case-card ${className}`.trim()}>
   <div class="ds-case-card__image" style={imageSrc ? undefined : `background-color: ${color};`}>
-    {imageSrc && (
+    {imageSrc ? (
       <img
         class="ds-case-card__media"
         src={imageSrc}
@@ -22,6 +22,15 @@ const { title, category, color, imageSrc, imageScale = 1, href = '#', className 
         loading="lazy"
         style={`transform: scale(${imageScale});`}
       />
+    ) : (
+      // No screenshot for this project — never fill the tile with the
+      // template's own stock or abstract art standing in for real work.
+      // A typographic tile (the project's own name and category) is honest
+      // about there being nothing to show yet.
+      <div class="ds-case-card__typographic" aria-hidden="true">
+        <span class="ds-case-card__typographic-title">{title}</span>
+        <span class="ds-case-card__typographic-category">{category}</span>
+      </div>
     )}
   </div>
   <div class="ds-case-card__info">
@@ -58,6 +67,33 @@ const { title, category, color, imageSrc, imageScale = 1, href = '#', className 
     object-position: center;
     display: block;
     transform-origin: center;
+  }
+
+  .ds-case-card__typographic {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 8px;
+    padding: 24px;
+  }
+
+  .ds-case-card__typographic-title {
+    font-size: var(--fs-h4, 1.25rem);
+    font-weight: var(--fw-semibold);
+    text-transform: uppercase;
+    color: var(--text-on-dark, currentColor);
+  }
+
+  .ds-case-card__typographic-category {
+    font-size: var(--fs-xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-on-dark, currentColor);
+    opacity: 0.72;
   }
 
   .ds-case-card__info {

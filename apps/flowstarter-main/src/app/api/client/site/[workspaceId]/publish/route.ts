@@ -28,7 +28,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   ASSET_NOT_BINARY,
   describeAssetProblems,
+  describePlaceholderImageIssue,
   findNonBinaryAssets,
+  findPlaceholderImageReferencesInFiles,
+  PLACEHOLDER_IMAGE_SHIPPED,
 } from '@flowstarter/agentic-codegen';
 import {
   markVersionPublished,
@@ -61,7 +64,7 @@ type PublishMode = 'no_host' | 'dry_run' | 'rebuild_queued';
 
 export async function POST(
   _request: NextRequest,
-  { params }: { params: Promise<{ workspaceId: string }> }
+  { params }: { params: Promise<{ workspaceId: string }> },
 ) {
   const { workspaceId } = await params;
   const opened = await openSiteEditorContext(workspaceId);
@@ -71,7 +74,7 @@ export async function POST(
   const refusal = refuseUnlessAllowed(
     context,
     'content',
-    'inline_content_agent'
+    'inline_content_agent',
   );
   if (refusal) return refusal;
 
@@ -85,7 +88,7 @@ export async function POST(
   const assetProblems = findNonBinaryAssets(context.site.files);
   if (assetProblems.length > 0) {
     console.error(
-      `[site-publish] ${workspaceId}: ${describeAssetProblems(assetProblems)}`
+      `[site-publish] ${workspaceId}: ${describeAssetProblems(assetProblems)}`,
     );
     return NextResponse.json(
       {
@@ -95,7 +98,33 @@ export async function POST(
         code: ASSET_NOT_BINARY,
         paths: assetProblems.map((problem) => problem.path).slice(0, 20),
       },
-      { status: 422 }
+      { status: 422 },
+    );
+  }
+
+  // Same rule, over images: a brief with no portrait or no project
+  // screenshot must publish a site that says so honestly, not one wearing
+  // the template's own stand-in art (a design-review guide graphic, a stock
+  // screenshot of someone else's product) as if it were the client's own.
+  // The worker's build validator runs the same check on the compiled output
+  // by content hash; this one runs before a job is even queued.
+  const placeholderImages = findPlaceholderImageReferencesInFiles(
+    context.site.files,
+  );
+  if (placeholderImages.length > 0) {
+    console.error(
+      `[site-publish] ${workspaceId}: ${describePlaceholderImageIssue(placeholderImages)}`,
+    );
+    return NextResponse.json(
+      {
+        error:
+          'This site cannot be published: it still shows a template ' +
+          'placeholder image instead of the client’s own content. The ' +
+          'build team has been given the details.',
+        code: PLACEHOLDER_IMAGE_SHIPPED,
+        paths: placeholderImages.map((finding) => finding.path).slice(0, 20),
+      },
+      { status: 422 },
     );
   }
 
@@ -133,7 +162,7 @@ export async function POST(
 
     const hasHost = Boolean(workspace?.hosting_server_id);
     const agentConfigured = Boolean(
-      deployAgentUrl && process.env.DEPLOY_AGENT_SHARED_SECRET?.trim()
+      deployAgentUrl && process.env.DEPLOY_AGENT_SHARED_SECRET?.trim(),
     );
     const hasBuild = Boolean(findBuiltIndex(context.site.files));
 
@@ -162,7 +191,7 @@ export async function POST(
       } catch (error) {
         console.warn(
           '[site-publish] could not nudge the build worker:',
-          error instanceof Error ? error.message : error
+          error instanceof Error ? error.message : error,
         );
       }
     }
@@ -171,8 +200,8 @@ export async function POST(
     const mode: PublishMode = canRebuild
       ? 'rebuild_queued'
       : !hasHost
-      ? 'no_host'
-      : 'dry_run';
+        ? 'no_host'
+        : 'dry_run';
 
     const detail: Record<PublishMode, string> = {
       no_host:

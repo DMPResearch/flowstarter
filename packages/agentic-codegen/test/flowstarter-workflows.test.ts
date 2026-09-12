@@ -842,6 +842,7 @@ describe('Flowstarter preview-to-build orchestration', () => {
       'Checking the build',
       'Checking the site matches the brief',
       'Checking for placeholder copy',
+      'Checking for placeholder images',
       'Committing the site',
       'Publishing for review',
       'Handed to human QA',
