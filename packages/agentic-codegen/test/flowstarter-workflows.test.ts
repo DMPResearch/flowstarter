@@ -30,6 +30,11 @@ import {
   type SiteValidator,
   type TemplateLibrary,
 } from '../src/index';
+import {
+  BRIEF_INPUT_VERSION,
+  mergeBriefIntoIntake,
+  type BriefInput,
+} from '../src/flowstarter/brief-input';
 
 const temporaryDirectories: string[] = [];
 
@@ -2921,5 +2926,284 @@ describe('CHANGE_REQUEST_BUILD: the paid change that used to ship nothing', () =
 
     expect(calls).toEqual(['store:failed:CHANGE_REQUEST_NOT_APPLIED']);
     expect(calls).not.toContain('publisher:deploy');
+  });
+});
+
+/**
+ * The brief, all the way to the agent and the gate.
+ *
+ * This is the leg the 2026-09-12 review found missing: `workspace_briefs` was
+ * written by the client, the payload carried nothing, `job.intake.projects`
+ * was always absent, and the invented-project gate therefore never ran on any
+ * build. These tests run the real `FullSiteBuildWorker` over a job that
+ * carries a brief and assert the two things that make the fix worth having --
+ * the agent is told the client's real material by name and path, and the gate
+ * refuses a heading the brief never mentioned.
+ */
+describe('the in-depth brief reaches generation', () => {
+  const PROJECT_ID = '0f4e1088-8d8f-4f18-83b1-406cc292b23c';
+
+  function briefFor(): BriefInput {
+    return {
+      version: BRIEF_INPUT_VERSION,
+      composedAt: '2026-09-12T09:00:00.000Z',
+      reason: 'brief_ready',
+      offer: 'Calm, practical therapy for founders, in fifty minute sessions.',
+      projects: [
+        {
+          name: 'Ereno',
+          line: 'A calm inbox for freelance invoices.',
+          link: 'https://ereno.example',
+          screenshotAssetIds: [],
+          screenshots: [
+            {
+              assetId: 'c2f0f3a1-9b2e-4a7c-8d1f-6b5a4c3d2e10',
+              publicPath: '/flowstarter-media/brief-c2f0f3a1.png',
+              manifestPath: 'public/flowstarter-media/brief-c2f0f3a1.png',
+              role: 'project-screenshot',
+              caption: 'The Ereno inbox',
+              mime: 'image/png',
+              width: 1600,
+              height: 1000,
+            },
+          ],
+        },
+      ],
+      noProjects: false,
+      designReferences: [],
+      photos: [],
+      portrait: {
+        assetId: 'b104b1e0-6d4c-4a3e-9230-13cc17b426a0',
+        publicPath: '/flowstarter-media/brief-b104b1e0.jpg',
+        manifestPath: 'public/flowstarter-media/brief-b104b1e0.jpg',
+        role: 'portrait',
+        caption: 'Ana at her desk',
+        mime: 'image/jpeg',
+        width: 1600,
+        height: 1600,
+      },
+    };
+  }
+
+  function workerFor(input: {
+    brief: BriefInput | null;
+    agents: PiSdkFlowstarterAgents;
+    calls: string[];
+    events: string[];
+  }) {
+    const store: FullSiteBuildJobStore = {
+      claim: async (jobId) => ({
+        id: jobId,
+        projectId: PROJECT_ID,
+        kind: 'FULL_SITE_BUILD',
+        projectState: ProjectState.DEPOSIT_PAID,
+        intake: mergeBriefIntoIntake(validIntake(), input.brief),
+        brandConfig: validBrandConfig(),
+        approvedPreviewFiles: [
+          {
+            path: 'src/content/site.md',
+            content: 'Approved preview',
+            type: 'file',
+          },
+        ],
+        requiredIntegrations: [],
+        ...(input.brief ? { briefInput: input.brief } : {}),
+      }),
+      appendEvent: async (_jobId, event) => {
+        input.events.push(event.body);
+      },
+      markAgentWorking: async () => {
+        input.calls.push('store:agents-working');
+      },
+      markRebuildStarted: async () => {},
+      markRebuilt: async () => {},
+      markHumanQa: async () => {
+        input.calls.push('store:human-qa');
+      },
+      markFailed: async (_jobId, error) => {
+        input.calls.push(`store:failed:${error.code}`);
+      },
+    };
+    const worktrees = {
+      discard: async () => {},
+      create: async () => {
+        const root = await mkdtemp(join(tmpdir(), 'flowstarter-brief-'));
+        temporaryDirectories.push(root);
+        return { branch: `client/flowstarter-${PROJECT_ID}`, path: root };
+      },
+      commit: async () => 'abc123def456',
+    } as unknown as SafeGitWorktreeManager;
+    const pullRequests: PullRequestPublisher = {
+      create: async () => ({
+        pullRequestUrl: 'https://example.com/pr',
+        stagingUrl: 'https://example.com/site',
+      }),
+    };
+    const validator: SiteValidator = { validate: async () => {} };
+    return new FullSiteBuildWorker(
+      store,
+      worktrees,
+      input.agents,
+      validator,
+      pullRequests,
+    );
+  }
+
+  it('names every project and every asset path in the prompt the agent is given', async () => {
+    const calls: string[] = [];
+    const events: string[] = [];
+    const prompts: Array<Record<string, unknown>> = [];
+    const agents = {
+      buildFullSite: async (given: Record<string, unknown>) => {
+        prompts.push(given);
+        return { summary: 'ok', changedPaths: ['src/pages/index.astro'] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    await workerFor({ brief: briefFor(), agents, calls, events }).run('job-1');
+
+    expect(calls).toContain('store:human-qa');
+    const first = prompts[0] as {
+      briefDigest?: string;
+      intake: BusinessIntakePayload;
+    };
+    expect(first.briefDigest).toContain('Ereno');
+    expect(first.briefDigest).toContain('A calm inbox for freelance invoices.');
+    expect(first.briefDigest).toContain(
+      '/flowstarter-media/brief-c2f0f3a1.png',
+    );
+    expect(first.briefDigest).toContain(
+      '/flowstarter-media/brief-b104b1e0.jpg',
+    );
+    // And on the intake itself, which is what the page-set rule and the gate
+    // read; the digest is the same facts said out loud.
+    expect(first.intake.projects?.map((project) => project.name)).toEqual([
+      'Ereno',
+    ]);
+    expect(first.intake.offer).toContain('fifty minute sessions');
+    // The operator board is told what the build is made from, before it runs.
+    expect(events.some((body) => body.includes("client's brief"))).toBe(true);
+    expect(events.some((body) => body.includes('Ereno'))).toBe(true);
+  });
+
+  it('fails the build when the work section names a project the brief never mentioned', async () => {
+    const calls: string[] = [];
+    const events: string[] = [];
+    const agents = {
+      buildFullSite: async (given: { workspaceRoot: string }) => {
+        // What the 2026-09-12 site actually did: a real project, plus a case
+        // study for a client who does not exist.
+        await mkdir(join(given.workspaceRoot, 'dist', 'work'), {
+          recursive: true,
+        });
+        await writeFile(
+          join(given.workspaceRoot, 'dist', 'work', 'index.html'),
+          '<h2>Selected work</h2><h2>Ereno</h2><h2>Northwind Bank</h2>',
+          'utf8',
+        );
+        return { summary: 'ok', changedPaths: ['src/pages/index.astro'] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    await expect(
+      workerFor({ brief: briefFor(), agents, calls, events }).run('job-1'),
+    ).rejects.toThrow(/Northwind Bank/);
+    expect(calls).toContain('store:failed:INVENTED_PROJECT');
+    expect(calls).not.toContain('store:human-qa');
+  });
+
+  it('builds from the intake exactly as before for a workspace with no brief', async () => {
+    const calls: string[] = [];
+    const events: string[] = [];
+    const prompts: Array<Record<string, unknown>> = [];
+    const agents = {
+      buildFullSite: async (given: { workspaceRoot: string }) => {
+        prompts.push(given);
+        // The same invented heading as above. With no brief nobody asked this
+        // client about their work, so the gate has no opinion and the build
+        // ships -- which is what every workspace taken before the dashboard
+        // existed must keep doing.
+        await mkdir(join(given.workspaceRoot, 'dist', 'work'), {
+          recursive: true,
+        });
+        await writeFile(
+          join(given.workspaceRoot, 'dist', 'work', 'index.html'),
+          '<h2>Northwind Bank</h2>',
+          'utf8',
+        );
+        return { summary: 'ok', changedPaths: ['src/pages/index.astro'] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    await workerFor({ brief: null, agents, calls, events }).run('job-1');
+
+    expect(calls).toContain('store:human-qa');
+    expect(prompts[0]?.['briefDigest']).toBeUndefined();
+    expect(
+      (prompts[0] as { intake: BusinessIntakePayload }).intake.projects,
+    ).toBeUndefined();
+  });
+
+  /**
+   * "I have no past work to show" is an answer, and it buys a different site.
+   *
+   * Two rules act on it and they are layered deliberately: the page-set rule
+   * refuses to keep a work page at all, and the invented-project gate refuses
+   * a work section the agent put somewhere else anyway. Both are exercised
+   * here, because either one alone leaves a way for a fabricated case study to
+   * reach a paying client's site.
+   */
+  function noWorkBrief(): BriefInput {
+    return { ...briefFor(), projects: [], noProjects: true };
+  }
+
+  it('drops the work page outright when the client has no past work', async () => {
+    const calls: string[] = [];
+    const events: string[] = [];
+    const agents = {
+      buildFullSite: async (given: { workspaceRoot: string }) => {
+        // The agent builds a work page anyway. It must not ship.
+        await mkdir(join(given.workspaceRoot, 'dist', 'work'), {
+          recursive: true,
+        });
+        await writeFile(
+          join(given.workspaceRoot, 'dist', 'work', 'index.html'),
+          '<h2>Selected work</h2>',
+          'utf8',
+        );
+        return { summary: 'ok', changedPaths: ['src/pages/index.astro'] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    await expect(
+      workerFor({ brief: noWorkBrief(), agents, calls, events }).run('job-1'),
+    ).rejects.toThrow(/PAGE_BUDGET_EXCEEDED[\s\S]*work/);
+    expect(calls).toContain('store:failed:PAGE_BUDGET_EXCEEDED');
+    expect(calls).not.toContain('store:human-qa');
+  });
+
+  it('refuses an invented project in the home page work section when the client has none', async () => {
+    const calls: string[] = [];
+    const events: string[] = [];
+    const agents = {
+      buildFullSite: async (given: { workspaceRoot: string }) => {
+        // No /work route, so the page budget is satisfied -- and a fabricated
+        // case study tucked into the home page instead, which is exactly the
+        // shape the page-set rule alone cannot catch.
+        await mkdir(join(given.workspaceRoot, 'dist'), { recursive: true });
+        await writeFile(
+          join(given.workspaceRoot, 'dist', 'index.html'),
+          '<section id="work"><h2>Selected work</h2>' +
+            '<h2>Northwind Bank</h2></section>',
+          'utf8',
+        );
+        return { summary: 'ok', changedPaths: ['src/pages/index.astro'] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    await expect(
+      workerFor({ brief: noWorkBrief(), agents, calls, events }).run('job-1'),
+    ).rejects.toThrow(/Remove the work section entirely/);
+    expect(calls).toContain('store:failed:INVENTED_PROJECT');
   });
 });

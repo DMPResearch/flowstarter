@@ -24,6 +24,7 @@
 import {
   QUEUED_JOB_STALL_MS,
   RUNNING_JOB_STALL_MS,
+  WAITING_BRIEF_STATUS,
 } from '@/lib/flowstarter/pipeline/board';
 
 /**
@@ -110,6 +111,14 @@ export function clientBuildSignal(
   // on its client is waiting from the moment it is queued, and there is no
   // number of hours after which that becomes a stall. It stops being true when
   // the brief is finished, not when a clock runs out.
+  // Two ways to know, and the persisted one wins because it needs no second
+  // query: the worker parks the row on `waiting_brief` the first time it
+  // refuses to claim it. `briefReady === false` is the caller's own read of
+  // the brief and still matters for the window between the deposit landing
+  // and a worker first looking at the job.
+  if (job.status === WAITING_BRIEF_STATUS) {
+    return { jobId: job.id, attention: 'waiting_on_brief' };
+  }
   if (job.status === 'queued' && context.briefReady === false) {
     return { jobId: job.id, attention: 'waiting_on_brief' };
   }

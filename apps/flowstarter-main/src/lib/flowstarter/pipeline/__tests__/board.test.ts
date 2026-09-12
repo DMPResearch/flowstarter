@@ -321,6 +321,79 @@ describe('row reducers', () => {
   });
 });
 
+/**
+ * A build parked on its client's brief.
+ *
+ * Before it had a status of its own it sat at `queued` and aged past
+ * `QUEUED_JOB_STALL_MS`, at which point the board told an operator that
+ * dispatch to the worker had probably been dropped. It had not: the deposit
+ * was settled, the job existed, and the one thing it needed was a form only
+ * the client can fill in. An alarm about our own system for a situation only
+ * the client can end is worse than no signal, because it teaches an operator
+ * to ignore the board.
+ */
+describe('waiting on the client brief', () => {
+  const parked = () =>
+    job({
+      id: 'j',
+      workspace_id: 'w',
+      status: 'waiting_brief',
+      // Long past every threshold. There is no number of hours after which
+      // waiting for a client becomes a stall.
+      created_at: ago(20 * 24 * 60 * 60_000),
+      run_after: ago(20 * 24 * 60 * 60_000),
+    });
+
+  it('is never a stall, however long it has been waiting', () => {
+    expect(
+      stallReasonsFor({
+        state: ProjectState.DEPOSIT_PAID,
+        timeInStateMs: 60_000,
+        job: parked(),
+        now: NOW,
+      })
+    ).toEqual([]);
+  });
+
+  it('is visible on the card, with the sentence an operator would say', () => {
+    const card = toPipelineCard({
+      workspace: workspace({ id: 'w' }),
+      job: parked(),
+      stateSince: ago(60_000),
+      now: NOW,
+    });
+    expect(card.stalled).toBe(false);
+    expect(card.waitingOn).toBe('brief');
+    expect(card.waitingReason).toContain('brief');
+    expect(card.waitingReason).toContain('starts by itself');
+  });
+
+  it('says nothing about a brief on a project that is not waiting for one', () => {
+    const card = toPipelineCard({
+      workspace: workspace({ id: 'w' }),
+      job: job({ id: 'j', workspace_id: 'w', status: 'running' }),
+      stateSince: ago(60_000),
+      now: NOW,
+    });
+    expect(card.waitingOn).toBeNull();
+    expect(card.waitingReason).toBeNull();
+  });
+
+  it('still reports the project-state budget, which is about us and not the client', () => {
+    // A deposit that has been in DEPOSIT_PAID for days is worth an operator's
+    // attention even while the brief is outstanding -- that is the moment to
+    // pick up the phone, or to override.
+    const reasons = stallReasonsFor({
+      state: ProjectState.DEPOSIT_PAID,
+      timeInStateMs: 20 * 24 * 60 * 60_000,
+      job: parked(),
+      now: NOW,
+    });
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toMatch(/Deposit/i);
+  });
+});
+
 describe('the card an operator actually reads', () => {
   it('names a project whose fields were never filled in', () => {
     const card = toPipelineCard({

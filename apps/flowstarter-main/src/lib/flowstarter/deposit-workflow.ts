@@ -7,8 +7,10 @@ import { loadFunnelPreview } from '@/lib/hosting/funnel-previews';
 import type { Json } from '@/lib/database.types';
 import { depositReceivedEmail } from '@/lib/email-templates/client-notices';
 import { formatInvoiceAmount } from '@/lib/billing/balance-invoice-email';
+import { loadBriefBuildInput } from './brief-build-input';
 import { notifyClientOnce } from './client-notifications';
 import { depositBuildPayload, derivePreviewIntent } from './preview-intent';
+import type { BriefInput } from '@flowstarter/agentic-codegen/src/flowstarter/brief-input';
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -24,6 +26,21 @@ const DEPOSIT_READY_STATES = [
   ProjectState.PREVIEW_READY,
   ProjectState.DEPOSIT_PAID,
 ];
+
+/**
+ * The status a FULL_SITE_BUILD is parked in while it waits for its client.
+ *
+ * The same literal the build worker writes (`apps/build-worker/src/job-store.ts`).
+ * It is duplicated for the same reason `briefAllowsBuild` is: the worker is a
+ * separate deployable with no dependency on this app, and the column they
+ * share is one string in one table. Both readers are named in each other's
+ * comments so a change to either is a change somebody has to make twice on
+ * purpose rather than once by accident.
+ */
+export const WAITING_BRIEF = 'waiting_brief';
+
+/** Statuses that mean a build for this workspace is already going to happen. */
+const LIVE_BUILD_STATUSES = ['queued', 'running'];
 
 /**
  * Verifies the signed Stripe deposit event against the server-owned quote,
@@ -302,32 +319,58 @@ async function approvedPreviewForWorkspace(
  * job per Stripe event — so a retried webhook converges on the same job rather
  * than starting a second build.
  */
-async function enqueueBuildAndAdvance(input: {
+export async function enqueueBuildAndAdvance(input: {
   supabase: SupabaseServiceClient;
   workspaceId: string;
-  eventId: string;
+  eventId?: string;
   paymentIntentId?: string;
   source: 'payment_intent' | 'deposit_invoice';
   workspaceUpdate: Record<string, unknown>;
+  /**
+   * What is asking. `deposit_paid` is the money landing and is the only
+   * trigger that moves the lifecycle; `brief_ready` is the client finishing
+   * their brief (or an operator waiving it) for a deposit that was settled
+   * minutes or days ago, and it must not rewrite `deposit_paid_at`.
+   */
+  trigger?: 'deposit_paid' | 'brief_ready';
+  /**
+   * The composed brief, when the caller has already read it. Omitted, this
+   * reads it itself, which is what makes the deposit path carry a brief that
+   * an operator overrode before the payment landed.
+   */
+  briefInput?: BriefInput | null;
 }): Promise<DepositBuildEnqueueResult> {
   const { supabase, workspaceId } = input;
+  const trigger = input.trigger ?? 'deposit_paid';
   const now = new Date().toISOString();
 
   const approved = await approvedPreviewForWorkspace(supabase, workspaceId);
+  const briefInput =
+    input.briefInput !== undefined
+      ? input.briefInput
+      : (await loadBriefBuildInput(workspaceId)).briefInput;
+
+  // A build with no brief behind it is parked rather than queued, and the
+  // column says so. The alternative -- what shipped -- was a `queued` row the
+  // worker silently refused on every poll: correct, invisible, and after
+  // fifteen minutes reported to the operator as a dropped dispatch.
+  const status = briefInput ? 'queued' : WAITING_BRIEF;
+  const payload = depositBuildPayload({
+    source: input.source,
+    claimedPreviewId: approved.claimedPreviewId,
+    previewIntent: approved.previewIntent,
+    briefInput,
+  }) as unknown as Json;
 
   const insert = await supabase
     .from('flowstarter_agent_jobs')
     .insert({
       workspace_id: workspaceId,
       kind: 'FULL_SITE_BUILD',
-      status: 'queued',
-      stripe_event_id: input.eventId,
+      status,
+      stripe_event_id: input.eventId ?? null,
       stripe_payment_intent_id: input.paymentIntentId ?? null,
-      payload: depositBuildPayload({
-        source: input.source,
-        claimedPreviewId: approved.claimedPreviewId,
-        previewIntent: approved.previewIntent,
-      }) as unknown as Json,
+      payload,
       updated_at: now,
     })
     .select('id, status')
@@ -352,26 +395,35 @@ async function enqueueBuildAndAdvance(input: {
     ) {
       return { workspaceId, jobId, duplicate: true };
     }
+    // The unique index did its job: there is one FULL_SITE_BUILD per workspace
+    // and this is it. What is left to do is give it the brief it did not have
+    // when it was created, and let it out of the waiting room. Both are
+    // guarded so a job a worker claimed a moment ago is never dragged back.
+    if (briefInput) {
+      await resumeWaitingBuild({ supabase, jobId, payload, now });
+    }
   } else if (insert.error || !insert.data) {
     throw insert.error ?? new Error('Could not enqueue full site build');
   } else {
     jobId = insert.data.id;
   }
 
-  const stateUpdate = await supabase
-    .from('workspaces')
-    .update({
-      project_state: ProjectState.DEPOSIT_PAID,
-      deposit_status: 'paid',
-      deposit_paid_at: now,
-      outstanding_payment: false,
-      ...input.workspaceUpdate,
-    })
-    .eq('id', workspaceId)
-    .in('project_state', DEPOSIT_READY_STATES)
-    .select('id')
-    .single();
-  if (stateUpdate.error) throw stateUpdate.error;
+  if (trigger === 'deposit_paid') {
+    const stateUpdate = await supabase
+      .from('workspaces')
+      .update({
+        project_state: ProjectState.DEPOSIT_PAID,
+        deposit_status: 'paid',
+        deposit_paid_at: now,
+        outstanding_payment: false,
+        ...input.workspaceUpdate,
+      })
+      .eq('id', workspaceId)
+      .in('project_state', DEPOSIT_READY_STATES)
+      .select('id')
+      .single();
+    if (stateUpdate.error) throw stateUpdate.error;
+  }
 
   // The ledger row is the commitment; dispatch is only a nudge to start it
   // sooner. Letting a failed nudge throw would fail the webhook *after* the
@@ -382,6 +434,166 @@ async function enqueueBuildAndAdvance(input: {
   // did not.
   await dispatchBuildJob({ supabase, workspaceId, jobId });
   return { workspaceId, jobId, duplicate };
+}
+
+/**
+ * Gives a parked build its brief and lets it out of the waiting room.
+ *
+ * Two writes, both conditional, in this order:
+ *
+ *   The payload is refreshed for any job that is not finished, because a job
+ *   that is `queued` or `failed` will still be claimed and should be claimed
+ *   with the brief on it. `payload` is replaced rather than merged: it is
+ *   composed from the same three sources every time (the deposit's own terms,
+ *   the approved preview, the brief), so a merge would only preserve a stale
+ *   copy of something this call has just recomputed.
+ *
+ *   The status moves only from `waiting_brief`, and only to `queued`. The
+ *   `.eq('status', WAITING_BRIEF)` is the whole safety of it: a job a worker
+ *   claimed a millisecond ago is `running`, matches nothing, and is left
+ *   exactly where it is. A job already `queued` needs no move.
+ */
+async function resumeWaitingBuild(input: {
+  supabase: SupabaseServiceClient;
+  jobId: string;
+  payload: Json;
+  now: string;
+}): Promise<void> {
+  const { supabase, jobId, payload, now } = input;
+  const { error: payloadError } = await supabase
+    .from('flowstarter_agent_jobs')
+    .update({ payload, updated_at: now })
+    .eq('id', jobId)
+    .in('status', [WAITING_BRIEF, 'queued', 'failed']);
+  if (payloadError) throw payloadError;
+
+  const { error: statusError } = await supabase
+    .from('flowstarter_agent_jobs')
+    .update({ status: 'queued', updated_at: now })
+    .eq('id', jobId)
+    .eq('status', WAITING_BRIEF);
+  if (statusError) throw statusError;
+}
+
+/** What a readiness dispatch did, for the caller's log and its tests. */
+export type BriefReadyOutcome =
+  | 'enqueued'
+  | 'resumed'
+  | 'already_building'
+  | 'skipped';
+
+export interface BriefReadyEnqueueResult {
+  outcome: BriefReadyOutcome;
+  jobId: string | null;
+  /** Plain words for the log. Empty when the build was started or resumed. */
+  reason: string;
+}
+
+/**
+ * The client finished their brief (or an operator waived it): start the build.
+ *
+ * This is the half of the deposit-to-build flow that was missing. The deposit
+ * enqueues a job before the brief exists, the worker refuses to claim it until
+ * the brief is ready, and until this function nothing anywhere turned "the
+ * brief is now ready" back into "so run it". A client could pay, fill in
+ * everything that was asked of them, and wait forever.
+ *
+ * It is idempotent on two keys and neither of them is a timestamp:
+ *
+ *   - the workspace, through `flowstarter_agent_jobs_one_full_build`, which is
+ *     a unique index and therefore cannot be raced; and
+ *   - the deposit, checked below, because a brief completed on a workspace
+ *     whose deposit never settled must not start a paid build.
+ *
+ * Calling it on every save of a complete brief is correct and cheap: a build
+ * already queued, running or finished is recognised and nothing happens.
+ *
+ * Never throws. Its two callers are a client's form POST and an operator's
+ * override, and neither should fail because a build could not be nudged --
+ * the ledger row is the commitment and the worker's own reconciliation sweep
+ * will find it within the minute either way.
+ */
+export async function enqueueBuildOnBriefReady(input: {
+  workspaceId: string;
+}): Promise<BriefReadyEnqueueResult> {
+  const { workspaceId } = input;
+  const nothing = (reason: string): BriefReadyEnqueueResult => ({
+    outcome: 'skipped',
+    jobId: null,
+    reason,
+  });
+  if (!UUID.test(workspaceId)) return nothing('invalid workspace id');
+
+  try {
+    const { briefInput, reason } = await loadBriefBuildInput(workspaceId);
+    if (!briefInput) return nothing(reason || 'brief is not ready');
+
+    const supabase = createSupabaseServiceRoleClient();
+    const { data: workspace, error: workspaceError } = await supabase
+      .from('workspaces')
+      .select('id, project_state, deposit_status')
+      .eq('id', workspaceId)
+      .maybeSingle();
+    if (workspaceError) throw workspaceError;
+    if (!workspace) return nothing('workspace does not exist');
+
+    // The deposit half of the key. A brief is a form anybody with dashboard
+    // access can complete; the money is what makes a build owed.
+    if (workspace.deposit_status !== 'paid') {
+      return nothing('deposit is not paid');
+    }
+    // DEPOSIT_PAID and nothing else. AGENTS_WORKING means a build is already
+    // in flight with whatever payload it claimed, and restarting it from here
+    // would either duplicate the work or fight the worker for the row; HUMAN_QA
+    // and beyond mean the site exists, and changing it is a change request.
+    if (workspace.project_state !== ProjectState.DEPOSIT_PAID) {
+      return nothing(`project is in ${workspace.project_state}`);
+    }
+
+    const { data: existing, error: existingError } = await supabase
+      .from('flowstarter_agent_jobs')
+      .select('id, status')
+      .eq('workspace_id', workspaceId)
+      .eq('kind', 'FULL_SITE_BUILD')
+      .maybeSingle();
+    if (existingError) throw existingError;
+    if (existing && LIVE_BUILD_STATUSES.includes(existing.status)) {
+      // Already going to happen. The payload is still refreshed, so a build
+      // that has not been claimed yet picks up the brief the client just
+      // finished rather than the empty one it was queued with.
+      await enqueueBuildAndAdvance({
+        supabase,
+        workspaceId,
+        source: 'payment_intent',
+        workspaceUpdate: {},
+        trigger: 'brief_ready',
+        briefInput,
+      });
+      return { outcome: 'already_building', jobId: existing.id, reason: '' };
+    }
+
+    const enqueued = await enqueueBuildAndAdvance({
+      supabase,
+      workspaceId,
+      source: 'payment_intent',
+      workspaceUpdate: {},
+      trigger: 'brief_ready',
+      briefInput,
+    });
+    return {
+      outcome: enqueued.duplicate ? 'resumed' : 'enqueued',
+      jobId: enqueued.jobId,
+      reason: '',
+    };
+  } catch (error) {
+    const detail =
+      error instanceof Error ? error.message : 'unknown enqueue error';
+    console.error(
+      `[Flowstarter] the brief for workspace ${workspaceId} is ready but its ` +
+        `build could not be started: ${detail}`
+    );
+    return nothing(detail);
+  }
 }
 
 /**

@@ -29,6 +29,13 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 
 /**
+ * The ledger status a FULL_SITE_BUILD sits in while its client finishes their
+ * brief. The same literal the build worker writes and `deposit-workflow.ts`
+ * enqueues with; see the comment on `WAITING_BRIEF` there.
+ */
+export const WAITING_BRIEF_STATUS = 'waiting_brief';
+
+/**
  * A queued job that has not started within this long is not "waiting its
  * turn", it is unattended. Fifteen minutes is generous for a worker that
  * normally picks up in seconds, and short enough that an operator notices
@@ -127,8 +134,29 @@ export interface PipelineCard {
   stalled: boolean;
   /** Plain-language reasons, in the order an operator should read them. */
   stallReasons: string[];
+  /**
+   * Why this project's build has not started, when the answer is "it is
+   * waiting for somebody who is not us".
+   *
+   * Deliberately not a stall reason. A FULL_SITE_BUILD parked on
+   * `waiting_brief` is healthy: the deposit is settled, the job exists, and
+   * the one thing it needs is a form only the client can fill in. Reported as
+   * a stall it is an alarm about our own system for a situation only the
+   * client can end, and the support conversation it starts ends with us
+   * explaining the board was wrong. Reported as nothing at all it is a build
+   * an operator cannot see, which is what shipped. So it is its own field,
+   * with the sentence an operator would say to the client.
+   */
+  waitingOn: 'brief' | null;
+  waitingReason: string | null;
   createdAt: string;
 }
+
+/** What the board says about a build parked on its client's brief. */
+export const WAITING_BRIEF_REASON =
+  'Waiting on the client brief. The deposit is settled and the build is ' +
+  'booked; it starts by itself the moment the brief is complete, or when an ' +
+  'operator overrides it.';
 
 export interface PipelineColumn {
   state: ProjectState;
@@ -207,7 +235,11 @@ export function stallReasonsFor(input: {
   const { job, now } = input;
 
   if (job) {
-    if (job.status === 'queued') {
+    if (job.status === WAITING_BRIEF_STATUS) {
+      // Nothing. See `waitingOn` on PipelineCard: this is a wait, not a stall,
+      // and it has no clock. It stops being true when the client finishes
+      // their brief, not when a threshold passes.
+    } else if (job.status === 'queued') {
       // `run_after` is the earliest the worker should touch it — a backoff
       // window is not a stall, so measure from there and not from creation.
       const due = Math.max(
@@ -273,6 +305,7 @@ export function toPipelineCard(input: {
   const state = asProjectState(workspace.project_state) ?? ProjectState.INTAKE;
   const timeInStateMs = Math.max(0, now - Date.parse(input.stateSince));
   const stallReasons = stallReasonsFor({ state, timeInStateMs, job, now });
+  const waitingOnBrief = job?.status === WAITING_BRIEF_STATUS;
 
   return {
     workspaceId: workspace.id,
@@ -293,6 +326,8 @@ export function toPipelineCard(input: {
     latestJob: job ? summarizeJob(job, now) : null,
     stalled: stallReasons.length > 0,
     stallReasons,
+    waitingOn: waitingOnBrief ? 'brief' : null,
+    waitingReason: waitingOnBrief ? WAITING_BRIEF_REASON : null,
     createdAt: workspace.created_at,
   };
 }

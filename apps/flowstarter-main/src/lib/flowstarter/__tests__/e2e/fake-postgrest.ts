@@ -91,6 +91,13 @@ export interface FakePostgrest {
 
 /** `eq.PREVIEW_READY` / `in.("A","B")` -> a predicate over one column. */
 function parseFilter(column: string, raw: string): (row: Row) => boolean {
+  // `not.is.null`, which is how `loadUsableAssets` asks for the rights-
+  // confirmed rows and therefore how a brief reaches a build. Negation is
+  // expressed by wrapping, so every operator below gets it for free.
+  if (raw.startsWith('not.')) {
+    const inner = parseFilter(column, raw.slice(4));
+    return (row) => !inner(row);
+  }
   if (raw.startsWith('eq.')) {
     const expected = raw.slice(3);
     return (row) => {

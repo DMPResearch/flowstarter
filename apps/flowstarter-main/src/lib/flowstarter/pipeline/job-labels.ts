@@ -331,7 +331,12 @@ export function boardColumnFor(job: {
 }): BoardColumnId {
   if (job.status === 'failed' || job.status === 'canceled') return 'attention';
   if (job.status === 'succeeded') return 'done';
-  if (job.status === 'queued') return 'waiting';
+  // A build parked on its client's brief belongs beside the queued ones: it is
+  // waiting, it is not in trouble, and putting it in `attention` (which is
+  // where an unrecognised status goes) would make every unfinished brief look
+  // like a broken build.
+  if (job.status === 'queued' || job.status === 'waiting_brief')
+    return 'waiting';
   if (job.status !== 'running') {
     // A status this app does not know is schema drift, and the operator is the
     // one who should find out about it.

@@ -283,7 +283,15 @@ interface RecordedQuery {
   gtCalls: Array<[string, unknown]>;
 }
 
-function makeScriptedClient(script: Record<string, Scripted[]>) {
+function makeScriptedClient(
+  script: Record<string, Scripted[]>,
+  /**
+   * Bytes the storage bucket answers with, per object path. Only the brief and
+   * change-request asset paths reach it; anything else answers "not found",
+   * which is the case a build has to survive rather than fail on.
+   */
+  objects: Record<string, Buffer> = {},
+) {
   const calls: RecordedQuery[] = [];
   const remaining: Record<string, Scripted[]> = Object.fromEntries(
     Object.entries(script).map(([table, responses]) => [table, [...responses]]),
@@ -374,7 +382,44 @@ function makeScriptedClient(script: Record<string, Scripted[]>) {
     },
   };
 
-  return { client: client as unknown as SupabaseClient, calls };
+  const withStorage = {
+    ...client,
+    storage: {
+      from: () => ({
+        download: async (path: string) => {
+          const bytes = objects[path];
+          if (!bytes) return { data: null, error: { message: 'not found' } };
+          return {
+            data: {
+              arrayBuffer: async () =>
+                bytes.buffer.slice(
+                  bytes.byteOffset,
+                  bytes.byteOffset + bytes.byteLength,
+                ),
+            },
+            error: null,
+          };
+        },
+      }),
+    },
+  };
+
+  return { client: withStorage as unknown as SupabaseClient, calls };
+}
+
+/**
+ * A real PNG at 400x400, so `assertSafeUploadedImage` reads honest bytes and
+ * clears the minimum edge it demands. Same fixture as
+ * `change-request-assets.test.ts`.
+ */
+function pngBytes(): Buffer {
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  png.writeUInt32BE(400, 16);
+  png.writeUInt32BE(400, 20);
+  return png;
 }
 
 const dbError = (message: string) => ({ name: 'PostgrestError', message });
@@ -837,10 +882,10 @@ describe('SupabaseFullSiteBuildJobStore', () => {
      * board is told once rather than once per poll.
      */
     describe('waiting on the client brief', () => {
-      it('does not claim a full build whose client has no brief row yet, and leaves the row queued', async () => {
+      it('parks a full build whose client has no brief row yet, without spending an attempt', async () => {
         const row = ledgerRow();
         const { client, calls } = makeScriptedClient({
-          flowstarter_agent_jobs: [{ data: row }],
+          flowstarter_agent_jobs: [{ data: row }, { error: null }],
           // No row at all: the client has not opened the brief page. Not an
           // error, and specifically not a reason to fail the job.
           workspace_briefs: [{ data: null, error: null }],
@@ -851,15 +896,20 @@ describe('SupabaseFullSiteBuildJobStore', () => {
 
         await expect(store.claim(row.id)).resolves.toBeNull();
 
-        // The row is untouched: no compare-and-set, so `status` is still
-        // `queued` and `attempt_count` is still whatever it was. A gate that
-        // spent an attempt per poll would exhaust the budget of a build that
-        // has nothing wrong with it.
-        expect(
-          calls.filter(
-            (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
-          ),
-        ).toHaveLength(0);
+        // Exactly one write, and it is the status: `waiting_brief`, which is
+        // what makes this visible on the board and findable by the sweep.
+        // `attempt_count` is deliberately absent from it -- a gate that spent
+        // an attempt per poll would exhaust the budget of a build that has
+        // nothing wrong with it -- and the update is guarded on the status
+        // that was read, so a job somebody else claimed is left alone.
+        const parked = calls.filter(
+          (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+        );
+        expect(parked).toHaveLength(1);
+        expect(parked[0]?.values).toMatchObject({ status: 'waiting_brief' });
+        expect(parked[0]?.values).not.toHaveProperty('attempt_count');
+        expect(parked[0]?.eqCalls).toContainEqual(['id', row.id]);
+        expect(parked[0]?.eqCalls).toContainEqual(['status', 'queued']);
         expect(calls.filter((c) => c.table === 'workspaces')).toHaveLength(0);
         expect(
           calls.filter((c) => c.table === 'flowstarter_project_artifacts'),
@@ -1792,5 +1842,301 @@ describe('CHANGE_REQUEST_BUILD on the ledger', () => {
         ledgerRow({ kind: 'SITE_REBUILD', payload: changePayload() }),
       ),
     ).toBeNull();
+  });
+});
+
+/**
+ * The brief on its way into the build, and the sweep that finds a job nobody
+ * dispatched.
+ *
+ * Both halves of the 2026-09-12 defect live here. The payload carried nothing
+ * the client wrote after paying, so `intake.projects` was always absent and
+ * the invented-project gate never ran; and the end of a `waiting_brief` wait
+ * reached nobody, because the only thing that ever asked this worker to look
+ * at a job was a dispatch at deposit time that had already been refused.
+ */
+describe('the client brief on a claimed build', () => {
+  const PORTRAIT_ID = 'b104b1e0-6d4c-4a3e-9230-13cc17b426a0';
+  const SHOT_ID = 'c2f0f3a1-9b2e-4a7c-8d1f-6b5a4c3d2e10';
+  const PORTRAIT_PATH = 'public/flowstarter-media/brief-b104b1e0.jpg';
+  const SHOT_PATH = 'public/flowstarter-media/brief-c2f0f3a1.png';
+
+  function briefPayload() {
+    return {
+      trigger: 'deposit_paid',
+      briefInput: {
+        version: 1,
+        composedAt: '2026-09-12T09:30:00.000Z',
+        reason: 'brief_ready',
+        offer: 'Calm, plain-language bookkeeping for founders.',
+        projects: [
+          {
+            name: 'Ereno',
+            line: 'A calm inbox for freelance invoices.',
+            link: 'https://ereno.example',
+            screenshotAssetIds: [SHOT_ID],
+            screenshots: [
+              {
+                assetId: SHOT_ID,
+                publicPath: '/flowstarter-media/brief-c2f0f3a1.png',
+                manifestPath: SHOT_PATH,
+                caption: 'The Ereno inbox',
+                mime: 'image/png',
+                width: 1600,
+                height: 1000,
+              },
+            ],
+          },
+        ],
+        noProjects: false,
+        designReferences: [],
+        photos: [],
+        portrait: {
+          assetId: PORTRAIT_ID,
+          publicPath: '/flowstarter-media/brief-b104b1e0.jpg',
+          manifestPath: PORTRAIT_PATH,
+          caption: 'Ana at her desk',
+          mime: 'image/jpeg',
+          width: 1600,
+          height: 1600,
+        },
+      },
+    };
+  }
+
+  function assetRows(rights: { portrait: boolean; shot: boolean }) {
+    return [
+      {
+        id: PORTRAIT_ID,
+        storage_path: `tenant/${WORKSPACE_ID}/assets/portrait.jpg`,
+        rights_confirmed_at: rights.portrait
+          ? '2026-09-12T09:00:00.000Z'
+          : null,
+      },
+      {
+        id: SHOT_ID,
+        storage_path: `tenant/${WORKSPACE_ID}/assets/shot.png`,
+        rights_confirmed_at: rights.shot ? '2026-09-12T09:00:00.000Z' : null,
+      },
+    ];
+  }
+
+  function scriptFor(rows: Array<Record<string, unknown>>) {
+    return {
+      flowstarter_agent_jobs: [
+        { data: ledgerRow({ payload: briefPayload() }) },
+        { data: { id: 'job-1' } },
+      ],
+      workspace_briefs: [readyBrief()],
+      workspaces: [
+        {
+          data: {
+            id: WORKSPACE_ID,
+            project_state: ProjectState.DEPOSIT_PAID,
+            cal_com_url: null,
+          },
+        },
+      ],
+      flowstarter_project_artifacts: [{ data: artifacts() }],
+      assets: [{ data: rows }],
+      flowstarter_agent_job_events: [
+        { data: { workspace_id: WORKSPACE_ID } },
+        { error: null },
+      ],
+    };
+  }
+
+  it('merges the brief into the intake and puts the files on disk', async () => {
+    const { client } = makeScriptedClient(
+      scriptFor(assetRows({ portrait: true, shot: true })),
+      {
+        [`tenant/${WORKSPACE_ID}/assets/portrait.jpg`]: pngBytes(),
+        [`tenant/${WORKSPACE_ID}/assets/shot.png`]: pngBytes(),
+      },
+    );
+    const store = new SupabaseFullSiteBuildJobStore(client, { maxAttempts: 3 });
+
+    const job = await store.claim('4f9d5bf2-1c4a-4a2f-9d4a-4c0f0a7c2f11');
+
+    // The whole point: the rules downstream read these off the intake.
+    expect(job?.intake.offer).toContain('plain-language bookkeeping');
+    expect(job?.intake.projects?.map((project) => project.name)).toEqual([
+      'Ereno',
+    ]);
+    expect(job?.intake.photos?.[0]?.kind).toBe('portrait');
+    // And the bytes are seeded beside the approved preview, at the exact paths
+    // the prompt will name.
+    const paths = job?.approvedPreviewFiles.map((file) => file.path) ?? [];
+    expect(paths).toContain('src/content/site.md');
+    expect(paths).toContain(PORTRAIT_PATH);
+    expect(paths).toContain(SHOT_PATH);
+    const portrait = job?.approvedPreviewFiles.find(
+      (file) => file.path === PORTRAIT_PATH,
+    );
+    expect(portrait?.encoding).toBe('base64');
+    expect(job?.briefInput?.projects[0]?.screenshots).toHaveLength(1);
+  });
+
+  it('never publishes a file whose rights are no longer confirmed, and stops naming its path', async () => {
+    const { client, calls } = makeScriptedClient(
+      // The client withdrew the portrait's rights after the payload was
+      // composed. Rights are a statement somebody can take back, and this is
+      // the last moment before those bytes are on a public website.
+      scriptFor(assetRows({ portrait: false, shot: true })),
+      {
+        [`tenant/${WORKSPACE_ID}/assets/portrait.jpg`]: pngBytes(),
+        [`tenant/${WORKSPACE_ID}/assets/shot.png`]: pngBytes(),
+      },
+    );
+    const store = new SupabaseFullSiteBuildJobStore(client, { maxAttempts: 3 });
+
+    const job = await store.claim('4f9d5bf2-1c4a-4a2f-9d4a-4c0f0a7c2f11');
+
+    const paths = job?.approvedPreviewFiles.map((file) => file.path) ?? [];
+    expect(paths).not.toContain(PORTRAIT_PATH);
+    expect(paths).toContain(SHOT_PATH);
+    // And the brief the prompt is written from no longer mentions it, so the
+    // agent is never told to place a picture that is not there.
+    expect(job?.briefInput?.portrait).toBeNull();
+    // The client is owed an answer for the missing photograph, on the job's
+    // own timeline, before the build starts.
+    const note = calls.find(
+      (c) => c.table === 'flowstarter_agent_job_events' && c.op === 'insert',
+    );
+    expect(String((note?.values as { body?: string })?.body)).toContain(
+      'could not be used',
+    );
+    // The asset read is tenant scoped, like every other read here.
+    const assetRead = calls.find((c) => c.table === 'assets');
+    expect(assetRead?.eqCalls).toContainEqual(['workspace_id', WORKSPACE_ID]);
+  });
+
+  it('leaves the intake untouched for a workspace with no brief on its payload', async () => {
+    const { client } = makeScriptedClient({
+      flowstarter_agent_jobs: [
+        { data: ledgerRow() },
+        { data: { id: 'job-1' } },
+      ],
+      workspace_briefs: [readyBrief({ ready_at: null, override_at: 'now' })],
+      workspaces: [
+        {
+          data: {
+            id: WORKSPACE_ID,
+            project_state: ProjectState.DEPOSIT_PAID,
+            cal_com_url: null,
+          },
+        },
+      ],
+      flowstarter_project_artifacts: [{ data: artifacts() }],
+    });
+    const store = new SupabaseFullSiteBuildJobStore(client, { maxAttempts: 3 });
+
+    const job = await store.claim('4f9d5bf2-1c4a-4a2f-9d4a-4c0f0a7c2f11');
+
+    // An operator-created project, or any workspace that predates the brief
+    // page: `projects` stays absent, which is what keeps the gate silent and
+    // the build behaving exactly as it did.
+    expect(job?.intake.projects).toBeUndefined();
+    expect(job?.briefInput).toBeUndefined();
+    expect(job?.approvedPreviewFiles.map((file) => file.path)).toEqual([
+      'src/content/site.md',
+    ]);
+  });
+});
+
+describe('readyForClaim: the jobs nobody dispatched', () => {
+  const JOB_A = '4f9d5bf2-1c4a-4a2f-9d4a-4c0f0a7c2f11';
+  const JOB_B = '5a8e6cf3-2d5b-4b30-8e5b-5d1f1b8d3f22';
+
+  function sweepRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: JOB_A,
+      workspace_id: WORKSPACE_ID,
+      kind: 'FULL_SITE_BUILD',
+      status: 'queued',
+      attempt_count: 0,
+      run_after: '2020-01-01T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('returns a queued job that is due', async () => {
+    const { client } = makeScriptedClient({
+      flowstarter_agent_jobs: [{ data: [sweepRow()] }],
+    });
+    const store = new SupabaseFullSiteBuildJobStore(client, { maxAttempts: 3 });
+    await expect(store.readyForClaim(25)).resolves.toEqual([JOB_A]);
+  });
+
+  it('leaves a queued job alone until its backoff window has passed', async () => {
+    const { client } = makeScriptedClient({
+      flowstarter_agent_jobs: [
+        { data: [sweepRow({ run_after: '2999-01-01T00:00:00.000Z' })] },
+      ],
+    });
+    const store = new SupabaseFullSiteBuildJobStore(client, { maxAttempts: 3 });
+    await expect(store.readyForClaim(25)).resolves.toEqual([]);
+  });
+
+  it('leaves a job that has spent its attempt budget', async () => {
+    const { client } = makeScriptedClient({
+      flowstarter_agent_jobs: [{ data: [sweepRow({ attempt_count: 3 })] }],
+    });
+    const store = new SupabaseFullSiteBuildJobStore(client, { maxAttempts: 3 });
+    await expect(store.readyForClaim(25)).resolves.toEqual([]);
+  });
+
+  it('promotes a parked job whose client finished their brief while nothing was listening', async () => {
+    const { client, calls } = makeScriptedClient({
+      flowstarter_agent_jobs: [
+        { data: [sweepRow({ status: 'waiting_brief' })] },
+        { data: { id: JOB_A } },
+      ],
+      workspace_briefs: [readyBrief()],
+    });
+    const store = new SupabaseFullSiteBuildJobStore(client, { maxAttempts: 3 });
+
+    await expect(store.readyForClaim(25)).resolves.toEqual([JOB_A]);
+
+    // Promotion is a compare-and-set on the status that was read, so of two
+    // workers sweeping at once exactly one takes the job.
+    const promote = calls.find(
+      (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+    );
+    expect(promote?.values).toMatchObject({ status: 'queued' });
+    expect(promote?.eqCalls).toContainEqual(['status', 'waiting_brief']);
+    // And the brief read is tenant scoped.
+    const briefRead = calls.find((c) => c.table === 'workspace_briefs');
+    expect(briefRead?.eqCalls).toContainEqual(['workspace_id', WORKSPACE_ID]);
+  });
+
+  it('leaves a parked job parked while the brief is still unfinished', async () => {
+    const { client, calls } = makeScriptedClient({
+      flowstarter_agent_jobs: [
+        { data: [sweepRow({ status: 'waiting_brief' })] },
+      ],
+      workspace_briefs: [{ data: null, error: null }],
+    });
+    const store = new SupabaseFullSiteBuildJobStore(client, { maxAttempts: 3 });
+
+    await expect(store.readyForClaim(25)).resolves.toEqual([]);
+    expect(
+      calls.filter(
+        (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('does not hand back a job another worker promoted first', async () => {
+    const { client } = makeScriptedClient({
+      flowstarter_agent_jobs: [
+        { data: [sweepRow({ id: JOB_B, status: 'waiting_brief' })] },
+        // The guarded update matched nothing: somebody else got there.
+        { data: null },
+      ],
+      workspace_briefs: [readyBrief()],
+    });
+    const store = new SupabaseFullSiteBuildJobStore(client, { maxAttempts: 3 });
+    await expect(store.readyForClaim(25)).resolves.toEqual([]);
   });
 });

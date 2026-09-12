@@ -11,10 +11,15 @@
  * So when the brief lists real projects, the built site is checked against
  * that list. Three properties keep the check honest:
  *
- * - **It only has an opinion when it was given one.** No brief project names,
- *   no findings. A brief that lists none is handled a page earlier, by the
- *   page-set rule dropping the work page; a gate that guessed here would fail
- *   every build taken before the dashboard asked the question.
+ * - **It only has an opinion when it was given one.** A brief that was never
+ *   asked the question — every workspace taken before the dashboard existed —
+ *   produces no findings at all, because a gate that guessed there would fail
+ *   builds for having no data. "Asked, and the answer is none" is a different
+ *   input and a stricter one: `projectsKnown` says the client answered, and
+ *   then *every* project-shaped heading outside the closed generic list is
+ *   invented, because the client has told us there is no real work to name.
+ *   The page-set rule drops the work page in that case, and this is what
+ *   catches a work section the agent put somewhere else anyway.
  * - **It looks only where projects live.** The work and case-study routes,
  *   and the work section of a one-page site. A false positive fails a paid
  *   build and costs an operator an hour, so the scope is narrow on purpose
@@ -216,18 +221,33 @@ export function matchesBriefProject(
 }
 
 /**
+ * How the gate was told to read an empty list of project names.
+ *
+ * `projectsKnown` is the difference between "nobody asked this client about
+ * their past work" and "this client was asked and said there is none". Only
+ * the second one licenses failing a build over a heading, and only the app
+ * that stored the brief can tell them apart, so it is passed in rather than
+ * inferred from the empty array.
+ */
+export interface InventedProjectOptions {
+  projectsKnown?: boolean;
+}
+
+/**
  * Every project-shaped heading in a built site that the brief does not
  * account for.
  *
  * `files` is the built output as `collectBuiltSiteText` returns it, paths and
- * all. An empty `briefProjectNames` returns nothing: see the header.
+ * all. An empty `briefProjectNames` returns nothing unless the caller says
+ * the emptiness is an answer: see the header.
  */
 export function findInventedProjects(
   files: readonly { path: string; content: string }[],
   briefProjectNames: readonly string[],
+  options: InventedProjectOptions = {},
 ): InventedProjectFinding[] {
   const names = briefProjectNames.filter((name) => canonical(name).length > 0);
-  if (names.length === 0) return [];
+  if (names.length === 0 && options.projectsKnown !== true) return [];
 
   const findings: InventedProjectFinding[] = [];
   for (const file of files) {
@@ -269,11 +289,23 @@ export function describeInventedProjectFindings(
     briefProjectNames.length > MAX_FINDINGS_LISTED
       ? ` and ${briefProjectNames.length - MAX_FINDINGS_LISTED} more`
       : '';
+  // The no-projects case gets its own closing sentence rather than an empty
+  // list. "The only projects this client has are: ." is not an instruction an
+  // agent can act on, and this branch is reached exactly when the client has
+  // told us there is no past work at all.
+  const remedy =
+    briefProjectNames.length > 0
+      ? `The only projects this client has are: ${allowed}${allowedOverflow}. ` +
+        'Build the work section from those alone, using each name exactly as ' +
+        'the brief writes it, and never invent a client, a project or a case ' +
+        'study.'
+      : 'This client has told us they have no past work to show. Remove the ' +
+        'work section entirely rather than renaming it: no project cards, no ' +
+        'case studies, no stock photography standing in for work, and never ' +
+        'invent a client, a project or a result.';
   return (
     `${INVENTED_PROJECT}: the site presents work the client never told us ` +
     `about. Remove or rename each of these headings: ${detail}${overflow}. ` +
-    `The only projects this client has are: ${allowed}${allowedOverflow}. ` +
-    'Build the work section from those alone, using each name exactly as the ' +
-    'brief writes it, and never invent a client, a project or a case study.'
+    remedy
   );
 }

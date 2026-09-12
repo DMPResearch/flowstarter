@@ -32,6 +32,7 @@ function usable(overrides: Partial<UsableAsset> = {}): UsableAsset {
     height: 750,
     usableFor: ['section'],
     caption: 'The Flowstarter client dashboard',
+    kind: null,
     ...overrides,
   };
 }

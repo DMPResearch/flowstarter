@@ -860,6 +860,8 @@ export class PiSdkFlowstarterAgents {
     requiredIntegrations: string[];
     /** The page set the brief buys, phrased by `describePageSet`. */
     pageSet?: string;
+    /** The client's in-depth brief, phrased by `describeBriefInput`. */
+    briefDigest?: string;
     /** Trusted orchestrator build/validation output for a bounded repair pass. */
     feedback?: string;
     /**
@@ -883,6 +885,7 @@ export class PiSdkFlowstarterAgents {
         brandConfig: input.brandConfig,
         requiredIntegrations: input.requiredIntegrations,
         ...(input.pageSet ? { pageSet: input.pageSet } : {}),
+        ...(input.briefDigest ? { briefDigest: input.briefDigest } : {}),
         ...(input.feedback ? { feedback: input.feedback } : {}),
       }),
       customTools: tools,

@@ -45,6 +45,7 @@ import { LocalSitePublisher } from './local-publisher';
 import { ensureLocalSitesRepository } from './local-repo';
 import { GitHubPullRequestPublisher } from './pull-requests';
 import { BuildQueue } from './queue';
+import { BuildReconciler } from './reconcile';
 import { createStubFullSiteAgent } from './stub-agent';
 import { CommandSiteValidator, NoopSiteValidator } from './validator';
 
@@ -201,6 +202,21 @@ const queue = new BuildQueue({
     ),
 });
 
+/**
+ * The durable queue, beside the in-process one.
+ *
+ * Started after the server is listening rather than before: the first sweep
+ * may enqueue a build, and a build that starts before this process can answer
+ * /health is a build an operator cannot see.
+ */
+const reconciler = new BuildReconciler({
+  store,
+  enqueue: (jobId) => queue.enqueue(jobId),
+  intervalMs: config.pollIntervalMs,
+  limit: config.pollLimit,
+  onReport: (message) => console.info(`[build-worker] ${message}`),
+});
+
 async function readBody(req: IncomingMessage): Promise<string | null> {
   let size = 0;
   const chunks: Buffer[] = [];
@@ -277,6 +293,9 @@ async function start(): Promise<void> {
     }
   }
   server.listen(config.port, config.hostname, () => {
+    // Startup reconciliation: everything dispatched while this process was
+    // down, and every job whose client finished their brief in the meantime.
+    reconciler.start();
     const target = config.local
       ? `local deploy via ${config.local.flowstarterMainUrl}` +
         (config.local.stubAgent ? ', stub agent' : '')
@@ -307,6 +326,7 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     console.info(
       `[build-worker] ${signal} received; finishing in-flight builds`,
     );
+    reconciler.stop();
     server.close();
     void queue.drain().then(() => process.exit(0));
   });

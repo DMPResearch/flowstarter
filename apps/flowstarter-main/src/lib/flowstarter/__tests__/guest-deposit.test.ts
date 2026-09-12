@@ -408,7 +408,10 @@ describe('guest deposit provisioning', () => {
     expect(db.flowstarter_agent_jobs[0]).toMatchObject({
       workspace_id: result?.workspaceId,
       kind: 'FULL_SITE_BUILD',
-      status: 'queued',
+      // Parked on the brief the guest has not written yet, which is the whole
+      // point of a guest deposit: they have an account and a paid deposit and
+      // have never seen the dashboard. The build starts when they finish it.
+      status: 'waiting_brief',
       stripe_event_id: 'evt_guest_1',
       stripe_payment_intent_id: 'pi_guest_1',
     });

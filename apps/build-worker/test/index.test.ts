@@ -55,8 +55,19 @@ vi.mock('../src/local-repo', () => ({
   ensureLocalSitesRepository: ensureLocalSitesRepositoryMock,
 }));
 
+/**
+ * The Supabase client every `boot()` gets. Replaceable per test, because the
+ * reconciliation sweep this worker now runs at startup is a real query: the
+ * default answers nothing at all (and the sweep survives that, which is the
+ * point), while the startup-recovery test below answers with a job nobody
+ * dispatched.
+ */
+const supabaseFactory = vi.hoisted(() => ({
+  create: (): unknown => ({ from: vi.fn() }),
+}));
+
 vi.mock('@supabase/supabase-js', () => ({
-  createClient: vi.fn(() => ({ from: vi.fn() })),
+  createClient: vi.fn(() => supabaseFactory.create()),
 }));
 
 interface FakeJobLogWriter {
@@ -229,6 +240,7 @@ describe('build worker entry point (src/index.ts)', () => {
     ensureLocalSitesRepositoryMock.mockClear();
     ensureLocalSitesRepositoryMock.mockResolvedValue({ created: false });
     workerRunMock.mockClear();
+    supabaseFactory.create = () => ({ from: vi.fn() });
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     consoleInfoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
   });
@@ -261,6 +273,74 @@ describe('build worker entry point (src/index.ts)', () => {
       ...overrides,
     };
   }
+
+  /**
+   * Startup reconciliation.
+   *
+   * The in-process queue starts empty on every boot and the only thing that
+   * ever filled it was an HTTP nudge from flowstarter-main. A deploy, a crash
+   * or an unreachable host therefore left a paid build queued in the database
+   * with no process that would ever look at it again -- and with the brief
+   * gate, the commonest case of all: a client finishing their brief at two in
+   * the morning while this service was restarting.
+   */
+  describe('reconciliation on startup', () => {
+    it('picks up a job the database says is runnable, with no dispatch at all', async () => {
+      const swept = {
+        id: JOB_ID,
+        workspace_id: '0f4e1088-8d8f-4f18-83b1-406cc292b23c',
+        kind: 'FULL_SITE_BUILD',
+        status: 'queued',
+        attempt_count: 0,
+        run_after: '2020-01-01T00:00:00.000Z',
+      };
+      let reads = 0;
+      supabaseFactory.create = () => ({
+        from: () => {
+          const builder: Record<string, unknown> = {
+            select: () => builder,
+            in: () => builder,
+            order: () => builder,
+            // Only the first sweep hands the job over; a second one must not
+            // enqueue it again, which is the queue's job to prove elsewhere.
+            limit: () =>
+              Promise.resolve({
+                data: reads++ === 0 ? [swept] : [],
+                error: null,
+              }),
+          };
+          return builder;
+        },
+      });
+
+      const { server } = await boot(await localEnv());
+      try {
+        // No POST to /jobs/full-site anywhere in this test.
+        await vi.waitFor(() =>
+          expect(workerRunMock).toHaveBeenCalledWith(JOB_ID),
+        );
+      } finally {
+        server.close();
+      }
+    }, 30_000);
+
+    it('boots and serves normally when the sweep cannot read the database', async () => {
+      supabaseFactory.create = () => ({
+        from: () => {
+          throw new Error('supabase is unreachable');
+        },
+      });
+
+      const { baseUrl, server } = await boot(await localEnv());
+      try {
+        const res = await fetch(`${baseUrl}/health`);
+        expect(res.status).toBe(200);
+        expect(workerRunMock).not.toHaveBeenCalled();
+      } finally {
+        server.close();
+      }
+    }, 30_000);
+  });
 
   describe('local mode', () => {
     it('boots, initialises the local sites repository, and serves /health with no auth', async () => {
