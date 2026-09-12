@@ -8,24 +8,20 @@
  */
 
 import { resolvePlatformDomain } from '@flowstarter/platform-config';
+import {
+  ISOLATION_ENV_KEY,
+  LEGACY_ISOLATION_ENV_KEY,
+  resolveContainerUser,
+  resolveIsolationMode,
+  type ValidatorIsolationMode,
+} from './isolation';
+
+export type { ValidatorIsolationMode } from './isolation';
 
 export interface ValidatorCommand {
   bin: string;
   args: string[];
 }
-
-/**
- * Where the trusted install/build commands actually execute.
- *
- * `native` is the historical path: the commands run on the build host as this
- * process's user. `docker` runs each one inside a disposable container with
- * only the site workspace mounted — no host credentials, no Docker socket, no
- * home directory, nothing outside the workspace. It has to be asked for
- * explicitly, because it needs a working Docker daemon on the host and a
- * half-configured one must fail loudly rather than silently fall back to
- * running a generated Astro build next to the service-role key.
- */
-export type ValidatorIsolationMode = 'native' | 'docker';
 
 /**
  * Programs the validation image is trusted to run directly. A command is never
@@ -47,10 +43,17 @@ export interface DockerValidationConfig {
   /** Node 22 by default; the site toolchain comes from the image, not the host. */
   image: string;
   /**
-   * `bridge` — an install has to reach a registry. `none` is available for a
-   * pre-populated workspace, where the build must touch no network at all.
+   * Egress for the *install* step, which is the one command that legitimately
+   * has to reach a registry. `bridge` is plain egress; a named Docker network
+   * is how an operator points it at a registry proxy instead.
    */
-  network: 'bridge' | 'none';
+  network: string;
+  /**
+   * Egress for every other command, `pnpm run build` above all. `none` by
+   * default: a generated site has no business calling out from its own build,
+   * and an operator who needs it (a build that fetches fonts) has to say so.
+   */
+  buildNetwork: string;
   /** Container memory cap, docker size syntax (`4g`, `512m`). */
   memory: string;
   /** Size of the container's `/tmp`, which holds HOME and every cache. */
@@ -59,6 +62,17 @@ export interface DockerValidationConfig {
   pidsLimit: number;
   /** pnpm pinned through corepack *inside* the container. */
   pnpmVersion: string;
+  /**
+   * True when the image already has that exact pnpm prepared, as
+   * `docker/validation-runtime.Dockerfile` builds it. It decides whether the
+   * build step can run with no network at all: corepack downloads the pinned
+   * pnpm on first use, and the container's corepack home is a tmpfs that dies
+   * with it, so an image without pnpm baked in needs a registry for *every*
+   * command, not just the install.
+   */
+  pnpmBaked: boolean;
+  /** `uid:gid` the build runs as. Never 0 — see `resolveContainerUser`. */
+  user: string;
 }
 
 /**
@@ -162,6 +176,17 @@ export interface WorkerConfig {
   pollIntervalMs: number;
   /** Most jobs one reconciliation sweep considers, so a backlog is paced. */
   pollLimit: number;
+  /**
+   * The lease half of that same sweep: how long a claim is good for, how often
+   * a running build renews it, and how long a failed attempt waits before it
+   * is due again. See `leases.ts` for the rules these numbers feed.
+   */
+  lease: {
+    ttlMs: number;
+    heartbeatMs: number;
+    backoffBaseMs: number;
+    backoffMaxMs: number;
+  };
 }
 
 const THINKING_LEVELS = new Set([
@@ -259,17 +284,53 @@ function parseValidateCommands(raw: string | undefined): ValidatorCommand[] {
   });
 }
 
+/**
+ * Where generated code is allowed to execute, decided by `isolation.ts` and
+ * turned into a boot failure here.
+ *
+ * There is no fallback. A staging or production worker that cannot run the
+ * isolated validator must refuse to start rather than quietly build a client's
+ * generated Astro config next to every other client's worktree.
+ */
 function parseValidatorIsolation(
-  raw: string | undefined,
+  env: NodeJS.ProcessEnv,
 ): ValidatorIsolationMode {
-  const mode = raw?.trim() || 'native';
-  if (mode !== 'native' && mode !== 'docker') {
+  const resolved = resolveIsolationMode({
+    requested: env[ISOLATION_ENV_KEY],
+    legacyRequested: env[LEGACY_ISOLATION_ENV_KEY],
+    flowstarterEnv: resolveWorkerFlowstarterEnv(env),
+  });
+  if (!resolved.ok) throw new ConfigError(resolved.error);
+  return resolved.mode;
+}
+
+/**
+ * A `docker run --network=` value: `none`, `bridge`, `host`, or the name of a
+ * user-defined network. A bare token, never a flag and never a shell fragment.
+ */
+function parseDockerNetwork(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  fallback: string,
+): string {
+  const raw = env[key]?.trim();
+  if (!raw) return fallback;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/.test(raw)) {
     throw new ConfigError(
-      'FLOWSTARTER_BUILD_VALIDATE_ISOLATION must be "native" or "docker", ' +
-        `received "${mode}"`,
+      `${key} must be "none", "bridge", or the name of a docker network`,
     );
   }
-  return mode;
+  // `host` shares the host's network namespace, which hands a generated build
+  // every loopback service on the box — the deploy-agent, this worker's own
+  // HTTP surface, a local database. It is the one value that would undo the
+  // isolation this flag exists to provide.
+  if (raw === 'host') {
+    throw new ConfigError(
+      `${key} may not be "host": that gives the build every service listening ` +
+        'on this host, including the deploy-agent and this worker',
+    );
+  }
+  return raw;
 }
 
 /** A docker size argument: `512m`, `4g`. Rejects anything else outright. */
@@ -319,14 +380,31 @@ function parseDockerValidation(
     );
   }
 
-  const network =
-    env.FLOWSTARTER_BUILD_VALIDATE_DOCKER_NETWORK?.trim() || 'bridge';
-  if (network !== 'bridge' && network !== 'none') {
-    throw new ConfigError(
-      'FLOWSTARTER_BUILD_VALIDATE_DOCKER_NETWORK must be "bridge" or "none", ' +
-        `received "${network}"`,
-    );
-  }
+  // The install step's egress. `bridge` is plain outbound; a named network is
+  // how an operator routes it through a registry proxy instead. It is passed
+  // straight to `docker run --network=`, so it is validated as a token.
+  const network = parseDockerNetwork(
+    env,
+    'FLOWSTARTER_BUILD_VALIDATE_DOCKER_NETWORK',
+    'bridge',
+  );
+  const pnpmBaked =
+    env.FLOWSTARTER_BUILD_VALIDATE_DOCKER_PNPM_BAKED?.trim() === 'true';
+
+  // Everything that is not an install. `none` whenever the image can supply
+  // the toolchain by itself, which is the whole reason the shipped
+  // `docker/validation-runtime.Dockerfile` bakes the pinned pnpm in.
+  const buildNetwork = parseDockerNetwork(
+    env,
+    'FLOWSTARTER_BUILD_VALIDATE_DOCKER_BUILD_NETWORK',
+    pnpmBaked ? 'none' : network,
+  );
+  const user = resolveContainerUser({
+    uid: typeof process.getuid === 'function' ? process.getuid() : null,
+    gid: typeof process.getgid === 'function' ? process.getgid() : null,
+    configured: env.FLOWSTARTER_BUILD_VALIDATE_DOCKER_USER,
+  });
+  if (!user.ok) throw new ConfigError(user.error);
 
   const pnpmVersion =
     env.FLOWSTARTER_BUILD_VALIDATE_PNPM_VERSION?.trim() ||
@@ -338,10 +416,24 @@ function parseDockerValidation(
     );
   }
 
+  if (buildNetwork === 'none' && !pnpmBaked) {
+    throw new ConfigError(
+      'FLOWSTARTER_BUILD_VALIDATE_DOCKER_BUILD_NETWORK=none needs an image ' +
+        `that already has pnpm ${pnpmVersion} prepared: corepack downloads it ` +
+        "on first use, and the container's corepack home is a tmpfs that dies " +
+        'with the container. Build apps/build-worker/docker/validation-runtime.Dockerfile, ' +
+        'point FLOWSTARTER_BUILD_VALIDATE_DOCKER_IMAGE at it and set ' +
+        'FLOWSTARTER_BUILD_VALIDATE_DOCKER_PNPM_BAKED=true.',
+    );
+  }
+
   return {
     bin,
     image,
     network,
+    buildNetwork,
+    pnpmBaked,
+    user: user.user,
     memory: parseDockerSize(
       env,
       'FLOWSTARTER_BUILD_VALIDATE_DOCKER_MEMORY',
@@ -473,6 +565,54 @@ function resolveFlowstarterMainUrl(env: NodeJS.ProcessEnv): string {
   );
 }
 
+/**
+ * Lease timings, checked against each other rather than only against bounds.
+ *
+ * A heartbeat that does not fit twice inside the TTL is a lease that expires
+ * during an ordinary build: another worker takes the job, two processes write
+ * the same worktree, and the ledger tells the client two different stories. It
+ * is a configuration mistake with an expensive failure mode, so it is refused
+ * at boot instead of discovered during somebody's paid build.
+ */
+function parseLease(env: NodeJS.ProcessEnv): WorkerConfig['lease'] {
+  const ttlMs = optionalNumber(env, 'FLOWSTARTER_BUILD_LEASE_TTL_MS', 120_000, {
+    min: 15_000,
+    max: 3_600_000,
+  });
+  const heartbeatMs = optionalNumber(
+    env,
+    'FLOWSTARTER_BUILD_LEASE_HEARTBEAT_MS',
+    30_000,
+    { min: 1_000, max: 1_800_000 },
+  );
+  if (heartbeatMs * 2 > ttlMs) {
+    throw new ConfigError(
+      'FLOWSTARTER_BUILD_LEASE_HEARTBEAT_MS must be at most half of ' +
+        `FLOWSTARTER_BUILD_LEASE_TTL_MS (got ${heartbeatMs}ms against ${ttlMs}ms), ` +
+        'or a running build loses its lease between beats',
+    );
+  }
+  const backoffBaseMs = optionalNumber(
+    env,
+    'FLOWSTARTER_BUILD_RETRY_BACKOFF_MS',
+    30_000,
+    { min: 1_000, max: 3_600_000 },
+  );
+  const backoffMaxMs = optionalNumber(
+    env,
+    'FLOWSTARTER_BUILD_RETRY_BACKOFF_MAX_MS',
+    900_000,
+    { min: 1_000, max: 86_400_000 },
+  );
+  if (backoffMaxMs < backoffBaseMs) {
+    throw new ConfigError(
+      'FLOWSTARTER_BUILD_RETRY_BACKOFF_MAX_MS must be at least ' +
+        'FLOWSTARTER_BUILD_RETRY_BACKOFF_MS',
+    );
+  }
+  return { ttlMs, heartbeatMs, backoffBaseMs, backoffMaxMs };
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const sharedSecret = required(env, 'FLOWSTARTER_BUILD_WORKER_SECRET');
   if (sharedSecret.length < 32) {
@@ -552,9 +692,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const validateCommands = parseValidateCommands(
     env.FLOWSTARTER_BUILD_VALIDATE_COMMANDS,
   );
-  const validateIsolation = parseValidatorIsolation(
-    env.FLOWSTARTER_BUILD_VALIDATE_ISOLATION,
-  );
+  const validateIsolation = parseValidatorIsolation(env);
   const skipValidation = parseSkipValidation(env);
 
   return {
@@ -648,5 +786,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
       min: 1,
       max: 200,
     }),
+    lease: parseLease(env),
   };
 }

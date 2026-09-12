@@ -356,6 +356,16 @@ function makeScriptedClient(
           record.eqCalls.push([column, values]);
           return builder;
         },
+        // `is(column, null)` is how the lease guards express "nobody holds
+        // this", and `lte` is the queue sweep's run_after window.
+        is(column: string, value: unknown) {
+          record.eqCalls.push([`is:${column}`, value]);
+          return builder;
+        },
+        lte(column: string, value: unknown) {
+          record.eqCalls.push([`lte:${column}`, value]);
+          return builder;
+        },
         order() {
           return builder;
         },
@@ -2138,5 +2148,395 @@ describe('readyForClaim: the jobs nobody dispatched', () => {
     });
     const store = new SupabaseFullSiteBuildJobStore(client, { maxAttempts: 3 });
     await expect(store.readyForClaim(25)).resolves.toEqual([]);
+  });
+});
+
+/**
+ * Leases on the ledger: the durable half of the queue.
+ *
+ * The defect these cover is one a client feels. A worker claimed a paid build,
+ * wrote `running`, and died. Nothing looked at that row again — a restarted
+ * worker walked past it, and the operator board refused to re-dispatch it — so
+ * the site was never built and nobody found out until the client asked.
+ */
+describe('SupabaseFullSiteBuildJobStore leases', () => {
+  const NOW = Date.parse('2026-09-12T12:00:00.000Z');
+  const OWNER = 'build-1:42:abcd';
+  const options = {
+    maxAttempts: 3,
+    leaseTtlMs: 120_000,
+    owner: OWNER,
+    backoff: { baseMs: 30_000, maxMs: 900_000 },
+    now: () => NOW,
+  };
+  const iso = (offsetMs: number) => new Date(NOW + offsetMs).toISOString();
+
+  function leasedRow(overrides: Partial<JobLedgerRow> = {}): JobLedgerRow {
+    return ledgerRow({
+      status: 'running',
+      attempt_count: 1,
+      leased_by: 'build-0:9:dead',
+      lease_expires_at: iso(-1_000),
+      ...overrides,
+    });
+  }
+
+  describe('claim', () => {
+    it('writes who holds the job and until when, in the same statement', async () => {
+      const row = ledgerRow();
+      const { client, calls } = makeScriptedClient({
+        workspace_briefs: [readyBrief()],
+        flowstarter_agent_jobs: [{ data: row }, { data: { id: row.id } }],
+        workspaces: [
+          {
+            data: {
+              id: WORKSPACE_ID,
+              project_state: ProjectState.DEPOSIT_PAID,
+              cal_com_url: null,
+            },
+          },
+        ],
+        flowstarter_project_artifacts: [{ data: artifacts() }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, options);
+
+      await store.claim(row.id);
+
+      const cas = calls.filter(
+        (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+      )[0];
+      expect(cas?.values).toMatchObject({
+        status: 'running',
+        leased_by: OWNER,
+        lease_expires_at: iso(120_000),
+      });
+      // There is no window where the row reads `running` with nobody on it.
+      expect(cas?.eqCalls).toContainEqual(['is:leased_by', null]);
+    });
+
+    it('takes over a build whose worker stopped checking in', async () => {
+      const row = leasedRow();
+      const { client, calls } = makeScriptedClient({
+        workspace_briefs: [readyBrief()],
+        flowstarter_agent_jobs: [{ data: row }, { data: { id: row.id } }],
+        workspaces: [
+          {
+            data: {
+              id: WORKSPACE_ID,
+              project_state: ProjectState.DEPOSIT_PAID,
+              cal_com_url: null,
+            },
+          },
+        ],
+        flowstarter_project_artifacts: [{ data: artifacts() }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, options);
+
+      await expect(store.claim(row.id)).resolves.not.toBeNull();
+
+      const cas = calls.filter(
+        (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+      )[0];
+      // Guarded on the dead holder, so two workers recovering the same
+      // abandoned build cannot both take it.
+      expect(cas?.eqCalls).toContainEqual(['leased_by', 'build-0:9:dead']);
+      expect(cas?.values).toMatchObject({ leased_by: OWNER });
+    });
+
+    it('leaves a build alone while its worker is still checking in', async () => {
+      const row = leasedRow({ lease_expires_at: iso(60_000) });
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: row }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, options);
+
+      await expect(store.claim(row.id)).resolves.toBeNull();
+      expect(
+        calls.filter((c) => c.table === 'flowstarter_agent_jobs'),
+      ).toHaveLength(1);
+    });
+
+    it('finishes a crashed build that had already published, without rebuilding it', async () => {
+      // Idempotent publication. The commit is pushed and the PR is open; all
+      // that is missing is the row that says so. Building again would open a
+      // second PR for work that already shipped.
+      const row = leasedRow({
+        payload: {
+          commitSha: 'abc123',
+          pullRequestUrl: 'https://github.com/o/r/pull/7',
+          stagingUrl: 'https://x.staging.flowstarter.dev',
+        },
+      });
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: row },
+          { data: { payload: row.payload } },
+          { data: { workspace_id: WORKSPACE_ID } },
+        ],
+        workspaces: [{ data: null, error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, options);
+
+      await expect(store.claim(row.id)).resolves.toBeNull();
+
+      const update = calls.find(
+        (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+      );
+      expect(update?.values).toMatchObject({
+        status: 'succeeded',
+        pull_request_url: 'https://github.com/o/r/pull/7',
+        leased_by: null,
+        lease_expires_at: null,
+      });
+      // Nothing was re-claimed: no attempt was spent and no build started.
+      expect(
+        calls.some(
+          (c) =>
+            c.op === 'update' &&
+            (c.values as Record<string, unknown>)?.status === 'running',
+        ),
+      ).toBe(false);
+    });
+  });
+
+  describe('heartbeat', () => {
+    it('pushes the expiry forward, guarded on this worker owning the row', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { id: 'job-1' } }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, options);
+
+      await expect(store.heartbeat('job-1')).resolves.toBe(true);
+
+      const beat = calls[0];
+      expect(beat?.values).toMatchObject({
+        leased_by: OWNER,
+        lease_expires_at: iso(120_000),
+      });
+      expect(beat?.eqCalls).toContainEqual(['status', 'running']);
+      expect(beat?.eqCalls).toContainEqual(['leased_by', OWNER]);
+    });
+
+    it('reports the lease lost when somebody else now holds the job', async () => {
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: null, error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, options);
+
+      await expect(store.heartbeat('job-1')).resolves.toBe(false);
+    });
+  });
+
+  describe('reconcileStaleLeases', () => {
+    it('re-queues a build abandoned by a worker that stopped', async () => {
+      const row = leasedRow();
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: [row] }, { data: { id: row.id } }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, options);
+
+      await expect(store.reconcileStaleLeases()).resolves.toEqual({
+        requeued: [row.id],
+        completed: [],
+        abandoned: [],
+      });
+
+      const requeue = calls.find((c) => c.op === 'update');
+      expect(requeue?.values).toMatchObject({
+        status: 'queued',
+        started_at: null,
+        leased_by: null,
+        lease_expires_at: null,
+        error_code: 'BUILD_LEASE_EXPIRED',
+        // Due now: the wait already happened, as a build that ran and died.
+        run_after: iso(0),
+      });
+      expect(requeue?.eqCalls).toContainEqual(['leased_by', 'build-0:9:dead']);
+    });
+
+    it('completes a build that published before it crashed', async () => {
+      const row = leasedRow({
+        payload: {
+          commitSha: 'abc123',
+          pullRequestUrl: 'https://github.com/o/r/pull/7',
+          stagingUrl: 'https://x.staging.flowstarter.dev',
+        },
+      });
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: [row] },
+          { data: { payload: row.payload } },
+          { data: { workspace_id: WORKSPACE_ID } },
+        ],
+        workspaces: [{ data: null, error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, options);
+
+      await expect(store.reconcileStaleLeases()).resolves.toEqual({
+        requeued: [],
+        completed: [row.id],
+        abandoned: [],
+      });
+    });
+
+    it('fails a build with no attempts left rather than looping on it', async () => {
+      const row = leasedRow({ attempt_count: 3 });
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: [row] },
+          { data: { workspace_id: WORKSPACE_ID } },
+        ],
+        workspaces: [{ data: null, error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, options);
+
+      await expect(store.reconcileStaleLeases()).resolves.toEqual({
+        requeued: [],
+        completed: [],
+        abandoned: [row.id],
+      });
+      const failure = calls.find((c) => c.op === 'update');
+      expect(failure?.values).toMatchObject({
+        status: 'failed',
+        error_code: 'BUILD_LEASE_EXPIRED',
+      });
+    });
+
+    it('leaves a build whose worker is still checking in', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: [leasedRow({ lease_expires_at: iso(60_000) })] },
+        ],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, options);
+
+      await expect(store.reconcileStaleLeases()).resolves.toEqual({
+        requeued: [],
+        completed: [],
+        abandoned: [],
+      });
+      expect(calls.filter((c) => c.op === 'update')).toHaveLength(0);
+    });
+  });
+
+  describe('readyForClaim, with leases', () => {
+    it('hands back an abandoned build alongside the ordinary queue', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          {
+            data: [
+              ledgerRow({ id: 'queued-1' }),
+              // Somebody else is genuinely running this one.
+              leasedRow({ id: 'held-1', lease_expires_at: iso(60_000) }),
+              // Nobody is running this one any more.
+              leasedRow({ id: 'abandoned-1' }),
+              // A retry whose backoff has elapsed, and one whose has not.
+              ledgerRow({
+                id: 'retry-1',
+                status: 'failed',
+                attempt_count: 1,
+                run_after: iso(-1),
+              }),
+              ledgerRow({
+                id: 'backing-off-1',
+                status: 'failed',
+                attempt_count: 1,
+                run_after: iso(60_000),
+              }),
+              // Not ours to run.
+              ledgerRow({ id: 'inline-1', kind: 'INLINE_EDIT' }),
+              // Out of attempts.
+              ledgerRow({ id: 'spent-1', status: 'failed', attempt_count: 3 }),
+            ],
+          },
+        ],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, options);
+
+      await expect(store.readyForClaim(50)).resolves.toEqual([
+        'queued-1',
+        'abandoned-1',
+        'retry-1',
+      ]);
+      // The sweep asks for the four statuses a worker may take something from;
+      // which of them it actually may is `claimVerdict`'s answer, not a second
+      // copy of the rule written into the query.
+      expect(calls[0]?.eqCalls).toContainEqual([
+        'status',
+        ['queued', 'failed', 'running', 'waiting_brief'],
+      ]);
+      // A recovered row is handed over as it is. Promoting it to `queued` here
+      // would throw away the lease that lets claim() tell a dead holder from a
+      // live one, and the payload check that stops a second publish.
+      expect(calls.filter((c) => c.op === 'update')).toHaveLength(0);
+    });
+
+    it('leaves a build parked on its brief to the brief gate, not to the lease rule', async () => {
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: [ledgerRow({ id: 'parked-1', status: 'waiting_brief' })] },
+        ],
+        // The client has still not finished it.
+        workspace_briefs: [{ data: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, options);
+
+      await expect(store.readyForClaim(50)).resolves.toEqual([]);
+    });
+  });
+
+  describe('markFailed', () => {
+    it('records the backoff on the row and drops the lease', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        workspaces: [{ data: null, error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, options);
+
+      await store.markFailed('job-1', { code: 'BUILD_FAILED', detail: 'boom' });
+
+      expect(calls[0]?.values).toMatchObject({
+        status: 'failed',
+        leased_by: null,
+        lease_expires_at: null,
+        // First attempt: one base interval, written where a restart can read it.
+        run_after: iso(30_000),
+      });
+    });
+
+    it('backs off further on a later attempt', async () => {
+      const row = ledgerRow({ status: 'failed', attempt_count: 1 });
+      const { client, calls } = makeScriptedClient({
+        workspace_briefs: [readyBrief()],
+        flowstarter_agent_jobs: [
+          { data: row },
+          { data: { id: row.id } },
+          { data: { workspace_id: WORKSPACE_ID } },
+        ],
+        workspaces: [
+          {
+            data: {
+              id: WORKSPACE_ID,
+              project_state: ProjectState.DEPOSIT_PAID,
+              cal_com_url: null,
+            },
+          },
+          { data: null, error: null },
+        ],
+        flowstarter_project_artifacts: [{ data: artifacts() }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, options);
+
+      await store.claim(row.id);
+      await store.markFailed(row.id, { code: 'BUILD_FAILED', detail: 'boom' });
+
+      const failure = calls
+        .filter(
+          (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+        )
+        .at(-1);
+      // Second attempt: two base intervals.
+      expect(failure?.values).toMatchObject({ run_after: iso(60_000) });
+    });
   });
 });

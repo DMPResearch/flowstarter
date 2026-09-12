@@ -175,11 +175,17 @@ describe('worker configuration', () => {
     expect(config.validateDocker).toEqual({
       bin: 'docker',
       image: 'node:22-bookworm-slim',
+      // The install step may reach a registry. On the stock image so does
+      // every other command, because corepack has to fetch the pinned pnpm;
+      // the shipped validation image is what turns this into 'none'.
       network: 'bridge',
+      buildNetwork: 'bridge',
+      pnpmBaked: false,
       memory: '4g',
       tmpfsSize: '2g',
       pidsLimit: 1_024,
       pnpmVersion: '10.29.2',
+      user: `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
     });
   });
 
@@ -190,6 +196,7 @@ describe('worker configuration', () => {
         FLOWSTARTER_BUILD_VALIDATE_DOCKER_IMAGE:
           'node@sha256:' + 'a'.repeat(64),
         FLOWSTARTER_BUILD_VALIDATE_DOCKER_NETWORK: 'none',
+        FLOWSTARTER_BUILD_VALIDATE_DOCKER_PNPM_BAKED: 'true',
         FLOWSTARTER_BUILD_VALIDATE_DOCKER_MEMORY: '8g',
         FLOWSTARTER_BUILD_VALIDATE_DOCKER_TMPFS_SIZE: '512m',
         FLOWSTARTER_BUILD_VALIDATE_DOCKER_PIDS_LIMIT: '256',
@@ -391,5 +398,175 @@ describe('skipValidation: the only switch allowed to swap in the noop validator'
     expect(() =>
       loadConfig(validEnv({ FLOWSTARTER_ENV: 'staging' })),
     ).not.toThrow();
+  });
+});
+
+/**
+ * The two rules `loadConfig` enforces that a client's money depends on:
+ * where generated code may execute, and how long a claim on their build is
+ * good for.
+ */
+describe('isolation and leases at boot', () => {
+  /**
+   * A minimum viable environment. Deliberately not `validEnv()` from above:
+   * these cases are about `FLOWSTARTER_ENV`, and the helper pins it.
+   */
+  function envFor(
+    overrides: Record<string, string | undefined> = {},
+  ): NodeJS.ProcessEnv {
+    return {
+      FLOWSTARTER_BUILD_WORKER_SECRET: 'x'.repeat(40),
+      NEXT_PUBLIC_SUPABASE_URL: 'https://project.supabase.co',
+      SUPABASE_SERVICE_ROLE_KEY: 'service-role',
+      PI_API_KEY: 'pi-key',
+      FLOWSTARTER_REPOSITORY_ROOT: '/srv/sites',
+      FLOWSTARTER_WORKTREES_ROOT: '/srv/worktrees',
+      FLOWSTARTER_SITES_REPO: 'DMPResearch/flowstarter-sites',
+      FLOWSTARTER_SITES_GITHUB_TOKEN: 'gh-token',
+      FLOWSTARTER_STAGING_URL_TEMPLATE: 'https://{projectId}.staging.example',
+      ...overrides,
+    } as NodeJS.ProcessEnv;
+  }
+
+  it('isolates a staging or production worker without being asked', () => {
+    for (const FLOWSTARTER_ENV of ['staging', 'production']) {
+      const config = loadConfig(
+        envFor({
+          FLOWSTARTER_ENV,
+          FLOWSTARTER_BUILD_VALIDATE_DOCKER_PNPM_BAKED: 'true',
+        }),
+      );
+      expect(config.validateIsolation).toBe('docker');
+      expect(config.validateDocker).not.toBeNull();
+    }
+  });
+
+  it('refuses to boot a staging or production worker in native mode', () => {
+    for (const FLOWSTARTER_ENV of ['staging', 'production']) {
+      expect(() =>
+        loadConfig(
+          envFor({ FLOWSTARTER_ENV, FLOWSTARTER_BUILD_ISOLATION: 'native' }),
+        ),
+      ).toThrow(ConfigError);
+      expect(() =>
+        loadConfig(
+          envFor({ FLOWSTARTER_ENV, FLOWSTARTER_BUILD_ISOLATION: 'native' }),
+        ),
+      ).toThrow(
+        /refused when the resolved environment is staging or production/,
+      );
+    }
+  });
+
+  it('leaves a development worker native, where there may be no daemon', () => {
+    expect(
+      loadConfig(envFor({ FLOWSTARTER_ENV: 'development' })).validateIsolation,
+    ).toBe('native');
+    expect(
+      loadConfig(envFor({ FLOWSTARTER_ENV: 'development' })).validateDocker,
+    ).toBeNull();
+  });
+
+  it('still honours the name the setting shipped under', () => {
+    expect(
+      loadConfig(
+        envFor({
+          FLOWSTARTER_ENV: 'development',
+          FLOWSTARTER_BUILD_VALIDATE_ISOLATION: 'docker',
+          FLOWSTARTER_BUILD_VALIDATE_DOCKER_PNPM_BAKED: 'true',
+        }),
+      ).validateIsolation,
+    ).toBe('docker');
+  });
+
+  it('refuses a build step with no network when the image has no toolchain', () => {
+    // corepack would have to download the pinned pnpm, into a corepack home on
+    // a tmpfs that dies with the container. Failing at boot beats failing
+    // inside somebody's paid build.
+    expect(() =>
+      loadConfig(
+        envFor({
+          FLOWSTARTER_ENV: 'staging',
+          FLOWSTARTER_BUILD_VALIDATE_DOCKER_BUILD_NETWORK: 'none',
+        }),
+      ),
+    ).toThrow(/validation-runtime.Dockerfile/);
+  });
+
+  it('gives the build step egress only when the image cannot supply pnpm', () => {
+    // Stock image: the note, made into behaviour. Egress, because every
+    // command needs corepack to reach a registry.
+    expect(
+      loadConfig(envFor({ FLOWSTARTER_ENV: 'staging' })).validateDocker,
+    ).toMatchObject({ network: 'bridge', buildNetwork: 'bridge' });
+    // Shipped image: no network for anything but the install.
+    expect(
+      loadConfig(
+        envFor({
+          FLOWSTARTER_ENV: 'staging',
+          FLOWSTARTER_BUILD_VALIDATE_DOCKER_PNPM_BAKED: 'true',
+        }),
+      ).validateDocker,
+    ).toMatchObject({ network: 'bridge', buildNetwork: 'none' });
+  });
+
+  it('refuses host networking, which would hand the build every local service', () => {
+    expect(() =>
+      loadConfig(
+        envFor({
+          FLOWSTARTER_ENV: 'staging',
+          FLOWSTARTER_BUILD_VALIDATE_DOCKER_NETWORK: 'host',
+        }),
+      ),
+    ).toThrow(/may not be "host"/);
+  });
+
+  it('routes the install step through a named proxy network when asked', () => {
+    expect(
+      loadConfig(
+        envFor({
+          FLOWSTARTER_ENV: 'staging',
+          FLOWSTARTER_BUILD_VALIDATE_DOCKER_NETWORK: 'registry-proxy',
+          FLOWSTARTER_BUILD_VALIDATE_DOCKER_PNPM_BAKED: 'true',
+        }),
+      ).validateDocker,
+    ).toMatchObject({ network: 'registry-proxy', buildNetwork: 'none' });
+  });
+
+  it('defaults the lease to two minutes with a beat that fits twice inside it', () => {
+    expect(loadConfig(envFor()).lease).toEqual({
+      ttlMs: 120_000,
+      heartbeatMs: 30_000,
+      backoffBaseMs: 30_000,
+      backoffMaxMs: 900_000,
+    });
+    // The sweep that acts on those leases is the reconciler's own interval,
+    // not a second one: one loop asks the ledger what is runnable and what
+    // nobody is running any more.
+    expect(loadConfig(envFor()).pollIntervalMs).toBe(60_000);
+  });
+
+  it('refuses a heartbeat that cannot keep a lease alive', () => {
+    // A build would lose its lease mid-run, another worker would take it, and
+    // two processes would write the same worktree.
+    expect(() =>
+      loadConfig(
+        envFor({
+          FLOWSTARTER_BUILD_LEASE_TTL_MS: '60000',
+          FLOWSTARTER_BUILD_LEASE_HEARTBEAT_MS: '45000',
+        }),
+      ),
+    ).toThrow(/at most half of/);
+  });
+
+  it('refuses a backoff cap below the backoff itself', () => {
+    expect(() =>
+      loadConfig(
+        envFor({
+          FLOWSTARTER_BUILD_RETRY_BACKOFF_MS: '60000',
+          FLOWSTARTER_BUILD_RETRY_BACKOFF_MAX_MS: '30000',
+        }),
+      ),
+    ).toThrow(ConfigError);
   });
 });

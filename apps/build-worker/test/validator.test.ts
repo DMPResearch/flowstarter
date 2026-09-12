@@ -522,10 +522,13 @@ const DOCKER: DockerValidationConfig = {
   bin: 'docker',
   image: 'node:22-bookworm-slim',
   network: 'bridge',
+  buildNetwork: 'none',
   memory: '4g',
   tmpfsSize: '2g',
   pidsLimit: 1_024,
   pnpmVersion: '10.29.2',
+  pnpmBaked: true,
+  user: '1000:1000',
 };
 
 /**
@@ -549,9 +552,11 @@ describe('dockerRunArgs', () => {
 
     expect(args.slice(0, 3)).toEqual(['run', '--rm', '--init']);
     expect(args).toContain('--name=flowstarter-validate-abc123');
-    expect(args).toContain('--network=bridge');
+    // `pnpm run build` is not an install: it gets no network at all.
+    expect(args).toContain('--network=none');
     expect(args).toContain('--cap-drop=ALL');
     expect(args).toContain('--security-opt=no-new-privileges');
+    expect(args).toContain('--read-only');
     expect(args).toContain('--memory=4g');
     expect(args).toContain('--pids-limit=1024');
     expect(args).toContain('--workdir=/site');
@@ -798,5 +803,147 @@ describe('CommandSiteValidator under Docker isolation', () => {
       SiteValidationError,
     );
     expect(await docker.runArgs()).toEqual([]);
+  });
+});
+
+/**
+ * The adversarial build.
+ *
+ * Codex risk 3 was not a demonstrated compromise — it was an unsafe default:
+ * a generated `astro.config.mjs` runs for real during validation, and in
+ * native mode it runs as this worker's user with this worker's filesystem.
+ * These are the four things such a config would reach for, asserted against
+ * the argument vector, because the argv *is* the boundary. A source that is
+ * not in this list cannot appear inside the container, whatever the generated
+ * code asks for.
+ *
+ * `docker-isolation-proof.test.ts` runs the same four reads for real against a
+ * live daemon; this file is the part that runs everywhere, including CI hosts
+ * with no Docker.
+ */
+describe('the isolated validator against an adversarial build', () => {
+  const WORKSPACE = '/srv/worktrees/client-1';
+  const base = {
+    docker: DOCKER,
+    workspaceRoot: WORKSPACE,
+    name: 'flowstarter-validate-adversary',
+    env: { CI: '1' },
+    user: '1000:1000',
+  };
+
+  /** What a hostile `astro.config.mjs` would try to read. */
+  const TARGETS = [
+    '/srv/worktrees/other-workspace/secret.txt',
+    '/etc/flowstarter/deploy-agent.token',
+    '/srv/build-worker/.env',
+    '/var/run/docker.sock',
+  ];
+
+  it('grants exactly one path, so no other file is even mountable', () => {
+    for (const command of [
+      { bin: 'pnpm', args: ['install', '--ignore-scripts'] },
+      { bin: 'pnpm', args: ['run', 'build'] },
+    ]) {
+      const args = dockerRunArgs({ ...base, command });
+      const mounts = args.filter((arg) => arg.startsWith('--mount='));
+      expect(mounts).toEqual([
+        `--mount=type=bind,source=${WORKSPACE},target=/site`,
+      ]);
+      for (const target of TARGETS) {
+        expect(args.some((arg) => arg.includes(target))).toBe(false);
+      }
+      // Not a mount, not a volume, not an env var pointing at one.
+      expect(
+        args.filter((arg) => arg === '-v' || arg.startsWith('--volume')),
+      ).toEqual([]);
+      expect(args.some((arg) => arg.includes('docker.sock'))).toBe(false);
+      expect(args.some((arg) => arg.includes('/var/run'))).toBe(false);
+    }
+  });
+
+  it('leaves the container nothing to write outside the workspace', () => {
+    const args = dockerRunArgs({
+      ...base,
+      command: { bin: 'pnpm', args: ['run', 'build'] },
+    });
+    expect(args).toContain('--read-only');
+    expect(args).toContain('--tmpfs=/tmp:rw,exec,mode=1777,size=2g');
+    expect(args).toContain('--cap-drop=ALL');
+    expect(args).toContain('--security-opt=no-new-privileges');
+    // Non-root, always. Root inside the container writes root-owned files into
+    // the host worktree and keeps the one capability --cap-drop cannot take.
+    expect(args).toContain('--user=1000:1000');
+    expect(args.some((arg) => arg === '--user=0:0')).toBe(false);
+    expect(args.some((arg) => arg.includes('--privileged'))).toBe(false);
+  });
+
+  it('gives the build itself no way out to the network', () => {
+    expect(
+      dockerRunArgs({
+        ...base,
+        command: { bin: 'pnpm', args: ['run', 'build'] },
+      }),
+    ).toContain('--network=none');
+    // The install step is the single exception, and it is the only command
+    // that has a registry to talk to.
+    expect(
+      dockerRunArgs({
+        ...base,
+        command: { bin: 'pnpm', args: ['install', '--ignore-scripts'] },
+      }),
+    ).toContain('--network=bridge');
+  });
+
+  it('hands the build no credential, including a proxy URL that carries one', () => {
+    const source = {
+      SUPABASE_SERVICE_ROLE_KEY: 'service-role-leak',
+      PI_API_KEY: 'pi-leak',
+      FLOWSTARTER_SITES_GITHUB_TOKEN: 'ghp-leak',
+      HTTPS_PROXY: 'http://user:password@proxy.internal:3128',
+      HOME: '/home/builder',
+      PATH: '/usr/bin',
+    } as NodeJS.ProcessEnv;
+
+    const install = containerBuildEnv(source, { registry: true });
+    const build = containerBuildEnv(source, { registry: false });
+
+    for (const env of [install, build]) {
+      expect(Object.values(env)).not.toContain('service-role-leak');
+      expect(Object.values(env)).not.toContain('pi-leak');
+      expect(Object.values(env)).not.toContain('ghp-leak');
+      // Not even the host's HOME: the container's own tmpfs stands in.
+      expect(env.HOME).toBe('/tmp/build');
+      expect(env.PATH).toBeUndefined();
+    }
+    // A proxy URL can embed basic-auth, so it reaches only the one command
+    // that has a registry to talk to.
+    expect(install.HTTPS_PROXY).toBe(
+      'http://user:password@proxy.internal:3128',
+    );
+    expect(build.HTTPS_PROXY).toBeUndefined();
+  });
+
+  it('refuses to mount a path crafted to smuggle in a second source', () => {
+    // The shape a generated workspace name would have to take to add a mount.
+    // execFile never goes through a shell, so this is about the mount spec's
+    // own comma-separated grammar rather than about quoting.
+    expect(() =>
+      dockerRunArgs({
+        ...base,
+        workspaceRoot: '/srv/worktrees/a,source=/var/run/docker.sock',
+        command: { bin: 'pnpm', args: ['run', 'build'] },
+      }),
+    ).toThrow(SiteValidationError);
+  });
+
+  it('runs no program the image was not trusted with', () => {
+    for (const bin of ['sh', 'bash', 'curl', 'docker', 'make']) {
+      expect(() =>
+        dockerRunArgs({
+          ...base,
+          command: { bin, args: ['-c', 'cat /etc/flowstarter/*'] },
+        }),
+      ).toThrow(/not available in the Docker/);
+    }
   });
 });

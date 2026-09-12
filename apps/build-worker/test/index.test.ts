@@ -180,6 +180,15 @@ const CONFIG_ENV_KEYS = [
   'FLOWSTARTER_BUILD_MAX_ATTEMPTS',
   'FLOWSTARTER_BUILD_CONCURRENCY',
   'FLOWSTARTER_BUILD_QUEUE_LIMIT',
+  'FLOWSTARTER_BUILD_ISOLATION',
+  'FLOWSTARTER_BUILD_VALIDATE_DOCKER_BUILD_NETWORK',
+  'FLOWSTARTER_BUILD_VALIDATE_DOCKER_PNPM_BAKED',
+  'FLOWSTARTER_BUILD_VALIDATE_DOCKER_USER',
+  'FLOWSTARTER_BUILD_LEASE_TTL_MS',
+  'FLOWSTARTER_BUILD_LEASE_HEARTBEAT_MS',
+  'FLOWSTARTER_BUILD_POLL_INTERVAL_MS',
+  'FLOWSTARTER_BUILD_RETRY_BACKOFF_MS',
+  'FLOWSTARTER_BUILD_RETRY_BACKOFF_MAX_MS',
 ] as const;
 
 function resetConfigEnv(): void {
@@ -297,15 +306,24 @@ describe('build worker entry point (src/index.ts)', () => {
       let reads = 0;
       supabaseFactory.create = () => ({
         from: () => {
+          // A sweep now asks two questions: which builds has a dead worker
+          // abandoned (`.eq('status', 'running')`), and which are runnable
+          // (`.in('status', ...)`). This answers the first with nothing and
+          // the second with the swept job.
+          let recovery = false;
           const builder: Record<string, unknown> = {
             select: () => builder,
+            eq: (column: string, value: unknown) => {
+              if (column === 'status' && value === 'running') recovery = true;
+              return builder;
+            },
             in: () => builder,
             order: () => builder,
             // Only the first sweep hands the job over; a second one must not
             // enqueue it again, which is the queue's job to prove elsewhere.
             limit: () =>
               Promise.resolve({
-                data: reads++ === 0 ? [swept] : [],
+                data: recovery || reads++ > 0 ? [] : [swept],
                 error: null,
               }),
           };
@@ -854,4 +872,187 @@ describe('build worker entry point (src/index.ts)', () => {
       }
     });
   });
+});
+
+/**
+ * The lease half of the durable queue, as the booted worker actually wires it.
+ *
+ * The rules live in `leases.test.ts` and the loop in `reconcile.test.ts`; these
+ * assert the wiring — that a real boot recovers a build whose worker died
+ * without anybody dispatching it, and that a running build has its lease
+ * renewed underneath it for as long as it runs.
+ */
+describe('lease wiring', () => {
+  const STALE_JOB = '7c1f1b8e-2d4a-4a2f-9d4a-4c0f0a7c2f22';
+
+  function githubEnv(overrides: Record<string, string> = {}) {
+    return {
+      FLOWSTARTER_BUILD_WORKER_SECRET: SECRET,
+      NEXT_PUBLIC_SUPABASE_URL: 'https://project.supabase.co',
+      SUPABASE_SERVICE_ROLE_KEY: 'service-role',
+      PI_API_KEY: 'pi-key',
+      FLOWSTARTER_REPOSITORY_ROOT: '/srv/sites',
+      FLOWSTARTER_WORKTREES_ROOT: '/srv/worktrees',
+      FLOWSTARTER_SITES_REPO: 'DMPResearch/flowstarter-sites',
+      FLOWSTARTER_SITES_GITHUB_TOKEN: 'gh-token',
+      FLOWSTARTER_STAGING_URL_TEMPLATE: 'https://{projectId}.staging.example',
+      ...overrides,
+    };
+  }
+
+  /**
+   * A client that answers every query with one scripted `{ data, error }`,
+   * which the test can change while the worker is running. Not a database —
+   * just enough shape for the sweep, the recovery write and the heartbeat to
+   * each take the branch this is about.
+   */
+  function scriptedClient(script: {
+    value: { data: unknown; error: unknown };
+  }) {
+    return {
+      from: () => {
+        const builder: Record<string | symbol, unknown> = new Proxy(
+          {},
+          {
+            get(_target, property) {
+              if (property === 'then') {
+                return (
+                  onFulfilled: (value: unknown) => unknown,
+                  onRejected?: (reason: unknown) => unknown,
+                ) =>
+                  Promise.resolve(script.value).then(onFulfilled, onRejected);
+              }
+              if (property === 'maybeSingle' || property === 'single') {
+                return () => Promise.resolve(script.value);
+              }
+              return () => builder;
+            },
+          },
+        );
+        return builder;
+      },
+    };
+  }
+
+  const servers: Server[] = [];
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await Promise.all(servers.splice(0).map((s) => s.close()));
+  });
+
+  it('recovers a build whose worker died, with nobody dispatching it', async () => {
+    // The defect, end to end through a real boot: this row says `running`, its
+    // lease stopped being renewed an hour ago, and before leases existed no
+    // worker would ever have looked at it again.
+    const script = {
+      value: {
+        data: [
+          {
+            id: STALE_JOB,
+            workspace_id: '0f4e1088-8d8f-4f18-83b1-406cc292b23c',
+            kind: 'FULL_SITE_BUILD',
+            status: 'running',
+            attempt_count: 1,
+            max_attempts: 3,
+            run_after: '2020-01-01T00:00:00.000Z',
+            started_at: '2020-01-01T00:00:00.000Z',
+            leased_by: 'build-0:9:dead',
+            lease_expires_at: '2020-01-01T00:02:00.000Z',
+            payload: {},
+          },
+        ],
+        error: null,
+      } as { data: unknown; error: unknown },
+    };
+    supabaseFactory.create = () => scriptedClient(script);
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    workerRunMock.mockClear();
+
+    const { server } = await boot(
+      githubEnv({ FLOWSTARTER_BUILD_WORKER_PORT: String(await freePort()) }),
+    );
+    servers.push(server);
+
+    await vi.waitFor(() => {
+      const said = info.mock.calls.map((call) => String(call[0])).join('\n');
+      expect(said).toContain('re-queued 1 build(s) abandoned by a worker');
+      expect(said).toContain(STALE_JOB);
+    });
+    // And it is not merely logged: the recovered job is handed to the queue.
+    await vi.waitFor(() =>
+      expect(workerRunMock).toHaveBeenCalledWith(STALE_JOB),
+    );
+  }, 30_000);
+
+  it('names the lease and the sweep in its boot line', async () => {
+    supabaseFactory.create = () => ({ from: vi.fn() });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+    const { server } = await boot(
+      githubEnv({ FLOWSTARTER_BUILD_WORKER_PORT: String(await freePort()) }),
+    );
+    servers.push(server);
+
+    const said = info.mock.calls.map((call) => String(call[0])).join('\n');
+    // An operator reading a held row has to be able to find the host holding it.
+    expect(said).toContain('lease 120000ms as ');
+    expect(said).toContain('sweep every 60000ms');
+  }, 30_000);
+
+  it('renews the lease while a build runs, and gives it up once it is taken', async () => {
+    const script = {
+      value: { data: null, error: { message: 'connection reset' } } as {
+        data: unknown;
+        error: unknown;
+      },
+    };
+    supabaseFactory.create = () => scriptedClient(script);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'info').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    workerRunMock.mockClear();
+    // A build long enough to be beaten on twice: the first beat cannot reach
+    // the database at all, the second finds the row is somebody else's now.
+    workerRunMock.mockImplementationOnce(
+      async () => new Promise<void>((resolve) => setTimeout(resolve, 2_600)),
+    );
+
+    const { baseUrl, server } = await boot(
+      githubEnv({
+        FLOWSTARTER_BUILD_WORKER_PORT: String(await freePort()),
+        FLOWSTARTER_BUILD_LEASE_TTL_MS: '15000',
+        FLOWSTARTER_BUILD_LEASE_HEARTBEAT_MS: '1000',
+      }),
+    );
+    servers.push(server);
+
+    const accepted = await fetch(`${baseUrl}/jobs/full-site`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${SECRET}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ jobId: JOB_ID }),
+    });
+    expect(accepted.status).toBe(202);
+
+    await vi.waitFor(
+      () =>
+        expect(
+          warn.mock.calls.map((call) => String(call[0])).join('\n'),
+        ).toContain(`heartbeat failed for job ${JOB_ID}`),
+      { timeout: 5_000 },
+    );
+    // The row is readable again, but it is no longer ours. The build is not
+    // killed for it: half a site on disk is worse than a finish that its own
+    // compare-and-set refuses.
+    script.value = { data: null, error: null };
+    await vi.waitFor(
+      () =>
+        expect(
+          warn.mock.calls.map((call) => String(call[0])).join('\n'),
+        ).toContain(`lost the lease on job ${JOB_ID}`),
+      { timeout: 5_000 },
+    );
+  }, 30_000);
 });

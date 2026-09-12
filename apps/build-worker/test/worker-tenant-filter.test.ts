@@ -110,9 +110,39 @@ const ALLOW_LIST: AllowListEntry[] = [
   {
     file: 'job-store.ts',
     table: 'flowstarter_agent_jobs',
-    match: `.select('id, workspace_id, kind, status, attempt_count, payload')`,
+    match: `.select(LEDGER_COLUMNS)
+      .eq('id', jobId)`,
     reason:
       "claim(): initial read, keyed by the job's own id; this is the read that discovers workspace_id.",
+  },
+  // -- The queue sweep and startup reconciliation are cross-tenant on purpose,
+  // and are the two queries in this worker that could not be workspace-scoped
+  // even in principle. This process drains one ledger for every tenant on the
+  // host: "which builds is nobody running?" has no workspace to ask it of.
+  // Both are bounded, both are read-only or keyed by the row they just read,
+  // and neither returns anything to a caller -- the ids go into this worker's
+  // own queue, and every one of them is then claimed through claim(), which
+  // re-reads the row and scopes everything after it by that row's workspace.
+  {
+    file: 'job-store.ts',
+    table: 'flowstarter_agent_jobs',
+    match: `.eq('status', 'running')`,
+    reason:
+      'reconcileStaleLeases(): the cross-tenant sweep for builds abandoned by a dead worker.',
+  },
+  {
+    file: 'job-store.ts',
+    table: 'flowstarter_agent_jobs',
+    match: "status: 'queued',\n        started_at: null,",
+    reason:
+      'requeueExpired(): update keyed by the job id and the dead lease this worker just read.',
+  },
+  {
+    file: 'job-store.ts',
+    table: 'flowstarter_agent_jobs',
+    match: '...this.leaseFields(now),',
+    reason:
+      'heartbeat(): lease renewal keyed by the job id this worker holds and by its own owner string.',
   },
   {
     file: 'job-store.ts',
@@ -159,16 +189,16 @@ const ALLOW_LIST: AllowListEntry[] = [
   {
     file: 'job-store.ts',
     table: 'flowstarter_agent_jobs',
-    match: `.update({ status: WAITING_BRIEF, updated_at: now })`,
+    match: 'status: WAITING_BRIEF,',
     reason:
       "parkOnBrief(): compare-and-set keyed by (id, status), both from claim()'s own read of that job.",
   },
   {
     file: 'job-store.ts',
     table: 'flowstarter_agent_jobs',
-    match: `.in('status', ['queued', WAITING_BRIEF])`,
+    match: `.in('status', ['queued', 'failed', 'running', WAITING_BRIEF])`,
     reason:
-      'readyForClaim(): the reconciliation sweep is deliberately fleet-wide. It is a worker asking which jobs anywhere are runnable, exactly like the dispatcher it replaces; it returns only ids, and every one of them still goes through claim(), which does the per-workspace reads under withTenant.',
+      'readyForClaim(): the reconciliation sweep is deliberately fleet-wide. It is a worker asking which jobs anywhere are runnable -- including the ones whose lease has died -- exactly like the dispatcher it replaces; it returns only ids, and every one of them still goes through claim(), which does the per-workspace reads under withTenant.',
   },
   {
     file: 'job-store.ts',

@@ -875,6 +875,8 @@ export type Database = {
           id: string
           idempotency_key: string | null
           kind: string
+          lease_expires_at: string | null
+          leased_by: string | null
           max_attempts: number
           payload: Json
           pull_request_url: string | null
@@ -897,6 +899,8 @@ export type Database = {
           id?: string
           idempotency_key?: string | null
           kind: string
+          lease_expires_at?: string | null
+          leased_by?: string | null
           max_attempts?: number
           payload?: Json
           pull_request_url?: string | null
@@ -919,6 +923,8 @@ export type Database = {
           id?: string
           idempotency_key?: string | null
           kind?: string
+          lease_expires_at?: string | null
+          leased_by?: string | null
           max_attempts?: number
           payload?: Json
           pull_request_url?: string | null

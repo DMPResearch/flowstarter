@@ -21,17 +21,38 @@
  * the atomic compare-and-set in the job store, so a job swept twice, or swept
  * by two workers at once, runs exactly once.
  *
- * It is deliberately not a scheduler: nothing here retries a failed build,
- * decides backoff, or touches `running`. Those are the job store's rules and
- * this only ever hands it an id.
+ * Each sweep does two things in order. First it recovers: every `running` row
+ * whose lease has died is a build whose worker is gone, and until leases
+ * existed such a row was permanently invisible — the claim rule skipped it and
+ * the operator board refused to re-dispatch it, so a paid build sat there
+ * until somebody noticed. Then it asks what is runnable now, which by that
+ * point includes anything recovery just put back.
+ *
+ * It is deliberately not a scheduler: nothing here decides backoff or picks a
+ * retry. Those are the job store's rules and this only ever hands it an id.
  */
 
 import type { EnqueueOutcome } from './queue';
 
-/** The one thing a reconciler needs from a job store. */
+/** What one recovery pass did, for the operator log. */
+export interface ReconciliationReport {
+  /** Rows that were `running` with a dead lease and are queued again. */
+  requeued: string[];
+  /** Rows whose site had already shipped; finished without rebuilding. */
+  completed: string[];
+  /** Rows out of attempts; failed so an operator sees them. */
+  abandoned: string[];
+}
+
+/** The two things a reconciler needs from a job store. */
 export interface ReconcilableJobStore {
   /** Ids of jobs the database says are runnable now. */
   readyForClaim(limit: number): Promise<string[]>;
+  /**
+   * Hands back every build abandoned by a worker that stopped. Optional so a
+   * store without leases still sweeps.
+   */
+  reconcileStaleLeases?(): Promise<ReconciliationReport>;
 }
 
 export interface BuildReconcilerOptions {
@@ -66,6 +87,7 @@ export class BuildReconciler {
     if (this.sweeping) return { found: 0, enqueued: 0 };
     this.sweeping = true;
     try {
+      await this.recover();
       const jobIds = await this.options.store.readyForClaim(this.options.limit);
       let enqueued = 0;
       for (const jobId of jobIds) {
@@ -94,6 +116,44 @@ export class BuildReconciler {
   }
 
   /**
+   * Recovers every build whose worker died, and says so.
+   *
+   * A stranded paid build must never be recovered silently: the line this
+   * writes is how an operator learns that a worker stopped mid-build, and how
+   * many clients it happened to. Three outcomes, decided by `leases.ts`: the
+   * build had already published and only the ledger was behind; it had not,
+   * and attempts remain; or its budget is spent and it should read `failed`
+   * where somebody can see it rather than loop.
+   *
+   * A `waiting_brief` row is not one of these. It is not running, nobody holds
+   * it, and the thing that ends its wait is a client filling in a form.
+   */
+  private async recover(): Promise<void> {
+    const report = await this.options.store.reconcileStaleLeases?.();
+    if (!report) return;
+    if (report.completed.length > 0) {
+      this.options.onReport?.(
+        `reconciliation completed ${report.completed.length} build(s) that had ` +
+          'already published before their worker stopped, without rebuilding ' +
+          `them: ${report.completed.join(', ')}`,
+      );
+    }
+    if (report.requeued.length > 0) {
+      this.options.onReport?.(
+        `reconciliation re-queued ${report.requeued.length} build(s) abandoned ` +
+          `by a worker that stopped: ${report.requeued.join(', ')}`,
+      );
+    }
+    if (report.abandoned.length > 0) {
+      this.options.onReport?.(
+        `reconciliation failed ${report.abandoned.length} build(s) abandoned ` +
+          'by a worker that stopped, with no attempts left: ' +
+          report.abandoned.join(', '),
+      );
+    }
+  }
+
+  /**
    * Sweeps now and then on the interval.
    *
    * The timer is unref'd so it can never be the reason this process stays
@@ -113,5 +173,51 @@ export class BuildReconciler {
     if (!this.timer) return;
     clearInterval(this.timer);
     this.timer = null;
+  }
+}
+
+/**
+ * Runs `work` with this worker's lease renewed underneath it.
+ *
+ * The heartbeat is what separates "this build is taking a long time" from
+ * "the worker holding this build is gone", and a build legitimately takes
+ * minutes. A renewal that comes back false means somebody else now owns the
+ * job — the beats were missed for longer than the TTL — so this stops
+ * renewing rather than fighting the new holder for the same worktree. It does
+ * not cancel the work: the build finishing and being refused by its own
+ * compare-and-set is a better outcome than half a site on disk.
+ */
+export async function withHeartbeat<T>(
+  input: {
+    store: { heartbeat(jobId: string): Promise<boolean> };
+    jobId: string;
+    intervalMs: number;
+    onLost?: (jobId: string) => void;
+    onError?: (jobId: string, error: unknown) => void;
+  },
+  work: () => Promise<T>,
+): Promise<T> {
+  let stopped = false;
+  const timer = setInterval(() => {
+    void (async () => {
+      if (stopped) return;
+      try {
+        const held = await input.store.heartbeat(input.jobId);
+        if (!held && !stopped) {
+          stopped = true;
+          clearInterval(timer);
+          input.onLost?.(input.jobId);
+        }
+      } catch (error) {
+        input.onError?.(input.jobId, error);
+      }
+    })();
+  }, input.intervalMs);
+  timer.unref?.();
+  try {
+    return await work();
+  } finally {
+    stopped = true;
+    clearInterval(timer);
   }
 }

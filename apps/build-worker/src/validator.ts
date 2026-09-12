@@ -36,6 +36,7 @@ import {
   type DockerValidationConfig,
   type ValidatorCommand,
 } from './config';
+import { commandNeedsRegistry, containerNetworkFor } from './isolation';
 import { findCalPreviewInDir } from './output-cal-preview';
 import { findNonBinaryAssetsInDir } from './output-assets';
 import { findPlaceholderImagesInDir } from './output-placeholder-images';
@@ -195,6 +196,7 @@ export function dockerClientEnv(
  */
 export function containerBuildEnv(
   source: NodeJS.ProcessEnv = process.env,
+  options: { registry?: boolean } = {},
 ): Record<string, string> {
   return {
     HOME: CONTAINER_HOME,
@@ -204,7 +206,10 @@ export function containerBuildEnv(
     npm_config_cache: `${CONTAINER_HOME}/npm`,
     npm_config_store_dir: `${CONTAINER_HOME}/pnpm-store`,
     ...BUILD_ENV_FIXED,
-    ...proxyEnv(source),
+    // A proxy URL can embed basic-auth, so it reaches only the command that
+    // has a registry to talk to. `pnpm run build` gets no network and no
+    // reason to be handed a credential-bearing URL.
+    ...(options.registry === false ? {} : proxyEnv(source)),
   };
 }
 
@@ -268,9 +273,19 @@ export function dockerRunArgs(input: DockerRunArgsInput): string[] {
     // build instead of leaving it orphaned inside the container.
     '--init',
     `--name=${input.name}`,
-    `--network=${docker.network}`,
+    // Egress per command, not per container: the install step may reach a
+    // registry (or a proxy network standing in for one); everything after it,
+    // `pnpm run build` included, gets `none` unless an operator says otherwise.
+    `--network=${containerNetworkFor(input.command, {
+      installNetwork: docker.network,
+      buildNetwork: docker.buildNetwork,
+    })}`,
     '--cap-drop=ALL',
     '--security-opt=no-new-privileges',
+    // Nothing outside the workspace and the tmpfs is writable, so a generated
+    // postinstall cannot leave anything behind in the image's filesystem
+    // either — the same rule the site runtime containers run under.
+    '--read-only',
     `--memory=${docker.memory}`,
     `--pids-limit=${docker.pidsLimit}`,
     // The one and only mount. No host home, no Docker socket, no path outside
@@ -381,10 +396,12 @@ export class CommandSiteValidator implements SiteValidator {
     }
 
     if (this.isolation.mode === 'docker') {
-      const { image, network } = this.isolation.docker;
+      const { image, network, buildNetwork, user } = this.isolation.docker;
       this.options.onProgress?.(
         `Validating in a disposable ${image} container: only the site ` +
-          `workspace is mounted, network ${network}, no host credentials`,
+          `workspace is mounted, read-only root, uid ${user}, network ` +
+          `${network} for the install step and ${buildNetwork} for every ` +
+          'other command, no host credentials',
       );
     }
 
@@ -505,8 +522,12 @@ export class CommandSiteValidator implements SiteValidator {
         command,
         workspaceRoot,
         name,
-        env: containerBuildEnv(),
-        user: currentUser(),
+        env: containerBuildEnv(process.env, {
+          registry: commandNeedsRegistry(command),
+        }),
+        // The uid was resolved and refused-if-root at boot (`config.ts`), so
+        // by here it is a non-root pair this worker can read output back from.
+        user: docker.user || currentUser(),
       }),
       env: dockerClientEnv(),
       container: name,
