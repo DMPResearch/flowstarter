@@ -14,6 +14,7 @@ import {
   DEFAULT_COMMERCE_MODE,
   DEFAULT_GOAL,
   DEFAULT_PAGE_COUNT,
+  deriveBusinessName,
   goalFromDescription,
   guessedFields,
   industryFromDescription,
@@ -168,5 +169,109 @@ describe('guessedFields', () => {
         commerceMode: 'digital',
       })
     ).toEqual([]);
+  });
+});
+
+describe('deriveBusinessName', () => {
+  it("uses the Brief's own answer once it has one, over anything derivable", () => {
+    expect(
+      deriveBusinessName({
+        ...EMPTY_DISCOVERY,
+        businessName: 'Sable Fig Studio',
+        fullName: 'Ana Pop',
+        websiteUrl: 'https://not-sable-fig.example',
+      })
+    ).toBe('Sable Fig Studio');
+  });
+
+  it('derives a name from the website link, stripped of www and the TLD, title-cased', () => {
+    expect(
+      deriveBusinessName({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Ana Pop',
+        websiteUrl: 'https://www.flowstarter.net',
+      })
+    ).toBe('Flowstarter');
+  });
+
+  it('splits a hyphenated domain into separate title-cased words', () => {
+    expect(
+      deriveBusinessName({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Ana Pop',
+        websiteUrl: 'https://sable-fig.ro',
+      })
+    ).toBe('Sable Fig');
+  });
+
+  it('drops a generic two-label ccTLD whole, rather than leaving it in the name', () => {
+    expect(
+      deriveBusinessName({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Ana Pop',
+        websiteUrl: 'https://acmebakery.co.uk',
+      })
+    ).toBe('Acmebakery');
+  });
+
+  it('derives from the string alone: a domain that cannot resolve derives just as well as one that can', () => {
+    // No network call is made here — a DNS lookup on this host would time
+    // out or NXDOMAIN, and the derivation must not care either way.
+    expect(
+      deriveBusinessName({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Ana Pop',
+        websiteUrl: 'https://this-domain-should-never-resolve-9432.example',
+      })
+    ).toBe('This Domain Should Never Resolve 9432');
+  });
+
+  it('accepts a bare domain typed without a scheme', () => {
+    expect(
+      deriveBusinessName({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Ana Pop',
+        websiteUrl: 'flowstarter.net',
+      })
+    ).toBe('Flowstarter');
+  });
+
+  it('falls back to the visitor’s own name for an Instagram or LinkedIn profile', () => {
+    // A handle names a person, not a business: "@sablefig.official" is not
+    // "Sablefig Official", and for a personal portfolio the business is the
+    // person anyway.
+    expect(
+      deriveBusinessName({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Ana Pop',
+        instagramUrl: 'https://instagram.com/sablefig.official',
+      })
+    ).toBe('Ana Pop');
+  });
+
+  it('falls back to the visitor’s own name when the link does not parse as a URL at all', () => {
+    expect(
+      deriveBusinessName({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Ana Pop',
+        websiteUrl: 'not a url',
+      })
+    ).toBe('Ana Pop');
+  });
+
+  it('falls back to the visitor’s own name with no business name and no link', () => {
+    expect(
+      deriveBusinessName({ ...EMPTY_DISCOVERY, fullName: 'Ana Pop' })
+    ).toBe('Ana Pop');
+  });
+
+  it('is never empty when the visitor has given a full name', () => {
+    expect(
+      deriveBusinessName({ ...EMPTY_DISCOVERY, fullName: 'Ana' }).length
+    ).toBeGreaterThan(0);
+  });
+
+  it('is empty for a draft nobody has started', () => {
+    expect(deriveBusinessName(EMPTY_DISCOVERY)).toBe('');
   });
 });

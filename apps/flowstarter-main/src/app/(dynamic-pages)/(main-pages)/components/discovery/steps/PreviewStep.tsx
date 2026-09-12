@@ -26,7 +26,7 @@ import {
   claimIntakeChatPayload,
   describeWithIntakeAnswers,
 } from '../intake-chat.shared';
-import { withQuickDefaults } from '../quick-defaults';
+import { deriveBusinessName, withQuickDefaults } from '../quick-defaults';
 import { usePreviewProgress } from '../usePreviewProgress';
 import { formatPreviewExpiry } from '@/components/flowstarter/site-link';
 import { DemoSiteFrame } from './DemoSiteFrame';
@@ -149,15 +149,23 @@ interface ChatTurn {
  * generator takes. Without this the conversation would only reach the
  * generator after a claim, and the preview shown right now would ignore
  * what the visitor just told us.
+ *
+ * Exported for the unit test that pins the one field this function used to
+ * get wrong: the quick intake stopped asking for a business name directly
+ * (PR #108 moved that question behind the deposit), and this was still
+ * sending the now-always-blank `data.businessName` straight through, which
+ * is what made the live route's businessName gate — reasonably strict on its
+ * own terms — fail every quick-intake preview. `deriveBusinessName` is the
+ * rule that fills it back in from the answers the quick intake still asks.
  */
-function previewPayload(raw: DiscoveryData) {
+export function previewPayload(raw: DiscoveryData) {
   // The four answers, plus everything the intake stopped asking, derived by
   // rule from the visitor's own sentence. The generator needs an industry
   // and a page budget whether or not anybody was asked for one, and a
   // defensible guess beats a blank that the page-set rule reads as zero.
   const data = withQuickDefaults(raw);
   return {
-    businessName: data.businessName,
+    businessName: deriveBusinessName(data),
     fullName: data.fullName,
     // The intake asks "Where should I send your preview once it's ready?" and
     // this is the request that knows when it is ready. Dropping it here is

@@ -520,6 +520,37 @@ describe('depositBuildPayload', () => {
 
     expect(payload).not.toHaveProperty('claimedPreviewId');
   });
+
+  it('still yields a buildable payload for a claimed fallback preview with no manifest', () => {
+    // The JSON-preview fallback's own claim (a workspace whose funnel preview
+    // was never persisted with files — see `claim.ts`'s "has no stashed
+    // preview manifest" path) has a real, claimed preview id but nothing
+    // `derivePreviewIntent` can build an intent from. The deposit CTA must
+    // still work on that fallback rather than being hidden or disabled: the
+    // worker already treats a missing `previewIntent` as "generate from the
+    // intake alone", the same path an operator-created project (no preview
+    // at all) takes.
+    const previewIntent = derivePreviewIntent({
+      previewId: PREVIEW_ID,
+      manifest: null,
+    });
+    expect(previewIntent).toBeNull();
+
+    const payload = depositBuildPayload({
+      source: 'payment_intent',
+      claimedPreviewId: PREVIEW_ID,
+      previewIntent,
+    });
+
+    expect(payload).toEqual({
+      trigger: 'deposit_paid',
+      source: 'payment_intent',
+      depositPercent: 20,
+      balancePercent: 80,
+      claimedPreviewId: PREVIEW_ID,
+    });
+    expect(payload).not.toHaveProperty('previewIntent');
+  });
 });
 
 function intake(): BusinessIntakePayload {
