@@ -22,7 +22,7 @@ import {
   generateSiteAssets,
   type GeneratedAssetEntry,
 } from './generated-assets';
-import { listSiteImageSlots } from './site-media';
+import { CONTENT_FILES, listSiteImageSlots } from './site-media';
 import { assertSafeBusinessIntake } from './intake-guard';
 import type { TemplateLibrary } from './template-library-mcp';
 import {
@@ -67,6 +67,12 @@ import {
   isGatedPlaceholderImageRole,
   PLACEHOLDER_IMAGE_SHIPPED,
 } from './placeholder-images';
+import {
+  buildPortraitFrom,
+  DEFAULT_PORTRAIT_EDGE,
+  findPortraitSlotIssue,
+  type BuildPortrait,
+} from './portrait-slot';
 import {
   stripPreviewTeaserFromFiles,
   TEASER_IN_PAID_BUILD,
@@ -1066,13 +1072,32 @@ export function findInventedProjectIssue(
  */
 export function findPlaceholderImageIssue(
   files: readonly { path: string; content: string }[],
+  portrait?: BuildPortrait | null,
 ): string | undefined {
   const findings = findPlaceholderImageReferencesInFiles(files).filter(
     (finding) => isGatedPlaceholderImageRole(finding.role),
   );
-  return findings.length > 0
-    ? describePlaceholderImageIssue(findings)
-    : undefined;
+  const parts: string[] = [];
+  if (findings.length > 0) {
+    const described = describePlaceholderImageIssue(findings);
+    // "There is no client photograph, so initials are the honest answer" is
+    // the defence a portrait placeholder has, and it stops being one the
+    // moment this build is holding a photograph. Naming the file turns the
+    // repair from "remove the stand-in" into "use this instead".
+    const hasPortraitRole = findings.some(
+      (finding) => finding.role === 'portrait',
+    );
+    parts.push(
+      portrait && hasPortraitRole
+        ? `${described} The client’s own photograph is ${portrait.publicPath}; ` +
+            'use it in the about slot rather than the stand-in.'
+        : described,
+    );
+  }
+  // The placement half of the same question, and silent without a portrait.
+  const portraitIssue = findPortraitSlotIssue(files, portrait ?? null);
+  if (portraitIssue) parts.push(portraitIssue);
+  return parts.length > 0 ? parts.join(' ') : undefined;
 }
 
 /** Where a template keeps the copy the agent is meant to rewrite. */
@@ -1983,6 +2008,33 @@ export async function collectBuiltSiteText(
   return collectSiteTextFiles(siteRoot);
 }
 
+/**
+ * The template's own content files, read straight from the workspace.
+ *
+ * `collectBuiltSiteText` above prefers `dist/` as soon as a build has emitted
+ * one, and `dist/` is compiled HTML: it carries the image path but not the
+ * slot the path came from. The portrait rule is about slots (which section,
+ * which key), so when a build is holding a client photograph these two files
+ * join the scan. Missing files are an ordinary outcome: a template may ship
+ * only one of the two.
+ */
+async function readSiteContentFiles(
+  siteRoot: string,
+): Promise<Array<{ path: string; content: string }>> {
+  const files: Array<{ path: string; content: string }> = [];
+  for (const file of CONTENT_FILES) {
+    try {
+      files.push({
+        path: file,
+        content: await readFile(join(siteRoot, file), 'utf8'),
+      });
+    } catch {
+      /* a template may keep only one of the two files */
+    }
+  }
+  return files;
+}
+
 /** The most notes folded into one pass; a longer backlog waits for the next. */
 export const OPERATOR_NOTES_PER_PASS = 8;
 
@@ -2456,8 +2508,37 @@ export class FullSiteBuildWorker {
       // because the defect it catches is a specific stock image, not an
       // invented name.
       await phase('Checking for placeholder images');
+      // The photograph this build was given, read defensively off the job.
+      // The brief payload that declares it arrives in its own change, so the
+      // field is reached for rather than typed: with no portrait on the job
+      // this gate behaves exactly as it did before portraits existed, and
+      // with one it also checks where the picture ended up. The floor is the
+      // package's mirror of the app's, which is the source of truth.
+      const portrait = buildPortraitFrom(
+        (
+          job as {
+            briefInput?: {
+              portrait?: {
+                publicPath?: unknown;
+                width?: unknown;
+                height?: unknown;
+              } | null;
+            } | null;
+          }
+        ).briefInput ?? null,
+        { portraitEdge: DEFAULT_PORTRAIT_EDGE },
+      );
+      // Only a build with a portrait pays for the extra read.
+      const imageGateFiles = async () =>
+        portrait
+          ? [
+              ...(await collectBuiltSiteText(siteRoot)),
+              ...(await readSiteContentFiles(siteRoot)),
+            ]
+          : await collectBuiltSiteText(siteRoot);
       let placeholderImageIssue = findPlaceholderImageIssue(
-        await collectBuiltSiteText(siteRoot),
+        await imageGateFiles(),
+        portrait,
       );
       if (placeholderImageIssue) {
         await say('log', placeholderImageIssue);
@@ -2467,7 +2548,8 @@ export class FullSiteBuildWorker {
         );
         await check();
         placeholderImageIssue = findPlaceholderImageIssue(
-          await collectBuiltSiteText(siteRoot),
+          await imageGateFiles(),
+          portrait,
         );
       }
       if (placeholderImageIssue) {

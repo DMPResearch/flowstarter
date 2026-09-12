@@ -18,6 +18,7 @@ import { notFound, redirect } from 'next/navigation';
 import { requireWorkspaceAccess } from '@/lib/api-auth';
 import { listWorkspaceAssets } from '@/app/api/client/assets/asset-storage';
 import { evaluateBriefReadiness } from '@/lib/flowstarter/brief-readiness';
+import { portraitSizeFloors } from '@/lib/flowstarter/portrait-config';
 import { withTenant } from '@/lib/tenancy';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import {
@@ -144,7 +145,17 @@ export default async function ClientBriefPage({
           height: asset.height,
           usable: asset.usable,
           url: asset.url,
+          // Provenance. A picture we read off a page of theirs is offered back
+          // with a "Use this"; a file they sent us is already theirs to
+          // publish. The form cannot tell the two apart without these.
+          source: asset.source,
+          sourceUrl: asset.sourceUrl,
+          rightsConfirmedAt: asset.rightsConfirmedAt,
         }))}
+        // Read here, on the server, because `portraitSizeFloors` reads
+        // `process.env` and a client component would only ever see the
+        // browser-visible half of it, where an operator override is not.
+        portraitFloors={portraitSizeFloors()}
       />
     </main>
   );

@@ -114,6 +114,7 @@ function assetRow(overrides: Record<string, unknown> = {}) {
   return {
     id: PHOTO,
     source: 'upload',
+    sourceUrl: null,
     kind: null,
     mime: 'image/png',
     width: 2400,
@@ -171,6 +172,42 @@ describe('ClientBriefPage', () => {
       0
     );
     expect(listedFor).toEqual([MINE]);
+  });
+
+  // The page is what carries provenance down to the form: without `source`
+  // and `rightsConfirmedAt` on the props, a picture we read off the client's
+  // LinkedIn would be indistinguishable from one they uploaded and would be
+  // used without ever being offered back.
+  it('hands a sourced photo to the form as one we found, not one they sent', async () => {
+    state.assets = [
+      assetRow({
+        source: 'linkedin',
+        sourceUrl: 'https://media.licdn.com/dms/image/example/profile.jpg',
+        rightsConfirmedAt: null,
+        usable: false,
+        width: 800,
+        height: 800,
+      }),
+    ];
+    state.brief = {
+      workspace_id: MINE,
+      offer: GOOD_OFFER,
+      projects: [],
+      no_projects: true,
+      design_reference_asset_ids: [],
+      photo_asset_ids: [PHOTO],
+      ready_at: null,
+      override_at: null,
+    };
+
+    await renderPage(MINE);
+    const card = screen.getByTestId('brief-sourced-portrait');
+    expect(card).toHaveAttribute('data-source', 'linkedin');
+    expect(screen.getByTestId('brief-portrait-verdict')).toHaveAttribute(
+      'data-verdict',
+      'portrait'
+    );
+    expect(screen.getByTestId('brief-portrait-pending')).toBeInTheDocument();
   });
 
   it('opens with a way back to the project', async () => {

@@ -16,14 +16,22 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { probeImageSize } from './preview-assets';
 
-/** Content files a template may keep its rendered copy in. */
-const CONTENT_FILES = [
+/**
+ * Content files a template may keep its rendered copy in.
+ *
+ * Exported because a module that is handed files in memory rather than a
+ * workspace on disk (`portrait-slot.ts`, which judges where the client's own
+ * photograph ended up) still has to recognise a content file by its path, and
+ * two lists of the same two file names are two lists that can disagree.
+ */
+export const CONTENT_FILES = [
   'src/content/site-labels.md',
   'src/content/content.md',
 ] as const;
 
 /** Keys whose value is a rendered image path. */
-const IMAGE_KEY = /^(\s*)-?\s*(image|imageSrc|authorImage|logo|avatar):\s*(["'])(.*?)\3\s*$/;
+const IMAGE_KEY =
+  /^(\s*)-?\s*(image|imageSrc|authorImage|logo|avatar):\s*(["'])(.*?)\3\s*$/;
 /**
  * Some templates reuse `logo` for a text wordmark, so a key name alone does
  * not make a value an image. Only site-rooted image paths are offered for
@@ -52,6 +60,51 @@ export interface SiteImageSlot {
 }
 
 /**
+ * Every image slot in one content file's text, in document order.
+ *
+ * Pure, and separate from the workspace read below, because the same parse is
+ * needed by callers who never touch the disk: the build gates hold the site's
+ * files in memory, and a second regex pass written against the same YAML would
+ * be a second answer to "where are this site's pictures".
+ *
+ * `file` is only ever copied into the slot's `file` and `id`, so a caller with
+ * a prefixed path (`dist/`, an absolute workspace path) gets slots addressed
+ * the way it addressed the file.
+ */
+export function parseSiteImageSlots(
+  file: string,
+  source: string,
+): SiteImageSlot[] {
+  const slots: SiteImageSlot[] = [];
+  const lines = source.split('\n');
+  let section = 'general';
+  lines.forEach((line, index) => {
+    const sectionMatch = SECTION_KEY.exec(line);
+    if (sectionMatch) {
+      section = sectionMatch[1] as string;
+      return;
+    }
+    const match = IMAGE_KEY.exec(line);
+    if (!match) return;
+    const currentPath = match[4] as string;
+    if (!IMAGE_VALUE.test(currentPath)) return;
+    // Alt text sits on an adjacent line in every template we ship.
+    const altLine = lines[index + 1] ?? '';
+    const altMatch = ALT_KEY.exec(altLine);
+    slots.push({
+      id: `${file}#${index + 1}`,
+      file,
+      line: index + 1,
+      currentPath,
+      section,
+      key: match[2] as string,
+      ...(altMatch ? { alt: altMatch[3] as string } : {}),
+    });
+  });
+  return slots;
+}
+
+/**
  * Lists every image the delivered site renders, in document order, so a client
  * UI can show each slot with its current picture and offer a replacement.
  */
@@ -66,31 +119,7 @@ export async function listSiteImageSlots(
     } catch {
       continue;
     }
-    const lines = source.split('\n');
-    let section = 'general';
-    lines.forEach((line, index) => {
-      const sectionMatch = SECTION_KEY.exec(line);
-      if (sectionMatch) {
-        section = sectionMatch[1] as string;
-        return;
-      }
-      const match = IMAGE_KEY.exec(line);
-      if (!match) return;
-      const currentPath = match[4] as string;
-      if (!IMAGE_VALUE.test(currentPath)) return;
-      // Alt text sits on an adjacent line in every template we ship.
-      const altLine = lines[index + 1] ?? '';
-      const altMatch = ALT_KEY.exec(altLine);
-      slots.push({
-        id: `${file}#${index + 1}`,
-        file,
-        line: index + 1,
-        currentPath,
-        section,
-        key: match[2] as string,
-        ...(altMatch ? { alt: altMatch[3] as string } : {}),
-      });
-    });
+    slots.push(...parseSiteImageSlots(file, source));
   }
   return slots;
 }
@@ -99,7 +128,10 @@ export async function listSiteImageSlots(
 const MAGIC: Array<{ ext: string; test: (b: Buffer) => boolean }> = [
   { ext: 'png', test: (b) => b.length > 8 && b.readUInt32BE(0) === 0x89504e47 },
   { ext: 'jpg', test: (b) => b.length > 3 && b[0] === 0xff && b[1] === 0xd8 },
-  { ext: 'gif', test: (b) => b.length > 6 && b.toString('ascii', 0, 3) === 'GIF' },
+  {
+    ext: 'gif',
+    test: (b) => b.length > 6 && b.toString('ascii', 0, 3) === 'GIF',
+  },
   {
     ext: 'webp',
     test: (b) =>
@@ -110,7 +142,20 @@ const MAGIC: Array<{ ext: string; test: (b: Buffer) => boolean }> = [
 ];
 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
-const MIN_EDGE_PX = 200;
+
+/**
+ * The default floor on the longest edge, in pixels. Below it a picture put in
+ * a section or a hero reads as blurry, which is what the error says.
+ *
+ * Exported, and overridable per call, because one caller is filing a picture
+ * it already knows is small. A portrait read from a provider's public profile
+ * is 100 square on Instagram, and a hundred-pixel face is still worth keeping
+ * as a round avatar; refusing it here would be this function deciding a
+ * placement question. So a caller that knows what it is filing passes its own
+ * floor, and the rule that keeps a small picture out of a hero slot lives with
+ * that caller rather than in the byte check.
+ */
+export const MIN_EDGE_PX = 200;
 const MAX_EDGE_PX = 8_000;
 
 export interface VerifiedUpload {
@@ -123,27 +168,33 @@ export interface VerifiedUpload {
  * Validates an upload by its actual bytes rather than its declared name or
  * content type, so a renamed script or an SVG cannot reach a client's site.
  */
-export function assertSafeUploadedImage(bytes: Buffer): VerifiedUpload {
+export function assertSafeUploadedImage(
+  bytes: Buffer,
+  options?: { minEdge?: number },
+): VerifiedUpload {
   if (bytes.length === 0) throw new Error('Uploaded image is empty');
   if (bytes.length > MAX_UPLOAD_BYTES) {
     throw new Error('Uploaded image is larger than 8MB');
   }
   const format = MAGIC.find((candidate) => candidate.test(bytes));
   if (!format) {
-    throw new Error(
-      'Uploaded file is not a PNG, JPEG, GIF or WebP image',
-    );
+    throw new Error('Uploaded file is not a PNG, JPEG, GIF or WebP image');
   }
   const size = probeImageSize(bytes);
   if (size) {
+    // The effective floor: the caller's when it named one, ours otherwise, so
+    // every existing caller keeps exactly the behaviour it had.
+    const minEdge = options?.minEdge ?? MIN_EDGE_PX;
     const longest = Math.max(size.width, size.height);
-    if (longest < MIN_EDGE_PX) {
+    if (longest < minEdge) {
       throw new Error(
         `Uploaded image is only ${longest}px on its longest side; it would look blurry on the site`,
       );
     }
     if (longest > MAX_EDGE_PX) {
-      throw new Error('Uploaded image is larger than 8000px on its longest side');
+      throw new Error(
+        'Uploaded image is larger than 8000px on its longest side',
+      );
     }
   }
   return { extension: format.ext, ...(size ?? {}) };
@@ -206,9 +257,13 @@ export async function replaceSiteImage(
 
   const fileName = safeMediaName(input.slot, verified.extension);
   await mkdir(join(workspaceRoot, CLIENT_MEDIA_DIR), { recursive: true });
-  await writeFile(join(workspaceRoot, CLIENT_MEDIA_DIR, fileName), input.bytes, {
-    mode: 0o644,
-  });
+  await writeFile(
+    join(workspaceRoot, CLIENT_MEDIA_DIR, fileName),
+    input.bytes,
+    {
+      mode: 0o644,
+    },
+  );
 
   const publicPath = `/flowstarter-media/${fileName}`;
   lines[index] = line.replace(
@@ -222,7 +277,10 @@ export async function replaceSiteImage(
     const altMatch = altLine === undefined ? null : ALT_KEY.exec(altLine);
     if (altMatch) {
       // Quotes and YAML meaning must survive whatever the client typed.
-      const safeAlt = input.alt.replace(/["'\\\r\n]/g, ' ').trim().slice(0, 160);
+      const safeAlt = input.alt
+        .replace(/["'\\\r\n]/g, ' ')
+        .trim()
+        .slice(0, 160);
       lines[altIndex] = altLine!.replace(
         `${altMatch[2]}${altMatch[3]}${altMatch[2]}`,
         `${altMatch[2]}${safeAlt}${altMatch[2]}`,

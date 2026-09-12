@@ -39,6 +39,12 @@ export const PUBLIC_ROUTES = [
   '/api/contact(.*)', // Public contact form API
   '/api/support-chat(.*)', // Public support bot LLM endpoint
   '/api/discovery(.*)', // Public discovery wizard: lead capture + booking deposit
+  // The portrait connect flows. Public because the visitor has no session yet
+  // (the whole point is a preview built before anybody is anybody) and because
+  // the callback arrives as a provider's redirect, which carries no cookie of
+  // ours at all. What stands in for a session is the signed state: see
+  // `app/api/connect/connect-flow.ts`.
+  '/api/connect(.*)',
   '/unlock(.*)', // Preview unlock landing: reached from a generated site, viewer may be signed out
   '/welcome(.*)', // Guest deposit landing: Stripe returns here before the account exists
   '/contact(.*)',

@@ -605,6 +605,7 @@ describe('reading assets back', () => {
         id: ASSET_CONFIRMED,
         workspace_id: WORKSPACE_A,
         source: 'upload',
+        source_url: null,
         kind: null,
         storage_path: `tenant/${WORKSPACE_A}/assets/${'a'.repeat(64)}.png`,
         sha256: 'a'.repeat(64),
@@ -617,9 +618,14 @@ describe('reading assets back', () => {
         created_at: '2026-08-30T09:00:00.000Z',
       },
       {
+        // A picture we read off the client's own public Instagram page rather
+        // than one they sent. An automatic source is filed with no rights
+        // stamp on purpose, and the provenance is the only thing that can
+        // answer "where did this come from" six months later.
         id: ASSET_UNCONFIRMED,
         workspace_id: WORKSPACE_A,
-        source: 'upload',
+        source: 'instagram',
+        source_url: 'https://scontent.cdninstagram.com/v/example_100x100.jpg',
         kind: null,
         storage_path: `tenant/${WORKSPACE_A}/assets/${'b'.repeat(64)}.png`,
         sha256: 'b'.repeat(64),
@@ -651,6 +657,29 @@ describe('reading assets back', () => {
     expect(
       body.assets.find((asset) => asset.id === ASSET_UNCONFIRMED)?.usable
     ).toBe(false);
+  });
+
+  // Provenance survives the read. The brief's sourced-portrait card is the
+  // only thing that can offer a fetched picture back to the person it is of,
+  // and it cannot tell a fetch from an upload without these two fields.
+  it('reports where a picture came from, and where it did not', async () => {
+    const response = await GET(
+      new NextRequest(`http://localhost/api/client/assets/${WORKSPACE_A}`),
+      params(WORKSPACE_A)
+    );
+    const body = (await response.json()) as {
+      assets: Array<{ id: string; source: string; sourceUrl: string | null }>;
+    };
+
+    expect(
+      body.assets.find((asset) => asset.id === ASSET_UNCONFIRMED)
+    ).toMatchObject({
+      source: 'instagram',
+      sourceUrl: 'https://scontent.cdninstagram.com/v/example_100x100.jpg',
+    });
+    expect(
+      body.assets.find((asset) => asset.id === ASSET_CONFIRMED)
+    ).toMatchObject({ source: 'upload', sourceUrl: null });
   });
 
   it('hands out signed URLs, never raw storage paths', async () => {

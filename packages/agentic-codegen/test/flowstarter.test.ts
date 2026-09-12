@@ -818,6 +818,12 @@ describe('client media on a delivered site', () => {
     ).toThrow(/not a PNG, JPEG/);
     // Too small to render well.
     expect(() => assertSafeUploadedImage(png(120, 90))).toThrow(/blurry/);
+    // Unless the caller is filing something it knows is small: a portrait read
+    // from a provider's public profile is 100 square, and the rule that keeps
+    // it out of a hero slot is the caller's, not this function's.
+    expect(assertSafeUploadedImage(png(120, 90), { minEdge: 96 })).toMatchObject(
+      { extension: 'png', width: 120, height: 90 },
+    );
   });
 
   it('refuses to write when the slot moved since it was read', async () => {

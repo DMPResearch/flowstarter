@@ -40,7 +40,18 @@ import {
   listFunnelAssets,
   readFunnelAssetBytes,
   signFunnelAsset,
+  storeFunnelAsset,
+  type FunnelAssetSource,
 } from '@/lib/flowstarter/funnel-assets';
+import {
+  downloadPortraitPicture,
+  readAutomaticPortraitSources,
+} from '@/lib/flowstarter/portrait-auto-fetch';
+import { portraitSizeFloors } from '@/lib/flowstarter/portrait-config';
+import {
+  judgePortraitSources,
+  type PortraitSourceId,
+} from '@/lib/flowstarter/portrait-source';
 import {
   decodeBitmap,
   fetchImageBitmap,
@@ -51,7 +62,10 @@ import { parseProfileLinks } from '@/lib/flowstarter/profile-signals';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-/** Three profile fetches at four seconds each, in parallel, plus one model. */
+/**
+ * Three profile fetches and three portrait sources, four seconds each, all in
+ * parallel, plus the picture we file and one model completion.
+ */
 export const maxDuration = 30;
 
 const Schema = z.object({
@@ -63,6 +77,16 @@ const Schema = z.object({
   /** The visitor's own prose. The only thing the model is allowed to read. */
   offer: z.string().max(2000).optional().default(''),
   description: z.string().max(2000).optional().default(''),
+  /**
+   * The client's own name, when the intake has it.
+   *
+   * The website portrait source needs it and has no fallback: the rule is
+   * "the page says this image is a person", and the only way a page says that
+   * is by putting the name next to the picture. Without a name the site is
+   * still read, and everything it offers lands on `not_a_person`, which is the
+   * honest answer rather than a guess.
+   */
+  fullName: z.string().max(200).optional().default(''),
   /**
    * Set once generation has started, so a picture the visitor uploaded when
    * the profiles came back empty is folded into the palette.
@@ -141,6 +165,153 @@ async function collectBitmaps(input: {
   return bitmaps;
 }
 
+// ---------------------------------------------------------------------------
+// The portrait
+// ---------------------------------------------------------------------------
+
+/**
+ * The whole table of sources and the one we would use, as the wizard and the
+ * brief read it.
+ *
+ * Deliberately the full table rather than only the winner. Four of the five
+ * rows are usually a reason we have no picture, and each of those reasons is a
+ * sentence the client can act on: connect LinkedIn, convert the Instagram
+ * account, give us a GitHub link, put your name next to your photograph. A
+ * response that carried only the winner would be silence in the common case,
+ * and silence is the one answer nobody can do anything with.
+ */
+interface PortraitBlock {
+  candidates: Array<{
+    source: string;
+    rank: number;
+    usable: boolean;
+    verdict: string;
+    reason: string;
+    placements: string[];
+  }>;
+  chosen: {
+    source: string;
+    verdict: string;
+    placements: string[];
+    assetId: string | null;
+    url: string | null;
+    width: number | null;
+    height: number | null;
+  } | null;
+}
+
+/** What the response carries when the portrait step could not run at all. */
+const EMPTY_PORTRAIT: PortraitBlock = { candidates: [], chosen: null };
+
+/**
+ * Which `funnel_assets.source` each portrait source files under. The column is
+ * the rights record, so it names the network rather than the mechanism; a
+ * picture off the client's own page is `og`, the same value
+ * `captureProfilePicture` uses for one.
+ */
+const PORTRAIT_ASSET_SOURCE: Record<PortraitSourceId, FunnelAssetSource> = {
+  'linkedin-openid': 'linkedin',
+  'instagram-login': 'instagram',
+  'github-avatar': 'github',
+  'website-about': 'og',
+  'instagram-public-og': 'instagram',
+};
+
+/**
+ * Roles a stored picture is fit for, by what the measurement said. The same
+ * vocabulary `portrait-store.ts` writes, because the generator reads one list
+ * and two writers disagreeing about it is a portrait in a hero slot.
+ */
+const USABLE_FOR_BY_VERDICT: Record<string, readonly string[]> = {
+  portrait: ['section', 'portrait'],
+  avatar: ['avatar'],
+};
+
+/**
+ * The three automatic sources, judged, and the winner filed.
+ *
+ * Never throws for the caller's benefit; the caller wraps it anyway, because
+ * the contract is that nothing in this block can cost a visitor their preview.
+ */
+async function readPortrait(input: {
+  urls: readonly string[];
+  fullName: string;
+  previewId?: string;
+}): Promise<PortraitBlock> {
+  const observations = await readAutomaticPortraitSources({
+    urls: input.urls,
+    fullName: input.fullName,
+  });
+  const verdict = judgePortraitSources(observations, portraitSizeFloors());
+
+  const candidates = verdict.candidates.map((candidate) => ({
+    source: candidate.source,
+    rank: candidate.rank,
+    usable: candidate.usable,
+    verdict: candidate.verdict,
+    reason: candidate.reason,
+    placements: [...candidate.placements],
+  }));
+
+  const chosen = verdict.chosen;
+  if (!chosen || !chosen.picture) return { candidates, chosen: null };
+
+  let assetId: string | null = null;
+  // The provider's own URL until we have filed a copy. It is public by the
+  // publisher's choice and the client gave us the link it came off, so showing
+  // it back to them costs nothing; the signed copy is better because a
+  // provider URL expires and ours does not.
+  let url: string | null = chosen.picture.url;
+
+  if (input.previewId) {
+    const download = await downloadPortraitPicture({ url: chosen.picture.url });
+    if (download) {
+      const asset = await storeFunnelAsset({
+        previewId: input.previewId,
+        file: {
+          bytes: download.bytes,
+          extension: download.extension,
+          mime: download.mime,
+          sha256: download.sha256,
+          width: download.width,
+          height: download.height,
+        },
+        kind: 'photo',
+        source: PORTRAIT_ASSET_SOURCE[chosen.source],
+        usableFor: USABLE_FOR_BY_VERDICT[chosen.verdict] ?? [],
+        // The load-bearing line. An automatic source is not consent: nobody
+        // pressed a button, we went and looked. `rights_confirmed_at` stays
+        // NULL, which makes the row invisible to `loadUsableAssets` and the
+        // picture unpublishable on a paid site by construction. The client
+        // taps "Use this" on the brief and that tap is what changes it.
+        rights: null,
+        // What we downloaded and when. A provider's picture URL expires, so
+        // this pair is the only account of what the profile looked like at the
+        // moment we read it.
+        provenance: {
+          sourceUrl: chosen.picture.url,
+          fetchedAt: new Date().toISOString(),
+        },
+      });
+      assetId = asset.id;
+      if (asset.storagePath) url = await signFunnelAsset(asset.storagePath);
+    }
+  }
+
+  return {
+    candidates,
+    chosen: {
+      source: chosen.source,
+      verdict: chosen.verdict,
+      placements: [...chosen.placements],
+      assetId,
+      url,
+      width: chosen.picture.width,
+      height: chosen.picture.height,
+    },
+  };
+}
+
 export async function POST(request: NextRequest): Promise<NextResponse> {
   if (isRateLimited(clientIp(request))) {
     return NextResponse.json(
@@ -196,6 +367,27 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         })
       : ({ status: 'skipped', reason: 'no_image' } as const);
 
+    // The three automatic portrait sources, judged against the same rule the
+    // two connect flows are judged against. Its own try/catch, inside the
+    // route's own: a portrait is the richest thing this endpoint can return
+    // and it is still only decoration, so a thrown anything here leaves an
+    // empty table and every other field intact.
+    let portrait: PortraitBlock = EMPTY_PORTRAIT;
+    try {
+      portrait = await readPortrait({
+        urls: [input.instagramUrl, input.linkedinUrl, input.websiteUrl].filter(
+          Boolean
+        ),
+        fullName: input.fullName,
+        previewId: input.previewId,
+      });
+    } catch (error) {
+      console.error(
+        '[brand-signals] the portrait sources failed; the rest of the answer stands:',
+        error instanceof Error ? error.message : 'unknown error'
+      );
+    }
+
     const bitmaps = await collectBitmaps({
       previewId: input.previewId,
       imageUrls: signals.imageUrls,
@@ -248,6 +440,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
             }
           : null,
       /**
+       * The richer answer about the client's face, and the one the brief
+       * reads: every source with the reason it is or is not usable, plus the
+       * one we would place. Coexists with `picture` above rather than
+       * replacing it, because `picture` is what the palette step and the claim
+       * page already consume and the two are not the same question.
+       */
+      portrait,
+      /**
        * True when we read nothing at all and the visitor is worth offering the
        * picture upload to. A rule, decided here, so the wizard does not have
        * to reimplement "was any of that useful".
@@ -274,6 +474,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       unavailable: [],
       anyExposed: false,
       picture: null,
+      portrait: EMPTY_PORTRAIT,
       offerPictureUpload: true,
     });
   }

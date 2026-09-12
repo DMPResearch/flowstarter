@@ -312,6 +312,13 @@ async function findBySha256(
 export interface ClientAsset {
   id: string;
   source: string;
+  /**
+   * The provider URL the bytes were downloaded from, for a picture we fetched
+   * rather than one the client sent. Null for an upload, which is the
+   * distinction the brief's sourced-portrait card and any rights question turn
+   * on.
+   */
+  sourceUrl: string | null;
   kind: string | null;
   mime: string | null;
   width: number | null;
@@ -332,6 +339,7 @@ export interface ClientAsset {
 
 export interface ListedAssetsRow extends AssetRowShape {
   source: string;
+  source_url: string | null;
   mime: string | null;
   selected: boolean;
   created_at: string | null;
@@ -353,7 +361,7 @@ export async function listWorkspaceAssets(
   const { data, error } = await withTenant(supabase, workspaceId)
     .from('assets')
     .select(
-      'id, source, kind, mime, width, height, usable_for, selected, rights_confirmed_at, created_at, storage_path'
+      'id, source, source_url, kind, mime, width, height, usable_for, selected, rights_confirmed_at, created_at, storage_path'
     )
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -376,6 +384,7 @@ async function toClientAsset(
   return {
     id: row.id,
     source: row.source,
+    sourceUrl: row.source_url ?? null,
     kind: row.kind,
     mime: row.mime,
     width: row.width,

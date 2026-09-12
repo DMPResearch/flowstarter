@@ -98,5 +98,6 @@ export * from './flowstarter/teaser-rule';
 export * from './flowstarter/cal-preview-rule';
 export * from './flowstarter/placeholder-copy';
 export * from './flowstarter/placeholder-images';
+export * from './flowstarter/portrait-slot';
 export * from './flowstarter/invented-project';
 export * from './flowstarter/theme-tokens';

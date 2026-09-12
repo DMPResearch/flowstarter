@@ -498,6 +498,20 @@ export interface ClaimPreviewInput {
    * to the placeholder and the Brief asks for a photograph instead.
    */
   useProfilePicture?: boolean;
+  /**
+   * The funnel-asset namespace a connected portrait was filed under.
+   *
+   * The connect flows run at the links question, which is before generation
+   * has minted a preview id, so the wizard mints its own namespace for them
+   * and carries it in the draft. That picture is therefore filed against a
+   * different key from everything else this preview holds, and without this
+   * field the claim would carry the logo and leave the client's face behind.
+   *
+   * Distinct from `useProfilePicture`, and deliberately so: a connected
+   * portrait already carries `rights_confirmed_at`, because the person
+   * authorised it at the provider rather than being asked again here.
+   */
+  portraitPreviewId?: string | null;
   /** Recorded on the rights confirmation, as evidence of where it came from. */
   rightsStatementVersion?: string;
   clientIp?: string | null;
@@ -585,6 +599,7 @@ export async function claimPreview(
     await adoptFunnelPreview(input.previewId, existing, {
       useProfilePicture: input.useProfilePicture,
       statementVersion: input.rightsStatementVersion,
+      portraitPreviewId: input.portraitPreviewId,
       ip: input.clientIp,
       userAgent: input.clientUserAgent,
     });
@@ -683,6 +698,7 @@ export async function claimPreview(
     await adoptFunnelPreview(input.previewId, raced, {
       useProfilePicture: input.useProfilePicture,
       statementVersion: input.rightsStatementVersion,
+      portraitPreviewId: input.portraitPreviewId,
       ip: input.clientIp,
       userAgent: input.clientUserAgent,
     });
@@ -768,6 +784,7 @@ export async function claimPreview(
   await adoptFunnelPreview(input.previewId, workspaceId, {
     useProfilePicture: input.useProfilePicture,
     statementVersion: input.rightsStatementVersion,
+    portraitPreviewId: input.portraitPreviewId,
     ip: input.clientIp,
     userAgent: input.clientUserAgent,
   });
@@ -845,6 +862,59 @@ export async function claimPreview(
  * Never throws. The workspace already exists at this point and is the thing
  * worth protecting.
  */
+/**
+ * Carries a connected portrait into the workspace.
+ *
+ * Separate from `adoptFunnelPreview` because it is keyed on a different
+ * namespace: the LinkedIn and Instagram connect flows happen at the links
+ * question, before generation has minted a preview id, so the wizard mints its
+ * own and the picture is filed against that. This is the one call that brings
+ * it across, and it is idempotent for the same reason the rest of the claim
+ * is: `claimFunnelAssets` skips a row that already carries a claimed asset id.
+ *
+ * No rights confirmation is written here, and that absence is the point. A
+ * connected portrait already has one, written by the connect action itself,
+ * because the person went to the provider and approved it. Asking them again
+ * on the claim page would be asking a question they have already answered.
+ *
+ * Never throws. A portrait that did not make the crossing is a site that falls
+ * back to initials, which is PR #110's typographic fallback doing its job.
+ */
+async function adoptConnectedPortrait(
+  portraitPreviewId: string,
+  workspaceId: string
+): Promise<void> {
+  if (!UUID.test(portraitPreviewId)) return;
+  try {
+    const assets = await claimFunnelAssets({
+      previewId: portraitPreviewId,
+      workspaceId,
+    });
+    if (assets.failed.length > 0) {
+      console.warn(
+        `[Flowstarter] claim could not carry ${assets.failed.length} ` +
+          `connected portrait(s) into workspace ${workspaceId}`
+      );
+    }
+    // The connection row learns where it ended up, so an operator answering a
+    // rights question later can get from the workspace back to the moment the
+    // person authorised it.
+    const supabase = createSupabaseServiceRoleClient();
+    const { error } = await supabase
+      .from('portrait_connections')
+      .update({ workspace_id: workspaceId })
+      .eq('preview_id', portraitPreviewId)
+      .is('workspace_id', null);
+    if (error) throw error;
+  } catch (error) {
+    console.warn(
+      `[Flowstarter] claim could not adopt the connected portrait for ` +
+        `workspace ${workspaceId}: ` +
+        (error instanceof Error ? error.message : 'unknown error')
+    );
+  }
+}
+
 async function adoptFunnelPreview(
   previewId: string,
   workspaceId: string,
@@ -853,8 +923,13 @@ async function adoptFunnelPreview(
     statementVersion?: string;
     ip?: string | null;
     userAgent?: string | null;
+    /** See `ClaimPreviewInput.portraitPreviewId`. */
+    portraitPreviewId?: string | null;
   }
 ): Promise<void> {
+  if (rights?.portraitPreviewId) {
+    await adoptConnectedPortrait(rights.portraitPreviewId, workspaceId);
+  }
   try {
     // The pictures first, and outside the artifact's early return: a visitor
     // whose Instagram would not load uploads a logo before generation starts,

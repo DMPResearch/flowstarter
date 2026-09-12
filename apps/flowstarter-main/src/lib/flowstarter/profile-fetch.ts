@@ -27,6 +27,12 @@ import 'server-only';
  *     169.254.169.254 cannot be laundered through a public first hop,
  *   - the body is read in chunks and abandoned the moment it passes the cap,
  *     so a hostile endpoint cannot stream us out of memory.
+ *
+ * That discipline is exported as `fetchPublicResource`, which is the request
+ * with none of the profile reading attached. `portrait-auto-fetch.ts` reads a
+ * client's own page and downloads the picture it finds there through it, for
+ * the plain reason that a second hand-written copy of the redirect loop is a
+ * second place for the host re-check to go missing.
  */
 import {
   MAX_PROFILE_BYTES,
@@ -62,10 +68,13 @@ export type FetchLike = (
   }
 ) => Promise<Response>;
 
-/** Reads at most `MAX_PROFILE_BYTES`, then stops pulling from the stream. */
-async function readCapped(response: Response): Promise<string | 'too_large'> {
+/** Reads at most `maxBytes`, then stops pulling from the stream. */
+async function readCapped(
+  response: Response,
+  maxBytes: number
+): Promise<Buffer | 'too_large'> {
   const body = response.body;
-  if (!body) return await response.text();
+  if (!body) return Buffer.from(await response.text(), 'utf-8');
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -75,43 +84,73 @@ async function readCapped(response: Response): Promise<string | 'too_large'> {
       if (done) break;
       if (!value) continue;
       total += value.byteLength;
-      if (total > MAX_PROFILE_BYTES) return 'too_large';
+      if (total > maxBytes) return 'too_large';
       chunks.push(value);
     }
   } finally {
     await reader.cancel().catch(() => undefined);
   }
-  return new TextDecoder('utf-8', { fatal: false }).decode(
-    Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)))
-  );
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
 }
 
 /**
- * Fetches one profile and reads it. Never throws: a reading is the return
- * value in every case, including the ones where nothing came back.
+ * Why a request produced no bytes. The same vocabulary
+ * `ProfileUnavailableReason` uses for these four cases, deliberately, so the
+ * profile reading can hand it straight through without a translation table
+ * that could disagree with itself.
  */
-export async function fetchProfileReading(
-  link: ProfileLink,
-  options: { fetchImpl?: FetchLike; timeoutMs?: number } = {}
-): Promise<ProfileReading> {
-  const fetchImpl = (options.fetchImpl ?? fetch) as FetchLike;
-  const timeoutMs = options.timeoutMs ?? PROFILE_FETCH_TIMEOUT_MS;
+export type PublicFetchFailure =
+  | 'blocked'
+  | 'timeout'
+  | 'network_error'
+  | 'too_large';
+
+export type PublicFetchOutcome =
+  | {
+      status: 'ok';
+      /** The URL that finally answered, after every hop was re-checked. */
+      url: string;
+      httpStatus: number;
+      headers: Headers;
+      /** Never longer than `maxBytes`. */
+      bytes: Buffer;
+    }
+  | { status: 'failed'; reason: PublicFetchFailure };
+
+/**
+ * One GET against a URL a visitor supplied, under the whole safety discipline
+ * this module exists to hold, returning bytes and deciding nothing.
+ *
+ * Exported because the portrait pipeline needs exactly this and nothing else:
+ * `portrait-auto-fetch.ts` reads a client's own page and then downloads the
+ * picture it found there, both from strings a visitor gave us, both needing
+ * the host re-checked at every hop and the body capped. Copying eighty lines
+ * of redirect handling into a second file is how one of the two copies ends up
+ * without the re-check.
+ *
+ * Never throws. Every failure is one of four reasons.
+ */
+export async function fetchPublicResource(input: {
+  url: string;
+  headers: Record<string, string>;
+  maxBytes: number;
+  timeoutMs: number;
+  fetchImpl?: FetchLike;
+}): Promise<PublicFetchOutcome> {
+  const fetchImpl = (input.fetchImpl ?? fetch) as FetchLike;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(), input.timeoutMs);
 
   try {
-    let url = link.url;
+    let url = input.url;
     for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-      if (!isPublicHttpUrl(url)) {
-        return {
-          status: 'unavailable',
-          network: link.network,
-          url: link.url,
-          reason: 'blocked',
-        };
-      }
+      // Before the first request and again after every redirect. A hostile
+      // endpoint that answers the first hop from a public address and then
+      // points at 169.254.169.254 is the whole reason redirects are followed
+      // by hand rather than by the runtime.
+      if (!isPublicHttpUrl(url)) return { status: 'failed', reason: 'blocked' };
       const response = await fetchImpl(url, {
-        headers: REQUEST_HEADERS,
+        headers: input.headers,
         redirect: 'manual',
         signal: controller.signal,
       });
@@ -127,42 +166,67 @@ export async function fetchProfileReading(
         continue;
       }
 
-      const html = await readCapped(response);
-      if (html === 'too_large') {
-        return {
-          status: 'unavailable',
-          network: link.network,
-          url: link.url,
-          reason: 'too_large',
-        };
+      const bytes = await readCapped(response, input.maxBytes);
+      if (bytes === 'too_large') {
+        return { status: 'failed', reason: 'too_large' };
       }
-      return readProfileHtml({
-        network: link.network,
-        url: link.url,
-        status: response.status,
-        html,
-      });
+      return {
+        status: 'ok',
+        url,
+        httpStatus: response.status,
+        headers: response.headers,
+        bytes,
+      };
     }
     // Out of hops, or a redirect with nowhere to go.
-    return {
-      status: 'unavailable',
-      network: link.network,
-      url: link.url,
-      reason: 'blocked',
-    };
+    return { status: 'failed', reason: 'blocked' };
   } catch (error) {
     const aborted =
       controller.signal.aborted ||
       (error instanceof Error && error.name === 'AbortError');
     return {
-      status: 'unavailable',
-      network: link.network,
-      url: link.url,
+      status: 'failed',
       reason: aborted ? 'timeout' : 'network_error',
     };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Fetches one profile and reads it. Never throws: a reading is the return
+ * value in every case, including the ones where nothing came back.
+ */
+export async function fetchProfileReading(
+  link: ProfileLink,
+  options: { fetchImpl?: FetchLike; timeoutMs?: number } = {}
+): Promise<ProfileReading> {
+  const outcome = await fetchPublicResource({
+    url: link.url,
+    headers: REQUEST_HEADERS,
+    maxBytes: MAX_PROFILE_BYTES,
+    timeoutMs: options.timeoutMs ?? PROFILE_FETCH_TIMEOUT_MS,
+    fetchImpl: options.fetchImpl,
+  });
+
+  if (outcome.status === 'failed') {
+    return {
+      status: 'unavailable',
+      network: link.network,
+      url: link.url,
+      reason: outcome.reason,
+    };
+  }
+
+  return readProfileHtml({
+    network: link.network,
+    url: link.url,
+    status: outcome.httpStatus,
+    // Non-fatal on purpose: a page served as Latin-1 or with one broken byte
+    // in the middle of a script tag still has readable meta tags, and a throw
+    // here would cost the reading for a reason the visitor cannot act on.
+    html: new TextDecoder('utf-8', { fatal: false }).decode(outcome.bytes),
+  });
 }
 
 /**

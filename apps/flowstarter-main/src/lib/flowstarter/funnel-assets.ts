@@ -65,6 +65,10 @@ export interface FunnelAssetRow {
   usableFor: string[];
   rightsConfirmedAt: string | null;
   claimedAssetId: string | null;
+  /** The provider URL the bytes came off, for a picture we downloaded. */
+  sourceUrl: string | null;
+  /** When we downloaded it. Null for a file the visitor sent us. */
+  fetchedAt: string | null;
 }
 
 interface RawRow {
@@ -80,10 +84,12 @@ interface RawRow {
   usable_for: string[] | null;
   rights_confirmed_at: string | null;
   claimed_asset_id: string | null;
+  source_url: string | null;
+  fetched_at: string | null;
 }
 
 const COLUMNS =
-  'id, preview_id, source, kind, storage_path, sha256, mime, width, height, usable_for, rights_confirmed_at, claimed_asset_id';
+  'id, preview_id, source, kind, storage_path, sha256, mime, width, height, usable_for, rights_confirmed_at, claimed_asset_id, source_url, fetched_at';
 
 function toRow(raw: RawRow): FunnelAssetRow {
   return {
@@ -99,6 +105,8 @@ function toRow(raw: RawRow): FunnelAssetRow {
     usableFor: raw.usable_for ?? [],
     rightsConfirmedAt: raw.rights_confirmed_at,
     claimedAssetId: raw.claimed_asset_id,
+    sourceUrl: raw.source_url,
+    fetchedAt: raw.fetched_at,
   };
 }
 
@@ -106,9 +114,13 @@ function toRow(raw: RawRow): FunnelAssetRow {
 const UNIQUE_VIOLATION = '23505';
 
 /**
- * The values `assets.source` accepts. `funnel_assets.source` is wider, because
- * it names the network a picture was read from, and `instagram` is not a value
- * the older table knows; those collapse to `social` on the way across.
+ * The values `assets.source` accepts, which since
+ * `20260913120000_portrait_from_social.sql` are the same values
+ * `funnel_assets.source` accepts. The two check constraints are deliberately
+ * identical, so the network a picture was read from survives the claim instead
+ * of being rounded off at it. Anything outside the set is still refused rather
+ * than written, because an unrecognised source is a guess, and a guess is what
+ * a rights complaint would be answered with.
  */
 const ASSET_SOURCES = new Set([
   'upload',
@@ -117,6 +129,9 @@ const ASSET_SOURCES = new Set([
   'gbp',
   'old_site',
   'social',
+  'instagram',
+  'linkedin',
+  'github',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -164,6 +179,16 @@ export interface StoreFunnelAssetInput {
     ip: string | null;
     userAgent: string | null;
   } | null;
+  /**
+   * Where the bytes were downloaded from, and when, for a picture we fetched.
+   *
+   * Absent for an upload, and that absence is the record: a picture we
+   * downloaded is not a file the client sent, and in six months the row is the
+   * only thing that can tell them apart. A provider's picture URL expires, so
+   * the pair is also the only account of what the profile looked like at the
+   * moment we read it.
+   */
+  provenance?: { sourceUrl: string; fetchedAt: string };
   supabase?: ServiceClient;
 }
 
@@ -176,7 +201,8 @@ export type FunnelAssetSource =
   | 'old_site'
   | 'social'
   | 'instagram'
-  | 'linkedin';
+  | 'linkedin'
+  | 'github';
 
 export class FunnelAssetError extends Error {
   constructor(message: string, readonly status: number) {
@@ -256,6 +282,9 @@ export async function storeFunnelAsset(
       rights_user_agent: input.rights?.confirmed
         ? input.rights.userAgent?.slice(0, 500) ?? null
         : null,
+      // Null when the visitor handed us the file. See `provenance` above.
+      source_url: input.provenance?.sourceUrl ?? null,
+      fetched_at: input.provenance?.fetchedAt ?? null,
     })
     .select(COLUMNS)
     .single();
@@ -430,10 +459,15 @@ async function carryOne(
     .from('assets')
     .insert({
       workspace_id: workspaceId,
-      // Provenance survives the claim. An operator looking at a workspace's
-      // assets can still tell a file the client sent from one we read off
-      // their Instagram, which is the first question anybody asks when a
-      // rights complaint arrives.
+      // Provenance now SURVIVES the claim rather than being rounded off at
+      // it. `assets.source` used to know none of the networks, so a picture
+      // read off somebody's Instagram arrived in the workspace saying
+      // `social` and the workspace kept the file while losing the answer to
+      // "where did this come from" - which is the first question anybody asks
+      // when a rights complaint arrives. Both check constraints now accept
+      // the same vocabulary, so the source is carried verbatim. The guard
+      // stays for a value neither table knows, which would otherwise be a row
+      // the insert refuses outright.
       source: ASSET_SOURCES.has(row.source) ? row.source : 'social',
       kind: row.kind,
       storage_path: destination,
@@ -442,6 +476,11 @@ async function carryOne(
       width: row.width,
       height: row.height,
       usable_for: row.usableFor,
+      // The two provenance columns travel with it, for the same reason: a
+      // picture we downloaded is not a file the client sent, and in six
+      // months the row is the only thing that can tell them apart.
+      source_url: row.sourceUrl,
+      fetched_at: row.fetchedAt,
       // Carried across, not re-derived. See the note above.
       rights_confirmed_at: row.rightsConfirmedAt,
       selected: Boolean(row.rightsConfirmedAt),
@@ -555,4 +594,4 @@ export async function confirmFetchedPictureRights(input: {
 }
 
 /** The sources that mean "we read this off a page", not "they sent it". */
-const FETCHED_SOURCES = ['instagram', 'linkedin', 'og'];
+const FETCHED_SOURCES = ['instagram', 'linkedin', 'github', 'og'];

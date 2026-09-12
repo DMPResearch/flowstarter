@@ -41,6 +41,7 @@ import {
   chatGroupPositions,
   type BubblePosition,
 } from './ConciergePanes';
+import { ConnectPortrait } from './ConnectPortrait';
 import { RecommendationStep } from './RecommendationStep';
 import { SubscriptionStep } from './SubscriptionStep';
 import { useAutosizeTextarea } from '../useAutosizeTextarea';
@@ -373,23 +374,36 @@ function Composer({
   );
 
   if (question.kind === 'panel') {
+    // Same gate as the scripted conversation, and `connectPortrait` needs no
+    // special case here either: it sits on step 4, whose clause is the one
+    // link, already answered on the question immediately before it. So confirm
+    // is enabled the moment the panel appears, which is what an optional
+    // question should look like.
     const ready = canProceed(question.step as Step, data);
     return (
       <div className="space-y-4 rounded-xl border border-[var(--fs-rule)] bg-[var(--fs-bg-elevated)]/40 p-3.5">
         {question.id === 'selectedTier' ? (
           <RecommendationStep data={data} update={update} t={t} />
+        ) : question.id === 'connectPortrait' ? (
+          <ConnectPortrait data={data} update={update} t={t} />
         ) : (
           <SubscriptionStep data={data} update={update} t={t} />
         )}
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={() => onSubmit(question.value(data) || 'confirmed')}
-          disabled={!ready}
-          aria-disabled={!ready}
-        >
-          {t('landing.discovery.chat.confirm')}
-        </Button>
+        {/* The commercial panels are required and so never had a skip here.
+            The connect offer is optional and must be as easy to decline as to
+            accept, so the script's own skip chip is rendered beside confirm. */}
+        <SuggestionChips>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => onSubmit(question.value(data) || 'confirmed')}
+            disabled={!ready}
+            aria-disabled={!ready}
+          >
+            {t('landing.discovery.chat.confirm')}
+          </Button>
+          {skipChip}
+        </SuggestionChips>
       </div>
     );
   }

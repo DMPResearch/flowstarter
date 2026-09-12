@@ -471,6 +471,18 @@ export const SERVER_ONLY_TABLES = [
   // any member of that workspace should ever see. RLS on, zero policies,
   // grants revoked from anon/authenticated the same as every table above.
   'ops_alerts',
+  // Who authorised us to use their profile picture, through LinkedIn OpenID
+  // Connect or the Instagram API with Instagram Login. A connection is minted
+  // at the top of the funnel, while the visitor is still anonymous: there is
+  // no workspace, no membership row and no Clerk session, so workspace_id is
+  // nullable and, when it is set, it is the connection's eventual home rather
+  // than the key that authorises reading it. There is no tenant key a policy
+  // could usefully filter on for the anonymous half, so the protection is the
+  // one funnel_previews and funnel_assets already use: RLS on, zero policies,
+  // every grant to anon and authenticated revoked, and the only reader is the
+  // service role behind a route that already holds the connection id. See
+  // supabase/migrations/20260913120000_portrait_from_social.sql.
+  'portrait_connections',
 ];
 
 // ─── Assertions ────────────────────────────────────────────────────────────

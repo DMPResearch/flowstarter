@@ -195,6 +195,18 @@ export interface DiscoveryData {
    * `lib/flowstarter/profile-picture.ts`.
    */
   brandPicture?: FetchedProfilePicture;
+
+  // The connect step, offered once, right after the one link. Optional for the
+  // same reason the info agent's fields are optional: a draft saved before it
+  // existed has neither of them, and nothing in the funnel gates on either.
+  /**
+   * The funnel-asset namespace a connected portrait is filed under. Minted by
+   * the wizard because the connect round trip happens at the links question,
+   * before the preview exists and before there is any id the server has issued.
+   */
+  portraitPreviewId?: string;
+  /** What came back from a connect round trip, read off the URL we returned to. */
+  portraitConnect?: { provider: 'linkedin' | 'instagram'; outcome: string };
 }
 
 /** Mirrors `PaletteColour` in `lib/flowstarter/brand-palette.ts`. */

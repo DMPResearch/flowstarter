@@ -39,8 +39,11 @@ import {
   isUndersizedPhoto,
   type BriefReadiness,
 } from '@/lib/flowstarter/brief-readiness';
+import type { PortraitSizeFloors } from '@/lib/flowstarter/portrait-config';
 import { cn } from '@/lib/utils';
 import { AssetUploader } from './AssetUploader';
+import { CURRENT_RIGHTS_STATEMENT_VERSION } from './rights-statement';
+import { SourcedPortrait } from './SourcedPortrait';
 
 // ───────────────────────────────────────────────────────────────────────────
 // The shape the API speaks
@@ -73,6 +76,12 @@ export interface BriefAssetView {
   height: number | null;
   usable: boolean;
   url: string | null;
+  /** Where the bytes came from: 'upload' for a file they sent, or the network we read. */
+  source: string;
+  /** The provider URL we downloaded it from, when we downloaded it. */
+  sourceUrl: string | null;
+  /** Null when we hold the file but may not publish it. */
+  rightsConfirmedAt: string | null;
 }
 
 export interface BriefFormProps {
@@ -80,6 +89,15 @@ export interface BriefFormProps {
   initialBrief: BriefView;
   initialReadiness: BriefReadiness;
   initialAssets: BriefAssetView[];
+  /**
+   * The size floors, read on the server.
+   *
+   * `portraitSizeFloors()` reads `process.env`, which in a client component is
+   * inlined at build time from the browser-visible environment and will never
+   * carry a server-only override. Threading the floors from the page is what
+   * makes `FLOWSTARTER_PORTRAIT_MIN_EDGE` actually take effect on this form.
+   */
+  portraitFloors?: PortraitSizeFloors;
 }
 
 interface BriefResponse {
@@ -123,6 +141,7 @@ export function BriefForm({
   initialBrief,
   initialReadiness,
   initialAssets,
+  portraitFloors,
 }: BriefFormProps) {
   const [offer, setOffer] = useState(initialBrief.offer);
   const [offerLeft, setOfferLeft] = useState(false);
@@ -141,6 +160,13 @@ export function BriefForm({
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // "Use this" is two requests in one gesture, so it gets its own flag: the
+  // card has to look busy for both of them, not just for the save at the end.
+  const [portraitBusy, setPortraitBusy] = useState(false);
+
+  // "Replace" has to put the client somewhere they can actually replace the
+  // photo, which is the photos uploader a few lines further down.
+  const photosUploader = useRef<HTMLDivElement | null>(null);
 
   // The uploader reports "a write happened", not which ids landed, so the
   // newly arrived files are found by difference against what we already knew.
@@ -208,64 +234,148 @@ export function BriefForm({
     []
   );
 
-  const save = useCallback(async () => {
-    setSaving(true);
-    setSaved(false);
-    setError(null);
-    try {
-      const response = await fetch(endpoint, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          offer,
-          // Ticking "no past work" clears the list rather than hiding it: the
-          // route refuses a body that says both, and a half-typed project the
-          // client cannot see is not something to save on their behalf.
-          projects: noProjects ? [] : projects,
-          noProjects,
-          designReferenceAssetIds: referenceIds,
-          photoAssetIds: photoIds,
-          portraitAssetId: portraitId,
-        }),
-      });
-      const payload = (await response
-        .json()
-        .catch(() => ({}))) as Partial<BriefResponse>;
-      if (!response.ok || !payload.brief || !payload.readiness) {
-        setError(payload.error ?? 'We could not save that. Please try again.');
-        return;
+  /**
+   * Saves the brief.
+   *
+   * `overrides` exists for one reason: "Use this" chooses a portrait and saves
+   * it in the same gesture, and a `setPortraitId` a line earlier has not
+   * reached this closure yet. Passing the id explicitly is the difference
+   * between saving what the client just chose and saving what they had before.
+   */
+  const save = useCallback(
+    async (overrides: { portraitAssetId?: string | null } = {}) => {
+      setSaving(true);
+      setSaved(false);
+      setError(null);
+      try {
+        const response = await fetch(endpoint, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            offer,
+            // Ticking "no past work" clears the list rather than hiding it: the
+            // route refuses a body that says both, and a half-typed project the
+            // client cannot see is not something to save on their behalf.
+            projects: noProjects ? [] : projects,
+            noProjects,
+            designReferenceAssetIds: referenceIds,
+            photoAssetIds: photoIds,
+            portraitAssetId:
+              overrides.portraitAssetId !== undefined
+                ? overrides.portraitAssetId
+                : portraitId,
+          }),
+        });
+        const payload = (await response
+          .json()
+          .catch(() => ({}))) as Partial<BriefResponse>;
+        if (!response.ok || !payload.brief || !payload.readiness) {
+          setError(
+            payload.error ?? 'We could not save that. Please try again.'
+          );
+          return;
+        }
+        // The server's answer replaces the form, so what a client sees after a
+        // save is what is stored, not what they typed.
+        setOffer(payload.brief.offer);
+        setProjects(payload.brief.projects);
+        setNoProjects(payload.brief.noProjects);
+        setReferenceIds(payload.brief.designReferenceAssetIds);
+        setPhotoIds(payload.brief.photoAssetIds);
+        setPortraitId(payload.brief.portraitAssetId);
+        setReadiness(payload.readiness);
+        setAssets(payload.assets ?? []);
+        setLinkErrors({});
+        setSaved(true);
+      } catch {
+        setError('We could not save that. Please try again.');
+      } finally {
+        setSaving(false);
       }
-      // The server's answer replaces the form, so what a client sees after a
-      // save is what is stored, not what they typed.
-      setOffer(payload.brief.offer);
-      setProjects(payload.brief.projects);
-      setNoProjects(payload.brief.noProjects);
-      setReferenceIds(payload.brief.designReferenceAssetIds);
-      setPhotoIds(payload.brief.photoAssetIds);
-      setPortraitId(payload.brief.portraitAssetId);
-      setReadiness(payload.readiness);
-      setAssets(payload.assets ?? []);
-      setLinkErrors({});
-      setSaved(true);
-    } catch {
-      setError('We could not save that. Please try again.');
-    } finally {
-      setSaving(false);
+    },
+    [endpoint, noProjects, offer, photoIds, portraitId, projects, referenceIds]
+  );
+
+  /**
+   * "Use this" on a sourced photograph: one gesture, two writes.
+   *
+   * The rights confirmation goes first and the brief is only saved if it
+   * succeeded. The other order would leave a brief naming a portrait we are
+   * not allowed to publish, which is the failure that reaches a client's site.
+   * A refusal is surfaced through the form's own error line rather than
+   * swallowed, because a client who taps a button and sees nothing happen will
+   * tap it again.
+   *
+   * Named `adopt...` rather than `usePortrait` on purpose: a `const` whose
+   * name starts with `use` is a React hook as far as the linter is concerned,
+   * and calling one inside an `onUse` handler is an error. The rename is the
+   * fix rather than a disable comment, because the rule is right about what
+   * the name means.
+   */
+  const adoptSourcedPortrait = useCallback(
+    async (asset: BriefAssetView) => {
+      setPortraitBusy(true);
+      setSaved(false);
+      setError(null);
+      try {
+        if (!asset.rightsConfirmedAt) {
+          const response = await fetch(
+            `/api/client/assets/${workspaceId}/rights`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                assetIds: [asset.id],
+                statementVersion: CURRENT_RIGHTS_STATEMENT_VERSION,
+              }),
+            }
+          );
+          const payload = (await response.json().catch(() => ({}))) as {
+            error?: string;
+          };
+          if (!response.ok) {
+            setError(payload.error ?? 'We could not record that confirmation.');
+            return;
+          }
+        }
+        setPortraitId(asset.id);
+        await save({ portraitAssetId: asset.id });
+      } catch {
+        setError('We could not record that confirmation. Please try again.');
+      } finally {
+        setPortraitBusy(false);
+      }
+    },
+    [save, workspaceId]
+  );
+
+  /**
+   * "Replace": stop offering this one, and put the client in front of the
+   * uploader. It deliberately does not delete the asset. Changing your mind
+   * about which photograph represents you is not a reason to destroy a file,
+   * and an unconfirmed asset is already unpublishable by construction.
+   */
+  const replacePortrait = useCallback((asset: BriefAssetView) => {
+    setPortraitId((current) => (current === asset.id ? null : current));
+    setSaved(false);
+    const node = photosUploader.current;
+    if (!node) return;
+    // jsdom has no layout, so `scrollIntoView` is simply absent there.
+    if (typeof node.scrollIntoView === 'function') {
+      node.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
-  }, [
-    endpoint,
-    noProjects,
-    offer,
-    photoIds,
-    portraitId,
-    projects,
-    referenceIds,
-  ]);
+    node.querySelector<HTMLInputElement>('input[type="file"]')?.focus();
+  }, []);
 
   const assetById = new Map(assets.map((asset) => [asset.id, asset]));
   const photos = photoIds
     .map((id) => assetById.get(id))
     .filter((asset): asset is BriefAssetView => Boolean(asset));
+  // The first photograph that is not a file the client sent us: one we went
+  // and found on a page of theirs. It gets offered back rather than quietly
+  // used, which is the whole of the difference between the two.
+  const sourcedPortrait =
+    photos.find((asset) => asset.source !== 'upload') ?? null;
   const offerChars = offer.replace(/\s+/g, ' ').trim().length;
   const blocking = readiness.missing.filter(
     (entry) => entry.severity === 'blocking'
@@ -508,6 +618,17 @@ export function BriefForm({
             hint={`The place you work, the thing you make, or you at work. At least ${MIN_PHOTO_LONG_EDGE} pixels on the long edge, straight off a recent phone is fine, and no heavy filters.`}
           />
 
+          {sourcedPortrait ? (
+            <SourcedPortrait
+              asset={sourcedPortrait}
+              chosen={portraitId === sourcedPortrait.id}
+              busy={portraitBusy}
+              floors={portraitFloors}
+              onUse={() => void adoptSourcedPortrait(sourcedPortrait)}
+              onReplace={() => replacePortrait(sourcedPortrait)}
+            />
+          ) : null}
+
           {photos.length > 0 ? (
             <ul className="flex flex-wrap gap-3" aria-label="Your photos">
               {photos.map((asset) => (
@@ -551,13 +672,15 @@ export function BriefForm({
             </ul>
           ) : null}
 
-          <AssetUploader
-            workspaceId={workspaceId}
-            slot="hero"
-            askKey="brief_photos"
-            label="Add photos"
-            onSufficiency={() => void adopt('photos')}
-          />
+          <div ref={photosUploader}>
+            <AssetUploader
+              workspaceId={workspaceId}
+              slot="hero"
+              askKey="brief_photos"
+              label="Add photos"
+              onSufficiency={() => void adopt('photos')}
+            />
+          </div>
         </div>
       </GlassSurface>
 
@@ -685,7 +808,13 @@ function Thumbnails({
   );
 }
 
-function Thumbnail({ asset }: { asset: BriefAssetView }) {
+/**
+ * One file, at thumbnail size. Exported because `SourcedPortrait` shows the
+ * same picture in the same way, and two thumbnails with two different
+ * fallbacks for a signed URL that failed to sign is one more than there should
+ * be.
+ */
+export function Thumbnail({ asset }: { asset: BriefAssetView }) {
   return (
     // eslint-disable-next-line @next/next/no-img-element -- a signed, short-lived URL on a private bucket cannot be optimised by next/image
     <img

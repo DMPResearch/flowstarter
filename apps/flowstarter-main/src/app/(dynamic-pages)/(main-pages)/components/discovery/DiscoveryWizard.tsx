@@ -167,6 +167,50 @@ export function DiscoveryWizard({
     setEditRequest((previous) => ({ id, nonce: (previous?.nonce ?? 0) + 1 }));
   }, []);
 
+  /**
+   * The connect round trip's answer, read off the URL we were sent back to.
+   *
+   * The provider's callback lands on its own route, files whatever it got, and
+   * redirects the browser to `returnTo` with `?portrait=<outcome>` and
+   * `?portraitProvider=<provider>` on it. That is the entire channel: no
+   * popup, no message passing, no second source of truth.
+   *
+   * A FULL PAGE REDIRECT IS SAFE HERE BECAUSE THE DRAFT IS NOT IN MEMORY. The
+   * wizard autosaves to sessionStorage on every change, so leaving for
+   * LinkedIn and coming back restores the answers, the cursor and the step
+   * exactly as they were. A popup would buy nothing and would lose the
+   * visitors whose in-app browser blocks one.
+   *
+   * Both params are stripped with `replaceState` the moment they are read, so
+   * a refresh does not re-apply a stale answer and a shared URL does not carry
+   * somebody else's outcome. Runs once, on mount, because that is the only
+   * moment the params can be there.
+   */
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const outcome = params.get('portrait');
+    const provider = params.get('portraitProvider');
+    if (!outcome) return;
+    if (provider === 'linkedin' || provider === 'instagram') {
+      setData((previous) => ({
+        ...previous,
+        portraitConnect: { provider, outcome },
+      }));
+    }
+    params.delete('portrait');
+    params.delete('portraitProvider');
+    const query = params.toString();
+    window.history.replaceState(
+      null,
+      '',
+      `${window.location.pathname}${query ? `?${query}` : ''}${
+        window.location.hash
+      }`
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Persist the draft on every change (cheap; object is small).
   useEffect(() => {
     if (typeof window === 'undefined') return;

@@ -12,6 +12,8 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BriefForm, type BriefAssetView, type BriefView } from '../BriefForm';
+import { CURRENT_RIGHTS_STATEMENT_VERSION } from '../rights-statement';
+import { portraitVerdictText } from '../portrait-copy';
 import {
   MIN_OFFER_CHARS,
   evaluateBriefReadiness,
@@ -21,6 +23,7 @@ import {
 const WORKSPACE = '0f4e1088-8d8f-4f18-83b1-406cc292b23c';
 const PHOTO_BIG = '11111111-1111-4111-8111-111111111111';
 const PHOTO_SMALL = '22222222-2222-4222-8222-222222222222';
+const PHOTO_SOURCED = '33333333-3333-4333-8333-333333333333';
 
 const GOOD_OFFER =
   'We fit and service gas boilers for homes across the county, and we take on ' +
@@ -51,6 +54,9 @@ function asset(overrides: Partial<BriefAssetView> = {}): BriefAssetView {
     height: 1600,
     usable: true,
     url: 'https://storage.test/signed.png',
+    source: 'upload',
+    sourceUrl: null,
+    rightsConfirmedAt: '2026-09-12T10:00:00.000Z',
     ...overrides,
   };
 }
@@ -100,6 +106,41 @@ function lastPutBody(): Record<string, unknown> {
     .calls as Array<[string, RequestInit | undefined]>;
   const put = [...calls].reverse().find((call) => call[1]?.method === 'PUT');
   return JSON.parse(String(put?.[1]?.body ?? '{}'));
+}
+
+/** Every call the form made, as [url, init] pairs. */
+function fetchCalls(): Array<[string, RequestInit | undefined]> {
+  return (global.fetch as unknown as ReturnType<typeof vi.fn>).mock
+    .calls as Array<[string, RequestInit | undefined]>;
+}
+
+/** The POST to the rights endpoint, if the form sent one. */
+function rightsCall(): [string, RequestInit | undefined] | undefined {
+  return fetchCalls().find((call) => String(call[0]).endsWith('/rights'));
+}
+
+/**
+ * A fetch double that answers the two endpoints separately.
+ *
+ * "Use this" is two requests in one gesture -- the rights confirmation and
+ * then the save -- and the failure worth testing is one of them going wrong
+ * while the other would have succeeded, which a single blanket answer cannot
+ * describe.
+ */
+function respondPerUrl(answers: {
+  rights: { ok: boolean; payload: unknown };
+  brief: { ok: boolean; payload: unknown };
+}) {
+  global.fetch = vi.fn(async (url: string) => {
+    const answer = String(url).endsWith('/rights')
+      ? answers.rights
+      : answers.brief;
+    return {
+      ok: answer.ok,
+      status: answer.ok ? 200 : 400,
+      json: async () => answer.payload,
+    };
+  }) as unknown as typeof fetch;
 }
 
 function respondWith(payload: unknown, ok = true) {
@@ -393,5 +434,184 @@ describe('BriefForm', () => {
     mount();
     // Design references and photos, plus one per project row.
     expect(screen.getAllByTestId('asset-uploader')).toHaveLength(2);
+  });
+
+  // A photograph we read off one of the client's own pages is not the same
+  // thing as a file they sent us, and the form has to say so before it is
+  // used. The verdict comes from the rule, so the card cannot promise a hero
+  // image the size floor would refuse.
+  it('offers a sourced photo back, with the size verdict in plain words', () => {
+    const assets = [
+      asset({
+        id: PHOTO_SOURCED,
+        source: 'linkedin',
+        sourceUrl: 'https://media.licdn.com/dms/image/example/profile.jpg',
+        rightsConfirmedAt: null,
+        usable: false,
+        width: 800,
+        height: 800,
+      }),
+    ];
+    mount(brief({ photoAssetIds: [PHOTO_SOURCED] }), assets);
+
+    const card = screen.getByTestId('brief-sourced-portrait');
+    expect(card).toHaveAttribute('data-source', 'linkedin');
+    expect(screen.getByTestId('brief-portrait-verdict')).toHaveTextContent(
+      portraitVerdictText('portrait')
+    );
+    // The radio group, the warning and the uploader are all still there.
+    expect(screen.getAllByTestId('brief-photo')).toHaveLength(1);
+    expect(screen.getAllByTestId('asset-uploader')).toHaveLength(2);
+  });
+
+  // Nothing was sourced, so there is nothing to offer back: a brief made only
+  // of uploads must not grow a card asking permission for a file the client
+  // already handed over.
+  it('shows no sourced card when every photo is one the client sent', () => {
+    const assets = [asset({ id: PHOTO_BIG }), asset({ id: PHOTO_SMALL })];
+    mount(brief({ photoAssetIds: [PHOTO_BIG, PHOTO_SMALL] }), assets);
+    expect(screen.queryByTestId('brief-sourced-portrait')).toBeNull();
+  });
+
+  // One gesture, two writes, in this order. The rights confirmation is what
+  // makes the file publishable at all, so saving a brief that names it first
+  // would leave a portrait chosen and unusable.
+  it('confirms the rights and then saves the brief when Use this is tapped', async () => {
+    const user = userEvent.setup();
+    const sourced = asset({
+      id: PHOTO_SOURCED,
+      source: 'github',
+      sourceUrl: 'https://avatars.githubusercontent.com/u/1?v=4',
+      rightsConfirmedAt: null,
+      usable: false,
+      width: 460,
+      height: 460,
+    });
+    const view = brief({ photoAssetIds: [PHOTO_SOURCED] });
+    mount(view, [sourced]);
+
+    const saved = { ...view, portraitAssetId: PHOTO_SOURCED };
+    respondPerUrl({
+      rights: { ok: true, payload: { confirmedAssetIds: [PHOTO_SOURCED] } },
+      brief: {
+        ok: true,
+        payload: {
+          brief: saved,
+          readiness: readinessFor(saved, [sourced]),
+          assets: [sourced],
+        },
+      },
+    });
+
+    await user.click(screen.getByTestId('brief-portrait-use'));
+
+    await waitFor(() => expect(rightsCall()).toBeDefined());
+    const [url, init] = rightsCall() as [string, RequestInit];
+    expect(url).toBe(`/api/client/assets/${WORKSPACE}/rights`);
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({
+      assetIds: [PHOTO_SOURCED],
+      statementVersion: CURRENT_RIGHTS_STATEMENT_VERSION,
+    });
+
+    await waitFor(() =>
+      expect(lastPutBody().portraitAssetId).toBe(PHOTO_SOURCED)
+    );
+    // The rights call really did come first.
+    const order = fetchCalls().map((call) =>
+      String(call[0]).endsWith('/rights')
+    );
+    expect(order.indexOf(true)).toBeLessThan(order.indexOf(false));
+  });
+
+  // Changing your mind about which photograph represents you is not a reason
+  // to destroy a file, and an unconfirmed asset cannot reach a site anyway.
+  it('clears the choice on Replace without deleting anything', async () => {
+    const user = userEvent.setup();
+    const sourced = asset({
+      id: PHOTO_SOURCED,
+      source: 'instagram',
+      sourceUrl: 'https://scontent.cdninstagram.com/v/example_100x100.jpg',
+      rightsConfirmedAt: '2026-09-13T09:00:00.000Z',
+      width: 100,
+      height: 100,
+    });
+    mount(
+      brief({
+        photoAssetIds: [PHOTO_SOURCED],
+        portraitAssetId: PHOTO_SOURCED,
+      }),
+      [sourced]
+    );
+
+    expect(screen.getByTestId('brief-portrait-in-use')).toBeInTheDocument();
+    await user.click(screen.getByTestId('brief-portrait-replace'));
+
+    // Nothing was sent at all: no DELETE, no request of any kind.
+    expect(fetchCalls()).toHaveLength(0);
+    // The photo is still listed, and it is no longer the portrait.
+    expect(screen.getAllByTestId('brief-photo')).toHaveLength(1);
+    expect(screen.getByTestId('brief-portrait')).not.toBeChecked();
+
+    await user.click(screen.getByTestId('brief-save'));
+    await waitFor(() => expect(lastPutBody().portraitAssetId).toBeNull());
+  });
+
+  // A refused confirmation must not be swallowed, and it must not be followed
+  // by a save: a client who taps a button and sees nothing will tap it again.
+  it('surfaces a refused rights confirmation and does not save the brief', async () => {
+    const user = userEvent.setup();
+    const sourced = asset({
+      id: PHOTO_SOURCED,
+      source: 'og',
+      sourceUrl: 'https://example.com/about/me.jpg',
+      rightsConfirmedAt: null,
+      usable: false,
+      width: 1200,
+      height: 1600,
+    });
+    mount(brief({ photoAssetIds: [PHOTO_SOURCED] }), [sourced]);
+
+    respondPerUrl({
+      rights: {
+        ok: false,
+        payload: { error: 'Those files are not on this project' },
+      },
+      brief: { ok: true, payload: {} },
+    });
+
+    await user.click(screen.getByTestId('brief-portrait-use'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('brief-error')).toHaveTextContent(
+        'Those files are not on this project'
+      )
+    );
+    expect(screen.queryByTestId('brief-saved')).toBeNull();
+    expect(fetchCalls().some((call) => call[1]?.method === 'PUT')).toBe(false);
+  });
+
+  // A transport failure on the confirmation gets the same treatment as a
+  // refusal: said out loud, and no save behind it.
+  it('says so when the confirmation never reaches us', async () => {
+    const user = userEvent.setup();
+    const sourced = asset({
+      id: PHOTO_SOURCED,
+      source: 'linkedin',
+      rightsConfirmedAt: null,
+      usable: false,
+    });
+    mount(brief({ photoAssetIds: [PHOTO_SOURCED] }), [sourced]);
+
+    global.fetch = vi.fn(async () => {
+      throw new Error('offline');
+    }) as unknown as typeof fetch;
+
+    await user.click(screen.getByTestId('brief-portrait-use'));
+    await waitFor(() =>
+      expect(screen.getByTestId('brief-error')).toHaveTextContent(
+        'We could not record that confirmation'
+      )
+    );
   });
 });

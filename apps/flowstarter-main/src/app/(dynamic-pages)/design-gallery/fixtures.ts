@@ -502,6 +502,8 @@ export const briefGallery = {
       height: 1500,
       usable: true,
       url: null,
+      source: 'upload',
+      sourceUrl: null,
       rightsConfirmedAt: '2026-09-12T10:00:00.000Z',
     },
     {
@@ -512,6 +514,8 @@ export const briefGallery = {
       height: 1100,
       usable: true,
       url: null,
+      source: 'upload',
+      sourceUrl: null,
       rightsConfirmedAt: '2026-09-12T10:00:00.000Z',
     },
     {
@@ -524,6 +528,12 @@ export const briefGallery = {
       height: 1200,
       usable: true,
       url: null,
+      // Read off the client's LinkedIn through the connect flow, so the
+      // gallery shows the sourced-portrait card rather than only the upload
+      // path. The connect flow writes the rights stamp itself, because the
+      // person authorised it at the provider.
+      source: 'linkedin',
+      sourceUrl: 'https://media.licdn.com/dms/image/example/profile.jpg',
       rightsConfirmedAt: '2026-09-12T10:00:00.000Z',
     },
   ],

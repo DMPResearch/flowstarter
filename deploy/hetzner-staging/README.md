@@ -119,7 +119,19 @@ STRIPE_SECRET_KEY=<test-mode key until launch>
 STRIPE_WEBHOOK_SECRET=<test-mode webhook secret until launch>
 HANDOFF_SECRET=<HMAC key>
 RESEND_API_KEY=<transactional email key>
+LINKEDIN_CLIENT_ID=                 # portrait from social, see the note below
+LINKEDIN_CLIENT_SECRET=
+INSTAGRAM_APP_ID=
+INSTAGRAM_APP_SECRET=
 ```
+
+The four portrait lines may be left empty: unset, the LinkedIn and Instagram
+connect buttons render disabled, saying "this connection is not switched on
+yet", and nothing else in the funnel changes. See
+`docs/portrait-sources.md` for the two developer apps that produce those
+credentials, for the redirect URLs, which must match byte for byte, and for
+`FLOWSTARTER_PORTRAIT_REDIRECT_BASE`, which is worth pinning here so a slot
+sends the URL the provider has on file rather than its own hostname.
 
 The `NEXT_PUBLIC_*` values also exist as Depot secrets (`PROD_NEXT_PUBLIC_*`),
 because those are inlined into the client bundle at **build** time while the
