@@ -236,7 +236,14 @@ cmd_migrate() {
   echo "Applying migrations against the local stack..."
   supabase migration up --workdir "$REPO_DIR"
   echo "Migration status:"
-  supabase migration list --workdir "$REPO_DIR"
+  # --local, because the bare `migration list` compares the local stack
+  # against a LINKED remote project and exits 1 with "Cannot find project ref.
+  # Have you run supabase link?" when there is none. The Hetzner host is
+  # deliberately never linked to a hosted project, so without this flag the
+  # last command of this function always fails, `set -e` propagates it, and
+  # deploy-slot.sh aborts every deploy of slot `main` after the migrations
+  # have already been applied successfully.
+  supabase migration list --local --workdir "$REPO_DIR"
 }
 
 cmd_write_env() {
