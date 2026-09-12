@@ -20,6 +20,10 @@ import 'server-only';
  *    (workspace_id, sha256), so a re-upload of the same photograph races
  *    safely: we insert, and on 23505 we return the row that already existed.
  *    Checking first and inserting second would be a lie under concurrency.
+ *  - The browser's filename is stored, but only as `original_name`, never as
+ *    anything address-shaped. The object's real name is its content hash; a
+ *    client's own name for their file is prose an operator reads later, not
+ *    a path component, so it never touches `assetObjectPath` or storage.
  *
  * Rights are deliberately NOT confirmed here. Uploading a file says "here is a
  * picture"; it does not say "I own this and you may publish it". The client
@@ -165,6 +169,13 @@ export interface StoreUploadInput {
   slot?: string | null;
   /** `assets.kind`; `logo` is meaningful to the sufficiency gate. */
   kind?: string | null;
+  /**
+   * The browser's own name for the file, display-only. It is never the thing
+   * that addresses the object — `assetObjectPath` does that from the content
+   * hash — so a caller may pass through whatever a client typed or renamed
+   * their photo to without it ever reaching a path.
+   */
+  originalName?: string | null;
 }
 
 /**
@@ -179,6 +190,7 @@ export async function storeUpload({
   file,
   slot = null,
   kind = null,
+  originalName = null,
 }: StoreUploadInput): Promise<UploadedAsset> {
   const storagePath = assetObjectPath({
     workspaceId,
@@ -218,6 +230,7 @@ export async function storeUpload({
       storage_path: storagePath,
       sha256: file.sha256,
       mime: file.mime,
+      original_name: originalName,
       width: file.width,
       height: file.height,
       usable_for: usableFor,
@@ -420,6 +433,22 @@ async function signedUrl(
   } catch {
     return null;
   }
+}
+
+/**
+ * The one door callers outside this module get to `signedUrl` through.
+ *
+ * Every other reader of a private object (the client's own asset list, the
+ * operator's change-request picker) needs the exact same guarantee: the
+ * tenant path is re-asserted right before signing, and a failure degrades to
+ * `null` instead of failing whatever page or endpoint asked for a thumbnail.
+ * Rather than let a second place learn to sign a storage path, they call this.
+ */
+export async function signedAssetUrl(
+  workspaceId: string,
+  storagePath: string | null
+): Promise<string | null> {
+  return signedUrl(createSupabaseServiceRoleClient(), workspaceId, storagePath);
 }
 
 /**

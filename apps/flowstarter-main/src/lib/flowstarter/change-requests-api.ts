@@ -25,8 +25,10 @@ import {
   toChangeRequestView,
 } from './change-requests';
 import { enqueueChangeRequestBuild } from './change-request-build';
+import { changeRequestAssetLabel } from './change-request-asset-label';
 import { loadUsableAssets } from './generation-assets';
 import { dispatchAgentJob } from './pipeline/dispatch';
+import { signedAssetUrl } from '@/app/api/client/assets/asset-storage';
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -93,14 +95,18 @@ async function recordEvent(
  *
  * `loadUsableAssets` and nothing else, for the same reason the build itself
  * uses only that reader: an operator must not be able to tick a box on a file
- * whose rights the client never confirmed. The label is the client's own
- * caption, falling back to the file name, because those are the only two
- * things about a picture we did not make up.
+ * whose rights the client never confirmed. `changeRequestAssetLabel` builds
+ * the label from the client's own caption or filename/dimensions/date — it
+ * does not even accept a storage path, so a content hash can never surface
+ * here again the way it did in PR #119. `thumbnailUrl` goes through the same
+ * signed-URL path the client's own asset list uses, and is null rather than
+ * fatal when signing fails.
  */
 export interface ChangeRequestAssetOption {
   id: string;
   label: string;
   caption: string | null;
+  thumbnailUrl: string | null;
 }
 
 export async function listChangeRequestsHandler(
@@ -114,14 +120,20 @@ export async function listChangeRequestsHandler(
       listChangeRequests(op.db, op.workspaceId),
       loadUsableAssets(op.workspaceId),
     ]);
-    const assets: ChangeRequestAssetOption[] = usable.map((asset) => ({
-      id: asset.id,
-      label:
-        asset.caption?.trim() ||
-        asset.storagePath.split('/').pop() ||
-        'Untitled picture',
-      caption: asset.caption?.trim() || null,
-    }));
+    const assets: ChangeRequestAssetOption[] = await Promise.all(
+      usable.map(async (asset) => ({
+        id: asset.id,
+        label: changeRequestAssetLabel({
+          caption: asset.caption,
+          originalName: asset.originalName,
+          width: asset.width,
+          height: asset.height,
+          createdAt: asset.createdAt,
+        }),
+        caption: asset.caption?.trim() || null,
+        thumbnailUrl: await signedAssetUrl(op.workspaceId, asset.storagePath),
+      }))
+    );
     return NextResponse.json(
       {
         requests: rows.map((row) =>

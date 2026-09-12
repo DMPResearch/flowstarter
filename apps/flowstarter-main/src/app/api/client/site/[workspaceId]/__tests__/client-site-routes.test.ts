@@ -21,8 +21,11 @@
  *  5. COST. Each proposal spends the tenant's tokens, so the daily cap has to
  *     hold on the N+1th request rather than on the N+1th *successful* one.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
+import { PLACEHOLDER_IMAGE_MANIFEST } from '@flowstarter/agentic-codegen';
 // Static imports: vi.mock is hoisted above them, and the app's tsconfig does
 // not allow top-level await in tests.
 import { GET as GET_STATE } from '../route';
@@ -1074,6 +1077,48 @@ describe('publishing', () => {
     // Nothing is stamped and no build is queued: the publish never happened.
     expect(db.rows('flowstarter_agent_jobs')).toEqual([]);
     expect(dispatched).toEqual([]);
+  });
+
+  /**
+   * The other half of the same rule, and the one that was a blocker.
+   *
+   * A site published before #110 keeps the template's whole `public/images/`
+   * library in its manifest, and its case-study covers may well point at one
+   * of those pictures. Refusing that publish leaves a client unable to fix a
+   * typo on a site we delivered them, so the check is asked of the manifest
+   * after the seed rule has run: the reference is blanked, the file is
+   * dropped, and the rebuild does the same thing again on its way to `dist/`.
+   */
+  it('publishes a legacy manifest whose placeholder the seed rule can clear', async () => {
+    hostThePublishedSite();
+    const artifact = db
+      .rows('flowstarter_project_artifacts')
+      .find((row) => row.workspace_id === WORKSPACE_A);
+    const portrait = PLACEHOLDER_IMAGE_MANIFEST.find(
+      (asset) => asset.id === 'creative-portfolio-about-me-photo',
+    )!;
+    // The real bytes: the rule matches by the same content hash the gate uses,
+    // so a plausible-looking stand-in would prove nothing here.
+    const bytes = readFileSync(
+      join(
+        __dirname,
+        '../../../../../../../../..',
+        'apps/flowstarter-templates',
+        portrait.template,
+        portrait.path,
+      ),
+    );
+    (artifact?.['preview_manifest'] as { files: Row[] }).files.push(
+      { path: 'public/images/about-me-photo.svg', content: bytes.toString() },
+      {
+        path: 'src/pages/about.astro',
+        content: '<img src="/images/about-me-photo.svg" alt="About" />',
+      },
+    );
+
+    const response = await PUBLISH(post('/x'), params(WORKSPACE_A));
+    expect(response.status).toBe(200);
+    expect(db.rows('flowstarter_agent_jobs')).toHaveLength(1);
   });
 
   it('publishes a manifest whose images carry their base64 flag', async () => {
