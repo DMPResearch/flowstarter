@@ -89,7 +89,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const inviteUrl = getInviteUrl(token);
 
     // Send invitation email
-    const { subject, html } = invitationEmail({
+    const { subject, html, text } = invitationEmail({
       inviterName,
       inviterEmail,
       invitationUrl: inviteUrl,
@@ -100,6 +100,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       to: email,
       subject,
       html,
+      text,
     });
 
     if (!emailResult.success) {

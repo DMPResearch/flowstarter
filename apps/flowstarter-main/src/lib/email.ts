@@ -12,6 +12,13 @@ interface SendEmailOptions {
   to: string | string[];
   subject: string;
   html: string;
+  /**
+   * The text/plain alternative. Every template renders one, and Resend only
+   * sends a multipart message when it is given one: without it a reader that
+   * shows text gets whatever the client can salvage from the markup, and spam
+   * filters score an HTML-only message worse.
+   */
+  text?: string;
   from?: string;
   replyTo?: string;
 }
@@ -29,6 +36,7 @@ export async function sendEmail({
   to,
   subject,
   html,
+  text,
   from = DEFAULT_FROM,
   replyTo = 'hello@flowstarter.net',
 }: SendEmailOptions): Promise<SendEmailResult> {
@@ -51,6 +59,7 @@ export async function sendEmail({
         to: Array.isArray(to) ? to : [to],
         subject,
         html,
+        ...(text ? { text } : {}),
         reply_to: replyTo,
       }),
     });
@@ -89,13 +98,13 @@ export async function sendTeamInvitation(
   invitationUrl: string
 ): Promise<SendEmailResult> {
   const { invitationEmail } = await import('./email-templates/invitation');
-  const { subject, html } = invitationEmail({
+  const { subject, html, text } = invitationEmail({
     inviterName,
     inviterEmail,
     invitationUrl,
   });
 
-  return sendEmail({ to: email, subject, html });
+  return sendEmail({ to: email, subject, html, text });
 }
 
 /**
@@ -106,10 +115,10 @@ export async function sendWelcomeEmail(
   userName?: string
 ): Promise<SendEmailResult> {
   const { welcomeEmail } = await import('./email-templates/welcome');
-  const { subject, html } = welcomeEmail({
+  const { subject, html, text } = welcomeEmail({
     userName,
     dashboardUrl: 'https://flowstarter.dev/dashboard',
   });
 
-  return sendEmail({ to: email, subject, html });
+  return sendEmail({ to: email, subject, html, text });
 }

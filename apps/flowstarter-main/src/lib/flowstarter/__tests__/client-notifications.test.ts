@@ -66,7 +66,12 @@ function seedWorkspace(overrides: Record<string, unknown> = {}): void {
 }
 
 type Render = NonNullable<Parameters<typeof notifyClientOnce>[0]['render']>;
-const render: Render = () => ({ subject: 'Subject line', html: '<p>Body</p>' });
+const render: Render = () => ({
+  subject: 'Subject line',
+  preheader: 'The line under the subject',
+  html: '<p>Body</p>',
+  text: 'Body',
+});
 
 async function notify(
   extra: Partial<Parameters<typeof notifyClientOnce>[0]> = {}
@@ -135,10 +140,13 @@ describe('notifyClientOnce', () => {
 
     expect(result).toEqual({ sent: true });
     expect(sendEmail).toHaveBeenCalledTimes(1);
+    // The text part goes with it: every template renders one, and a message
+    // sent without it is HTML-only to a reader that shows text.
     expect(sendEmail).toHaveBeenCalledWith({
       to: 'client@example.com',
       subject: 'Subject line',
       html: '<p>Body</p>',
+      text: 'Body',
     });
 
     const ledger = db.rows('project_events');

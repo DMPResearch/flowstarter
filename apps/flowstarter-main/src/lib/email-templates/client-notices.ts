@@ -1,52 +1,63 @@
 /**
  * The emails a paying client gets while their site is being made.
  *
- * Until now the product sent the client nothing between "your deposit went
+ * Until PR #94 the product sent the client nothing between "your deposit went
  * through" on a guest checkout and an operator typing them a message by hand.
- * A real run of the whole funnel produced zero emails, and the person who paid
- * asked, reasonably, whether he would ever receive one. These are the four
- * moments that answer that: the deposit landing, the preview being ready, the
- * balance invoice going out, the site going live, and the one that was missing
- * until a real run needed it, a build that stopped and has to be looked at.
- * Since the in-depth brief moved to the dashboard there is one more: the
- * build that cannot start because we are waiting on the client.
+ * These are the seven moments that answer that: the deposit landing, the
+ * preview being ready, the balance invoice going out, the site going live, a
+ * build that stopped and has to be looked at, a booking arriving through the
+ * client's own calendar, and a paid change reaching the site. Since the
+ * in-depth brief moved to the dashboard there is one more: the build that
+ * cannot start because we are waiting on the client.
  *
  * House style, and the reason these live in one file: each is six lines of
- * prose and a button. Splitting them across four modules would make the
+ * prose and a button. Splitting them across seven modules would make the
  * differences harder to see than the similarities, and what matters most about
  * a set of transactional emails is that they sound like one voice. Plain
- * sentences, no em dashes, no emoji, one link each, and a subject line that is
- * true when read alone in an inbox list.
+ * sentences, no em dashes, no emoji, one button each, and a subject line that
+ * is true when read alone in an inbox list.
+ *
+ * They describe themselves as blocks and `renderEmail` draws them. No template
+ * in here writes HTML, escapes anything, or writes its own plain-text copy:
+ * all three are the base layout's job, and were the three things the old
+ * hand-written markup got wrong.
  */
-import { baseEmailTemplate } from './base';
+import { renderEmail, type Block, type RenderedEmail } from './base';
 
-export interface RenderedEmail {
-  subject: string;
-  html: string;
-}
-
-/** Keeps a client-supplied name out of the HTML as anything but text. */
-export function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
+export { escapeHtml } from './base';
+export type { RenderedEmail } from './base';
 
 /**
  * "your site" is the honest fallback. A sentence built around an empty string
  * reads worse than one with no name in it at all.
  */
 function projectPhrase(businessName?: string | null): string {
-  const trimmed = businessName?.trim();
-  return trimmed ? escapeHtml(trimmed) : 'your site';
+  return businessName?.trim() || 'your site';
 }
 
-function greeting(clientName?: string | null): string {
+function greeting(clientName?: string | null): Block {
   const trimmed = clientName?.trim();
-  return trimmed ? `Hi ${escapeHtml(trimmed)},` : 'Hi there,';
+  return {
+    kind: 'paragraph',
+    content: trimmed ? `Hi ${trimmed},` : 'Hi there,',
+  };
+}
+
+/**
+ * A date a person can read, in the one format that is unambiguous on both
+ * sides of the Atlantic. Returns null for anything unparseable rather than
+ * printing "Invalid Date" at a client.
+ */
+export function readableDate(iso?: string | null): string | null {
+  if (!iso) return null;
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return null;
+  return at.toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
 }
 
 /**
@@ -54,8 +65,8 @@ function greeting(clientName?: string | null): string {
  *
  * Deliberately not the guest-checkout welcome: this client already has an
  * account and is already signed in, so credentials would be noise. What they
- * need is confirmation that the money arrived and one link to where the work
- * is now visible.
+ * need is confirmation that the money arrived, what it started, and one link
+ * to where the work is now visible.
  */
 export function depositReceivedEmail(input: {
   dashboardUrl: string;
@@ -75,42 +86,89 @@ export function depositReceivedEmail(input: {
   briefUrl?: string;
   clientName?: string | null;
   businessName?: string | null;
+  /** Formatted for display, e.g. "EUR 159.80". Omitted when not known. */
+  amount?: string | null;
 }): RenderedEmail {
-  const next = input.briefUrl
-    ? `<p>
-      There is one thing we need from you: the detail of what you want on the
-      site. It takes about ten minutes, and the build starts by itself the
-      moment it is done.
-    </p>
-    <div style="text-align: center;">
-      <a href="${input.briefUrl}" class="button">Fill in your brief</a>
-      <a href="${input.dashboardUrl}" class="button">Open your dashboard</a>
-    </div>`
-    : `<p>
-      You can follow the build from your dashboard. We will email you again the
-      moment there is something to look at.
-    </p>
-    <div style="text-align: center;">
-      <a href="${input.dashboardUrl}" class="button">Open your dashboard</a>
-    </div>`;
-  return {
+  const amount = input.amount?.trim();
+  const started = `we have started building ${projectPhrase(
+    input.businessName
+  )}.${input.briefUrl ? '' : ' Nothing else is needed from you right now.'}`;
+
+  // With a brief to fill in, that is the one action, and the dashboard stays a
+  // link rather than a second button: two buttons is two decisions, and only
+  // one of them unblocks the build.
+  const next: Block[] = input.briefUrl
+    ? [
+        {
+          kind: 'callout',
+          title: 'What starts now',
+          content:
+            'There is one thing we need from you: the detail of what you ' +
+            'want on the site. It takes about ten minutes, and the build ' +
+            'starts by itself the moment it is done.',
+        },
+        { kind: 'button', label: 'Fill in your brief', href: input.briefUrl },
+        {
+          kind: 'paragraph',
+          content: [
+            {
+              link: {
+                href: input.dashboardUrl,
+                label: 'Open your dashboard',
+              },
+            },
+            ' to follow the build. We will email you again the moment there ' +
+              'is something to look at.',
+          ],
+        },
+      ]
+    : [
+        {
+          kind: 'callout',
+          title: 'What starts now',
+          content:
+            'We build the full site from your brief, then check it by hand ' +
+            'before you see it. You can follow it from your dashboard, and ' +
+            'we will email you the moment there is something to look at.',
+        },
+        {
+          kind: 'button',
+          label: 'Open your dashboard',
+          href: input.dashboardUrl,
+        },
+      ];
+
+  return renderEmail({
     subject: 'Your deposit is in and your build has started',
-    html: baseEmailTemplate(`
-    <h1>Your build has started</h1>
-    <p>${greeting(input.clientName)}</p>
-    <p>
-      Your deposit went through and we have started building
-      ${projectPhrase(input.businessName)}.${
-      input.briefUrl ? '' : ' Nothing else is needed from you right now.'
-    }
-    </p>
-    ${next}
-    <p class="muted" style="margin-top: 24px;">
-      If you did not pay this deposit, reply to this email and we will sort it
-      out.
-    </p>
-  `),
-  };
+    preheader: `We have started building ${projectPhrase(
+      input.businessName
+    )}. ${
+      input.briefUrl
+        ? 'One thing is needed from you.'
+        : 'Nothing is needed from you.'
+    }`,
+    blocks: [
+      { kind: 'heading', text: 'Your build has started' },
+      greeting(input.clientName),
+      {
+        kind: 'paragraph',
+        content: amount
+          ? [
+              'Your deposit of ',
+              { strong: amount },
+              ` went through and ${started}`,
+            ]
+          : `Your deposit went through and ${started}`,
+      },
+      ...next,
+      {
+        kind: 'note',
+        content:
+          'If you did not pay this deposit, reply to this email and we will ' +
+          'sort it out.',
+      },
+    ],
+  });
 }
 
 /**
@@ -135,72 +193,86 @@ export function briefIncompleteEmail(input: {
   clientName?: string | null;
   businessName?: string | null;
 }): RenderedEmail {
-  const items = input.missing
-    .map((entry) => `<li style="margin-bottom: 8px;">${escapeHtml(entry)}</li>`)
-    .join('\n      ');
-  return {
+  return renderEmail({
     subject: 'We are waiting on a few things for your site',
-    html: baseEmailTemplate(`
-    <h1>We are waiting on a few things</h1>
-    <p>${greeting(input.clientName)}</p>
-    <p>
-      Your deposit is in and the build of ${projectPhrase(input.businessName)}
-      is queued. Before it can start we need a short list of things from you,
-      because they are the parts of the site only you can write.
-    </p>
-    <ul style="padding-left: 20px;">
-      ${items}
-    </ul>
-    <p>
-      It all goes on one page and takes about ten minutes. The build starts by
-      itself as soon as it is done, so there is nothing to tell us afterwards.
-    </p>
-    <div style="text-align: center;">
-      <a href="${input.briefUrl}" class="button">Fill in your brief</a>
-    </div>
-    <p class="muted" style="margin-top: 24px;">
-      If something on that list is not going to happen, reply to this email and
-      we will work around it.
-    </p>
-  `),
-  };
+    preheader: `The build of ${projectPhrase(
+      input.businessName
+    )} is queued and needs a few things only you can write.`,
+    blocks: [
+      { kind: 'heading', text: 'We are waiting on a few things' },
+      greeting(input.clientName),
+      {
+        kind: 'paragraph',
+        content: `Your deposit is in and the build of ${projectPhrase(
+          input.businessName
+        )} is queued. Before it can start we need a short list of things from you, because they are the parts of the site only you can write.`,
+      },
+      { kind: 'list', items: input.missing },
+      {
+        kind: 'paragraph',
+        content:
+          'It all goes on one page and takes about ten minutes. The build ' +
+          'starts by itself as soon as it is done, so there is nothing to ' +
+          'tell us afterwards.',
+      },
+      { kind: 'button', label: 'Fill in your brief', href: input.briefUrl },
+      {
+        kind: 'note',
+        content:
+          'If something on that list is not going to happen, reply to this ' +
+          'email and we will work around it.',
+      },
+    ],
+  });
 }
 
 /**
  * The funnel preview finished generating.
  *
  * Sent to the address the intake asked for with the words "Where should I send
- * your preview once it's ready?", which until now was collected and then never
- * used for that.
+ * your preview once it's ready?", which until PR #94 was collected and then
+ * never used for that. The expiry is in the email because the preview is
+ * temporary by rule, and a link that stops working without warning is worse
+ * than one that never existed.
  */
 export function previewReadyEmail(input: {
   previewUrl: string;
   businessName?: string | null;
   clientName?: string | null;
+  /** ISO instant the hosted preview stops being served. */
+  expiresAt?: string | null;
 }): RenderedEmail {
-  return {
+  const expires = readableDate(input.expiresAt);
+  return renderEmail({
     subject: 'Your preview is ready',
-    html: baseEmailTemplate(`
-    <h1>Your preview is ready</h1>
-    <p>${greeting(input.clientName)}</p>
-    <p>
-      We finished a first version of ${projectPhrase(input.businessName)}. It is
-      a real site, not a mockup, and you can open it now.
-    </p>
-    <div style="text-align: center;">
-      <a href="${input.previewUrl}" class="button">See your preview</a>
-    </div>
-    <p style="margin-top: 24px;">
-      <strong>What happens next.</strong> Look it over and tell us what you want
-      changed. When you are happy with it, a deposit starts the full build and
-      the rest of the pages.
-    </p>
-    <p class="muted">
-      This preview is temporary. Claim it from the link above if you want to
-      keep it.
-    </p>
-  `),
-  };
+    preheader: `A first version of ${projectPhrase(
+      input.businessName
+    )} is built and you can open it now.`,
+    blocks: [
+      { kind: 'heading', text: 'Your preview is ready' },
+      greeting(input.clientName),
+      {
+        kind: 'paragraph',
+        content: `We finished a first version of ${projectPhrase(
+          input.businessName
+        )}. It is a real site, not a mockup, and you can open it now.`,
+      },
+      { kind: 'button', label: 'See your preview', href: input.previewUrl },
+      {
+        kind: 'callout',
+        title: 'What happens next',
+        content:
+          'Look it over and tell us what you want changed. When you are happy ' +
+          'with it, a deposit starts the full build and the rest of the pages.',
+      },
+      {
+        kind: 'note',
+        content: expires
+          ? `This preview is temporary and stops being served on ${expires}. Claim it before then if you want to keep it.`
+          : 'This preview is temporary. Claim it from the link above if you want to keep it.',
+      },
+    ],
+  });
 }
 
 /**
@@ -223,41 +295,46 @@ export function balanceInvoiceEmail(input: {
           input.dueInDays === 1 ? '' : 's'
         }.`
       : '';
-  return {
+  return renderEmail({
     subject: 'Your balance invoice is ready',
-    html: baseEmailTemplate(`
-    <h1>Your balance invoice is ready</h1>
-    <p>${greeting(input.clientName)}</p>
-    <p>
-      Your site is approved, so the remaining balance of
-      <strong>${escapeHtml(input.amount)}</strong> is now invoiced.${due}
-    </p>
-    <p>
-      You can pay it by card on the secure Stripe page below. There is nothing
-      to install and no account to make.
-    </p>
-    <div style="text-align: center;">
-      <a href="${input.hostedInvoiceUrl}" class="button">View and pay</a>
-    </div>
-    <p class="muted" style="margin-top: 24px;">
-      The same link is on your dashboard at
-      <a href="${input.dashboardUrl}">${input.dashboardUrl}</a>.
-    </p>
-  `),
-  };
+    preheader: `The remaining balance of ${input.amount} is invoiced and payable by card.`,
+    blocks: [
+      { kind: 'heading', text: 'Your balance invoice is ready' },
+      greeting(input.clientName),
+      {
+        kind: 'paragraph',
+        content: [
+          'Your site is approved, so the remaining balance of ',
+          { strong: input.amount },
+          ` is now invoiced.${due}`,
+        ],
+      },
+      {
+        kind: 'paragraph',
+        content:
+          'You can pay it by card on the secure Stripe page below. There is ' +
+          'nothing to install and no account to make.',
+      },
+      { kind: 'button', label: 'View and pay', href: input.hostedInvoiceUrl },
+      {
+        kind: 'note',
+        content: [
+          'The same link is on your dashboard at ',
+          { link: { href: input.dashboardUrl } },
+          '.',
+        ],
+      },
+    ],
+  });
 }
 
 /**
  * Somebody booked time through the calendar on the client's own site.
  *
- * The one email in this file that is not about the build. It is here for the
- * same reason the others are: the moment happens inside a webhook, where an
- * email is easy to forget and dangerous to add, and `notifyClientOnce` is the
- * only safe way to send one from there. Cal.com sends its own confirmation to
- * both people, so this is deliberately not a second copy of that. It says one
- * booking landed and points at the list, and it says nothing about the
- * attendee beyond their name, because the details are on a page behind a login
- * and an inbox is not.
+ * Cal.com sends its own confirmation to both people, so this is deliberately
+ * not a second copy of that. It says one booking landed, who and when, and
+ * points at the list. Nothing about the attendee beyond their name: the
+ * details are on a page behind a login, and an inbox is not.
  */
 export function newBookingEmail(input: {
   bookingsUrl: string;
@@ -267,65 +344,87 @@ export function newBookingEmail(input: {
   businessName?: string | null;
   clientName?: string | null;
 }): RenderedEmail {
-  const who = input.attendeeName?.trim()
-    ? escapeHtml(input.attendeeName.trim())
-    : 'Someone';
-  const what = input.eventName?.trim()
-    ? escapeHtml(input.eventName.trim())
-    : 'time with you';
-  return {
+  const who = input.attendeeName?.trim() || 'Someone';
+  const what = input.eventName?.trim() || 'time with you';
+  return renderEmail({
     subject: 'New booking on your site',
-    html: baseEmailTemplate(`
-    <h1>New booking on your site</h1>
-    <p>${greeting(input.clientName)}</p>
-    <p>
-      ${who} booked ${what} through the calendar on
-      ${projectPhrase(input.businessName)}.
-    </p>
-    <p><strong>${escapeHtml(input.when)}</strong></p>
-    <p>
-      It is already in your Cal.com calendar, so there is nothing to accept.
-      Your dashboard keeps the full list, including anything that gets moved or
-      cancelled later.
-    </p>
-    <div style="text-align: center;">
-      <a href="${input.bookingsUrl}" class="button">See your bookings</a>
-    </div>
-  `),
-  };
+    preheader: `${who} booked ${what} for ${input.when}.`,
+    blocks: [
+      { kind: 'heading', text: 'New booking on your site' },
+      greeting(input.clientName),
+      {
+        kind: 'paragraph',
+        content: `${who} booked time through the calendar on ${projectPhrase(
+          input.businessName
+        )}.`,
+      },
+      {
+        kind: 'facts',
+        rows: [
+          { label: 'Who', value: who },
+          { label: 'What', value: what },
+          { label: 'When', value: input.when },
+        ],
+      },
+      {
+        kind: 'paragraph',
+        content:
+          'It is already in your Cal.com calendar, so there is nothing to ' +
+          'accept. Your dashboard keeps the full list, including anything ' +
+          'that gets moved or cancelled later.',
+      },
+      { kind: 'button', label: 'See your bookings', href: input.bookingsUrl },
+    ],
+  });
 }
 
-/** The deploy finished and the site is being served. */
+/**
+ * The deploy finished and the site is being served.
+ *
+ * The address is the hero of this one, large and linked, because it is the
+ * thing the client has been waiting weeks for and the thing they will forward
+ * to someone else within the hour.
+ */
 export function siteLiveEmail(input: {
   siteUrl: string;
   dashboardUrl: string;
   clientName?: string | null;
   businessName?: string | null;
 }): RenderedEmail {
-  return {
+  return renderEmail({
     subject: 'Your site is live',
-    html: baseEmailTemplate(`
-    <h1>Your site is live</h1>
-    <p>${greeting(input.clientName)}</p>
-    <p>
-      ${projectPhrase(input.businessName)} is published and anyone can reach it
-      now.
-    </p>
-    <div style="text-align: center;">
-      <a href="${input.siteUrl}" class="button">Open your site</a>
-    </div>
-    <p style="margin-top: 24px;">
-      The address is
-      <a href="${input.siteUrl}">${escapeHtml(input.siteUrl)}</a>. Changes you
-      make in the editor go live the same way, so you never have to wait on us
-      for a wording fix.
-    </p>
-    <p class="muted">
-      Your dashboard is at
-      <a href="${input.dashboardUrl}">${input.dashboardUrl}</a>.
-    </p>
-  `),
-  };
+    preheader: `${projectPhrase(input.businessName)} is published at ${
+      input.siteUrl
+    }.`,
+    blocks: [
+      { kind: 'heading', text: 'Your site is live' },
+      greeting(input.clientName),
+      {
+        kind: 'paragraph',
+        content: `${projectPhrase(
+          input.businessName
+        )} is published and anyone can reach it now.`,
+      },
+      { kind: 'hero', href: input.siteUrl },
+      { kind: 'button', label: 'Open your site', href: input.siteUrl },
+      {
+        kind: 'paragraph',
+        content: [
+          'Your dashboard is at ',
+          { link: { href: input.dashboardUrl } },
+          '. Changes you make in the editor go live the same way, so you ' +
+            'never have to wait on us for a wording fix.',
+        ],
+      },
+      {
+        kind: 'note',
+        content:
+          'Your care plan covers the hosting, the domain renewal, ' +
+          'maintenance, support and your editor allowance, so the site stays ' +
+          'up and current without you doing anything.',
+      },
+    ],
+  });
 }
 
 /**
@@ -347,41 +446,47 @@ export function buildNeedsReviewEmail(input: {
   clientName?: string | null;
   businessName?: string | null;
 }): RenderedEmail {
-  return {
+  return renderEmail({
     subject: 'Your build needs a second look',
-    html: baseEmailTemplate(`
-    <h1>Your build needs a second look</h1>
-    <p>${greeting(input.clientName)}</p>
-    <p>
-      The build of ${projectPhrase(input.businessName)} stopped before it was
-      finished, so one of us is going through it now. Nothing is needed from
-      you, and nothing you have paid is affected.
-    </p>
-    <p>
-      We will email you again as soon as it is moving, and your dashboard shows
-      where it has got to in the meantime.
-    </p>
-    <div style="text-align: center;">
-      <a href="${input.dashboardUrl}" class="button">Open your dashboard</a>
-    </div>
-    <p class="muted" style="margin-top: 24px;">
-      If you would rather talk to a person about it, reply to this email.
-    </p>
-  `),
-  };
+    preheader: 'One of us is going through it now. Nothing is needed from you.',
+    blocks: [
+      { kind: 'heading', text: 'Your build needs a second look' },
+      greeting(input.clientName),
+      {
+        kind: 'paragraph',
+        content: `The build of ${projectPhrase(
+          input.businessName
+        )} stopped before it was finished, so one of us is going through it now.`,
+      },
+      {
+        kind: 'callout',
+        title: 'Nothing is needed from you',
+        content:
+          'Nothing you have paid is affected. We will email you again as soon ' +
+          'as it is moving, and your dashboard shows where it has got to in ' +
+          'the meantime.',
+      },
+      {
+        kind: 'button',
+        label: 'Open your dashboard',
+        href: input.dashboardUrl,
+      },
+      {
+        kind: 'note',
+        content:
+          'If you would rather talk to a person about it, reply to this email.',
+      },
+    ],
+  });
 }
 
 /**
  * A paid change request is on the site.
  *
- * The sixth notice, and the one the product owed a client who paid EUR 190 for
- * a change on 2026-09-12 and heard nothing, because there was no route that
- * could do the work and therefore no moment at which anything could be said.
- *
  * It quotes the client's own request back to them rather than describing the
  * change in our words. They wrote that sentence, they paid against it, and
- * reading it back is the shortest honest way to say "this, the thing you
- * asked for, is the thing that is now live".
+ * reading it back is the shortest honest way to say "this, the thing you asked
+ * for, is the thing that is now live".
  */
 export function changeRequestLiveEmail(input: {
   request: string;
@@ -391,29 +496,34 @@ export function changeRequestLiveEmail(input: {
   clientName?: string | null;
   businessName?: string | null;
 }): RenderedEmail {
-  return {
+  return renderEmail({
     subject: 'Your change is live',
-    html: baseEmailTemplate(`
-    <h1>Your change is live</h1>
-    <p>${greeting(input.clientName)}</p>
-    <p>
-      The change you asked for on ${projectPhrase(input.businessName)} is done
-      and published. This is what you asked for, in your words:
-    </p>
-    <blockquote style="margin: 16px 0; padding: 12px 16px; border-left: 3px solid #d9d5cc;">
-      ${escapeHtml(input.request)}
-    </blockquote>
-    <div style="text-align: center;">
-      <a href="${input.siteUrl}" class="button">See it on your site</a>
-    </div>
-    <p style="margin-top: 24px;">
-      It is version ${input.version} of your site, and your editor can still
-      change any of the wording on it yourself.
-    </p>
-    <p class="muted">
-      Your dashboard is at
-      <a href="${input.dashboardUrl}">${input.dashboardUrl}</a>.
-    </p>
-  `),
-  };
+    preheader: `The change you asked for on ${projectPhrase(
+      input.businessName
+    )} is published as version ${input.version}.`,
+    blocks: [
+      { kind: 'heading', text: 'Your change is live' },
+      greeting(input.clientName),
+      {
+        kind: 'paragraph',
+        content: `The change you asked for on ${projectPhrase(
+          input.businessName
+        )} is done and published. This is what you asked for, in your words:`,
+      },
+      { kind: 'quote', text: input.request },
+      {
+        kind: 'paragraph',
+        content: `It is version ${input.version} of your site, and your editor can still change any of the wording on it yourself.`,
+      },
+      { kind: 'button', label: 'See it on your site', href: input.siteUrl },
+      {
+        kind: 'note',
+        content: [
+          'Your dashboard is at ',
+          { link: { href: input.dashboardUrl } },
+          '.',
+        ],
+      },
+    ],
+  });
 }

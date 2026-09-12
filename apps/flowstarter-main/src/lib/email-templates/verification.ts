@@ -1,8 +1,12 @@
 /**
- * Email Verification Template
+ * Prove the address is real.
+ *
+ * Two shapes, because the auth provider sends one of two things: a link, or a
+ * six-character code the person types back into the tab they already have
+ * open. The code variant is the only email in the whole system with no button,
+ * because there is nowhere for it to go.
  */
-
-import { baseEmailTemplate } from './base';
+import { renderEmail, type RenderedEmail } from './base';
 
 interface VerificationEmailProps {
   verificationUrl?: string;
@@ -12,34 +16,43 @@ interface VerificationEmailProps {
 export function verificationEmail({
   verificationUrl,
   verificationCode,
-}: VerificationEmailProps): { subject: string; html: string } {
-  const subject = `Verify your email for Flowstarter`;
+}: VerificationEmailProps): RenderedEmail {
+  const ignore =
+    'If you did not create a Flowstarter account, you can ignore this email ' +
+    'and nothing will happen.';
 
-  const actionContent = verificationCode
-    ? `
-      <p>Enter this code to verify your email:</p>
-      <div style="text-align: center; margin: 24px 0;">
-        <span style="display: inline-block; padding: 16px 32px; background: #f3f4f6; border-radius: 12px; font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #1a1a2e;">
-          ${verificationCode}
-        </span>
-      </div>
-    `
-    : `
-      <div style="text-align: center;">
-        <a href="${verificationUrl}" class="button">Verify Email</a>
-      </div>
-    `;
+  if (verificationCode) {
+    return renderEmail({
+      subject: 'Verify your email for Flowstarter',
+      preheader: `Your verification code is ${verificationCode}.`,
+      blocks: [
+        { kind: 'heading', text: 'Verify your email' },
+        {
+          kind: 'paragraph',
+          content:
+            'Enter this code in the tab you started from to finish signing up.',
+        },
+        {
+          kind: 'panel',
+          rows: [{ label: 'Verification code', value: verificationCode }],
+        },
+        { kind: 'note', content: ignore },
+      ],
+    });
+  }
 
-  const html = baseEmailTemplate(`
-    <h1>Verify your email</h1>
-    <p>
-      Thanks for signing up! Please verify your email address to complete your registration.
-    </p>
-    ${actionContent}
-    <p class="muted" style="margin-top: 24px;">
-      If you didn't create a Flowstarter account, you can safely ignore this email.
-    </p>
-  `);
-
-  return { subject, html };
+  return renderEmail({
+    subject: 'Verify your email for Flowstarter',
+    preheader: 'One link finishes your Flowstarter sign-up.',
+    blocks: [
+      { kind: 'heading', text: 'Verify your email' },
+      {
+        kind: 'paragraph',
+        content:
+          'Confirm this is your address and your Flowstarter account is ready.',
+      },
+      { kind: 'button', label: 'Verify email', href: verificationUrl ?? '#' },
+      { kind: 'note', content: ignore },
+    ],
+  });
 }

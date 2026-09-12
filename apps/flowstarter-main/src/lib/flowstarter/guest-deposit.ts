@@ -248,7 +248,7 @@ async function sendGuestWelcome(input: {
   businessName: string | null;
 }): Promise<boolean> {
   const { account } = input;
-  const { subject, html } = guestDepositWelcomeEmail({
+  const { subject, html, text } = guestDepositWelcomeEmail({
     email: account.email,
     ...(account.tempPassword ? { tempPassword: account.tempPassword } : {}),
     signInUrl: signInUrl(),
@@ -256,7 +256,12 @@ async function sendGuestWelcome(input: {
   });
 
   try {
-    const result = await sendEmail({ to: account.email, subject, html });
+    const result = await sendEmail({
+      to: account.email,
+      subject,
+      html,
+      text,
+    });
     if (result.success) return true;
     await noteEmailFailure(input.workspaceId, account.kind, result.error);
     return false;

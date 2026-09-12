@@ -146,6 +146,7 @@ export async function POST(request: NextRequest) {
           to: workspace.client_email,
           subject: tpl.subject,
           html: tpl.html,
+          text: tpl.text,
           replyTo: email ?? undefined,
         });
       } catch (e) {

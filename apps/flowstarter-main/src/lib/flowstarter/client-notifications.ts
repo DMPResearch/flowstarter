@@ -196,7 +196,7 @@ export async function notifyClientOnce(input: {
       return { sent: false, reason: 'already_sent' };
     }
 
-    const { subject, html } = input.render({
+    const { subject, html, text } = input.render({
       workspaceId,
       email: to,
       clientName: workspace.client_name,
@@ -204,7 +204,7 @@ export async function notifyClientOnce(input: {
       dashboardUrl: clientDashboardUrl(workspaceId),
     });
 
-    const result = await sendEmail({ to, subject, html });
+    const result = await sendEmail({ to, subject, html, text });
     if (!result.success) {
       const failureDetail = result.error ?? 'unknown error';
       // Not recorded under CLIENT_EMAIL_EVENT: an unconfigured or briefly
