@@ -1920,6 +1920,10 @@ export type Database = {
           billing_interval: string
           cal_com_url: string | null
           cal_com_webhook_secret: string | null
+          cal_event_type_id: number | null
+          cal_provisioned_at: string | null
+          cal_provisioning_error: string | null
+          cal_user_id: number | null
           claimed_preview_id: string | null
           client_business_name: string | null
           client_email: string | null
@@ -1992,6 +1996,10 @@ export type Database = {
           billing_interval?: string
           cal_com_url?: string | null
           cal_com_webhook_secret?: string | null
+          cal_event_type_id?: number | null
+          cal_provisioned_at?: string | null
+          cal_provisioning_error?: string | null
+          cal_user_id?: number | null
           claimed_preview_id?: string | null
           client_business_name?: string | null
           client_email?: string | null
@@ -2064,6 +2072,10 @@ export type Database = {
           billing_interval?: string
           cal_com_url?: string | null
           cal_com_webhook_secret?: string | null
+          cal_event_type_id?: number | null
+          cal_provisioned_at?: string | null
+          cal_provisioning_error?: string | null
+          cal_user_id?: number | null
           claimed_preview_id?: string | null
           client_business_name?: string | null
           client_email?: string | null

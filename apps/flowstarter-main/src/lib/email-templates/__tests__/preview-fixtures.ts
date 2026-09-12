@@ -13,6 +13,7 @@
 import type { RenderedEmail } from '../base';
 import {
   balanceInvoiceEmail,
+  bookingPageReadyEmail,
   briefIncompleteEmail,
   buildNeedsReviewEmail,
   changeRequestLiveEmail,
@@ -32,6 +33,11 @@ export const SITE = 'https://darius-mihai-popescu-enxxz0.flowstarter.dev';
 export const PREVIEW = 'https://p-4f2a9c1d8b3e7a06.preview.flowstarter.net';
 export const INVOICE = 'https://invoice.stripe.com/i/acct_1/test_abc123';
 export const BRIEF = `${DASHBOARD}/brief`;
+/** The self-hosted Cal.com this platform provisions client calendars on. */
+export const BOOKING_PAGE =
+  'https://cal.flowstarter.dev/lumina-dental/intro-call';
+export const CAL_PASSWORD_SETUP =
+  'https://cal.flowstarter.dev/auth/forgot-password';
 
 export interface EmailFixture {
   name: string;
@@ -138,6 +144,19 @@ export function emailFixtures(): EmailFixture[] {
         'a 30 minute consultation',
         'Thursday 18 September, 10:30',
       ],
+    },
+    {
+      name: 'booking-page-ready',
+      mail: bookingPageReadyEmail({
+        bookingUrl: BOOKING_PAGE,
+        passwordSetupUrl: CAL_PASSWORD_SETUP,
+        dashboardUrl: DASHBOARD,
+        clientName: 'Ana',
+        businessName: 'Lumina Dental',
+      }),
+      // The password, not the booking link: the link already works.
+      button: CAL_PASSWORD_SETUP,
+      textContains: [BOOKING_PAGE, DASHBOARD, 'To change your times'],
     },
     {
       name: 'change-delivered',

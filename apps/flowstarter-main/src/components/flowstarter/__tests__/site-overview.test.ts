@@ -287,6 +287,120 @@ describe('the bookings tile', () => {
     );
   });
 
+  /**
+   * The three states of the calendar the platform makes for the client.
+   *
+   * The one that matters is "failed". A client cannot fix a connection to our
+   * Cal instance, so a tile that only said something had gone wrong would be
+   * an error they can do nothing about. It carries the reason and a retry, in
+   * the tone the tile uses for "there is something for you to do", and there
+   * is no red in the vocabulary at all.
+   */
+  it('says the booking page is being made, rather than asking for a link', () => {
+    expect(
+      tile('bookings', {
+        booking: {
+          connected: false,
+          href: BOOKING,
+          upcoming: 0,
+          nextAt: null,
+          last30Days: 0,
+          provisioning: { state: 'not_yet', reason: null },
+        },
+      })
+    ).toMatchObject({
+      value: 'Being set up',
+      note: 'We are making your booking page. We will email you the moment people can book you.',
+      href: BOOKING,
+      tone: 'muted',
+    });
+  });
+
+  it('gives the client the reason and the retry when it could not be made', () => {
+    const failed = tile('bookings', {
+      booking: {
+        connected: false,
+        href: BOOKING,
+        upcoming: 0,
+        nextAt: null,
+        last30Days: 0,
+        provisioning: {
+          state: 'failed',
+          reason:
+            'The booking service could not be reached. We will try again.',
+        },
+      },
+    });
+
+    expect(failed).toMatchObject({
+      value: 'Not set up',
+      note:
+        'The booking service could not be reached. We will try again. ' +
+        'Open your booking settings to try again.',
+      href: BOOKING,
+      // Never an error state: `attention` is the strongest tone there is.
+      tone: 'attention',
+    });
+  });
+
+  it('does not say "null" when a failed row lost its reason', () => {
+    expect(
+      tile('bookings', {
+        booking: {
+          connected: false,
+          href: BOOKING,
+          upcoming: 0,
+          nextAt: null,
+          last30Days: 0,
+          provisioning: { state: 'failed', reason: null },
+        },
+      })?.note
+    ).toBe(
+      'We could not finish your booking page. Open your booking settings to try again.'
+    );
+  });
+
+  it('keeps today’s wording for a provisioned calendar with nothing on it', () => {
+    expect(
+      tile('bookings', {
+        booking: {
+          connected: true,
+          href: BOOKING,
+          upcoming: 0,
+          nextAt: null,
+          last30Days: 0,
+          provisioning: { state: 'provisioned', reason: null },
+        },
+      })
+    ).toMatchObject({
+      value: '0',
+      note: 'Nothing booked yet. Your calendar is connected and taking bookings.',
+      tone: 'muted',
+    });
+  });
+
+  // A stale error column on a workspace whose client has since pasted their
+  // own link would otherwise tell somebody with a working booking page that
+  // they have not got one.
+  it('ignores a stale failure once a calendar is connected', () => {
+    expect(
+      tile('bookings', {
+        booking: {
+          connected: true,
+          href: BOOKING,
+          upcoming: 2,
+          nextAt: '2026-09-15T09:30:00.000Z',
+          last30Days: 6,
+          provisioning: { state: 'failed', reason: 'Something went wrong.' },
+        },
+      })
+    ).toMatchObject({
+      value: '2',
+      note: 'Coming up. Next on 15 Sep. 6 bookings in the last 30 days.',
+      tone: 'ok',
+    });
+  });
+
   it('does not print a broken date when the start time is nonsense', () => {
     expect(
       tile('bookings', {

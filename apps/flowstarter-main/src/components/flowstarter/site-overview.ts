@@ -24,6 +24,7 @@ import type {
   BriefMissingCode,
   BriefReadiness,
 } from '@/lib/flowstarter/brief-readiness';
+import type { CalProvisioningStatus } from '@/lib/flowstarter/cal-provisioning';
 
 export type SiteOverviewTileKey =
   | 'credits'
@@ -74,6 +75,12 @@ export interface SiteOverviewInput {
    * `connected` is whether a Cal.com link is saved; the three numbers come
    * from `workspace_bookings`, which only the signed Cal.com webhook writes.
    * `nextAt` is the start of the soonest upcoming booking, ISO, or null.
+   *
+   * `provisioning` is `calProvisioningStatus`'s verdict on the calendar the
+   * platform makes for the client, passed through rather than recomputed so
+   * this tile and the booking page cannot disagree. Optional: a caller that
+   * does not know (the design gallery's fixtures) gets today's wording, which
+   * is the honest default, because a missing verdict is not a failure.
    */
   booking: {
     connected: boolean;
@@ -81,6 +88,7 @@ export interface SiteOverviewInput {
     upcoming: number;
     nextAt: string | null;
     last30Days: number;
+    provisioning?: CalProvisioningStatus;
   };
   store: { products: number };
   editorHref: string;
@@ -147,6 +155,14 @@ const BRIEF_SUBJECTS: Record<BriefMissingCode, string> = {
 
 /** The five things a complete brief has; `completeness` is the share of them. */
 const BRIEF_PARTS = 5;
+
+/**
+ * Said only when the workspace is marked failed with no reason stored, which
+ * `calProvisioningStatus` cannot currently produce. It exists so a row written
+ * by an older migration, or hand-edited by an operator, cannot put the word
+ * "null" on a client's dashboard.
+ */
+const PROVISION_FAILED_FALLBACK = 'We could not finish your booking page.';
 
 /**
  * How far the brief has got, and the next thing it is waiting on.
@@ -269,8 +285,50 @@ function enquiriesTile({
  * nothing on it is not the same as a calendar nobody has hooked up, and a
  * client who sees "0" with no explanation reads it as "the site is not
  * working". Say which it is.
+ *
+ * Two more states come from the platform now making the calendar itself. They
+ * are checked first, and only while nothing is connected: the moment there is
+ * a working link the counts above are the truth, and a stale
+ * `cal_provisioning_error` from a run that has since been fixed (or from a
+ * client who pasted their own link in the meantime) must not tell somebody
+ * with a working booking page that they have not got one.
+ *
+ * NEITHER OF THEM IS RED. A client cannot fix our Postgres connection, so
+ * "failed" here is `attention` with the reason and a retry, which is a thing
+ * they can act on, rather than an error they can only be alarmed by.
  */
 function bookingsTile({ booking }: SiteOverviewInput): SiteOverviewTile {
+  const provisioning = booking.provisioning;
+
+  if (!booking.connected && provisioning?.state === 'failed') {
+    return {
+      key: 'bookings',
+      label: 'Bookings',
+      value: 'Not set up',
+      // The stored reason is already one sentence written for a client;
+      // `cal-provisioning.ts` keeps the connection strings and the constraint
+      // names for the log.
+      note: `${
+        provisioning.reason ?? PROVISION_FAILED_FALLBACK
+      } Open your booking settings to try again.`,
+      href: booking.href,
+      tone: 'attention',
+    };
+  }
+
+  if (!booking.connected && provisioning?.state === 'not_yet') {
+    return {
+      key: 'bookings',
+      label: 'Bookings',
+      value: 'Being set up',
+      note: 'We are making your booking page. We will email you the moment people can book you.',
+      href: booking.href,
+      // Nothing for the client to do, and nothing wrong: this is the tile's
+      // "not switched on yet" tone, not its "there is a job for you" one.
+      tone: 'muted',
+    };
+  }
+
   if (!booking.connected) {
     return {
       key: 'bookings',

@@ -16,7 +16,8 @@ export default {
     return [
       // Authenticated app surface — never cache, must revalidate every hit.
       {
-        source: '/:path(dashboard|admin|login|sign-up|forgot-password|reset-password|verify)(.*)',
+        source:
+          '/:path(dashboard|admin|login|sign-up|forgot-password|reset-password|verify)(.*)',
         headers: [
           { key: 'Cache-Control', value: 'no-store, must-revalidate' },
           { key: 'Accept-CH', value: 'Sec-CH-Prefers-Color-Scheme' },
@@ -26,9 +27,7 @@ export default {
       // Auth/session API endpoints — never cache.
       {
         source: '/api/(auth|webhooks)(.*)',
-        headers: [
-          { key: 'Cache-Control', value: 'no-store, must-revalidate' },
-        ],
+        headers: [{ key: 'Cache-Control', value: 'no-store, must-revalidate' }],
       },
       // Astro template previews — fully static, served straight from /public.
       // Hash-fingerprinted assets in /preview/_astro/ get a long cache; the
@@ -36,20 +35,29 @@ export default {
       {
         source: '/preview/:slug/_astro/(.*)',
         headers: [
-          { key: 'Cache-Control', value: 'public, max-age=31536000, immutable' },
+          {
+            key: 'Cache-Control',
+            value: 'public, max-age=31536000, immutable',
+          },
         ],
       },
       {
         source: '/preview/:path*',
         headers: [
-          { key: 'Cache-Control', value: 'public, s-maxage=300, stale-while-revalidate=60' },
+          {
+            key: 'Cache-Control',
+            value: 'public, s-maxage=300, stale-while-revalidate=60',
+          },
         ],
       },
       // Library showcase imagery is rebuilt only when we recapture thumbs.
       {
         source: '/showcase/:file*',
         headers: [
-          { key: 'Cache-Control', value: 'public, s-maxage=86400, stale-while-revalidate=604800' },
+          {
+            key: 'Cache-Control',
+            value: 'public, s-maxage=86400, stale-while-revalidate=604800',
+          },
         ],
       },
       // Everything else (marketing, legal, static-ish pages) - let the CDN in
@@ -167,7 +175,17 @@ export default {
   compiler: {
     removeConsole: process.env.NODE_ENV === 'production',
   },
-        allowedDevOrigins: ['192.168.3.119', '127.0.0.1', 'localhost', 'flowstarter.dev', 'www.flowstarter.dev', 'staging.flowstarter.dev', 'editor.flowstarter.dev', 'library.flowstarter.dev', 'workflows.flowstarter.dev'],
+  allowedDevOrigins: [
+    '192.168.3.119',
+    '127.0.0.1',
+    'localhost',
+    'flowstarter.dev',
+    'www.flowstarter.dev',
+    'staging.flowstarter.dev',
+    'editor.flowstarter.dev',
+    'library.flowstarter.dev',
+    'workflows.flowstarter.dev',
+  ],
   turbopack: {
     resolveExtensions: ['.tsx', '.ts', '.jsx', '.js'],
   },
@@ -225,6 +243,12 @@ export default {
     '@earendil-works/pi-coding-agent',
     '@earendil-works/pi-agent-core',
     '@earendil-works/pi-tui',
+    // `pg` is how the Cal.com provisioner reaches Cal's own database
+    // (src/lib/flowstarter/cal-provisioning.ts). It has to stay external: the
+    // package ships `pg-cloudflare`, which imports the `cloudflare:sockets`
+    // built-in, and a bundler that follows that import fails the whole build
+    // on a module that only exists inside a Workers runtime.
+    'pg',
     'playwright',
   ],
 };
