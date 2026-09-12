@@ -48,12 +48,19 @@ services:
       # included, to staging. deploy-slot.sh upserts the right line into the
       # env file before it starts the container.
     healthcheck:
+      # `$$` escapes the `$` so Compose passes `${process.env.PORT}` through to
+      # node instead of trying to interpolate it itself. Unescaped, Compose
+      # reads `${process.env.PORT}` as one of its own variables, rejects the
+      # dots in the name, and `docker compose up` fails outright with
+      # "invalid interpolation format for services.flowstarter-staging.healthcheck.test.[]"
+      # before any container starts. deploy-slot.test.sh stubs docker, so no
+      # test caught this; the first real deploy did.
       test:
         [
           'CMD',
           'node',
           '-e',
-          'fetch(`http://127.0.0.1:${process.env.PORT}/api/health`).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))',
+          'fetch(`http://127.0.0.1:$${process.env.PORT}/api/health`).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))',
         ]
       interval: 30s
       timeout: 10s
