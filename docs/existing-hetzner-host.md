@@ -11,6 +11,7 @@ Existing platform Caddy snippets are preserved.
    ```
 
    Use `bun-linux-arm64` for an ARM host.
+
 2. Prepare two root-readable environment files with distinct random
    `DEPLOY_AGENT_SHARED_SECRET` values. Both use
    `DEPLOY_AGENT_SITE_RUNTIME=docker` and
@@ -46,6 +47,17 @@ Existing platform Caddy snippets are preserved.
    `scripts/install-existing-host-agent.sh` to a private directory on the host.
    Run the installer as root with that directory and the preview suffix as its
    two arguments. It validates Caddy before reloading and starts both agents.
+
+   If the host's base Caddyfile already carries an `on_demand_tls` block, the
+   installer checks whether it is the platform's own policy, the one
+   cloud-init writes into every host it provisions with previews enabled,
+   identified by a marker comment next to the directive. When it is, the
+   installer integrates with it instead of adding a second one, so this
+   script also works on hosts the platform already provisioned, for example
+   to push a new agent binary onto one. When the on-demand policy is foreign,
+   the installer still aborts with a message that says how to merge the two
+   by hand before re-running it.
+
 4. Point a DNS-only wildcard A record, `*.preview.example.com`, at the host for
    previews. Final site names are **not** a wildcard: the app writes one A
    record per site, `{slug}.example.com`, at deploy time, and refuses to
@@ -56,6 +68,7 @@ Existing platform Caddy snippets are preserved.
    for names its own templates produce and that have a snippet on disk, so the
    paid agent answers for `{slug}.example.com` and the preview agent answers
    for `{slug}.preview.example.com`.
+
 5. Configure Flowstarter's server-only `FLOWSTARTER_EXISTING_HOST_ID`,
    `FLOWSTARTER_EXISTING_HOST_AGENT_URL`, and
    `FLOWSTARTER_EXISTING_HOST_SECRET_REF`. The last value names another
