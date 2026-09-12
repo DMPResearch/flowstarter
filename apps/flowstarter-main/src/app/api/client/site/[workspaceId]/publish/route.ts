@@ -32,6 +32,7 @@ import {
   findNonBinaryAssets,
   findPlaceholderImageReferencesInFiles,
   PLACEHOLDER_IMAGE_SHIPPED,
+  sanitiseSeedPlaceholders,
 } from '@flowstarter/agentic-codegen';
 import {
   markVersionPublished,
@@ -108,8 +109,17 @@ export async function POST(
   // screenshot of someone else's product) as if it were the client's own.
   // The worker's build validator runs the same check on the compiled output
   // by content hash; this one runs before a job is even queued.
+  //
+  // Asked of the manifest *after* the seed rule has run over it, because that
+  // rule is what the rebuild will materialise. A site published before #110
+  // carries the template's whole `public/images/` library in its manifest and
+  // may well point at one of those pictures from a case-study cover; refusing
+  // the publish outright would leave a client unable to fix their own typo on
+  // a site we delivered. The rule blanks the reference and drops the file, the
+  // rebuild does the same again on its way to `dist/`, and what is left here
+  // is a placeholder no rule can account for — which is worth a 422.
   const placeholderImages = findPlaceholderImageReferencesInFiles(
-    context.site.files,
+    sanitiseSeedPlaceholders(context.site.files).files,
   );
   if (placeholderImages.length > 0) {
     console.error(

@@ -37,6 +37,8 @@ function usable(overrides: Partial<UsableAsset> = {}): UsableAsset {
     height: 1600,
     usableFor: ['section'],
     caption: 'Ana at her desk',
+    originalName: null,
+    createdAt: null,
     kind: 'portrait',
     ...overrides,
   };

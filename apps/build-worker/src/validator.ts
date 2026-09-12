@@ -28,7 +28,7 @@ import type { SiteValidator } from '@flowstarter/agentic-codegen';
 import {
   describeAssetProblems,
   describeCalPreviewIssue,
-  describePlaceholderImageIssue,
+  describePlaceholderImageRepair,
   describePreviewTeaserIssue,
 } from '@flowstarter/agentic-codegen';
 import {
@@ -498,7 +498,10 @@ export class CommandSiteValidator implements SiteValidator {
     // caught by hash even if nothing referencing it survived as a string.
     const placeholderImages = await findPlaceholderImagesInDir(output);
     if (placeholderImages.length > 0) {
-      const message = describePlaceholderImageIssue(placeholderImages);
+      // The repair brief, not the bare verdict: this message is read back to
+      // an agent as "the output was ...", and a change-request agent is only
+      // allowed to delete a file under `public/` that this names by path.
+      const message = describePlaceholderImageRepair(placeholderImages);
       this.options.onOutput?.('placeholder-image-gate', [message]);
       throw new SiteValidationError(message);
     }

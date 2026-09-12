@@ -306,13 +306,23 @@ export function changeRequestFeedback(intent: ChangeRequestIntent): string {
     'RULES for this pass, in order of importance:',
     '1. Do the request and nothing else. Every other page, section, heading, ' +
       'sentence, image and style in this site is already approved and paid ' +
-      'for; leave it exactly as it is.',
+      'for; leave it exactly as it is. The one exception is rule 3: a file ' +
+      'the placeholder-image gate names by path may be deleted, because it ' +
+      'is the template’s own stand-in picture and was never the ' +
+      'client’s.',
     '2. Invent nothing. Do not add a project, case study, client, testimonial, ' +
       'statistic, price, award or logo that is not already in these files or ' +
       'named in the request above.',
-    '3. Add no image file. The only pictures you may introduce are the ones ' +
-      'listed above, by their given path; every other image reference must ' +
-      'already exist in this worktree.',
+    '3. Never add or replace a file under public/. The only pictures you may ' +
+      'introduce are the ones listed above, by their given path; every other ' +
+      'image reference must already exist in this worktree. You may delete a ' +
+      'file under public/ that the placeholder-image gate names by path, and ' +
+      'only such a file: those are the template’s own placeholder ' +
+      'pictures, the gate hashes the compiled site and public/ is copied ' +
+      'into it whole, so removing the file is the only thing that clears it. ' +
+      'Take the references out with it and let the component’s no-image ' +
+      'fallback render — the no-photo about layout, the typographic ' +
+      'project tile.',
     '4. Create no page that does not already exist unless the request asks ' +
       'for one in so many words.',
     '5. Keep the template component system, the routes and the styling ' +

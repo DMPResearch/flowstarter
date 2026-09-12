@@ -58,8 +58,18 @@ function paidRequest(): ChangeRequestView {
 
 function renderCard(
   assets = [
-    { id: ASSET_A, label: 'The Flowstarter client dashboard', caption: null },
-    { id: ASSET_B, label: 'operator-pipeline.png', caption: null },
+    {
+      id: ASSET_A,
+      label: 'The Flowstarter client dashboard',
+      caption: null,
+      thumbnailUrl: 'https://storage.example/signed/a.jpg',
+    },
+    {
+      id: ASSET_B,
+      label: 'operator-pipeline.png',
+      caption: null,
+      thumbnailUrl: null,
+    },
   ]
 ) {
   const client = new QueryClient({
@@ -150,6 +160,22 @@ describe('the change request card', () => {
     fireEvent.click(screen.getByTestId('change-request-build-start'));
 
     expect(await sentBody()).not.toHaveProperty('assetIds');
+  });
+
+  it('shows a thumbnail next to a picture that has one, and none for one that does not', () => {
+    renderCard();
+    const thumbnail = screen.getByAltText('') as HTMLImageElement;
+    expect(thumbnail).toHaveAttribute(
+      'src',
+      'https://storage.example/signed/a.jpg'
+    );
+    // Only one asset in this fixture has a thumbnailUrl; a failed sign must
+    // degrade to no image, not a broken one.
+    expect(screen.getAllByRole('img')).toHaveLength(1);
+    expect(
+      screen.getByText('The Flowstarter client dashboard')
+    ).toBeInTheDocument();
+    expect(screen.getByText('operator-pipeline.png')).toBeInTheDocument();
   });
 
   it('shows no picker at all when the client has confirmed no pictures', () => {
