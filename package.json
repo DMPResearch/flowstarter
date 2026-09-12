@@ -6,6 +6,8 @@
   "packageManager": "pnpm@10.34.5",
   "scripts": {
     "dev": "mprocs",
+    "dev:bootstrap": "bash scripts/dev-bootstrap.sh",
+    "dev:doctor": "bash scripts/dev-doctor.sh",
     "dev:main": "pnpm nx run flowstarter-main:dev --output-style=stream",
     "docker:dev:main:up": "docker compose -f docker-compose.flowstarter-main-dev.yml up -d --build",
     "docker:dev:main:down": "docker compose -f docker-compose.flowstarter-main-dev.yml down",
