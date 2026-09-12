@@ -223,6 +223,60 @@ describe('CommandSiteValidator', () => {
     ).toBe(true);
   });
 
+  it('fails a paid build whose output still carries the portrait placeholder', async () => {
+    const root = await siteWorkspace();
+    const output: Array<{ command: string; lines: string[] }> = [];
+    const validator = new CommandSiteValidator({
+      commands: [
+        {
+          bin: 'node',
+          args: [
+            '-e',
+            'const fs=require("node:fs");fs.mkdirSync("dist/images",{recursive:true});' +
+              'fs.writeFileSync("dist/images/placeholder-portrait.svg","<svg></svg>","utf8");' +
+              'fs.mkdirSync("dist/about",{recursive:true});' +
+              'fs.writeFileSync("dist/about/index.html",' +
+              '"<img src=\\"/images/placeholder-portrait.svg\\" alt=\\"About\\" />","utf8")',
+          ],
+        },
+      ],
+      timeoutMs: 30_000,
+      onOutput: (command, lines) => output.push({ command, lines }),
+    });
+
+    await expect(validator.validate(root, 'full')).rejects.toThrow(
+      /PLACEHOLDER_IMAGE_SHIPPED/,
+    );
+    expect(
+      output.some(
+        (entry) =>
+          entry.command === 'placeholder-image-gate' &&
+          entry.lines.join(' ').includes('portrait'),
+      ),
+    ).toBe(true);
+  });
+
+  it('passes a paid build whose only stand-in art is decoration', async () => {
+    const root = await siteWorkspace();
+    const validator = new CommandSiteValidator({
+      commands: [
+        {
+          bin: 'node',
+          args: [
+            '-e',
+            'const fs=require("node:fs");fs.mkdirSync("dist/images",{recursive:true});' +
+              'fs.writeFileSync("dist/images/studio-portrait.svg","<svg><!-- abstract --></svg>","utf8");' +
+              'fs.writeFileSync("dist/index.html",' +
+              '"<img src=\\"/images/studio-portrait.svg\\" alt=\\"\\" />","utf8")',
+          ],
+        },
+      ],
+      timeoutMs: 30_000,
+    });
+
+    await expect(validator.validate(root, 'full')).resolves.toBeUndefined();
+  });
+
   it('kills a command that hangs past the build timeout', async () => {
     const root = await siteWorkspace();
     const validator = new CommandSiteValidator({

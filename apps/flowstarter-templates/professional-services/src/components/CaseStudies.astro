@@ -72,7 +72,15 @@ const rightProjects = caseStudies.projects.filter((_, index) => index % 2 === 1)
             <a href={project.href} class="case-studies__list-image">
               {project.imageSrc
                 ? <img src={project.imageSrc} alt={project.title} loading="lazy" style={project.imageScale ? `transform: scale(${project.imageScale})` : undefined} />
-                : <div class="case-studies__list-image-fallback" style={`background-color: ${project.color}`}></div>
+                : (
+                  // No screenshot for this engagement — a typographic tile
+                  // (its own name and category) rather than the template's
+                  // stock or abstract art standing in for work never done.
+                  <div class="case-studies__list-image-fallback" style={`background-color: ${project.color}`}>
+                    <span class="case-studies__list-image-fallback-title">{project.title}</span>
+                    <span class="case-studies__list-image-fallback-category">{project.category}</span>
+                  </div>
+                )
               }
             </a>
             <div class="case-studies__list-content">
@@ -274,6 +282,29 @@ const rightProjects = caseStudies.projects.filter((_, index) => index % 2 === 1)
   .case-studies__list-image-fallback {
     width: 100%;
     height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 8px;
+    padding: 24px;
+  }
+
+  .case-studies__list-image-fallback-title {
+    font-family: var(--font-title);
+    font-size: var(--fs-h4, 1.25rem);
+    font-weight: var(--fw-semibold);
+    text-transform: uppercase;
+    color: var(--text-on-dark, #fff);
+  }
+
+  .case-studies__list-image-fallback-category {
+    font-size: var(--fs-xs);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-on-dark, #fff);
+    opacity: 0.72;
   }
 
   .case-studies__list-content {

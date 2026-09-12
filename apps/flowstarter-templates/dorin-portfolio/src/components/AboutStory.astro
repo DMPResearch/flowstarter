@@ -3,13 +3,42 @@ import { frontmatter as siteLabels } from '../content/site-labels.md';
 import SectionBlock from './design-system/SectionBlock.astro';
 import ActionButton from './design-system/ActionButton.astro';
 
-const { aboutStory } = siteLabels;
+const { aboutStory, header } = siteLabels;
+
+// The photo here is the client's own — the generator places a cachedAssets
+// or intake.photos portrait, or leaves this field absent. A brief with no
+// portrait is common, not a defect, and the honest response is initials in
+// a disc, never the template's own stand-in art (a design-review guide
+// graphic once shipped here on a paid site).
+const aboutStoryImage =
+  typeof aboutStory.imageSrc === 'string' ? aboutStory.imageSrc.trim() : '';
+
+const initials = (() => {
+  const source = typeof header?.logo === 'string' ? header.logo.trim() : '';
+  if (!source) return '—';
+  const letters = source
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word[0]?.toUpperCase() ?? '')
+    .join('');
+  return letters.slice(0, 2) || '—';
+})();
 ---
 
 <SectionBlock id="about-story" className="about-story">
   <div class="about-story__inner container">
     <div class="about-story__media">
-      <img src={aboutStory.imageSrc} alt={aboutStory.imageAlt} loading="lazy" />
+      {aboutStoryImage ? (
+        <img src={aboutStoryImage} alt={aboutStory.imageAlt} loading="lazy" />
+      ) : (
+        <div
+          class="about-story__initials"
+          role="img"
+          aria-label={aboutStory.imageAlt || header?.logo || 'About'}
+        >
+          <span>{initials}</span>
+        </div>
+      )}
     </div>
     <div class="about-story__content">
       <h2 class="about-story__title">{aboutStory.title}</h2>
@@ -44,6 +73,32 @@ const { aboutStory } = siteLabels;
     aspect-ratio: 4 / 5;
     object-fit: cover;
     display: block;
+  }
+
+  .about-story__initials {
+    width: 100%;
+    max-width: 560px;
+    aspect-ratio: 4 / 5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--accent);
+  }
+
+  .about-story__initials span {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40%;
+    aspect-ratio: 1;
+    border-radius: 50%;
+    background: var(--bg-dark);
+    color: var(--text-on-dark);
+    font-family: var(--font-title, inherit);
+    font-size: clamp(1.5rem, 4vw, 2.75rem);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
   }
 
   .about-story__content {
