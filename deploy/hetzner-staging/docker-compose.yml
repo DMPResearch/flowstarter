@@ -40,7 +40,29 @@ services:
     environment:
       NODE_ENV: production
       PORT: '${FLOWSTARTER_HOST_PORT:-3000}'
-      HOSTNAME: 127.0.0.1
+      # 0.0.0.0, not 127.0.0.1, and the reason is specific enough to write down.
+      #
+      # Next 16's server binds HOSTNAME, but its internal proxy hop (the one
+      # that exists because this app still has a `middleware.ts`) always dials
+      # `localhost`. On this host /etc/hosts maps localhost to BOTH 127.0.0.1
+      # and ::1, and Node prefers ::1. So:
+      #
+      #   HOSTNAME=127.0.0.1  binds v4 only -> proxy dials ::1 -> nothing there
+      #                       -> every request dies "socket hang up / ECONNRESET"
+      #                       and the slot never passes its health gate.
+      #   HOSTNAME=localhost  binds [::1] only -> Caddy's 127.0.0.1 upstream
+      #                       cannot reach it.
+      #   HOSTNAME=0.0.0.0    binds dual-stack -> both the proxy hop and Caddy
+      #                       work. Measured on fs-sites-01, 2026-09-12.
+      #
+      # What that costs: with `network_mode: host` the slot is a plain listener
+      # on every interface, not a published container port, so neither Docker's
+      # loopback default publish address nor a DOCKER-USER rule applies to it.
+      # The thing that keeps it off the internet is the Hetzner Cloud Firewall
+      # (inbound 22/80/443 only), which is the same layer README.md already
+      # names as the enforcing one for the Supabase stack. Verify with
+      # `nc -z <host> 3000` from somewhere else; it must not connect.
+      HOSTNAME: 0.0.0.0
       # FLOWSTARTER_ENV is deliberately NOT set here. It comes from the slot's
       # env file (staging.env carries `FLOWSTARTER_ENV=staging`, prod.env
       # carries `FLOWSTARTER_ENV=production`), because a value under
