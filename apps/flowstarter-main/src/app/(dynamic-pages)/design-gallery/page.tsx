@@ -26,8 +26,10 @@ import { notFound } from 'next/navigation';
 import { MeshBackdrop } from '@flowstarter/flow-design-system/components/backgrounds/MeshBackdrop';
 import { SiteOverview } from '@/components/flowstarter/SiteOverview';
 import { siteOverviewTiles } from '@/components/flowstarter/site-overview';
+import { BriefForm } from '@/components/flowstarter/BriefForm';
+import { evaluateBriefReadiness } from '@/lib/flowstarter/brief-readiness';
 import { AdminDashboardGallery, AdminPipelineGallery } from './AdminSection';
-import { starterOverview, ecommerceOverview } from './fixtures';
+import { briefGallery, starterOverview, ecommerceOverview } from './fixtures';
 
 export const metadata: Metadata = {
   robots: { index: false, follow: false },
@@ -114,6 +116,61 @@ export default function DesignGalleryPage() {
             <SiteOverview
               state={ecommerceOverview.state}
               tiles={ecommerceTiles}
+            />
+          </div>
+        </div>
+      </section>
+
+      <section
+        aria-labelledby="design-gallery-client-brief"
+        className="flex flex-col gap-6"
+      >
+        <SectionLabel id="design-gallery-client-brief" title="Client brief" />
+        {/* The in-depth brief, the page a client fills in after the deposit.
+            Wrapped the way `dashboard/layout.tsx` wraps its children, and in
+            the same reading column the real route uses, so a screenshot taken
+            here is the width the page actually has. */}
+        <div
+          className="relative overflow-hidden"
+          style={{ transform: 'translateZ(0)' }}
+        >
+          <MeshBackdrop variant="app" />
+          <div className="relative z-10 mx-auto flex w-full max-w-3xl flex-col gap-6 p-6">
+            <header className="flex flex-col gap-2">
+              <p className="text-xs font-semibold uppercase tracking-widest text-[var(--purple-primary)]">
+                Your brief
+              </p>
+              <h1 className="text-3xl font-bold leading-tight text-[var(--fs-ink)]">
+                What your site is made from
+              </h1>
+              <p className="text-sm text-[var(--fs-ink-dim)]">
+                Your build starts once this is complete. Everything here ends up
+                on the site, so the more of it is yours, the less we have to
+                invent.
+              </p>
+            </header>
+            <BriefForm
+              workspaceId={briefGallery.workspaceId}
+              initialBrief={briefGallery.brief}
+              initialReadiness={evaluateBriefReadiness({
+                offer: briefGallery.brief.offer,
+                projects: briefGallery.brief.projects,
+                noProjects: briefGallery.brief.noProjects,
+                designReferenceAssetIds:
+                  briefGallery.brief.designReferenceAssetIds,
+                photos: briefGallery.assets
+                  .filter((asset) =>
+                    briefGallery.brief.photoAssetIds.includes(asset.id)
+                  )
+                  .map((asset) => ({
+                    assetId: asset.id,
+                    kind: asset.kind,
+                    width: asset.width,
+                    height: asset.height,
+                    rightsConfirmed: Boolean(asset.rightsConfirmedAt),
+                  })),
+              })}
+              initialAssets={briefGallery.assets}
             />
           </div>
         </div>

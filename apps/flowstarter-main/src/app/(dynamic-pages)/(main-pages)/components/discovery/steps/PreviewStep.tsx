@@ -26,9 +26,12 @@ import {
   claimIntakeChatPayload,
   describeWithIntakeAnswers,
 } from '../intake-chat.shared';
+import { withQuickDefaults } from '../quick-defaults';
 import { usePreviewProgress } from '../usePreviewProgress';
 import { formatPreviewExpiry } from '@/components/flowstarter/site-link';
 import { DemoSiteFrame } from './DemoSiteFrame';
+import { BrandStrip, type BrandStripProps } from './BrandStrip';
+import { ProfilePictureConsent } from './ProfilePictureConsent';
 import { DerivedSiteSkeleton } from './IntakePreviewPane';
 import {
   ChatBubble,
@@ -147,7 +150,12 @@ interface ChatTurn {
  * generator after a claim, and the preview shown right now would ignore
  * what the visitor just told us.
  */
-function previewPayload(data: DiscoveryData) {
+function previewPayload(raw: DiscoveryData) {
+  // The four answers, plus everything the intake stopped asking, derived by
+  // rule from the visitor's own sentence. The generator needs an industry
+  // and a page budget whether or not anybody was asked for one, and a
+  // defensible guess beats a blank that the page-set rule reads as zero.
+  const data = withQuickDefaults(raw);
   return {
     businessName: data.businessName,
     fullName: data.fullName,
@@ -164,6 +172,24 @@ function previewPayload(data: DiscoveryData) {
     // every generated site with placeholder social links.
     instagramUrl: data.instagramUrl,
     linkedinUrl: data.linkedinUrl,
+    // A site they already have. The brief type has carried
+    // `existingWebsiteUrl` since it was written with nothing ever setting it.
+    websiteUrl: data.websiteUrl ?? '',
+    // What someone actually buys. The generator's services section is written
+    // from this rather than inferred from the description.
+    offer: data.offer ?? '',
+    // The palette and the voice the brand step derived, passed through rather
+    // than re-derived: the visitor has already been shown these swatches, and
+    // deriving them twice could disagree with what they saw.
+    ...(data.brandPalette ? { palette: data.brandPalette } : {}),
+    ...(data.brandVoice
+      ? {
+          tone: {
+            adjectives: data.brandVoice.adjectives,
+            voice: data.brandVoice.voice,
+          },
+        }
+      : {}),
     // The page-count answer decides how many pages the generator may build.
     // Dropping it here is what gave a "Under 5" brief a seven-page site.
     ...(data.pageCount ? { pageCount: data.pageCount } : {}),
@@ -175,9 +201,18 @@ function previewPayload(data: DiscoveryData) {
 export function PreviewStep({
   data,
   t,
+  brand,
 }: {
   data: DiscoveryData;
   t: (key: string) => string;
+  /**
+   * The colours and the voice, derived while the visitor answered the fourth
+   * question. Shown here rather than only in the intake pane because the
+   * intake pane is on screen for about a second after the links land: this is
+   * where the visitor actually waits, and seeing their own colours while the
+   * build runs is the whole argument for having read their profile at all.
+   */
+  brand?: Omit<BrandStripProps, 't'>;
 }) {
   const [mode, setMode] = useState<Mode>('loading');
   const [liveUrl, setLiveUrl] = useState<string | null>(null);
@@ -463,6 +498,16 @@ export function PreviewStep({
   const { isSignedIn, isLoaded: authLoaded } = useAuth();
   const [claimBusy, setClaimBusy] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
+  /**
+   * The answer to the claim page's one picture question, defaulted to yes.
+   *
+   * Held here rather than in `DiscoveryData` because it is not an intake
+   * answer: it is a consent given at the moment of claiming, and it is sent
+   * with that request and nowhere else. The checkbox is only rendered when
+   * there is a fetched picture to ask about, so the default is never sent for
+   * a preview that has none.
+   */
+  const [useProfilePicture, setUseProfilePicture] = useState(true);
 
   const previewId = liveDemoId ?? demo?.demoId ?? null;
 
@@ -502,6 +547,11 @@ export function PreviewStep({
           ...(claimIntakeChatPayload(data)
             ? { intakeChat: claimIntakeChatPayload(data) }
             : {}),
+          // The one picture question. Sent only when there is a fetched
+          // picture to ask about, so a preview with none cannot accidentally
+          // confirm rights over something else: the server defaults the field
+          // to false and confirms nothing without it.
+          ...(data.brandPicture ? { useProfilePicture } : {}),
         }),
       });
       const json = (await res.json().catch(() => ({}))) as {
@@ -518,7 +568,7 @@ export function PreviewStep({
     } finally {
       setClaimBusy(false);
     }
-  }, [previewId, data]);
+  }, [previewId, data, useProfilePicture]);
 
   /**
    * The signed-out path: straight to Stripe, no account first.
@@ -932,6 +982,11 @@ export function PreviewStep({
             </div>
           ) : (
             <div className="mt-2 flex flex-col gap-2">
+              <ProfilePictureConsent
+                picture={data.brandPicture}
+                onChange={setUseProfilePicture}
+                t={t}
+              />
               <button
                 type="button"
                 onClick={claimSite}
@@ -960,6 +1015,7 @@ export function PreviewStep({
           )}
         </ChatBubble>
       )}
+      {brand ? <BrandStrip {...brand} t={t} /> : null}
     </ConversationLog>
   );
 

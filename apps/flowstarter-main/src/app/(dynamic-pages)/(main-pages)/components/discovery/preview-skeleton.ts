@@ -26,6 +26,7 @@
  * build; when it starts, this skeleton becomes its loading frame.
  */
 import type { DiscoveryData, PageCount } from './discovery.logic';
+import { withQuickDefaults } from './quick-defaults';
 
 /** A band in the skeleton, in the order it is drawn. */
 export type SkeletonSectionId =
@@ -46,7 +47,7 @@ export type SkeletonRadius = 'sharp' | 'soft' | 'round';
 /** One line of the "what we know so far" list under the pane. */
 export interface KnownFact {
   /** Matches an `IntakeQuestionId`, so the edit affordance can jump back. */
-  id: 'fullName' | 'businessName' | 'brandTone' | 'pageCount';
+  id: 'fullName' | 'description' | 'links' | 'brandTone';
   /** Locale key for the label. */
   labelKey: string;
   /** The visitor's own words, or '' when they have not answered yet. */
@@ -193,17 +194,35 @@ function toneShape(brandTone: string): {
   return { weight: 'regular', radius: 'soft' };
 }
 
+/** The first few words of a prose answer, so the fact list stays one line. */
+function firstWords(text: string, max = 48): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat.length <= max) return flat;
+  const cut = flat.slice(0, max);
+  const atWord = cut.lastIndexOf(' ');
+  return `${atWord > 16 ? cut.slice(0, atWord) : cut}...`;
+}
+
 /**
- * The pages answer, as the visitor picked it. Deliberately the raw value and
- * not a locale lookup: the caller has `t` and the option labels, this module
- * stays free of both.
+ * Which networks the visitor gave us, named rather than spelled out. The list
+ * is a glance, and a pasted Instagram URL is forty characters of noise in it.
  */
-function pagesFact(data: DiscoveryData): string {
-  return data.pageCount === '' ? '' : data.pageCount;
+function linksFact(data: DiscoveryData): string {
+  const names: string[] = [];
+  if ((data.instagramUrl ?? '').trim()) names.push('Instagram');
+  if ((data.linkedinUrl ?? '').trim()) names.push('LinkedIn');
+  if ((data.websiteUrl ?? '').trim()) names.push('Website');
+  return names.join(', ');
 }
 
 /** The whole skeleton, derived. Pure: same data in, same skeleton out. */
-export function derivePreviewSkeleton(data: DiscoveryData): PreviewSkeleton {
+export function derivePreviewSkeleton(raw: DiscoveryData): PreviewSkeleton {
+  // The intake asks four questions now, so the industry, the goal, the page
+  // count and the commerce answer are derived from the visitor's sentence
+  // rather than asked. Same shape either way: a derived industry reshapes the
+  // skeleton exactly as a chosen one did, which is the point of deriving it
+  // into the same vocabulary.
+  const data = withQuickDefaults(raw);
   const siteName = (data.businessName ?? '').trim();
   const industry = (data.industry ?? '').trim();
   const brandTone = (data.brandTone ?? '').trim();
@@ -211,6 +230,11 @@ export function derivePreviewSkeleton(data: DiscoveryData): PreviewSkeleton {
   const { weight, radius } = toneShape(brandTone);
   const hasProductRow = sellsCatalogue(data.commerceMode);
 
+  // The four facts are exactly the four things the quick intake asks about, so
+  // the list fills in as the conversation runs and is complete when it ends.
+  // It used to show the business name, the tone and the page count; those are
+  // no longer asked before the preview, and a list that can never fill is a
+  // list that reads as broken.
   const facts: KnownFact[] = [
     {
       id: 'fullName',
@@ -218,12 +242,19 @@ export function derivePreviewSkeleton(data: DiscoveryData): PreviewSkeleton {
       value: (data.fullName ?? '').trim(),
     },
     {
-      id: 'businessName',
-      labelKey: `${KEY}factBusiness`,
-      value: siteName,
+      id: 'description',
+      labelKey: `${KEY}factDoes`,
+      value: firstWords(data.description ?? ''),
     },
+    {
+      id: 'links',
+      labelKey: `${KEY}factLinks`,
+      value: linksFact(data),
+    },
+    // Derived rather than asked: the tone comes from the profile and the
+    // visitor's own sentence. Shown because it visibly shapes the skeleton,
+    // and editable through the link it was derived from.
     { id: 'brandTone', labelKey: `${KEY}factStyle`, value: brandTone },
-    { id: 'pageCount', labelKey: `${KEY}factPages`, value: pagesFact(data) },
   ];
 
   return {

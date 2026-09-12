@@ -126,6 +126,12 @@ export function stageStatus(
  * Only the words change. The stepper still shows the stage the project is in,
  * because inventing a seventh stage would mean inventing a seventh state, and
  * the state machine is the state machine.
+ *
+ * The third case is the opposite of the other two: a build that is waiting on
+ * the client's own brief. Nothing is wrong with it, nobody is looking at it,
+ * and the one thing it must not say is the DEPOSIT_PAID stage's "Nothing is
+ * needed from you right now", which is precisely what it would say without
+ * this branch.
  */
 export function stageCopy(
   state: ProjectState,
@@ -140,6 +146,20 @@ export function stageCopy(
         'Your build stopped before it finished and a person on our team is ' +
         'checking it now. Nothing is needed from you, and nothing you have ' +
         'paid is affected. We will email you as soon as it is moving again.',
+    };
+  }
+  // The one case here where something IS needed from the client, which is why
+  // it cannot borrow either of the other two sentences: both of them promise
+  // that nothing is. Calm, specific, and it names the page rather than asking
+  // them to go looking for it.
+  if (signal.attention === 'waiting_on_brief') {
+    return {
+      title: 'We are waiting on your brief',
+      detail:
+        'Your build is queued and starts by itself as soon as we know what ' +
+        'to put on the site. Open Your brief on this page and tell us what ' +
+        'you offer and what you have made. It takes about ten minutes and ' +
+        'nothing happens until it is done.',
     };
   }
   return {

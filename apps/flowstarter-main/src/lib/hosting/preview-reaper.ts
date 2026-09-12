@@ -29,6 +29,7 @@ import 'server-only';
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '../database.types';
+import { deleteFunnelAssets } from '../flowstarter/funnel-assets';
 import {
   deleteFunnelPreviewArtifact,
   listExpiredFunnelPreviews,
@@ -48,6 +49,8 @@ export interface ReapedPreview {
   hostname: string | null;
   siteRemoved: boolean;
   artifactRemoved: boolean;
+  /** Pictures the visitor uploaded before the claim, deleted with the preview. */
+  picturesRemoved: number;
   detail: string | null;
 }
 
@@ -115,6 +118,30 @@ export async function reapExpiredPreviews(
       });
     }
 
+    // A preview may also hold pictures the visitor uploaded before there was a
+    // workspace: a logo or a headshot, taken when their profiles would not
+    // load, so the palette could come from their own material. Those live
+    // under the same `funnel/{previewId}/` prefix and die with the preview.
+    //
+    // Deliberately not gated on `removal.removed`. The site teardown talks to
+    // a deploy agent that may be unreachable, while these are rows and objects
+    // we own outright, and leaving a stranger's photograph in the bucket
+    // because a Hetzner host was down is the wrong way round.
+    let picturesRemoved = 0;
+    try {
+      const deleted = await deleteFunnelAssets({
+        previewId: candidate.previewId,
+        ...(options.supabase ? { supabase: options.supabase } : {}),
+      });
+      picturesRemoved = deleted.removed;
+    } catch (error) {
+      console.warn(
+        `[preview-reaper] ${candidate.previewId}: could not delete the ` +
+          'uploaded pictures: ' +
+          (error instanceof Error ? error.message : 'unknown error')
+      );
+    }
+
     if (removal.removed) result.reaped += 1;
     else result.failed += 1;
 
@@ -123,6 +150,7 @@ export async function reapExpiredPreviews(
       hostname: candidate.hostname,
       siteRemoved: removal.removed,
       artifactRemoved,
+      picturesRemoved,
       detail: removal.detail,
     });
   }

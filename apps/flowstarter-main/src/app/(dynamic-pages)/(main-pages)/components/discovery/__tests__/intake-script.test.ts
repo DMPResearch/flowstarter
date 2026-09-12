@@ -6,11 +6,13 @@
  * model's opinion, so the whole of it is tested without rendering anything and
  * without a network in sight.
  *
- * The invariant worth naming: the script's `required` questions must line up
- * exactly with `canProceed`. If they drift, the conversation either walks past
- * a step the wizard would have blocked (and the preview is built from nothing)
- * or blocks on something the old form let through (and the funnel loses people
- * for no reason).
+ * What it does *not* cover is how many questions stand in front of the
+ * preview, which stages there are, or that the quick phase lines up with
+ * `canProceed`. Those are the friction budget, and `intake-friction.test.ts`
+ * owns them: a number asserted in two files is a number that gets changed in
+ * one of them. This file is the mechanics underneath -- validators, appliers,
+ * option matching, reflections, interpolation -- for every question in the
+ * script, including the twelve the Brief now asks after the deposit.
  */
 import { describe, expect, it } from 'vitest';
 import en from '@/locales/en';
@@ -18,14 +20,13 @@ import {
   type DiscoveryData,
   type Step,
   EMPTY_DISCOVERY,
+  PREVIEW_STEP,
   canProceed,
 } from '../discovery.logic';
 import {
-  CONVERSATION_LAST_STEP,
   INTAKE_SCRIPT,
   answerText,
   answeredQuestions,
-  applicableQuestions,
   conversationProgress,
   firstSentence,
   humanList,
@@ -34,9 +35,11 @@ import {
   nextQuestion,
   promptText,
   questionById,
+  questionsInPhase,
   reflectionText,
   shortcutLetter,
   stepForConversation,
+  websiteFrom,
 } from '../intake-script';
 
 const t = (key: string): string =>
@@ -57,7 +60,11 @@ function answer(
   };
 }
 
-/** Walks the whole script, answering everything, collecting the order asked. */
+/**
+ * Walks the pre-preview conversation, answering everything, collecting the
+ * order asked. `nextQuestion` is scoped to the quick phase, so this reaches
+ * exactly the questions a visitor is asked before they see anything.
+ */
 function walk(
   answers: Record<string, string>,
   start: DiscoveryData = EMPTY_DISCOVERY
@@ -88,9 +95,11 @@ const FULL_ANSWERS: Record<string, string> = {
   email: 'maria@example.com',
   businessName: 'Ionescu Dental',
   description: 'A boutique dental clinic in Cluj doing cosmetic work.',
+  offer: 'Whitening, veneers and a nervous-patient first visit.',
   industry: 'Therapy & wellness',
   targetAudience: 'Adults in Cluj who avoided the dentist for a decade.',
-  links: 'instagram.com/ionescudental',
+  links:
+    'instagram.com/ionescudental, linkedin.com/company/ionescu, ionescu-dental.ro',
   goal: 'Take bookings or appointments',
   brandTone: 'Calm, Trustworthy',
   pageCount: '5-7',
@@ -103,46 +112,35 @@ const FULL_ANSWERS: Record<string, string> = {
 };
 
 describe('the script itself', () => {
-  it('asks one question at a time, in a fixed order, across steps 1 to 6', () => {
+  it('asks one thing at a time, never twice, and never goes backwards', () => {
+    // Which questions these are, and how many, belongs to the friction
+    // budget. What is pinned here is the shape of the walk itself.
     const { asked, steps } = walk(FULL_ANSWERS);
-
-    expect(asked).toEqual([
-      'fullName',
-      'email',
-      'businessName',
-      'description',
-      'industry',
-      'targetAudience',
-      'links',
-      'goal',
-      'brandTone',
-      'pageCount',
-      'timeline',
-      'commerceMode',
-      // no catalogSize: this business sells nothing
-      'calComUrl',
-      'customIntegrations',
-      'selectedTier',
-      'subscription',
-    ]);
-    // Never goes backwards, and never past the conversation's last step.
+    expect(new Set(asked).size).toBe(asked.length);
     expect(steps).toEqual([...steps].sort((a, b) => a - b));
-    expect(Math.max(...steps)).toBe(CONVERSATION_LAST_STEP);
   });
 
-  it('is over — and only then — when every applicable question is answered', () => {
+  it('keeps the transcript in the order the visitor dealt with it', () => {
     const { data, asked } = walk(FULL_ANSWERS);
-    expect(nextQuestion(data, asked)).toBeNull();
-    expect(nextQuestion(data, asked.slice(0, -1))).not.toBeNull();
+    // `answeredQuestions` is the transcript's spine, so it follows the
+    // visitor's own order rather than the script's.
+    const backwards = [...asked].reverse();
+    expect(answeredQuestions(data, backwards).map((q) => q.id)).toEqual(
+      backwards
+    );
+    // And an id the conversation never had is not invented into it.
+    expect(
+      answeredQuestions(data, [...asked, 'pageCount']).map((q) => q.id)
+    ).toEqual(asked);
   });
 
-  it('hands the wizard on to the info agent when it runs out of questions', () => {
+  it('hands the wizard on to the preview when it runs out of questions', () => {
     const { data, asked } = walk(FULL_ANSWERS);
-    expect(stepForConversation(data, [], 7)).toBe(1);
-    expect(stepForConversation(data, asked, 7)).toBe(7);
+    expect(stepForConversation(data, [], PREVIEW_STEP)).toBe(1);
+    expect(stepForConversation(data, asked, PREVIEW_STEP)).toBe(PREVIEW_STEP);
   });
 
-  it('every question it can ask has copy in the catalogue', () => {
+  it('every question in the script has copy in the catalogue', () => {
     INTAKE_SCRIPT.forEach((question) => {
       expect(t(question.promptKey)).not.toBe(question.promptKey);
       if (question.placeholderKey) {
@@ -157,29 +155,10 @@ describe('the script itself', () => {
 });
 
 describe('the required-answer gate', () => {
-  it("matches canProceed exactly — the conversation cannot outrun the wizard's own gate", () => {
-    let data = EMPTY_DISCOVERY;
-    let answered: string[] = [];
-
-    for (let guard = 0; guard < INTAKE_SCRIPT.length + 2; guard += 1) {
-      const question = nextQuestion(data, answered);
-      if (!question) break;
-      const leaving = question.step;
-      const applied = answer(
-        data,
-        answered,
-        question.id,
-        FULL_ANSWERS[question.id] ?? ''
-      );
-      data = applied.data;
-      answered = applied.answered;
-      const arriving = nextQuestion(data, answered)?.step ?? 7;
-      // The moment the conversation leaves a step behind, that step must be
-      // one the wizard would have let the visitor walk past.
-      if (arriving > leaving) expect(canProceed(leaving, data)).toBe(true);
-    }
-  });
-
+  // That the quick phase and `canProceed` agree stage by stage is asserted in
+  // `intake-friction.test.ts`, which walks the two against each other. What is
+  // pinned here is the validators themselves, including the ones that
+  // travelled with a question to the Brief.
   it('will not accept an empty or malformed answer to a required question', () => {
     expect(questionById('fullName')?.validate?.('M')).toBe(
       'landing.discovery.chat.errors.fullName'
@@ -195,44 +174,101 @@ describe('the required-answer gate', () => {
     expect(
       questionById('description')?.validate?.('A dental clinic in Cluj.')
     ).toBeNull();
+    expect(questionById('offer')?.validate?.('stuff')).toBe(
+      'landing.discovery.chat.errors.offer'
+    );
+    expect(
+      questionById('offer')?.validate?.('Whitening and veneers.')
+    ).toBeNull();
+    // One link, of any of the three kinds, and a line with none in it is
+    // corrected rather than accepted.
+    expect(questionById('links')?.validate?.('I am not online anywhere')).toBe(
+      'landing.discovery.chat.errors.links'
+    );
+    expect(
+      questionById('links')?.validate?.('instagram.com/ionescudental')
+    ).toBeNull();
+    expect(questionById('links')?.validate?.('ionescu-dental.ro')).toBeNull();
   });
 
-  it('never marks the intake complete while a required question — either commercial panel included — is unanswered', () => {
-    // There is no `essentialsOnly` narrowed pool any more: this walk, in the
-    // script's own order, is the only path to "done".
-    const required = INTAKE_SCRIPT.filter((question) => question.required).map(
-      (q) => q.id
+  it('gates the what-you-do stage on the description alone, now the offer has moved', () => {
+    const described = questionById('description')!.apply(
+      EMPTY_DISCOVERY,
+      'A boutique dental clinic in Cluj doing cosmetic work.'
     );
-    expect(required).toEqual([
+    expect(canProceed(3, EMPTY_DISCOVERY)).toBe(false);
+    expect(canProceed(3, described)).toBe(true);
+    // The offer used to gate this stage alongside it. It is asked on the
+    // dashboard now, so it cannot hold a visitor up in front of the preview.
+    expect(questionById('offer')!.phase).toBe('brief');
+    expect(canProceed(3, { ...described, offer: '' })).toBe(true);
+  });
+
+  it('treats a draft saved before the offer existed as unfinished, not broken', () => {
+    // `offer` is read with `?? ''` everywhere, so a stored draft from before
+    // the question existed re-enters the conversation at its first unanswered
+    // question rather than throwing.
+    const legacy = { ...EMPTY_DISCOVERY } as Record<string, unknown>;
+    delete legacy['offer'];
+    const data = legacy as unknown as DiscoveryData;
+    expect(() => questionById('offer')!.value(data)).not.toThrow();
+    expect(questionById('offer')!.value(data)).toBe('');
+    expect(nextQuestion(data, [])?.id).toBe('fullName');
+  });
+
+  it('keeps every required question required, whichever phase it moved to', () => {
+    // Moving a question did not make it optional. The four in front of the
+    // preview are gated by `canProceed`; `goal` and `commerceMode` are the
+    // Brief's own required fields, and the two panels are the deposit's.
+    const required = INTAKE_SCRIPT.filter((question) => question.required);
+    expect(required.map((question) => question.id)).toEqual([
       'fullName',
       'email',
       'description',
+      'links',
       'goal',
       'commerceMode',
       'selectedTier',
       'subscription',
     ]);
-
-    const { data, asked } = walk(FULL_ANSWERS);
-    expect(nextQuestion(data, asked)).toBeNull();
-
-    // Drop the very last required answer the walk gave — a commercial
-    // panel, not a form field — and the script still refuses to call
-    // itself done.
-    const withoutLastPanel = asked.filter((id) => id !== 'subscription');
-    expect(nextQuestion(data, withoutLastPanel)?.id).toBe('subscription');
+    expect(required.map((question) => question.phase)).toEqual([
+      'quick',
+      'quick',
+      'quick',
+      'quick',
+      'brief',
+      'brief',
+      'deposit',
+      'deposit',
+    ]);
   });
 
-  it('counts progress over every applicable question — there is no narrowed pool', () => {
-    expect(conversationProgress(EMPTY_DISCOVERY, []).total).toBe(
-      INTAKE_SCRIPT.length - 1
-    );
+  it('counts progress over the questions this visitor is actually asked', () => {
+    const start = conversationProgress(EMPTY_DISCOVERY, []);
+    expect(start.done).toBe(0);
+    expect(start.total).toBe(questionsInPhase('quick').length);
+
+    const { data, asked } = walk(FULL_ANSWERS);
+    const end = conversationProgress(data, asked);
+    expect(end.done).toBe(end.total);
   });
 });
 
+/** Applies every question in the script, whichever phase it now belongs to. */
+function applyWholeScript(answers: Record<string, string>): DiscoveryData {
+  let data = EMPTY_DISCOVERY;
+  for (const question of INTAKE_SCRIPT) {
+    data = question.apply(data, answers[question.id] ?? '');
+  }
+  return data;
+}
+
 describe('answers landing in DiscoveryData', () => {
   it('keeps the DiscoveryData shape the preview already reads', () => {
-    const { data } = walk(FULL_ANSWERS);
+    // Applied directly rather than walked: the Brief asks twelve of these on
+    // the dashboard now, and they have to land in the same fields the
+    // conversation used to write.
+    const data = applyWholeScript(FULL_ANSWERS);
     expect(data).toMatchObject({
       fullName: 'Maria Ionescu',
       email: 'maria@example.com',
@@ -272,44 +308,47 @@ describe('answers landing in DiscoveryData', () => {
     expect(industry?.validate).toBeUndefined();
   });
 
-  it('pulls both profile links out of one answer', () => {
+  it('pulls all three profile links out of one answer', () => {
     const links = questionById('links');
     const data = links?.apply(
       EMPTY_DISCOVERY,
-      'here you go: instagram.com/ionescudental and https://www.linkedin.com/company/ionescu'
+      'here you go: instagram.com/ionescudental and https://www.linkedin.com/company/ionescu, site is ionescu-dental.ro'
     );
     expect(data?.instagramUrl).toBe('https://instagram.com/ionescudental');
     expect(data?.linkedinUrl).toBe('https://www.linkedin.com/company/ionescu');
+    expect(data?.websiteUrl).toBe('https://ionescu-dental.ro');
   });
 
-  it('asks about catalog size only of a business that sells, and clears it when they stop', () => {
-    const commerce = questionById('commerceMode');
-    const selling = commerce?.apply(EMPTY_DISCOVERY, 'physical');
-    expect(selling?.catalogSize).toBe('1-5');
-    expect(
-      applicableQuestions(selling as DiscoveryData).map((q) => q.id)
-    ).toContain('catalogSize');
-
-    const sized = questionById('catalogSize')?.apply(
-      selling as DiscoveryData,
-      '26-100'
+  it('does not mistake a social profile for their own website', () => {
+    const data = questionById('links')?.apply(
+      EMPTY_DISCOVERY,
+      'just instagram.com/ionescudental'
     );
-    expect(sized?.catalogSize).toBe('26-100');
-
-    // Changed their mind: the catalog size goes with it, and the question
-    // leaves the transcript rather than lingering as a wrong answer.
-    const reversed = commerce?.apply(sized as DiscoveryData, 'none');
-    expect(reversed?.catalogSize).toBe('na');
-    expect(
-      applicableQuestions(reversed as DiscoveryData).map((q) => q.id)
-    ).not.toContain('catalogSize');
-    expect(
-      answeredQuestions(reversed as DiscoveryData, [
-        'commerceMode',
-        'catalogSize',
-      ]).map((q) => q.id)
-    ).toEqual(['commerceMode']);
+    expect(data?.instagramUrl).toBe('https://instagram.com/ionescudental');
+    expect(data?.websiteUrl).toBe('');
   });
+
+  it('reads a bare domain as the website, the way people write their own address', () => {
+    expect(websiteFrom('ionescu-dental.ro')).toBe('https://ionescu-dental.ro');
+    expect(websiteFrom('https://ionescu-dental.ro/about')).toBe(
+      'https://ionescu-dental.ro/about'
+    );
+    expect(websiteFrom('no links at all here')).toBe('');
+  });
+
+  it('shows all three links back as the visitor bubble', () => {
+    const data = questionById('links')!.apply(
+      EMPTY_DISCOVERY,
+      'instagram.com/a, linkedin.com/in/b, c.com'
+    );
+    expect(questionById('links')!.value(data)).toBe(
+      'https://instagram.com/a · https://linkedin.com/in/b · https://c.com'
+    );
+  });
+
+  // The catalog-size question and its `when` condition moved to the Brief with
+  // the rest of the commerce vocabulary; `intake-brief-questions.test.ts`
+  // exercises them where they now live.
 });
 
 describe('what the visitor sees', () => {
@@ -355,16 +394,6 @@ describe('what the visitor sees', () => {
     expect(answerText(questionById('subscription')!, data, t)).toBe('Commerce');
     // A skipped question has no bubble text; the caller says "skipped".
     expect(answerText(questionById('brandTone')!, EMPTY_DISCOVERY, t)).toBe('');
-  });
-
-  it('counts progress over the questions this visitor is actually asked', () => {
-    const start = conversationProgress(EMPTY_DISCOVERY, []);
-    expect(start.done).toBe(0);
-    expect(start.total).toBe(INTAKE_SCRIPT.length - 1); // no catalogSize yet
-
-    const { data, asked } = walk(FULL_ANSWERS);
-    const end = conversationProgress(data, asked);
-    expect(end.done).toBe(end.total);
   });
 });
 
@@ -448,7 +477,8 @@ describe('what the agent says back', () => {
       expect(line).not.toContain('{');
       if (!line) quiet.push(question.id);
     }
-    // The monthly plan is the last turn; the info agent opens right after it.
+    // The monthly plan is the last decision there is; nothing follows it to
+    // react to, so it deliberately says nothing back.
     expect(quiet).toEqual(['subscription']);
   });
 

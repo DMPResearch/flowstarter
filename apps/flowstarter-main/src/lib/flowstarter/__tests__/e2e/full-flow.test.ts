@@ -154,6 +154,23 @@ function seedWorkspace(): void {
       },
     },
   ]);
+  // The in-depth brief, already complete. Since the flow gained a brief step
+  // the worker refuses to claim a FULL_SITE_BUILD until `ready_at` is set or
+  // an operator has overridden it, so a deposit alone no longer starts a
+  // build. The waiting half of that rule is proved directly in
+  // `apps/build-worker/test/job-store.test.ts`; this chain is about what
+  // happens once the client has answered.
+  db.seed('workspace_briefs', [
+    {
+      workspace_id: WORKSPACE_ID,
+      offer:
+        'One to one therapy for adults, in person in Cluj and online, in fifty minute sessions.',
+      projects: [],
+      no_projects: true,
+      ready_at: '2026-08-11T11:00:00.000Z',
+      override_at: null,
+    },
+  ]);
 }
 
 function signedInvoiceEvent(eventId: string): {

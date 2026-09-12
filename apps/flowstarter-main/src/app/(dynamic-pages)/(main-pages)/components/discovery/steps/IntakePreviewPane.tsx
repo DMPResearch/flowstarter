@@ -20,6 +20,7 @@
  * generated site replaces it in place.
  */
 import { Pencil } from 'lucide-react';
+import { BrandStrip, type BrandStripProps } from './BrandStrip';
 import type { DiscoveryData } from '../discovery.logic';
 import type { IntakeQuestionId } from '../intake-script';
 import {
@@ -326,12 +327,9 @@ export function KnownSoFar({
         {facts.map((fact) => {
           const label = t(fact.labelKey);
           const known = Boolean(fact.value);
-          // The pages answer is stored as its option value ('5-7'); the list
-          // shows the chip the visitor actually tapped.
-          const shown =
-            fact.id === 'pageCount' && known
-              ? t(`landing.discovery.options.pages.${fact.value}.label`)
-              : fact.value;
+          // Every fact is now either the visitor's own words or a short
+          // derived label, so there is no stored option value left to look up.
+          const shown = fact.value;
           return (
             <div
               key={fact.id}
@@ -370,11 +368,20 @@ export function KnownSoFar({
   );
 }
 
-/** The whole right-hand pane: title, skeleton, and the facts list under it. */
+/**
+ * The whole right-hand pane: title, skeleton, the facts list, and the brand
+ * strip under it.
+ *
+ * The strip is last on purpose. The skeleton is a promise about shape and
+ * fills in from the first answer; the colours and the voice cannot appear
+ * until the visitor has given a link and said what they offer, so putting them
+ * above the facts would leave a hole in the pane for most of the conversation.
+ */
 export function IntakePreviewPane({
   data,
   t,
   onEdit,
+  brand,
   // Matched to `ConversationLog`'s own `max-h-[42vh]` so the two panes read
   // as one row rather than one column overhanging the other.
   heightClassName = 'h-[42vh] min-h-[260px]',
@@ -382,6 +389,8 @@ export function IntakePreviewPane({
   data: DiscoveryData;
   t: (key: string) => string;
   onEdit?: (id: IntakeQuestionId) => void;
+  /** Everything `useBrandSignals` produced, or absent while it has nothing. */
+  brand?: Omit<BrandStripProps, 't'>;
   heightClassName?: string;
 }) {
   return (
@@ -400,6 +409,7 @@ export function IntakePreviewPane({
         {t(`${KEY}caption`)}
       </p>
       <KnownSoFar data={data} t={t} onEdit={onEdit} />
+      {brand ? <BrandStrip {...brand} t={t} /> : null}
     </div>
   );
 }

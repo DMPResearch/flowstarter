@@ -128,6 +128,87 @@ describe('clientBuildSignal', () => {
     ).toBeNull();
   });
 
+  /**
+   * A build the worker is deliberately holding back.
+   *
+   * The deposit enqueues the build and the worker will not claim it until the
+   * client's in-depth brief is ready, so `queued` for two days is now an
+   * ordinary, healthy state that the client's own dashboard used to report as
+   * "Your build has not moved for a while". That is an alarm about us for a
+   * situation only they can end, and it arrives in the same week we start
+   * asking them to fill in a form.
+   */
+  describe('waiting on the client brief', () => {
+    function queuedSince(when: string): ClientBuildJobRow {
+      return job({
+        status: 'queued',
+        run_after: when,
+        created_at: when,
+        started_at: null,
+        finished_at: null,
+      });
+    }
+
+    it('says we are waiting on them, not that the build is stuck', () => {
+      // Queued since yesterday: well past QUEUED_JOB_STALL_MS, and still not a
+      // stall, because the reason it has not moved is known and is not ours.
+      expect(
+        clientBuildSignal([queuedSince('2026-09-10T00:00:00.000Z')], NOW, {
+          briefReady: false,
+        })
+      ).toEqual({ jobId: JOB, attention: 'waiting_on_brief' });
+    });
+
+    it('says it from the moment the job is queued, with no waiting period', () => {
+      expect(
+        clientBuildSignal([queuedSince('2026-09-11T23:59:00.000Z')], NOW, {
+          briefReady: false,
+        })?.attention
+      ).toBe('waiting_on_brief');
+    });
+
+    it('still reports a genuine stall once the brief is ready', () => {
+      expect(
+        clientBuildSignal([queuedSince('2026-09-10T00:00:00.000Z')], NOW, {
+          briefReady: true,
+        })?.attention
+      ).toBe('stalled');
+    });
+
+    it('leaves a failed build reading as failed either way', () => {
+      // A brief that is not finished does not explain a build that broke, and
+      // this one has to keep reaching `notifyClientBuildNeedsReview`.
+      expect(
+        clientBuildSignal([job({ status: 'failed' })], NOW, {
+          briefReady: false,
+        })?.attention
+      ).toBe('failed');
+    });
+
+    it('does not invent a wait for a caller that did not read the brief', () => {
+      // `briefReady` undefined means "not looked at". Suppressing a stall on
+      // that would hide a real one from every caller that has not been updated.
+      expect(
+        clientBuildSignal([queuedSince('2026-09-10T00:00:00.000Z')], NOW)
+          ?.attention
+      ).toBe('stalled');
+      expect(
+        clientBuildSignal([queuedSince('2026-09-10T00:00:00.000Z')], NOW, {})
+          ?.attention
+      ).toBe('stalled');
+    });
+
+    it('never says it about a build that is already running', () => {
+      expect(
+        clientBuildSignal(
+          [job({ status: 'running', started_at: NOW.toISOString() })],
+          NOW,
+          { briefReady: false }
+        )
+      ).toBeNull();
+    });
+  });
+
   it('falls back to created_at when a queued row has no run_after', () => {
     expect(
       clientBuildSignal(
@@ -174,6 +255,22 @@ describe('stageCopy', () => {
     expect(copy.title).toBe('Your build has not moved for a while');
     expect(copy.detail).toContain('a person on our team is looking at it');
   });
+
+  it('asks for the brief instead of promising nothing is needed', () => {
+    const stage = currentStage(ProjectState.DEPOSIT_PAID);
+    const copy = stageCopy(ProjectState.DEPOSIT_PAID, {
+      jobId: JOB,
+      attention: 'waiting_on_brief',
+    });
+
+    // The stage copy this replaces is the exact sentence that would be false.
+    expect(stage.detail).toContain('Nothing is needed from you');
+    expect(copy.title).toBe('We are waiting on your brief');
+    expect(copy.detail).toContain('Your brief');
+    expect(copy.detail).not.toContain('Nothing is needed from you');
+    // And it is not the stall copy, which says a person is looking into it.
+    expect(copy.detail).not.toContain('a person on our team');
+  });
 });
 
 describe('paymentPosition and a stopped build', () => {
@@ -200,6 +297,16 @@ describe('paymentPosition and a stopped build', () => {
 
   it('keeps the ordinary copy when nothing is wrong', () => {
     const lines = paymentPosition(projectPayments(paidInFull, 'ws'));
+    expect(lines.find((line) => line.key === 'balance')?.note).toBe(
+      'Paid. Your site is cleared to go live.'
+    );
+  });
+
+  it('does not tell a client waiting on their own brief that the build needs a second look', () => {
+    const lines = paymentPosition(projectPayments(paidInFull, 'ws'), {
+      jobId: JOB,
+      attention: 'waiting_on_brief',
+    });
     expect(lines.find((line) => line.key === 'balance')?.note).toBe(
       'Paid. Your site is cleared to go live.'
     );

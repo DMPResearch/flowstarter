@@ -20,12 +20,17 @@ import {
   normaliseTierKey,
   type EditCreditPosition,
 } from '@/lib/flowstarter/edit-credits';
+import type {
+  BriefMissingCode,
+  BriefReadiness,
+} from '@/lib/flowstarter/brief-readiness';
 
 export type SiteOverviewTileKey =
   | 'credits'
   | 'enquiries'
   | 'bookings'
   | 'changes'
+  | 'brief'
   | 'store';
 
 /**
@@ -70,6 +75,17 @@ export interface SiteOverviewInput {
   };
   store: { products: number };
   editorHref: string;
+  /**
+   * The in-depth brief, when the page that built this input loaded one.
+   *
+   * Optional, and the tile is omitted when it is absent, because a brief tile
+   * that guessed at "0% complete" for a workspace nobody has read the row for
+   * would be a made-up number in the one place a client is told what is left
+   * to do. `readiness` is `evaluateBriefReadiness`'s own verdict, passed
+   * through rather than recomputed, so this tile and the brief page can never
+   * disagree about what is outstanding.
+   */
+  brief?: { href: string; readiness: BriefReadiness };
 }
 
 /**
@@ -93,9 +109,78 @@ export function siteOverviewTiles(
     changesTile(input),
   ];
 
+  const brief = briefTile(input);
+  if (brief) tiles.push(brief);
+
   const store = storeTile(input);
   if (store) tiles.push(store);
   return tiles;
+}
+
+/**
+ * The subject of each ask, in two or three words.
+ *
+ * `BRIEF_MISSING_MESSAGES` is a paragraph per code, which is right on the
+ * brief page where the client is being asked for the thing and wrong in a tile
+ * that has one line. Same codes, shorter words, and exhaustive so a new code
+ * cannot quietly go unnamed here.
+ */
+const BRIEF_SUBJECTS: Record<BriefMissingCode, string> = {
+  brief_offer_missing: 'what you offer',
+  brief_offer_thin: 'more on what you offer',
+  brief_projects_unanswered: 'your products or projects',
+  brief_project_unnamed: 'a name on every project',
+  brief_project_screenshots_missing: 'screenshots of your projects',
+  brief_photos_missing: 'photos for your site',
+  brief_portrait_missing: 'a portrait of you',
+  brief_design_reference_missing: 'a site you like the look of',
+};
+
+/** The five things a complete brief has; `completeness` is the share of them. */
+const BRIEF_PARTS = 5;
+
+/**
+ * How far the brief has got, and the next thing it is waiting on.
+ *
+ * Blocking items are named before the ones that merely make the site better,
+ * because the first sort is what holds the build up and the second sort is
+ * not. At most two are named: a tile that lists five asks is a tile nobody
+ * reads, and the brief page itself carries the full list.
+ */
+function briefTile(input: SiteOverviewInput): SiteOverviewTile | null {
+  if (!input.brief) return null;
+  const { href, readiness } = input.brief;
+
+  if (readiness.ready) {
+    return {
+      key: 'brief',
+      label: 'Your brief',
+      value: 'Complete',
+      note: 'Everything we need is in. Your build is made from this.',
+      href,
+      tone: 'ok',
+    };
+  }
+
+  const ordered = [
+    ...readiness.missing.filter((entry) => entry.severity === 'blocking'),
+    ...readiness.missing.filter((entry) => entry.severity !== 'blocking'),
+  ];
+  const named = ordered.slice(0, 2).map((entry) => BRIEF_SUBJECTS[entry.code]);
+  const done = Math.round(readiness.completeness * BRIEF_PARTS);
+
+  return {
+    key: 'brief',
+    label: 'Your brief',
+    value: `${done} of ${BRIEF_PARTS}`,
+    note:
+      named.length > 0
+        ? `Still to send: ${named.join(', ')}.`
+        : 'A few more details before your build can start.',
+    href,
+    // Something for the client to do, and until it is done nothing is built.
+    tone: 'attention',
+  };
 }
 
 function creditsTile({

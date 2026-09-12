@@ -67,6 +67,13 @@ async function notifyDepositPaid(workspaceId: string): Promise<void> {
     render: (client) =>
       depositReceivedEmail({
         dashboardUrl: client.dashboardUrl,
+        // The in-depth brief lives one level under the client's own project
+        // page, and the build waits on it, so the email that says the build
+        // has started is also the email that has to say what it is waiting
+        // for. Built from `dashboardUrl` rather than composed again here:
+        // that value already resolves the public origin correctly for an
+        // address read outside any tab we control.
+        briefUrl: `${client.dashboardUrl}/brief`,
         clientName: client.clientName,
         businessName: client.businessName,
       }),

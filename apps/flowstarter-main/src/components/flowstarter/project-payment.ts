@@ -161,7 +161,11 @@ export function paymentPosition(
   signal?: ClientBuildSignal | null
 ): PaymentPositionLine[] {
   if (payments.quoteMinor <= 0) return [];
-  const stopped = Boolean(signal);
+  // A build waiting on the client's brief has not stopped and does not need a
+  // second look, so the money lines stay as they are. Only trouble rewrites
+  // them, and waiting is not trouble.
+  const stopped =
+    signal?.attention === 'failed' || signal?.attention === 'stalled';
   return [
     {
       key: 'deposit',

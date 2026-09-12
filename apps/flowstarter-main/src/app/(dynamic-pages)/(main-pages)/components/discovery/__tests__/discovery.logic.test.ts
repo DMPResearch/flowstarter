@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   type DiscoveryData,
+  DEPOSIT_STEP,
   EMPTY_DISCOVERY,
-  INFO_STEP,
   LAST_STEP,
+  PREVIEW_STEP,
   STEPS,
   bookingDepositAmount,
   bookingDepositFor,
@@ -83,24 +84,20 @@ describe('resolveDiscoveryCalComUrl', () => {
 });
 
 describe('wizard structure', () => {
-  it('has 8 steps: the info agent between the form and the preview', () => {
-    expect(STEPS).toHaveLength(8);
-    // Order is the product: form → info agent → preview. The preview must
-    // stay last, because that is the step the modal widens for and the step
-    // the wizard submits from.
-    expect(STEPS.map((step) => step.key)).toEqual([
-      'about',
-      'business',
-      'goals',
-      'commerce',
-      'recommendation',
-      'subscription',
-      'info',
-      'preview',
-    ]);
-    expect(STEPS[STEPS.length - 1].key).toBe('preview');
-    expect(LAST_STEP).toBe(8);
-    expect(INFO_STEP).toBe(LAST_STEP - 1);
+  // The stage list itself is owned by `intake-friction.test.ts`, which is the
+  // spec for how many questions stand between a visitor and their preview.
+  // What is pinned here is the other half: that the named constants and the
+  // list cannot drift apart, so a stage added in the middle moves the preview
+  // and the deposit with it instead of quietly pointing at the wrong screen.
+  it('names the preview and the deposit by the stages they actually are', () => {
+    const keyFor = (n: number) => STEPS.find((step) => step.n === n)?.key;
+    expect(keyFor(PREVIEW_STEP)).toBe('preview');
+    expect(keyFor(DEPOSIT_STEP)).toBe('deposit');
+    // The money is last, and it is the step the wizard submits from. The
+    // preview is the step before it: a price is only shown against a site.
+    expect(STEPS[STEPS.length - 1].n).toBe(LAST_STEP);
+    expect(DEPOSIT_STEP).toBe(LAST_STEP);
+    expect(PREVIEW_STEP).toBe(LAST_STEP - 1);
   });
 
   it('commerce uses the dedicated store subscription', () => {
@@ -120,10 +117,16 @@ describe('canProceed gating', () => {
     selectedTier: 'starter',
   };
 
-  it('requires a valid name + email on step 1', () => {
+  it('requires a real name on step 1', () => {
     expect(canProceed(1, base)).toBe(true);
-    expect(canProceed(1, { ...base, email: 'not-an-email' })).toBe(false);
     expect(canProceed(1, { ...base, fullName: 'M' })).toBe(false);
+  });
+
+  it('requires a valid email on step 2', () => {
+    // One question per stage now, so the email has a stage of its own rather
+    // than riding along with the name.
+    expect(canProceed(2, base)).toBe(true);
+    expect(canProceed(2, { ...base, email: 'not-an-email' })).toBe(false);
   });
 
   it('requires a subscription on step 6 unless commerce (dedicated plan)', () => {
@@ -138,17 +141,14 @@ describe('canProceed gating', () => {
     ).toBe(true);
   });
 
-  it('always allows the final preview step', () => {
-    expect(canProceed(8, base)).toBe(true);
-  });
-
-  it('never blocks on the info-agent step, however empty the answers', () => {
-    // The chat is skippable by design: a visitor who wants the preview now
-    // gets the preview now. Conversion beats completeness at this stage.
-    expect(canProceed(INFO_STEP, base)).toBe(true);
-    expect(canProceed(INFO_STEP, EMPTY_DISCOVERY)).toBe(true);
+  it('never blocks on the preview step, however empty the answers', () => {
+    // The preview is the thing the visitor came for, so it is never gated.
+    // This used to be said of the info-agent step, which sat in front of it
+    // and was skippable for the same reason: conversion beats completeness.
+    expect(canProceed(PREVIEW_STEP, base)).toBe(true);
+    expect(canProceed(PREVIEW_STEP, EMPTY_DISCOVERY)).toBe(true);
     expect(
-      canProceed(INFO_STEP, { ...base, intakeChatStatus: 'skipped' })
+      canProceed(PREVIEW_STEP, { ...base, intakeChatStatus: 'skipped' })
     ).toBe(true);
   });
 });

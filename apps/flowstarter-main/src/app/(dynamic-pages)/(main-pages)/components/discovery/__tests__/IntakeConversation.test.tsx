@@ -7,11 +7,16 @@
  * still a plain `DiscoveryData`, and the escape hatch really does reach the
  * preview.
  *
- * The preview and the info agent are stubbed — they talk to the network and
- * they are not what is under test here. No model is called anywhere in this
- * file, and the one `fetch` that survives (the recommendation refinement) is
- * answered with a refusal, which is the case the deterministic recommendation
- * is supposed to survive.
+ * The preview is stubbed — it talks to the network and it is not what is
+ * under test here. No model is called anywhere in this file, and the one
+ * `fetch` that survives (the recommendation refinement, on the deposit step)
+ * is answered with a refusal, which is the case the deterministic
+ * recommendation is supposed to survive.
+ *
+ * The conversation is four questions long now. Everything that used to be
+ * driven through it with a chip or a panel — the industry, the page count, the
+ * commerce answer, the two commercial cards — is asked after the deposit and
+ * is covered in `intake-brief-questions.test.ts` against the question objects.
  */
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -22,10 +27,6 @@ import { DiscoveryWizard } from '../DiscoveryWizard';
 
 vi.mock('../steps/PreviewStep', () => ({
   PreviewStep: () => <div data-testid="preview-stub">preview</div>,
-}));
-
-vi.mock('../steps/InfoAgentStep', () => ({
-  InfoAgentStep: () => <div data-testid="info-agent-stub">info agent</div>,
 }));
 
 const t = (key: string): string =>
@@ -47,7 +48,7 @@ function draft(): DiscoveryData | null {
 
 /**
  * The agent's beat before a new question is switched off here: it is cadence,
- * not behaviour, and a walk through seventeen questions should not spend ten
+ * not behaviour, and a walk through the four questions should not spend
  * seconds admiring it. The one test that is about the beat turns it back on.
  */
 function renderWizard(paceMs = 0) {
@@ -75,11 +76,6 @@ async function say(user: User, text: string) {
   await user.click(
     screen.getByRole('button', { name: t('landing.discovery.chat.send') })
   );
-}
-
-/** Taps a quick reply. */
-async function tap(user: User, label: string | RegExp) {
-  await user.click(screen.getByRole('button', { name: label }));
 }
 
 beforeEach(() => {
@@ -146,7 +142,11 @@ describe('the intake conversation', () => {
     ).toBeInTheDocument();
 
     await say(user, 'maria@example.com');
-    await screen.findByText(t('landing.discovery.chat.q.businessName.prompt'));
+    await screen.findByText(
+      said('landing.discovery.chat.q.description.prompt', {
+        business: 'your business',
+      })
+    );
 
     // Everything already said is still on screen, in order.
     const log = screen.getByRole('log');
@@ -173,38 +173,50 @@ describe('the intake conversation', () => {
     expect(draft()?.email).toBe('');
 
     await say(user, 'maria@example.com');
-    await screen.findByText(t('landing.discovery.chat.q.businessName.prompt'));
+    await screen.findByText(
+      said('landing.discovery.chat.q.description.prompt', {
+        business: 'your business',
+      })
+    );
   });
 
-  it('sends a tapped quick reply as a message, and files the value the preview reads', async () => {
+  it('files what the visitor types where the preview reads it', async () => {
     const { user } = renderWizard();
     await say(user, 'Maria Ionescu');
     await say(user, 'maria@example.com');
-    await tap(user, t('landing.discovery.chat.skip')); // no business name yet
-    await say(user, 'A boutique dental clinic in Cluj doing cosmetic work.');
+    await say(user, 'A dental clinic in Cluj doing cosmetic work.');
 
-    // The industry chips.
-    await screen.findByText(t('landing.discovery.chat.q.industry.prompt'));
-    await tap(user, 'Therapy & wellness');
-
-    expect(draft()).toMatchObject({
-      businessName: '',
-      description: 'A boutique dental clinic in Cluj doing cosmetic work.',
-      industry: 'Therapy & wellness',
-    });
+    // Still talking: what was said is in the transcript and in the pane.
     const log = screen.getByRole('log');
-    expect(within(log).getByText('Therapy & wellness')).toBeInTheDocument();
-    // A skipped question says so rather than leaving a hole.
     expect(
-      within(log).getByText(t('landing.discovery.chat.skipped'))
+      within(log).getByText('A dental clinic in Cluj doing cosmetic work.')
     ).toBeInTheDocument();
+    expect(screen.getByTestId('known-so-far')).toHaveTextContent(
+      'A dental clinic in Cluj doing cosmetic work.'
+    );
+
+    // One question, three fields: the last answer is taken apart by rule into
+    // exactly what the preview request carries.
+    await say(user, 'instagram.com/ionescudental and ionescu-dental.ro');
+    await waitFor(() =>
+      expect(draft()).toMatchObject({
+        description: 'A dental clinic in Cluj doing cosmetic work.',
+        instagramUrl: 'https://instagram.com/ionescudental',
+        websiteUrl: 'https://ionescu-dental.ro',
+      })
+    );
+    expect(await screen.findByTestId('preview-stub')).toBeInTheDocument();
   });
 
   it('lets the visitor correct an earlier answer, rewriting it in place', async () => {
     const { user } = renderWizard();
     await say(user, 'Maria Ionescu');
     await say(user, 'maria@example.com');
-    await screen.findByText(t('landing.discovery.chat.q.businessName.prompt'));
+    await screen.findByText(
+      said('landing.discovery.chat.q.description.prompt', {
+        business: 'your business',
+      })
+    );
 
     await user.click(
       screen.getByRole('button', {
@@ -228,7 +240,11 @@ describe('the intake conversation', () => {
     expect(draft()?.email).toBe('maria@ionescudental.ro');
     // And the conversation picks up where it left off.
     expect(
-      screen.getByText(t('landing.discovery.chat.q.businessName.prompt'))
+      screen.getByText(
+        said('landing.discovery.chat.q.description.prompt', {
+          business: 'your business',
+        })
+      )
     ).toBeInTheDocument();
   });
 
@@ -288,68 +304,48 @@ describe('the composer', () => {
 });
 
 describe('what makes it a conversation', () => {
-  it('reacts to a pick with the consequence of that pick, chosen by rule', async () => {
+  it("reads the visitor's own line back to them, chosen by rule", async () => {
     const { user } = renderWizard();
     await say(user, 'Maria Ionescu');
     await say(user, 'maria@example.com');
-    await say(user, 'Ionescu Dental');
-    await say(user, 'A boutique dental clinic in Cluj doing cosmetic work.');
-    await tap(user, t('landing.discovery.chat.skip')); // industry
-    await tap(user, t('landing.discovery.chat.skip')); // audience
-    await tap(user, t('landing.discovery.chat.skip')); // links
-    await tap(user, 'Take bookings or appointments');
-    await tap(user, t('landing.discovery.chat.done'));
-    await tap(user, t('landing.discovery.chat.skip')); // tone
-    await tap(user, t('landing.discovery.chat.skip')); // page count
-    await tap(user, t('landing.discovery.chat.skip')); // timeline
-    await tap(user, t('landing.discovery.options.commerce.digital.label'));
+    await say(
+      user,
+      'A dental clinic in Cluj. We do cosmetic work, mostly veneers.'
+    );
 
     const log = screen.getByRole('log');
-    // The reaction names what the pick means for the build, not "great".
+    // Their own first sentence, word for word. No model wrote this.
     expect(
       await within(log).findByText(
-        t('landing.discovery.chat.q.commerceMode.reflect.digital')
-      )
-    ).toBeInTheDocument();
-    // Their own line is read back to them, word for word.
-    expect(
-      within(log).getByText(
         said('landing.discovery.chat.q.description.reflect', {
-          quote: 'A boutique dental clinic in Cluj doing cosmetic work',
+          quote: 'A dental clinic in Cluj',
         })
       )
     ).toBeInTheDocument();
-    // A multi answer is folded into a sentence.
-    expect(
-      within(log).getByText(
-        said('landing.discovery.chat.q.goal.reflect', {
-          list: 'take bookings or appointments',
-        })
-      )
-    ).toBeInTheDocument();
-    // The pick stayed where it was made, in the agent's message, and is the
-    // way back into that question.
-    expect(
-      within(log).getByText(
-        t('landing.discovery.options.commerce.digital.label')
-      )
-    ).toBeInTheDocument();
+
+    // Answer it again and the reaction is rewritten rather than appended: the
+    // line follows the stored value, not the history.
     await user.click(
       screen.getByRole('button', {
-        name: `${t('landing.discovery.chat.edit')}: ${t(
-          'landing.discovery.chat.q.commerceMode.prompt'
+        name: `${t('landing.discovery.chat.edit')}: ${said(
+          'landing.discovery.chat.q.description.prompt',
+          { business: 'your business' }
         )}`,
       })
     );
-    await tap(user, t('landing.discovery.options.commerce.none.label'));
+    await say(user, 'A coffee roastery in Cluj.');
     expect(
       await within(log).findByText(
-        t('landing.discovery.chat.q.commerceMode.reflect.none')
+        said('landing.discovery.chat.q.description.reflect', {
+          quote: 'A coffee roastery in Cluj',
+        })
       )
     ).toBeInTheDocument();
     expect(
       within(log).queryByText(
-        t('landing.discovery.chat.q.commerceMode.reflect.digital')
+        said('landing.discovery.chat.q.description.reflect', {
+          quote: 'A dental clinic in Cluj',
+        })
       )
     ).toBeNull();
   });
@@ -394,52 +390,33 @@ describe('what makes it a conversation', () => {
     ).toBeNull();
   });
 
-  it('answers a lettered quick reply from the keyboard', async () => {
+  // The lettered quick replies and the typed-word-to-a-chip matching live on
+  // `choice` questions, and every one of those moved behind the deposit. The
+  // mechanisms are covered in `intake-brief-questions.test.ts`; what the
+  // pre-preview conversation still has is the composer, and the question
+  // below is the one it corrects hardest.
+  it('refuses a line with nothing to look at, then takes any one of the three kinds', async () => {
     const { user } = renderWizard();
     await say(user, 'Maria Ionescu');
     await say(user, 'maria@example.com');
-    await say(user, 'Ionescu Dental');
-    await say(user, 'A boutique dental clinic in Cluj doing cosmetic work.');
-    await tap(user, t('landing.discovery.chat.skip')); // industry
-    await tap(user, t('landing.discovery.chat.skip')); // audience
-    await tap(user, t('landing.discovery.chat.skip')); // links
-    await tap(user, 'Take bookings or appointments');
-    await tap(user, t('landing.discovery.chat.done'));
-    await tap(user, t('landing.discovery.chat.skip')); // tone
+    await say(user, 'A dental clinic in Cluj doing cosmetic work.');
+    await screen.findByText(t('landing.discovery.chat.q.links.prompt'));
 
-    // Page count is a lettered list; "b" is the second option.
-    await screen.findByText(t('landing.discovery.chat.q.pageCount.prompt'));
-    await user.keyboard('b');
-    await waitFor(() => expect(draft()?.pageCount).toBe('5-7'));
+    await say(user, 'I do not have anything online');
     expect(
-      await screen.findByText(
-        t('landing.discovery.chat.q.pageCount.reflect.5-7')
-      )
+      await screen.findByText(t('landing.discovery.chat.errors.links'))
     ).toBeInTheDocument();
-  });
-
-  it('answers a typed word to a choice as that choice, and a word it does not know in its own voice', async () => {
-    const { user } = renderWizard();
-    await say(user, 'Maria Ionescu');
-    await say(user, 'maria@example.com');
-    await say(user, 'Ionescu Dental');
-    await say(user, 'A boutique dental clinic in Cluj doing cosmetic work.');
-    await tap(user, t('landing.discovery.chat.skip')); // industry
-    await tap(user, t('landing.discovery.chat.skip')); // audience
-    await tap(user, t('landing.discovery.chat.skip')); // links
-    await tap(user, 'Take bookings or appointments');
-    await tap(user, t('landing.discovery.chat.done'));
-    await tap(user, t('landing.discovery.chat.skip')); // tone
-    await screen.findByText(t('landing.discovery.chat.q.pageCount.prompt'));
-
-    await say(user, 'a dozen');
+    // Still on the same question: a preview built without a profile is a grey
+    // template with the right words on it.
     expect(
-      await screen.findByText(t('landing.discovery.chat.errors.choice'))
+      screen.getByText(t('landing.discovery.chat.q.links.prompt'))
     ).toBeInTheDocument();
-    expect(draft()?.pageCount).toBe('');
+    expect(draft()?.instagramUrl).toBe('');
 
-    await say(user, 'not sure');
-    await waitFor(() => expect(draft()?.pageCount).toBe('unsure'));
+    await say(user, 'ionescu-dental.ro');
+    await waitFor(() =>
+      expect(draft()?.websiteUrl).toBe('https://ionescu-dental.ro')
+    );
   });
 
   it('draws its progress from the wizard-level stepper, not a bar of its own', () => {
@@ -459,67 +436,82 @@ describe('no way past the required questions', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('still lets an optional question be skipped, one at a time', async () => {
+  it('offers no skip at all, because every one of the four is required', async () => {
     const { user } = renderWizard();
-    await say(user, 'Maria Ionescu');
-    await say(user, 'maria@example.com');
-    await tap(user, t('landing.discovery.chat.skip')); // business name
+    const skip = () =>
+      screen.queryByRole('button', { name: t('landing.discovery.chat.skip') });
 
-    // Business name really was skipped, not silently filled in.
-    await waitFor(() => expect(draft()?.businessName).toBe(''));
-    expect(
-      screen.getByText(
-        said('landing.discovery.chat.q.description.prompt', {
-          business: 'your business',
-        })
-      )
-    ).toBeInTheDocument();
+    await screen.findByText(t('landing.discovery.chat.q.fullName.prompt'));
+    expect(skip()).toBeNull();
+
+    await say(user, 'Maria Ionescu');
+    await screen.findByText(t('landing.discovery.chat.q.email.prompt'));
+    expect(skip()).toBeNull();
+
+    await say(user, 'maria@example.com');
+    await screen.findByText(
+      said('landing.discovery.chat.q.description.prompt', {
+        business: 'your business',
+      })
+    );
+    expect(skip()).toBeNull();
+
+    // The link is the one that used to be skippable, and is not any more: it
+    // is the only answer that carries a colour, a face and a voice.
+    await say(user, 'A dental clinic in Cluj doing cosmetic work.');
+    await screen.findByText(t('landing.discovery.chat.q.links.prompt'));
+    expect(skip()).toBeNull();
+    expect(draft()?.businessName).toBe('');
   });
 });
 
-describe('the commercial panels', () => {
-  it('are the last two turns of the same conversation, and the wizard still gates them', async () => {
+/**
+ * The preview first, and the money against it.
+ *
+ * The two commercial decisions used to be the last two turns of the
+ * conversation, in front of a preview nobody had seen. They are the wizard's
+ * own deposit step now, after the preview, because a price shown before there
+ * is anything to price is a number the visitor has no way to judge. What has
+ * not changed is that `canProceed` is the gate, not the screen.
+ */
+describe('the deposit, once there is a preview to price', () => {
+  it('reaches the preview in four answers and gates the deposit behind a plan', async () => {
     const { user } = renderWizard();
 
     await say(user, 'Maria Ionescu');
     await say(user, 'maria@example.com');
-    await say(user, 'Ionescu Dental');
-    await say(user, 'A boutique dental clinic in Cluj doing cosmetic work.');
-    await tap(user, 'Therapy & wellness');
-    await tap(user, t('landing.discovery.chat.skip')); // audience
-    await tap(user, t('landing.discovery.chat.skip')); // links
-    await tap(user, 'Take bookings or appointments');
-    await tap(user, t('landing.discovery.chat.done'));
-    await tap(user, t('landing.discovery.chat.skip')); // tone
-    await tap(user, t('landing.discovery.chat.skip')); // page count
-    await tap(user, t('landing.discovery.chat.skip')); // timeline
-    await tap(user, t('landing.discovery.options.commerce.none.label'));
-    await tap(user, t('landing.discovery.chat.skip')); // cal.com booking link
-    await tap(user, t('landing.discovery.chat.skip')); // integrations
+    await say(user, 'A dental clinic in Cluj doing cosmetic work.');
+    await say(user, 'instagram.com/ionescudental');
 
-    // The build package, introduced by the agent and shown as its own message.
+    // The script is spent, so the preview is what comes next — not a
+    // seventeenth question, and not a price.
+    expect(await screen.findByTestId('preview-stub')).toBeInTheDocument();
     expect(
-      await screen.findByText(t('landing.discovery.chat.q.selectedTier.prompt'))
+      screen.queryByLabelText(t('landing.discovery.chat.composerLabel'))
+    ).toBeNull();
+
+    await user.click(
+      screen.getByRole('button', { name: t('landing.discovery.nav.continue') })
+    );
+    expect(
+      await screen.findByText(t('landing.discovery.steps.deposit.title'))
     ).toBeInTheDocument();
-    await waitFor(() => expect(draft()?.selectedTier).toBe('starter'));
-    await tap(user, t('landing.discovery.chat.confirm'));
+    // The build package is recommended by rule, so it is already filed.
+    await waitFor(() => expect(draft()?.selectedTier).toBeTruthy());
 
-    // The monthly plan is a separate decision, and confirming is blocked until
-    // one is picked — `canProceed` is still the gate, not the conversation.
-    await screen.findByText(t('landing.discovery.chat.q.subscription.prompt'));
-    expect(
-      screen.getByRole('button', { name: t('landing.discovery.chat.confirm') })
-    ).toBeDisabled();
-
-    await tap(user, /Pro/);
-    await tap(user, t('landing.discovery.chat.confirm'));
-
-    // Conversation spent — the info agent takes over the same screen.
-    expect(await screen.findByTestId('info-agent-stub')).toBeInTheDocument();
-    expect(draft()).toMatchObject({
-      selectedTier: 'starter',
-      subscription: 'pro',
+    // The monthly plan is a separate decision, and the wizard will not move
+    // until it is made.
+    const submit = screen.getByRole('button', {
+      name: t('landing.discovery.nav.saveAndBook'),
     });
+    expect(submit).toBeDisabled();
+
+    // The Pro card, named by the one line only it carries.
+    await user.click(
+      screen.getByRole('button', { name: /Manual model picker included/ })
+    );
+    await waitFor(() => expect(submit).toBeEnabled());
+    expect(draft()?.subscription).toBe('pro');
   });
 });
 
@@ -537,34 +529,37 @@ describe('the preview beside the conversation', () => {
     expect(screen.getByTestId('known-so-far')).toBeInTheDocument();
   });
 
-  it('puts the business name on the skeleton as soon as it is given', async () => {
+  it('fills the fact list as the answers land', async () => {
     const { user } = renderWizard();
+    const facts = () => screen.getByTestId('known-so-far');
+
     await say(user, 'Ana');
+    await waitFor(() => expect(facts()).toHaveTextContent('Ana'));
+
     await say(user, 'ana@sablefig.ro');
+    await say(user, 'We roast single origin coffee.');
+    await waitFor(() =>
+      expect(facts()).toHaveTextContent('We roast single origin coffee.')
+    );
 
+    // The business name is not asked before the preview any more, so the
+    // skeleton stays honestly unnamed rather than inventing one.
     expect(screen.queryByTestId('preview-hero-name')).toBeNull();
-    await say(user, 'Sable Fig');
-
-    expect(await screen.findByTestId('preview-hero-name')).toHaveTextContent(
-      'Sable Fig'
-    );
-    expect(screen.getByTestId('preview-header-name')).toHaveTextContent(
-      'Sable Fig'
-    );
+    expect(screen.queryByTestId('preview-header-name')).toBeNull();
   });
 
-  it('reshapes the skeleton when the industry lands', async () => {
+  it('reshapes the skeleton from the sentence the visitor writes', async () => {
     const { user } = renderWizard();
     await say(user, 'Ana');
     await say(user, 'ana@sablefig.ro');
-    await say(user, 'Sable Fig');
-    await say(user, 'We roast and serve single origin coffee in Cluj.');
 
     const sections = () =>
       screen.getByTestId('derived-site-skeleton').dataset.sections ?? '';
     expect(sections()).toContain('services');
 
-    await tap(user, 'Hospitality & food');
+    // The industry chips are behind the deposit now. The shape comes from
+    // their own words instead, by rule, and lands in the same vocabulary.
+    await say(user, 'We roast and serve single origin coffee.');
     await waitFor(() => expect(sections()).toContain('menu'));
     expect(sections()).not.toContain('services');
   });
@@ -573,39 +568,36 @@ describe('the preview beside the conversation', () => {
     const { user } = renderWizard();
     await say(user, 'Ana');
     await say(user, 'ana@sablefig.ro');
-    await say(user, 'Sable Fig');
+    await say(user, 'We roast single origin coffee.');
 
-    // The agent has moved on to the description.
+    // The agent has moved on to the links.
     expect(
-      await screen.findByText(
-        said('landing.discovery.chat.q.description.prompt', {
-          business: 'Sable Fig',
-        })
-      )
+      await screen.findByText(t('landing.discovery.chat.q.links.prompt'))
     ).toBeInTheDocument();
 
     const facts = screen.getByTestId('known-so-far');
     await user.click(
       within(facts).getByRole('button', {
         name: `${t('landing.discovery.chat.edit')}: ${t(
-          'landing.discovery.preview.pane.factBusiness'
+          'landing.discovery.preview.pane.factDoes'
         )}`,
       })
     );
 
-    // Back on the business name, with the old answer waiting in the composer.
+    // Back on the description, with the old answer waiting in the composer.
     await waitFor(() =>
       expect(
         screen.getByLabelText(t('landing.discovery.chat.composerLabel'))
-      ).toHaveValue('Sable Fig')
+      ).toHaveValue('We roast single origin coffee.')
     );
 
-    // Answering again moves the conversation forward, not sideways.
-    await say(user, 'Sable Fig Coffee');
+    // Answering again moves the conversation forward, not sideways: the
+    // skeleton follows the new sentence.
+    await say(user, 'A dental clinic in Cluj doing cosmetic work.');
     await waitFor(() =>
-      expect(screen.getByTestId('preview-hero-name')).toHaveTextContent(
-        'Sable Fig Coffee'
-      )
+      expect(
+        screen.getByTestId('derived-site-skeleton').dataset.sections ?? ''
+      ).toContain('booking')
     );
   });
 

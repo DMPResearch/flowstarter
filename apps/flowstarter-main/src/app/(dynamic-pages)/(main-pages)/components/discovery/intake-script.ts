@@ -43,14 +43,15 @@ import {
   usesDedicatedSubscription,
 } from './discovery.logic';
 
-/** The last wizard step the scripted conversation covers. 7 is the info agent. */
-export const CONVERSATION_LAST_STEP: Step = 6;
+/** The last stage the quick conversation covers. 5 is the preview. */
+export const CONVERSATION_LAST_STEP: Step = 4;
 
 export type IntakeQuestionId =
   | 'fullName'
   | 'email'
   | 'businessName'
   | 'description'
+  | 'offer'
   | 'industry'
   | 'targetAudience'
   | 'links'
@@ -91,8 +92,39 @@ export interface IntakeOption {
   labelKey?: string;
 }
 
+/**
+ * When a question is asked. This is the friction rule, and it is the most
+ * commercially load-bearing thing in the file.
+ *
+ * The intake used to ask seventeen questions before it showed anybody
+ * anything. Every one of them was defensible on its own and the sum of them
+ * was a form that people abandoned, because a visitor who has not yet seen a
+ * preview has no reason to tell you their catalogue size.
+ *
+ * So the script now has three phases:
+ *
+ *   quick    the four things a convincing preview cannot be built without.
+ *            Name, email, what they do, and one link. That is the whole of it,
+ *            and `quickRequiredCount` is asserted in the tests so it cannot
+ *            quietly grow back.
+ *   deposit  the two commercial decisions, asked after the preview exists,
+ *            because that is when a price means something.
+ *   brief    everything else, asked on the dashboard after the deposit, where
+ *            the client is already invested and the answers actually get used.
+ *
+ * Nothing was deleted. A question that moved keeps its entry here, with its
+ * copy, its validator and its applier intact, so the answer still folds into
+ * `DiscoveryData` the same way wherever it is eventually asked. The dashboard's
+ * Brief form currently writes its own fields rather than driving these objects;
+ * `briefQuestions()` exists so it can, and so that "what is asked after the
+ * deposit" has one answer rather than two lists that drift apart.
+ */
+export type IntakePhase = 'quick' | 'deposit' | 'brief';
+
 export interface IntakeQuestion {
   id: IntakeQuestionId;
+  /** When this is asked. See `IntakePhase`. */
+  phase: IntakePhase;
   /** The wizard step this answer belongs to, so `canProceed` stays the gate. */
   step: Step;
   kind: IntakeQuestionKind;
@@ -125,6 +157,42 @@ const EMAIL_RE = /^\S+@\S+\.\S+$/;
 
 const INSTAGRAM_RE = /(?:https?:\/\/)?(?:www\.)?instagram\.com\/[^\s,]+/i;
 const LINKEDIN_RE = /(?:https?:\/\/)?(?:www\.)?linkedin\.com\/[^\s,]+/i;
+
+/**
+ * Any other host in the answer is taken as their own site.
+ *
+ * Deliberately last and deliberately exclusive of the two above: the visitor
+ * pastes three links on one line and we have to tell them apart without asking
+ * three questions, which is how a form sounds. A bare domain counts, because
+ * that is how most people write their own address.
+ */
+const WEBSITE_RE =
+  /(?:https?:\/\/)?(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?:\/[^\s,]*)?/i;
+
+/** Hosts that are one of the two profile questions, not "their website". */
+const SOCIAL_HOSTS = /(?:instagram|linkedin|facebook|tiktok|x|twitter)\.com/i;
+
+/**
+ * The site they already have, out of a line that may hold three links.
+ * Returns '' when every match is a social profile we have already captured.
+ */
+export function websiteFrom(raw: string): string {
+  for (const candidate of raw.match(new RegExp(WEBSITE_RE, 'gi')) ?? []) {
+    if (SOCIAL_HOSTS.test(candidate)) continue;
+    return absoluteUrl(candidate);
+  }
+  return '';
+}
+
+/** The Instagram profile in a pasted line, absolute, or ''. */
+export function instagramFrom(raw: string): string {
+  return absoluteUrl(INSTAGRAM_RE.exec(raw)?.[0]);
+}
+
+/** The LinkedIn profile in a pasted line, absolute, or ''. */
+export function linkedinFrom(raw: string): string {
+  return absoluteUrl(LINKEDIN_RE.exec(raw)?.[0]);
+}
 
 const ERROR_KEY = 'landing.discovery.chat.errors.';
 
@@ -385,6 +453,7 @@ const Q = 'landing.discovery.chat.q.';
 export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
   {
     id: 'fullName',
+    phase: 'quick',
     step: 1,
     kind: 'text',
     promptKey: `${Q}fullName.prompt`,
@@ -397,7 +466,8 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
   },
   {
     id: 'email',
-    step: 1,
+    phase: 'quick',
+    step: 2,
     kind: 'text',
     promptKey: `${Q}email.prompt`,
     placeholderKey: 'landing.discovery.placeholders.email',
@@ -409,7 +479,8 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
   },
   {
     id: 'businessName',
-    step: 1,
+    phase: 'brief',
+    step: 6,
     kind: 'text',
     promptKey: `${Q}businessName.prompt`,
     placeholderKey: 'landing.discovery.placeholders.businessName',
@@ -419,7 +490,8 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
   },
   {
     id: 'description',
-    step: 2,
+    phase: 'quick',
+    step: 3,
     kind: 'longtext',
     promptKey: `${Q}description.prompt`,
     placeholderKey: 'landing.discovery.placeholders.description',
@@ -430,8 +502,23 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
     value: (data) => data.description,
   },
   {
+    id: 'offer',
+    phase: 'brief',
+    step: 6,
+    kind: 'longtext',
+    promptKey: `${Q}offer.prompt`,
+    placeholderKey: `${Q}offer.placeholder`,
+    // Asked on the dashboard after the deposit, where it is answered properly
+    // rather than guessed at by somebody who has not seen a preview yet.
+    required: false,
+    validate: (raw) => (trimmed(raw).length >= 10 ? null : `${ERROR_KEY}offer`),
+    apply: textApplier('offer'),
+    value: (data) => data.offer ?? '',
+  },
+  {
     id: 'industry',
-    step: 2,
+    phase: 'brief',
+    step: 6,
     kind: 'choice',
     promptKey: `${Q}industry.prompt`,
     placeholderKey: 'landing.discovery.placeholders.industryOther',
@@ -448,7 +535,8 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
   },
   {
     id: 'targetAudience',
-    step: 2,
+    phase: 'brief',
+    step: 6,
     kind: 'longtext',
     promptKey: `${Q}targetAudience.prompt`,
     placeholderKey: 'landing.discovery.placeholders.targetAudience',
@@ -458,24 +546,43 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
   },
   {
     id: 'links',
-    step: 2,
+    phase: 'quick',
+    step: 4,
     kind: 'text',
     promptKey: `${Q}links.prompt`,
     placeholderKey: `${Q}links.placeholder`,
-    required: false,
-    // One question, two fields: asking for "your Instagram" and then "your
-    // LinkedIn" as separate turns is how a form sounds.
+    // Required, and the last question added to the required set. A profile is
+    // the only thing in the quick intake that carries a colour, a face and a
+    // voice, so a preview built without one is a grey template with the right
+    // words on it. One link is enough; the answer takes all three if they are
+    // pasted together.
+    required: true,
+    validate: (raw) =>
+      instagramFrom(raw) || linkedinFrom(raw) || websiteFrom(raw)
+        ? null
+        : `${ERROR_KEY}links`,
+    // One question, three fields: asking for "your Instagram", then "your
+    // LinkedIn", then "your website" as separate turns is how a form sounds.
+    //
+    // This is now the most valuable optional question in the script. The
+    // palette and the tone are derived from whatever these pages expose to a
+    // reader without a login, so a visitor who answers it gets a preview in
+    // their own colours and one who skips it gets the tone chips instead.
     apply: (data, raw) => ({
       ...data,
-      instagramUrl: absoluteUrl(INSTAGRAM_RE.exec(raw)?.[0]),
-      linkedinUrl: absoluteUrl(LINKEDIN_RE.exec(raw)?.[0]),
+      instagramUrl: instagramFrom(raw),
+      linkedinUrl: linkedinFrom(raw),
+      websiteUrl: websiteFrom(raw),
     }),
     value: (data) =>
-      [data.instagramUrl, data.linkedinUrl].filter(Boolean).join(' · '),
+      [data.instagramUrl, data.linkedinUrl, data.websiteUrl ?? '']
+        .filter(Boolean)
+        .join(' · '),
   },
   {
     id: 'goal',
-    step: 3,
+    phase: 'brief',
+    step: 6,
     kind: 'multi',
     promptKey: `${Q}goal.prompt`,
     placeholderKey: `${Q}goal.placeholder`,
@@ -487,7 +594,8 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
   },
   {
     id: 'brandTone',
-    step: 3,
+    phase: 'brief',
+    step: 6,
     kind: 'multi',
     promptKey: `${Q}brandTone.prompt`,
     placeholderKey: `${Q}brandTone.placeholder`,
@@ -498,7 +606,8 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
   },
   {
     id: 'pageCount',
-    step: 3,
+    phase: 'brief',
+    step: 6,
     kind: 'choice',
     promptKey: `${Q}pageCount.prompt`,
     required: false,
@@ -509,7 +618,8 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
   },
   {
     id: 'timeline',
-    step: 3,
+    phase: 'brief',
+    step: 6,
     kind: 'choice',
     promptKey: `${Q}timeline.prompt`,
     required: false,
@@ -520,7 +630,8 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
   },
   {
     id: 'commerceMode',
-    step: 4,
+    phase: 'brief',
+    step: 6,
     kind: 'choice',
     promptKey: `${Q}commerceMode.prompt`,
     required: true,
@@ -547,7 +658,8 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
   },
   {
     id: 'catalogSize',
-    step: 4,
+    phase: 'brief',
+    step: 6,
     kind: 'choice',
     promptKey: `${Q}catalogSize.prompt`,
     required: false,
@@ -562,7 +674,8 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
   },
   {
     id: 'calComUrl',
-    step: 4,
+    phase: 'brief',
+    step: 6,
     kind: 'text',
     promptKey: `${Q}calComUrl.prompt`,
     placeholderKey: 'landing.discovery.placeholders.calComUrl',
@@ -572,7 +685,8 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
   },
   {
     id: 'customIntegrations',
-    step: 4,
+    phase: 'brief',
+    step: 6,
     kind: 'longtext',
     promptKey: `${Q}customIntegrations.prompt`,
     placeholderKey: 'landing.discovery.placeholders.customIntegrations',
@@ -582,7 +696,8 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
   },
   {
     id: 'selectedTier',
-    step: 5,
+    phase: 'deposit',
+    step: 6,
     kind: 'panel',
     promptKey: `${Q}selectedTier.prompt`,
     required: true,
@@ -596,6 +711,7 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
   },
   {
     id: 'subscription',
+    phase: 'deposit',
     step: 6,
     kind: 'panel',
     promptKey: `${Q}subscription.prompt`,
@@ -626,9 +742,47 @@ export function questionById(id: string): IntakeQuestion | undefined {
   return INTAKE_SCRIPT.find((question) => question.id === id);
 }
 
-/** The questions this visitor is actually asked, given what they have said. */
+/** Every question in one phase, in script order. */
+export function questionsInPhase(phase: IntakePhase): IntakeQuestion[] {
+  return INTAKE_SCRIPT.filter((question) => question.phase === phase);
+}
+
+/**
+ * The questions this visitor is actually asked before the preview, given what
+ * they have said.
+ *
+ * Scoped to the quick phase, which is the whole friction rule: the pre-preview
+ * conversation cannot reach a question that was moved behind the deposit, so
+ * the form cannot grow back by somebody adding a field and forgetting which
+ * side of the paywall it belongs on.
+ */
 export function applicableQuestions(data: DiscoveryData): IntakeQuestion[] {
-  return INTAKE_SCRIPT.filter((question) => question.when?.(data) ?? true);
+  return questionsInPhase('quick').filter(
+    (question) => question.when?.(data) ?? true
+  );
+}
+
+/**
+ * How many questions a visitor must answer before they see anything.
+ *
+ * This number is the product decision, and a test asserts it. Four: who you
+ * are, where to send it, what you do, and one link. Everything a site needs
+ * beyond that is asked once the client has a preview in front of them and a
+ * reason to care.
+ */
+export function quickRequiredCount(): number {
+  return questionsInPhase('quick').filter((question) => question.required)
+    .length;
+}
+
+/** The questions the dashboard's Brief form asks, after the deposit. */
+export function briefQuestions(): IntakeQuestion[] {
+  return questionsInPhase('brief');
+}
+
+/** The two commercial decisions, asked once a preview exists. */
+export function depositQuestions(): IntakeQuestion[] {
+  return questionsInPhase('deposit');
 }
 
 /**

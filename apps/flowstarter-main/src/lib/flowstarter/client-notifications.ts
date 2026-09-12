@@ -56,7 +56,13 @@ export type ClientNotification =
   | 'build_failed'
   // Keys on the Cal.com booking uid, so a client hears about each booking
   // once and a redelivered webhook is silent.
-  | 'booking_created';
+  | 'booking_created'
+  // Keys on nothing, because it is said once per workspace. The in-depth
+  // brief is one form filled in once, so "we are still waiting on you" is one
+  // fact about one workspace and not a thing that becomes true again: a
+  // client who has been nudged and still has not finished needs a person,
+  // not a second copy of the same email.
+  | 'brief_incomplete';
 
 export type ClientNotifySkipReason =
   | 'already_sent'

@@ -10,14 +10,20 @@ import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import en from '@/locales/en';
 import { DiscoveryStepper } from '../DiscoveryStepper';
-import { EMPTY_DISCOVERY, STEPS, type Step } from '../discovery.logic';
+import {
+  DEPOSIT_STEP,
+  EMPTY_DISCOVERY,
+  PREVIEW_STEP,
+  STEPS,
+  type Step,
+} from '../discovery.logic';
 import { conversationProgress } from '../intake-script';
 
 const t = (key: string): string =>
   (en as unknown as Record<string, string>)[key] ?? key;
 
 describe('DiscoveryStepper', () => {
-  it('renders all 8 stages in order with their labels', () => {
+  it('renders all 6 stages in order with their labels', () => {
     render(
       <DiscoveryStepper
         steps={STEPS}
@@ -30,17 +36,15 @@ describe('DiscoveryStepper', () => {
 
     const nav = screen.getByTestId('discovery-stepper');
     const items = within(nav).getAllByRole('listitem');
-    expect(items).toHaveLength(8);
+    expect(items).toHaveLength(6);
 
     const expectedLabels = [
-      'landing.discovery.stepper.about',
+      'landing.discovery.stepper.name',
+      'landing.discovery.stepper.contact',
       'landing.discovery.stepper.business',
-      'landing.discovery.stepper.goals',
-      'landing.discovery.stepper.commerce',
-      'landing.discovery.stepper.recommendation',
-      'landing.discovery.stepper.subscription',
-      'landing.discovery.stepper.info',
+      'landing.discovery.stepper.links',
       'landing.discovery.stepper.preview',
+      'landing.discovery.stepper.deposit',
     ].map(t);
     items.forEach((item, index) => {
       expect(within(item).getByText(expectedLabels[index])).toBeInTheDocument();
@@ -93,7 +97,7 @@ describe('DiscoveryStepper', () => {
     expect(items[3]).toHaveAttribute('data-state', 'upcoming');
   });
 
-  it.each([7, 8])(
+  it.each([PREVIEW_STEP, DEPOSIT_STEP])(
     'hides the progress bar once the wizard is at step %i, past the scripted conversation, but keeps the stepper',
     (current) => {
       render(

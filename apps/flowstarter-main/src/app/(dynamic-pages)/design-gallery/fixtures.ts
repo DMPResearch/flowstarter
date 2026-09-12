@@ -456,3 +456,75 @@ export const galleryProjectRows: ProjectRow[] = [
     created_at: '2026-09-11T07:20:00.000Z',
   },
 ];
+
+/**
+ * The dashboard's Brief form, part filled in.
+ *
+ * Deliberately mid-flight rather than empty or complete: an empty form shows
+ * none of the "what is still missing" list and a complete one shows none of
+ * the asks, and those two halves are the whole point of the page. Two named
+ * projects, one of them without a screenshot, and a portrait under the size
+ * the guidance asks for, so the readiness rule has something to say in both
+ * registers and the undersized warning is visible.
+ */
+export const briefGallery = {
+  workspaceId: '0f4e1088-8d8f-4f18-83b1-406cc292b23c',
+  brief: {
+    offer:
+      'I build small, sharp software products for people who are tired of bloated tools.',
+    projects: [
+      {
+        name: 'Ereno',
+        line: 'A calm inbox for people who hate inboxes.',
+        link: 'https://ereno.app',
+        screenshotAssetIds: ['11111111-1111-4111-8111-111111111111'],
+      },
+      {
+        name: 'Tallyhand',
+        line: 'Bookkeeping that stops at the receipt.',
+        link: '',
+        screenshotAssetIds: [],
+      },
+    ],
+    noProjects: false,
+    designReferenceAssetIds: ['22222222-2222-4222-8222-222222222222'],
+    photoAssetIds: ['33333333-3333-4333-8333-333333333333'],
+    portraitAssetId: '33333333-3333-4333-8333-333333333333',
+    readyAt: null,
+    overrideAt: null,
+  },
+  assets: [
+    {
+      id: '11111111-1111-4111-8111-111111111111',
+      kind: 'image',
+      mime: 'image/png',
+      width: 2400,
+      height: 1500,
+      usable: true,
+      url: null,
+      rightsConfirmedAt: '2026-09-12T10:00:00.000Z',
+    },
+    {
+      id: '22222222-2222-4222-8222-222222222222',
+      kind: 'image',
+      mime: 'image/png',
+      width: 1800,
+      height: 1100,
+      usable: true,
+      url: null,
+      rightsConfirmedAt: '2026-09-12T10:00:00.000Z',
+    },
+    {
+      // Under the 1600px long edge the guidance asks for, so the form shows
+      // its "smaller than we asked for" warning on this one.
+      id: '33333333-3333-4333-8333-333333333333',
+      kind: 'portrait',
+      mime: 'image/jpeg',
+      width: 900,
+      height: 1200,
+      usable: true,
+      url: null,
+      rightsConfirmedAt: '2026-09-12T10:00:00.000Z',
+    },
+  ],
+};

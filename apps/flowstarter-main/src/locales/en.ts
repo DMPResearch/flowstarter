@@ -2207,6 +2207,7 @@ const en = {
     'A dedicated store plan with product and collection editing, plus provider sync and order flows handled. Built for running a storefront, not just a content site.',
   'landing.discovery.steps.info.title': 'A couple of things before we build',
   'landing.discovery.steps.preview.title': 'Your site, being built',
+  'landing.discovery.steps.deposit.title': 'Start the full build',
   'landing.discovery.steps.preview.subtitle':
     'Generated from your answers, in seconds. The real one is designed properly on the call',
   'landing.discovery.preview.fallbackName': 'Your business',
@@ -2254,10 +2255,67 @@ const en = {
   'landing.discovery.preview.pane.knownTitle': 'What we know so far',
   'landing.discovery.preview.pane.factName': 'Name',
   'landing.discovery.preview.pane.factBusiness': 'Business',
+  'landing.discovery.preview.pane.factDoes': 'You do',
+  'landing.discovery.preview.pane.factLinks': 'Links',
   'landing.discovery.preview.pane.factStyle': 'Style',
   'landing.discovery.preview.pane.factPages': 'Pages',
   'landing.discovery.preview.pane.factEmpty': 'Not yet',
   'landing.discovery.preview.pane.stripCount': '{done} of {total} details in',
+
+  // The brand strip under the preview pane. A palette derived by rule from
+  // whatever the visitor's public profiles exposed, and a tone line phrased
+  // from their own words. When a network showed us nothing we say which one
+  // and why, rather than showing a palette with no explanation of where it
+  // came from.
+  'landing.discovery.brand.title': 'Your colours and voice',
+  'landing.discovery.brand.paletteFrom.image':
+    'Taken from your own pictures and profile.',
+  'landing.discovery.brand.paletteFrom.tone':
+    'From the style words you picked, until we can read a profile.',
+  'landing.discovery.brand.paletteFrom.default':
+    'A quiet default. Paste a link or a picture and I will use your own colours.',
+  'landing.discovery.brand.voiceFrom.phrased': 'Read from your own words.',
+  'landing.discovery.brand.voiceFrom.chips': 'From the style words you picked.',
+  'landing.discovery.brand.voiceFrom.default':
+    'Plain and clear, until you tell me otherwise.',
+  'landing.discovery.brand.adjust': 'Adjust',
+  'landing.discovery.brand.reading': 'Reading your profiles…',
+  'landing.discovery.brand.swatch.primary': 'Primary',
+  'landing.discovery.brand.swatch.secondary': 'Secondary',
+  'landing.discovery.brand.swatch.accent': 'Accent',
+  'landing.discovery.brand.swatch.neutral': 'Neutral',
+  'landing.discovery.brand.network.instagram': 'Instagram',
+  'landing.discovery.brand.network.linkedin': 'LinkedIn',
+  'landing.discovery.brand.network.website': 'Your site',
+  'landing.discovery.brand.unavailableTitle': 'What I could not read',
+  'landing.discovery.brand.unavailable.login_required':
+    'shows nothing to anyone who is not signed in, so I could not see it',
+  'landing.discovery.brand.unavailable.blocked':
+    'turned the request away, which it is entitled to do',
+  'landing.discovery.brand.unavailable.not_found':
+    'came back as not found. Worth checking the link',
+  'landing.discovery.brand.unavailable.timeout': 'did not answer in time',
+  'landing.discovery.brand.unavailable.network_error': 'could not be reached',
+  'landing.discovery.brand.unavailable.server_error':
+    'is having trouble at its end',
+  'landing.discovery.brand.unavailable.too_large':
+    'sent back more than I am willing to read',
+  'landing.discovery.brand.unavailable.not_given': 'was not given',
+  'landing.discovery.brand.pictureAsk':
+    'I could not read any of your profiles. Upload a logo or a photo of yourself and I will take your colours from that instead.',
+  'landing.discovery.brand.pictureCta': 'Add a logo or photo',
+  'landing.discovery.brand.pictureRights':
+    'By uploading you confirm this picture is yours to use, or that you have permission to use it.',
+  // The claim page's one picture question. A picture we READ off a public
+  // page is not one the visitor handed us, so it is shown to them and named
+  // before they are asked whether it may go on the site they are paying for.
+  'landing.discovery.brand.consent.label': 'Use my profile picture on the site',
+  'landing.discovery.brand.consent.from': 'We found this on',
+  'landing.discovery.brand.consent.note':
+    'Untick this and we will leave it off and ask you for a photo instead.',
+  'landing.discovery.brand.consent.alt': 'Your profile picture',
+  'landing.discovery.brand.pictureDone':
+    'Got it. Your colours now come from your own picture.',
   'landing.discovery.preview.pane.section.hero': 'Opening',
   'landing.discovery.preview.pane.section.services': 'What you offer',
   'landing.discovery.preview.pane.section.menu': 'Menu',
@@ -2285,14 +2343,22 @@ const en = {
   // first frame. Short labels — the long ones above are for the step
   // headings, these need to fit a small circle's width.
   'landing.discovery.stepper.label': 'Discovery progress',
+  // Four quick stages, then the preview, then the money. The stages the
+  // intake used to have (goals, selling online, the plan pair) are still in
+  // the catalogue below, because the dashboard's Brief asks those questions
+  // now and asks them in the same words.
+  'landing.discovery.stepper.name': 'Your name',
+  'landing.discovery.stepper.contact': 'Your email',
+  'landing.discovery.stepper.business': 'What you do',
+  'landing.discovery.stepper.links': 'Your links',
+  'landing.discovery.stepper.preview': 'Preview',
+  'landing.discovery.stepper.deposit': 'Your plan',
   'landing.discovery.stepper.about': 'About you',
-  'landing.discovery.stepper.business': 'Your business',
   'landing.discovery.stepper.goals': 'Goals & style',
   'landing.discovery.stepper.commerce': 'Selling online',
   'landing.discovery.stepper.recommendation': 'Your plan',
   'landing.discovery.stepper.subscription': 'Care plan',
   'landing.discovery.stepper.info': 'Details',
-  'landing.discovery.stepper.preview': 'Preview',
   'landing.discovery.stepper.position': 'Step {n} of {total}: {label}',
   'landing.discovery.chat.composerLabel': 'Your answer',
   'landing.discovery.chat.composerPlaceholder': 'Type your answer…',
@@ -2312,8 +2378,12 @@ const en = {
     'A first name is plenty. I just need something to call you.',
   'landing.discovery.chat.errors.email':
     "That doesn't look like an email address. Mind checking it?",
+  'landing.discovery.chat.errors.links':
+    'One link is all I need: your Instagram, your LinkedIn, or a site you already have. It is what I take your colours and your voice from.',
   'landing.discovery.chat.errors.description':
     'A little more than that, if you can: a sentence or two is all I need.',
+  'landing.discovery.chat.errors.offer':
+    'Just a line or two on what someone actually buys from you. I cannot write a services section from nothing without making things up.',
   'landing.discovery.chat.errors.goal':
     'Pick at least one, or tell me in your own words.',
   'landing.discovery.chat.errors.choice':
@@ -2327,14 +2397,18 @@ const en = {
     "And what's the business called? If you haven't settled on a name, skip it. We can come back to it.",
   'landing.discovery.chat.q.description.prompt':
     'Now the one that matters most: what does {business} actually do? Your own words, a sentence or two.',
+  'landing.discovery.chat.q.offer.prompt':
+    'And what does someone actually buy from you? Name the things you sell or do, the way you name them to a customer.',
+  'landing.discovery.chat.q.offer.placeholder':
+    'Coaching sessions, a six week programme, wedding photography…',
   'landing.discovery.chat.q.industry.prompt':
     "Which of these is closest to your line of work? Tap one, or type it if it's none of them.",
   'landing.discovery.chat.q.targetAudience.prompt':
     "Who are you trying to reach? Describe them the way you'd describe them to a friend.",
   'landing.discovery.chat.q.links.prompt':
-    'Anything of yours I can look at: Instagram, LinkedIn? Paste a link and I will match your voice to it.',
+    'Anything of yours I can look at: Instagram, LinkedIn, a site you already have? Paste what you have and I will take your colours and your voice from it.',
   'landing.discovery.chat.q.links.placeholder':
-    'instagram.com/yourbusiness, linkedin.com/company/…',
+    'instagram.com/yourbusiness, linkedin.com/in/you, yoursite.com',
   'landing.discovery.chat.q.goal.prompt':
     'What should the site actually do for you? Pick as many as fit, or add your own.',
   'landing.discovery.chat.q.goal.placeholder':
@@ -2379,6 +2453,8 @@ const en = {
     'No name yet is fine. I\'ll say "your business" for now and we can name it later.',
   'landing.discovery.chat.q.description.reflect':
     '"{quote}." That\'s the line I\'ll write the whole site around.',
+  'landing.discovery.chat.q.offer.reflect':
+    '"{quote}." Those are the things the site will sell, and it will not offer anything you have not just named.',
   'landing.discovery.chat.q.industry.reflect':
     '{answer}, got it. That tells me which layouts and photography to start from.',
   'landing.discovery.chat.q.industry.reflect.skipped':

@@ -49,6 +49,29 @@ export const runtime = 'nodejs';
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
 
+/**
+ * The palette, as the brand step produced it. Every value is re-validated here
+ * rather than trusted: this arrives from the browser, and the four hexes end
+ * up written into the generated site's CSS custom properties.
+ */
+const HEX = /^#[0-9a-fA-F]{6}$/;
+const BriefPaletteColourSchema = z.object({
+  base: z.string().regex(HEX),
+  onLight: z.string().regex(HEX),
+  onDark: z.string().regex(HEX),
+});
+const BriefPaletteSchema = z.object({
+  primary: BriefPaletteColourSchema,
+  secondary: BriefPaletteColourSchema,
+  accent: BriefPaletteColourSchema,
+  neutral: BriefPaletteColourSchema,
+  source: z.enum(['image', 'tone', 'default']),
+});
+const BriefToneSchema = z.object({
+  adjectives: z.array(z.string().max(24)).max(3),
+  voice: z.string().max(200),
+});
+
 const SpecSchema = z.object({
   businessName: z.string().max(200).optional().default(''),
   fullName: z.string().max(200).optional().default(''),
@@ -75,6 +98,28 @@ const SpecSchema = z.object({
   // malformed, so a bad paste costs the profile link, not the preview.
   instagramUrl: z.string().max(300).optional().default(''),
   linkedinUrl: z.string().max(300).optional().default(''),
+  /**
+   * A site they already have. `BusinessIntakePayload.business.existingWebsiteUrl`
+   * has been in the brief type and validated by the intake guard since it was
+   * written, with nothing in the funnel ever writing to it; the links question
+   * now does.
+   */
+  websiteUrl: z.string().max(300).optional().default(''),
+  /**
+   * What someone actually buys. Required in the conversation, optional here
+   * for the same reason `description` used to be everything: a brief taken
+   * before the question existed has none, and refusing it would turn a stored
+   * draft into a failed preview.
+   */
+  offer: z.string().max(2000).optional().default(''),
+  /**
+   * The palette and the tone the brand step derived. Passed through rather
+   * than re-derived: the derivation reads the visitor's profiles, and doing
+   * that twice would double the outbound requests and could disagree with the
+   * swatches the visitor has already been shown.
+   */
+  palette: BriefPaletteSchema.optional(),
+  tone: BriefToneSchema.optional(),
   /**
    * The wizard's page-count answer. It reaches the generator as part of the
    * intake and is the input to the page-set rule, which decides how many
@@ -226,8 +271,18 @@ function buildPiEvidence(
       description: spec.description.trim(),
       targetAudience: spec.targetAudience.trim() || undefined,
       primaryGoal: spec.goal.trim() || undefined,
+      existingWebsiteUrl: spec.websiteUrl.trim() || undefined,
       pageCount: spec.pageCount,
     },
+    offer: spec.offer.trim() || undefined,
+    // Deliberately absent rather than `[]` at preview time. An empty array is
+    // the brief saying "asked, and they have none", which drops the work page
+    // by rule; before the deposit nobody has been asked, and the two must not
+    // look the same to the page-set rule or to the invented-project gate.
+    palette: spec.palette,
+    tone: spec.tone
+      ? { adjectives: spec.tone.adjectives, voice: spec.tone.voice }
+      : undefined,
     socialMedia: targets,
     locale: 'en',
     submittedAt,
@@ -253,9 +308,11 @@ function buildPiEvidence(
           `Business: ${spec.businessName.trim()}`,
           `Industry: ${spec.industry.trim() || 'Not provided'}`,
           `Description: ${spec.description.trim()}`,
+          `What they sell: ${spec.offer.trim() || 'Not provided'}`,
           `Audience: ${spec.targetAudience.trim() || 'Not provided'}`,
           `Goal: ${spec.goal.trim() || 'Not provided'}`,
           `Desired tone: ${spec.brandTone.trim() || 'Not provided'}`,
+          `Derived voice: ${spec.tone?.voice?.trim() || 'Not provided'}`,
         ].join('\n'),
       },
     ],

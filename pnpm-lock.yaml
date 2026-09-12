@@ -961,6 +961,9 @@ importers:
       server-only:
         specifier: ^0.0.1
         version: 0.0.1
+      sharp:
+        specifier: ^0.35.4
+        version: 0.35.4(@types/node@24.7.0)
       sonner:
         specifier: ^1.7.4
         version: 1.7.4(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
@@ -1052,9 +1055,6 @@ importers:
       playwright:
         specifier: ^1.55.1
         version: 1.58.2
-      sharp:
-        specifier: ^0.35.4
-        version: 0.35.4(@types/node@24.7.0)
       typescript:
         specifier: ^5.9.2
         version: 5.9.3

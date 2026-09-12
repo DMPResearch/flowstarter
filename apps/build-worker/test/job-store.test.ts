@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { ProjectState } from '@flowstarter/agentic-codegen';
 import {
@@ -23,6 +23,22 @@ function ledgerRow(overrides: Partial<JobLedgerRow> = {}): JobLedgerRow {
     attempt_count: 0,
     payload: {},
     ...overrides,
+  };
+}
+
+/**
+ * A brief the client has finished. `claim()` reads this before it will start a
+ * FULL_SITE_BUILD, so it is the ordinary precondition of every claim below
+ * rather than a special case: a build whose client has not sent their offer,
+ * their projects and their pictures has nothing true to build from.
+ */
+function readyBrief(overrides: Record<string, unknown> = {}) {
+  return {
+    data: {
+      ready_at: '2026-09-12T09:00:00.000Z',
+      override_at: null,
+      ...overrides,
+    },
   };
 }
 
@@ -557,6 +573,9 @@ describe('SupabaseFullSiteBuildJobStore', () => {
     it('claims a queued job and materializes it from the workspace and artifact rows', async () => {
       const row = ledgerRow();
       const { client, calls } = makeScriptedClient({
+        // The brief gate runs before the compare-and-set, so every claim that
+        // is expected to proceed has to have a ready brief behind it.
+        workspace_briefs: [readyBrief()],
         flowstarter_agent_jobs: [{ data: row }, { data: { id: row.id } }],
         workspaces: [
           {
@@ -622,6 +641,9 @@ describe('SupabaseFullSiteBuildJobStore', () => {
     it('returns null when a concurrent dispatch wins the compare-and-set race', async () => {
       const row = ledgerRow();
       const { client, calls } = makeScriptedClient({
+        // The brief gate runs before the compare-and-set, so every claim that
+        // is expected to proceed has to have a ready brief behind it.
+        workspace_briefs: [readyBrief()],
         // Read succeeds, but the CAS update matches zero rows -- another
         // worker already advanced (status, attempt_count) first.
         flowstarter_agent_jobs: [{ data: row }, { data: null, error: null }],
@@ -654,6 +676,9 @@ describe('SupabaseFullSiteBuildJobStore', () => {
       const row = ledgerRow();
       const error = dbError('cas failed');
       const { client } = makeScriptedClient({
+        // The brief gate runs before the compare-and-set, so every claim that
+        // is expected to proceed has to have a ready brief behind it.
+        workspace_briefs: [readyBrief()],
         flowstarter_agent_jobs: [{ data: row }, { data: null, error }],
       });
       const store = new SupabaseFullSiteBuildJobStore(client, {
@@ -666,6 +691,9 @@ describe('SupabaseFullSiteBuildJobStore', () => {
     it('marks the job failed and rethrows when the workspace row is missing', async () => {
       const row = ledgerRow();
       const { client, calls } = makeScriptedClient({
+        // The brief gate runs before the compare-and-set, so every claim that
+        // is expected to proceed has to have a ready brief behind it.
+        workspace_briefs: [readyBrief()],
         flowstarter_agent_jobs: [
           { data: row },
           { data: { id: row.id } },
@@ -697,6 +725,9 @@ describe('SupabaseFullSiteBuildJobStore', () => {
     it('marks the job failed and rethrows when the artifacts row is missing', async () => {
       const row = ledgerRow();
       const { client } = makeScriptedClient({
+        // The brief gate runs before the compare-and-set, so every claim that
+        // is expected to proceed has to have a ready brief behind it.
+        workspace_briefs: [readyBrief()],
         flowstarter_agent_jobs: [
           { data: row },
           { data: { id: row.id } },
@@ -727,6 +758,9 @@ describe('SupabaseFullSiteBuildJobStore', () => {
       const row = ledgerRow();
       const cleanupError = dbError('cleanup update failed');
       const { client } = makeScriptedClient({
+        // The brief gate runs before the compare-and-set, so every claim that
+        // is expected to proceed has to have a ready brief behind it.
+        workspace_briefs: [readyBrief()],
         flowstarter_agent_jobs: [
           { data: row },
           { data: { id: row.id } },
@@ -749,6 +783,9 @@ describe('SupabaseFullSiteBuildJobStore', () => {
       const row = ledgerRow();
       const artifactError = dbError('artifacts read failed');
       const { client } = makeScriptedClient({
+        // The brief gate runs before the compare-and-set, so every claim that
+        // is expected to proceed has to have a ready brief behind it.
+        workspace_briefs: [readyBrief()],
         flowstarter_agent_jobs: [
           { data: row },
           { data: { id: row.id } },
@@ -784,6 +821,243 @@ describe('SupabaseFullSiteBuildJobStore', () => {
 
       await expect(store.claim(row.id)).resolves.toBeNull();
       expect(calls).toHaveLength(1);
+    });
+
+    /**
+     * The wait, which is the whole point of the gate.
+     *
+     * The in-depth brief is filled in on the client's dashboard after the
+     * deposit, so between paying and finishing that form there is a real
+     * window in which a FULL_SITE_BUILD is queued and there is nothing honest
+     * to build from. Starting anyway does not produce a worse site, it
+     * produces an invented one: a case study the client never had, an offer
+     * nobody wrote. So the job waits, and the tests below pin the three things
+     * that makes it safe to leave running unattended for days -- the row is
+     * not touched, the rebuild path is not caught by it, and the operator
+     * board is told once rather than once per poll.
+     */
+    describe('waiting on the client brief', () => {
+      it('does not claim a full build whose client has no brief row yet, and leaves the row queued', async () => {
+        const row = ledgerRow();
+        const { client, calls } = makeScriptedClient({
+          flowstarter_agent_jobs: [{ data: row }],
+          // No row at all: the client has not opened the brief page. Not an
+          // error, and specifically not a reason to fail the job.
+          workspace_briefs: [{ data: null, error: null }],
+        });
+        const store = new SupabaseFullSiteBuildJobStore(client, {
+          maxAttempts: 3,
+        });
+
+        await expect(store.claim(row.id)).resolves.toBeNull();
+
+        // The row is untouched: no compare-and-set, so `status` is still
+        // `queued` and `attempt_count` is still whatever it was. A gate that
+        // spent an attempt per poll would exhaust the budget of a build that
+        // has nothing wrong with it.
+        expect(
+          calls.filter(
+            (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+          ),
+        ).toHaveLength(0);
+        expect(calls.filter((c) => c.table === 'workspaces')).toHaveLength(0);
+        expect(
+          calls.filter((c) => c.table === 'flowstarter_project_artifacts'),
+        ).toHaveLength(0);
+
+        // And the brief read is tenant scoped, like every other read here.
+        const briefCall = calls.find((c) => c.table === 'workspace_briefs');
+        expect(briefCall?.eqCalls).toContainEqual([
+          'workspace_id',
+          WORKSPACE_ID,
+        ]);
+      });
+
+      it('says once, on the ledger, that the job is waiting on the client', async () => {
+        const row = ledgerRow();
+        const { client, calls } = makeScriptedClient({
+          flowstarter_agent_jobs: [{ data: row }],
+          workspace_briefs: [{ data: null, error: null }],
+          // [0] the "what was said last" read, [1] the insert.
+          flowstarter_agent_job_events: [
+            { data: null, error: null },
+            { error: null },
+          ],
+        });
+        const store = new SupabaseFullSiteBuildJobStore(client, {
+          maxAttempts: 3,
+        });
+
+        await store.claim(row.id);
+
+        const inserts = calls.filter(
+          (c) =>
+            c.table === 'flowstarter_agent_job_events' && c.op === 'insert',
+        );
+        expect(inserts).toHaveLength(1);
+        expect(inserts[0]?.values).toMatchObject({
+          job_id: row.id,
+          workspace_id: WORKSPACE_ID,
+          kind: 'phase',
+          payload: { waitingOn: 'brief' },
+        });
+        expect(String((inserts[0]?.values as { body: string }).body)).toContain(
+          'Waiting on the client brief',
+        );
+      });
+
+      it('does not repeat itself on the next poll', async () => {
+        const row = ledgerRow();
+        const { client, calls } = makeScriptedClient({
+          flowstarter_agent_jobs: [{ data: row }],
+          workspace_briefs: [{ data: null, error: null }],
+          // The last event on this job is already the waiting one, which is
+          // what a second poll a few seconds later sees.
+          flowstarter_agent_job_events: [
+            { data: { payload: { waitingOn: 'brief' } }, error: null },
+          ],
+        });
+        const store = new SupabaseFullSiteBuildJobStore(client, {
+          maxAttempts: 3,
+        });
+
+        await expect(store.claim(row.id)).resolves.toBeNull();
+        expect(
+          calls.filter(
+            (c) =>
+              c.table === 'flowstarter_agent_job_events' && c.op === 'insert',
+          ),
+        ).toHaveLength(0);
+      });
+
+      it('keeps waiting rather than failing when the ledger line cannot be written', async () => {
+        const row = ledgerRow();
+        const { client } = makeScriptedClient({
+          flowstarter_agent_jobs: [{ data: row }],
+          workspace_briefs: [{ data: null, error: null }],
+          flowstarter_agent_job_events: [
+            { data: null, error: dbError('events unavailable') },
+          ],
+        });
+        const store = new SupabaseFullSiteBuildJobStore(client, {
+          maxAttempts: 3,
+        });
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+        // Commentary failing is not the job failing.
+        await expect(store.claim(row.id)).resolves.toBeNull();
+        expect(warn).toHaveBeenCalled();
+        warn.mockRestore();
+      });
+
+      it('claims the build once the brief is ready', async () => {
+        const row = ledgerRow();
+        const { client } = makeScriptedClient({
+          flowstarter_agent_jobs: [{ data: row }, { data: { id: row.id } }],
+          workspace_briefs: [readyBrief()],
+          workspaces: [
+            {
+              data: {
+                id: WORKSPACE_ID,
+                project_state: ProjectState.DEPOSIT_PAID,
+                cal_com_url: null,
+              },
+            },
+          ],
+          flowstarter_project_artifacts: [{ data: artifacts() }],
+        });
+        const store = new SupabaseFullSiteBuildJobStore(client, {
+          maxAttempts: 3,
+        });
+
+        await expect(store.claim(row.id)).resolves.toMatchObject({
+          id: row.id,
+          projectId: WORKSPACE_ID,
+        });
+      });
+
+      it('claims the build on an operator override alone, with the brief still incomplete', async () => {
+        const row = ledgerRow();
+        const { client } = makeScriptedClient({
+          flowstarter_agent_jobs: [{ data: row }, { data: { id: row.id } }],
+          // The only way a build starts on an incomplete brief: a person said
+          // so, on the record, through the override route.
+          workspace_briefs: [
+            readyBrief({
+              ready_at: null,
+              override_at: '2026-09-12T10:00:00.000Z',
+            }),
+          ],
+          workspaces: [
+            {
+              data: {
+                id: WORKSPACE_ID,
+                project_state: ProjectState.DEPOSIT_PAID,
+                cal_com_url: null,
+              },
+            },
+          ],
+          flowstarter_project_artifacts: [{ data: artifacts() }],
+        });
+        const store = new SupabaseFullSiteBuildJobStore(client, {
+          maxAttempts: 3,
+        });
+
+        await expect(store.claim(row.id)).resolves.toMatchObject({
+          id: row.id,
+        });
+      });
+
+      it('never gates a rebuild, which is a change to a site that already exists', async () => {
+        const row = ledgerRow({ kind: 'SITE_REBUILD' });
+        const { client, calls } = makeScriptedClient({
+          flowstarter_agent_jobs: [{ data: row }, { data: { id: row.id } }],
+          workspaces: [
+            {
+              data: {
+                id: WORKSPACE_ID,
+                project_state: ProjectState.LIVE_SUBSCRIPTION,
+                cal_com_url: null,
+              },
+            },
+          ],
+          flowstarter_project_artifacts: [{ data: artifacts() }],
+        });
+        const store = new SupabaseFullSiteBuildJobStore(client, {
+          maxAttempts: 3,
+        });
+
+        await expect(store.claim(row.id)).resolves.toMatchObject({
+          kind: 'SITE_REBUILD',
+        });
+        // The brief is not even read: a client publishing an edit months later
+        // must not be held behind a form they finished at the start.
+        expect(
+          calls.filter((c) => c.table === 'workspace_briefs'),
+        ).toHaveLength(0);
+      });
+
+      it('refuses to guess when the brief cannot be read at all', async () => {
+        const row = ledgerRow();
+        const error = dbError('workspace_briefs unavailable');
+        const { client, calls } = makeScriptedClient({
+          flowstarter_agent_jobs: [{ data: row }],
+          workspace_briefs: [{ data: null, error }],
+        });
+        const store = new SupabaseFullSiteBuildJobStore(client, {
+          maxAttempts: 3,
+        });
+
+        // A database that cannot be read is not a client who has not
+        // answered, and must never be treated as one: the failure is loud and
+        // the row is left alone.
+        await expect(store.claim(row.id)).rejects.toBe(error);
+        expect(
+          calls.filter(
+            (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+          ),
+        ).toHaveLength(0);
+      });
     });
   });
 

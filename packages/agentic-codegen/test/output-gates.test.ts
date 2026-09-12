@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  findInventedProjectIssue,
   findPlaceholderCopyIssue,
   FullSiteBuildWorker,
+  INVENTED_PROJECT,
   PAGE_BUDGET_EXCEEDED,
   PLACEHOLDER_COPY_SHIPPED,
   PreviewGenerationPipeline,
@@ -126,6 +128,33 @@ describe('findPlaceholderCopyIssue', () => {
       findPlaceholderCopyIssue([
         { path: 'src/content/site-labels.md', content: 'Calm Path Therapy' },
       ]),
+    ).toBeUndefined();
+  });
+});
+
+describe('findInventedProjectIssue', () => {
+  it('names the heading, the page and the projects the client actually has', () => {
+    const issue = findInventedProjectIssue(
+      [
+        {
+          path: 'dist/work/index.html',
+          content: '<h2>Ereno</h2><h2>Northwind Bank</h2>',
+        },
+      ],
+      ['Ereno'],
+    );
+    expect(issue).toContain(INVENTED_PROJECT);
+    expect(issue).toContain('Northwind Bank');
+    expect(issue).toContain('dist/work/index.html');
+    expect(issue).toContain('Ereno');
+  });
+
+  it('says nothing when the brief listed no projects to check against', () => {
+    expect(
+      findInventedProjectIssue(
+        [{ path: 'dist/work/index.html', content: '<h2>Northwind Bank</h2>' }],
+        [],
+      ),
     ).toBeUndefined();
   });
 });
@@ -330,6 +359,8 @@ describe('the full-site build gates its own output', () => {
     calComUrl?: string;
     /** The approved preview manifest this build seeds from. */
     seed?: TemplateScaffoldFile[];
+    /** The real projects the brief lists, if it was asked at all. */
+    projects?: BusinessIntakePayload['projects'];
   }) {
     const agents = {
       buildFullSite: async (pass: { feedback?: string; pageSet?: string }) => {
@@ -358,7 +389,10 @@ describe('the full-site build gates its own output', () => {
         projectId: PROJECT_ID,
         kind: 'FULL_SITE_BUILD',
         projectState: ProjectState.DEPOSIT_PAID,
-        intake: intakeWith({ pageCount: 'lt-5' }),
+        intake: intakeWith(
+          { pageCount: 'lt-5' },
+          input.projects ? { projects: input.projects } : {},
+        ),
         brandConfig: validBrandConfig(),
         approvedPreviewFiles: input.seed ?? templateFiles(),
         requiredIntegrations: [],
@@ -530,6 +564,53 @@ describe('the full-site build gates its own output', () => {
     expect(layout).toContain('<slot />');
   });
 
+  it('ships a work section built from the projects the brief lists', async () => {
+    const calls: string[] = [];
+    const feedbacks: Array<string | undefined> = [];
+    const { worker } = workerFor({
+      calls,
+      feedbacks,
+      projects: [{ name: 'Ereno' }, { name: 'Halden Studio' }],
+      dist: () => ({
+        'index.html': '<h1>Calm Path</h1>',
+        'work/index.html':
+          '<h2>Selected work</h2><h2>Ereno, a calm inbox</h2><h2>Halden Studio</h2>',
+        'about/index.html': '<h1>About</h1>',
+        'contact/index.html': '<h1>Contact</h1>',
+      }),
+    });
+
+    await worker.run('job-1');
+    expect(calls).toContain('store:human-qa');
+    // No repair pass: the build was right the first time.
+    expect(feedbacks).toHaveLength(1);
+  });
+
+  it('fails the job with INVENTED_PROJECT when the site names a client the brief never did', async () => {
+    const calls: string[] = [];
+    const feedbacks: Array<string | undefined> = [];
+    const { worker } = workerFor({
+      calls,
+      feedbacks,
+      projects: [{ name: 'Ereno' }],
+      dist: () => ({
+        'index.html': '<h1>Calm Path</h1>',
+        'work/index.html': '<h2>Ereno</h2><h2>Northwind Bank</h2>',
+        'about/index.html': '<h1>About</h1>',
+        'contact/index.html': '<h1>Contact</h1>',
+      }),
+    });
+
+    await expect(worker.run('job-1')).rejects.toThrow(
+      new RegExp(INVENTED_PROJECT),
+    );
+    expect(calls).toContain(`store:failed:${INVENTED_PROJECT}`);
+    expect(calls).not.toContain('store:human-qa');
+    // One build pass, then exactly one repair pass carrying the verdict.
+    expect(feedbacks).toHaveLength(2);
+    expect(feedbacks[1]).toContain('Northwind Bank');
+  });
+
   it('allows the booking page once the workspace carries a Cal.com link', async () => {
     const calls: string[] = [];
     const feedbacks: Array<string | undefined> = [];
@@ -553,6 +634,7 @@ describe('the full-site build gates its own output', () => {
 
 function intakeWith(
   business: Partial<BusinessIntakePayload['business']>,
+  brief: Partial<BusinessIntakePayload> = {},
 ): BusinessIntakePayload {
   return {
     projectId: PROJECT_ID,
@@ -569,6 +651,7 @@ function intakeWith(
     locale: 'en-RO',
     submittedAt: '2026-09-11T10:00:00.000Z',
     consent: { publicProfileAnalysis: false, acceptedAt: '' },
+    ...brief,
   };
 }
 

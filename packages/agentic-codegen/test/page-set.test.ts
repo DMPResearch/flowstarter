@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyPageSetToScaffold,
+  worksSectionAllowed,
   CONTENT_PAGES,
   derivePageSet,
   describePageSet,
@@ -431,3 +432,70 @@ function NAV_YAML(): string {
     '',
   ].join('\n');
 }
+
+describe('rule 6: the work page follows the real projects', () => {
+  const services = {
+    pageCount: '5-7',
+    businessType: 'Accounting practice',
+    hasBookingLink: false,
+  };
+  // A four-page budget, so there is a page left on the priority list to take
+  // the place an empty work page gives up.
+  const portfolio = {
+    pageCount: 'lt-5',
+    businessType: 'Creative & design',
+    hasBookingLink: false,
+  };
+
+  it('behaves exactly as before when the brief was never asked', () => {
+    const asked = derivePageSet(services);
+    expect(derivePageSet({ ...services, projectCount: undefined })).toEqual(
+      asked,
+    );
+    expect(derivePageSet({ ...services, projectCount: null })).toEqual(asked);
+    expect(asked.content).toEqual([
+      'home',
+      'contact',
+      'services',
+      'about',
+      'work',
+      'blog',
+    ]);
+  });
+
+  it('drops the work page when the client listed no projects', () => {
+    const pageSet = derivePageSet({ ...services, projectCount: 0 });
+    expect(pageSet.allowed).not.toContain('work');
+    expect(pageSet.dropped).toContain('work');
+    expect(worksSectionAllowed(pageSet)).toBe(false);
+  });
+
+  it('promotes work ahead of about for a services brief with real projects', () => {
+    const pageSet = derivePageSet({ ...services, projectCount: 2 });
+    expect(pageSet.content.indexOf('work')).toBeLessThan(
+      pageSet.content.indexOf('about'),
+    );
+    expect(worksSectionAllowed(pageSet)).toBe(true);
+  });
+
+  it('leaves a portfolio ordering alone but still drops its empty work page', () => {
+    const withProjects = derivePageSet({ ...portfolio, projectCount: 3 });
+    expect(withProjects.content).toEqual(derivePageSet(portfolio).content);
+
+    const withNone = derivePageSet({ ...portfolio, projectCount: 0 });
+    expect(withNone.allowed).not.toContain('work');
+    expect(withNone.dropped).toContain('work');
+    // The brief still buys the pages it paid for; the next page down the
+    // priority list takes the place the work page would have had.
+    expect(withNone.content).toHaveLength(
+      derivePageSet(portfolio).content.length,
+    );
+  });
+
+  it('names the dropped work page to the agent', () => {
+    const described = describePageSet(
+      derivePageSet({ ...services, projectCount: 0 }),
+    );
+    expect(described).toContain('work');
+  });
+});

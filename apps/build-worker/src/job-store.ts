@@ -48,6 +48,47 @@ const CLAIMABLE_KINDS = new Set([
   'CHANGE_REQUEST_BUILD',
 ]);
 
+/** The two columns of `workspace_briefs` a claim decision is made from. */
+interface WorkspaceBriefRow {
+  ready_at: string | null;
+  override_at: string | null;
+}
+
+/**
+ * The in-depth brief the site is written from lives on the client's dashboard
+ * and is filled in after the deposit. Until it is ready, a FULL_SITE_BUILD has
+ * nothing true to build from, so it waits.
+ *
+ * This is a deliberate three-line copy of `briefAllowsBuild` in
+ * `apps/flowstarter-main/src/lib/flowstarter/brief-readiness.ts`. The
+ * duplication is the cheaper of two bad options: this worker is a separate
+ * deployable with its own package.json, its own tsconfig and no dependency on
+ * the Next app, and importing from `apps/flowstarter-main` would drag a whole
+ * Next application into a container whose only job is to run an agent over a
+ * checkout. `packages/agentic-codegen` was the other candidate and was
+ * rejected because that package is the shared domain vocabulary, while this
+ * rule is about one column in one table that exactly two call sites read. If a
+ * third reader ever appears, move it there rather than copy it again.
+ *
+ * Two ways through, matching that module exactly: the brief is ready, or an
+ * operator has said build it anyway. A missing row is neither, and is not an
+ * error: it means the client has not opened the brief page yet.
+ */
+function briefAllowsBuild(brief: WorkspaceBriefRow | null): boolean {
+  return Boolean(brief?.ready_at) || Boolean(brief?.override_at);
+}
+
+/**
+ * The marker on the ledger event that says a job is parked on its client, not
+ * broken. Read back before another one is written, so a poll every few seconds
+ * does not produce a wall of identical lines on the operator board.
+ */
+const WAITING_ON_BRIEF = 'brief';
+
+const WAITING_ON_BRIEF_BODY =
+  'Waiting on the client brief. The build is queued and will start by itself ' +
+  'once the brief is complete, or when an operator overrides it.';
+
 export class JobArtifactError extends Error {}
 
 export interface JobLedgerRow {
@@ -467,6 +508,78 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
     }));
   }
 
+  /**
+   * The workspace's brief row, or null when there is not one yet.
+   *
+   * A missing row is the ordinary case for a client who paid ten minutes ago
+   * and has not opened the brief page, so it reads as "not ready" rather than
+   * as a failure. A Supabase error is a different thing entirely and is
+   * thrown: a database that cannot be read must never be mistaken for a client
+   * who has not answered, because the two have opposite consequences.
+   */
+  private async readBrief(
+    workspaceId: string,
+  ): Promise<WorkspaceBriefRow | null> {
+    const { data, error } = await withTenant(this.client, workspaceId)
+      .from('workspace_briefs')
+      .select('ready_at, override_at')
+      .maybeSingle<WorkspaceBriefRow>();
+    if (error) throw error;
+    return data ?? null;
+  }
+
+  /**
+   * Says once, on the ledger, that this job is waiting on its client.
+   *
+   * The dispatcher polls, so the naive version of this writes one identical
+   * event every few seconds for as long as a client takes to fill in a form,
+   * which is days. Two cheaper designs were considered and rejected: a unique
+   * index (a migration, for a log table), and a per-process memo (wrong the
+   * moment there are two workers, and reset by every deploy). What is left is
+   * a read of the job's own most recent event: if it is already the waiting
+   * one, nothing is written. That is one bounded single-row read per poll,
+   * correct across processes and restarts, and self-clearing -- once a build
+   * runs and writes a phase of its own, a later wait is said again, which is
+   * right, because by then it is news.
+   *
+   * Never throws. A ledger line is commentary, and failing to write one is not
+   * a reason to turn a job that is merely waiting into a job that errored.
+   */
+  private async noteWaitingOnBrief(row: JobLedgerRow): Promise<void> {
+    try {
+      // Primes the cache `appendEvent` reads, so saying this costs no second
+      // lookup of a workspace this method was handed.
+      this.workspaceByJob.set(row.id, row.workspace_id);
+
+      const { data, error } = await withTenant(this.client, row.workspace_id)
+        .from('flowstarter_agent_job_events')
+        .select('payload')
+        .eq('job_id', row.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle<{ payload: unknown }>();
+      if (error) throw error;
+
+      const payload = data?.payload;
+      const last =
+        payload && typeof payload === 'object' && !Array.isArray(payload)
+          ? (payload as Record<string, unknown>)['waitingOn']
+          : undefined;
+      if (last === WAITING_ON_BRIEF) return;
+
+      await this.appendEvent(row.id, {
+        kind: 'phase',
+        body: WAITING_ON_BRIEF_BODY,
+        payload: { waitingOn: WAITING_ON_BRIEF },
+      });
+    } catch (error) {
+      console.warn(
+        `[job-store] could not record the brief wait for job ${row.id}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+
   async claim(jobId: string): Promise<FullSiteBuildJob | null> {
     const { data: row, error } = await this.client
       .from('flowstarter_agent_jobs')
@@ -476,6 +589,24 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
     if (error) throw error;
     if (!row) return null;
     if (!isClaimable(row, this.options.maxAttempts)) return null;
+
+    // The brief gate, before the compare-and-set and not after it: a job that
+    // is waiting on its client must be left exactly as it is, `queued`, with
+    // its attempt budget untouched. Flipping it to `running` and back would
+    // burn an attempt per poll and would eventually exhaust the budget of a
+    // build that never had anything wrong with it.
+    //
+    // FULL_SITE_BUILD only. A SITE_REBUILD is a rebuild of a site that already
+    // exists and was already built from a brief -- a client publishing an edit
+    // months later -- so gating it would strand their own change behind a form
+    // they finished long ago.
+    if (row.kind === 'FULL_SITE_BUILD') {
+      const brief = await this.readBrief(row.workspace_id);
+      if (!briefAllowsBuild(brief)) {
+        await this.noteWaitingOnBrief(row);
+        return null;
+      }
+    }
 
     const now = new Date().toISOString();
     // Guarding on the exact (status, attempt_count) we read makes this an

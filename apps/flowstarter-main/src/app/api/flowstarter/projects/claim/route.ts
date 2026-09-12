@@ -26,6 +26,8 @@ import type {
   PageCount,
   TimelineId,
 } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/discovery.logic';
+import { clientIp } from '@/app/api/client/assets/asset-storage';
+import { CURRENT_RIGHTS_STATEMENT_VERSION } from '@/components/flowstarter/rights-statement';
 import { requireAuth } from '@/lib/api-auth';
 import {
   claimPreview,
@@ -53,6 +55,23 @@ const ClaimSchema = z.object({
   description: z.string().max(5000).optional().default(''),
   industry: z.string().max(200).optional().default(''),
   targetAudience: z.string().max(500).optional().default(''),
+  /**
+   * What someone actually buys. Carried into `intakeSummary` so the brief the
+   * build reads names the offer rather than inferring it from the description.
+   */
+  offer: z.string().max(2000).optional().default(''),
+  /** A site they already had. Read for a palette and kept as provenance. */
+  websiteUrl: z.string().max(300).optional().default(''),
+  /**
+   * "Use my profile picture on the site", one tap on the claim page.
+   *
+   * A picture read off a public profile is filed without rights and is
+   * unpublishable until this says otherwise. Defaulting to false is the whole
+   * safety property: a client that forgets to send the field publishes
+   * nothing, rather than publishing somebody's photograph on the strength of
+   * a missing key.
+   */
+  useProfilePicture: z.boolean().optional().default(false),
   goal: z.string().max(400).optional().default(''),
   brandTone: z.string().max(400).optional().default(''),
   // Scope answers. These exist here only so the routing classifier can be
@@ -97,8 +116,10 @@ function discoveryDataFrom(spec: z.infer<typeof ClaimSchema>): DiscoveryData {
     industry: spec.industry,
     description: spec.description,
     targetAudience: spec.targetAudience,
+    offer: spec.offer ?? '',
     instagramUrl: '',
     linkedinUrl: '',
+    websiteUrl: spec.websiteUrl ?? '',
     goal: spec.goal,
     secondaryGoals: [],
     brandTone: spec.brandTone,
@@ -152,8 +173,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       ...(spec.tier ? { tier: spec.tier } : {}),
       ...(spec.subscription ? { subscriptionPlan: spec.subscription } : {}),
       ...(spec.billingCadence ? { billingCadence: spec.billingCadence } : {}),
+      useProfilePicture: spec.useProfilePicture,
+      rightsStatementVersion: CURRENT_RIGHTS_STATEMENT_VERSION,
+      clientIp: clientIp(request),
+      clientUserAgent: request.headers.get('user-agent'),
       intakeSummary: {
         description: spec.description,
+        offer: spec.offer,
+        websiteUrl: spec.websiteUrl,
         industry: spec.industry,
         targetAudience: spec.targetAudience,
         goal: spec.goal,

@@ -1123,6 +1123,77 @@ export type Database = {
         }
         Relationships: []
       }
+      funnel_assets: {
+        Row: {
+          claimed_asset_id: string | null
+          claimed_workspace_id: string | null
+          created_at: string
+          dominant_colors: string[] | null
+          height: number | null
+          id: string
+          kind: string | null
+          mime: string | null
+          preview_id: string
+          rights_confirmed_at: string | null
+          rights_ip: string | null
+          rights_statement_version: string | null
+          rights_user_agent: string | null
+          sha256: string | null
+          source: string
+          storage_path: string | null
+          usable_for: string[]
+          width: number | null
+        }
+        Insert: {
+          claimed_asset_id?: string | null
+          claimed_workspace_id?: string | null
+          created_at?: string
+          dominant_colors?: string[] | null
+          height?: number | null
+          id?: string
+          kind?: string | null
+          mime?: string | null
+          preview_id: string
+          rights_confirmed_at?: string | null
+          rights_ip?: string | null
+          rights_statement_version?: string | null
+          rights_user_agent?: string | null
+          sha256?: string | null
+          source?: string
+          storage_path?: string | null
+          usable_for?: string[]
+          width?: number | null
+        }
+        Update: {
+          claimed_asset_id?: string | null
+          claimed_workspace_id?: string | null
+          created_at?: string
+          dominant_colors?: string[] | null
+          height?: number | null
+          id?: string
+          kind?: string | null
+          mime?: string | null
+          preview_id?: string
+          rights_confirmed_at?: string | null
+          rights_ip?: string | null
+          rights_statement_version?: string | null
+          rights_user_agent?: string | null
+          sha256?: string | null
+          source?: string
+          storage_path?: string | null
+          usable_for?: string[]
+          width?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "funnel_assets_claimed_workspace_id_fkey"
+            columns: ["claimed_workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       intake_submissions: {
         Row: {
           created_at: string
@@ -1627,6 +1698,62 @@ export type Database = {
             foreignKeyName: "workspace_bookings_workspace_id_fkey"
             columns: ["workspace_id"]
             isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      workspace_briefs: {
+        Row: {
+          created_at: string
+          design_reference_asset_ids: string[]
+          no_projects: boolean
+          offer: string
+          override_at: string | null
+          override_by: string | null
+          palette: Json
+          photo_asset_ids: string[]
+          projects: Json
+          ready_at: string | null
+          tone: Json
+          updated_at: string
+          workspace_id: string
+        }
+        Insert: {
+          created_at?: string
+          design_reference_asset_ids?: string[]
+          no_projects?: boolean
+          offer?: string
+          override_at?: string | null
+          override_by?: string | null
+          palette?: Json
+          photo_asset_ids?: string[]
+          projects?: Json
+          ready_at?: string | null
+          tone?: Json
+          updated_at?: string
+          workspace_id: string
+        }
+        Update: {
+          created_at?: string
+          design_reference_asset_ids?: string[]
+          no_projects?: boolean
+          offer?: string
+          override_at?: string | null
+          override_by?: string | null
+          palette?: Json
+          photo_asset_ids?: string[]
+          projects?: Json
+          ready_at?: string | null
+          tone?: Json
+          updated_at?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "workspace_briefs_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: true
             referencedRelation: "workspaces"
             referencedColumns: ["id"]
           },

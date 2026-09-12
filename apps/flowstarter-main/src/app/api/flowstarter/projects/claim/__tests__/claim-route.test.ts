@@ -23,6 +23,8 @@ import {
   clearClaimablePreviews,
   rememberClaimablePreview,
 } from '@/lib/flowstarter/claim';
+import { CURRENT_RIGHTS_STATEMENT_VERSION } from '@/components/flowstarter/rights-statement';
+import { confirmFetchedPictureRights } from '@/lib/flowstarter/funnel-assets';
 import { ensureClientMembership } from '@/lib/flowstarter/membership';
 import { savePreviewArtifacts } from '@/lib/flowstarter/preview-artifacts';
 import { POST } from '../route';
@@ -145,6 +147,19 @@ vi.mock('@/supabase-clients/server', () => ({
 // Both are covered by their own suites; here they are stubbed so the claim's
 // orchestration (order, error handling, what it passes on) is what is tested.
 
+// The funnel-asset half of the claim. Stubbed so the route's own decision —
+// whether to confirm rights over a picture we fetched — is what is under test,
+// rather than Supabase Storage. `confirmFetchedPictureRights` has its own
+// suite in lib/flowstarter/__tests__/funnel-assets-rights.test.ts.
+vi.mock('@/lib/flowstarter/funnel-assets', () => ({
+  claimFunnelAssets: vi.fn(async () => ({
+    moved: 0,
+    alreadyClaimed: 0,
+    failed: [],
+  })),
+  confirmFetchedPictureRights: vi.fn(async () => ({ confirmed: 1 })),
+}));
+
 vi.mock('@/lib/flowstarter/membership', () => ({
   ensureClientMembership: vi.fn(async () => ({
     workspaceId: 'ws',
@@ -169,6 +184,7 @@ vi.mock('@/lib/flowstarter/preview-artifacts', () => ({
 }));
 
 const membershipMock = vi.mocked(ensureClientMembership);
+const confirmPictureMock = vi.mocked(confirmFetchedPictureRights);
 const artifactsMock = vi.mocked(savePreviewArtifacts);
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
@@ -237,6 +253,7 @@ beforeEach(() => {
     created: true,
   });
   artifactsMock.mockClear();
+  confirmPictureMock.mockClear();
 });
 
 describe('POST /api/flowstarter/projects/claim', () => {
@@ -428,5 +445,90 @@ describe('POST /api/flowstarter/projects/claim', () => {
     expect(artifactsMock).not.toHaveBeenCalled();
     expect(db.workspaces[0].project_state).toBe(ProjectState.INTAKE);
     expect(membershipMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the profile picture the claim page asks about', () => {
+  /**
+   * The whole safety property, stated once: a picture we read off somebody's
+   * public page is filed with no rights confirmation, so it is invisible to
+   * `loadUsableAssets` and unpublishable on a paid site. The claim page's one
+   * checkbox is the only thing that changes that, and these are the three ways
+   * that can go.
+   */
+  it('confirms the rights when the visitor left the box ticked', async () => {
+    stashPreview();
+
+    const response = await POST(
+      claimRequest({ ...VALID_BODY, useProfilePicture: true })
+    );
+
+    expect(response.status).toBe(201);
+    expect(confirmPictureMock).toHaveBeenCalledTimes(1);
+    expect(confirmPictureMock).toHaveBeenCalledWith(
+      expect.objectContaining({ previewId: PREVIEW_ID })
+    );
+  });
+
+  it('confirms nothing when the visitor unticked it', async () => {
+    stashPreview();
+
+    const response = await POST(
+      claimRequest({ ...VALID_BODY, useProfilePicture: false })
+    );
+
+    expect(response.status).toBe(201);
+    expect(confirmPictureMock).not.toHaveBeenCalled();
+  });
+
+  it('confirms nothing when the field is absent altogether', async () => {
+    // The field is only sent when there is a fetched picture to ask about, so
+    // its absence must never be read as consent. The schema defaults it to
+    // false for exactly this reason: a caller that forgets the key publishes
+    // nothing rather than publishing somebody's photograph.
+    stashPreview();
+
+    const response = await POST(claimRequest(VALID_BODY));
+
+    expect(response.status).toBe(201);
+    expect(confirmPictureMock).not.toHaveBeenCalled();
+  });
+
+  it('records the statement version and where the answer came from', async () => {
+    // A confirmation with no version, address or agent on it is a boolean, not
+    // evidence, and the question it answers is a legal one.
+    stashPreview();
+
+    await POST(claimRequest({ ...VALID_BODY, useProfilePicture: true }));
+
+    const call = confirmPictureMock.mock.calls[0]?.[0];
+    expect(call?.statementVersion).toBe(CURRENT_RIGHTS_STATEMENT_VERSION);
+    expect(call).toHaveProperty('ip');
+    expect(call).toHaveProperty('userAgent');
+  });
+
+  it('still creates the workspace when the visitor says no', async () => {
+    // Declining is an answer about a picture, not about the purchase.
+    stashPreview();
+
+    const response = await POST(
+      claimRequest({ ...VALID_BODY, useProfilePicture: false })
+    );
+    const body = (await response.json()) as { workspaceId: string };
+
+    expect(response.status).toBe(201);
+    expect(body.workspaceId).toBeTruthy();
+    expect(db.workspaces).toHaveLength(1);
+  });
+
+  it('refuses a non-boolean answer rather than guessing what it meant', async () => {
+    stashPreview();
+
+    const response = await POST(
+      claimRequest({ ...VALID_BODY, useProfilePicture: 'yes please' })
+    );
+
+    expect(response.status).toBe(400);
+    expect(confirmPictureMock).not.toHaveBeenCalled();
   });
 });

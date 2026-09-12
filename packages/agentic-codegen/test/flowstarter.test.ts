@@ -23,6 +23,7 @@ import {
   resolveEditorPolicy,
   validateBrandConfig,
   type BrandConfig,
+  type BusinessIntakePayload,
 } from '../src/index';
 
 const temporaryDirectories: string[] = [];
@@ -39,7 +40,11 @@ import { parseBrandConfig as __pbc } from '../src/flowstarter/brand-config';
 
 import { PiSdkFlowstarterAgents as __Agents } from '../src/flowstarter/pi-sdk';
 
-import { TemplateClassifier, buildIntakeText as __bit, describeCandidate as __dc } from '../src/flowstarter/template-classifier';
+import {
+  TemplateClassifier,
+  buildIntakeText as __bit,
+  describeCandidate as __dc,
+} from '../src/flowstarter/template-classifier';
 
 import { materializeScaffold } from '../src/flowstarter/worktree';
 import { materializeCachedAssets } from '../src/flowstarter/preview-assets';
@@ -63,9 +68,27 @@ describe('sigma template classifier', () => {
       }),
   };
   const candidates = [
-    { slug: 'creative-portfolio', displayName: 'Portfolio', description: 'project case studies', category: 'portfolio', useCase: [] },
-    { slug: 'wellness-therapy', displayName: 'Therapy', description: 'counseling practice', category: 'services', useCase: [] },
-    { slug: 'local-trade', displayName: 'Trade', description: 'plumbers and electricians', category: 'services', useCase: [] },
+    {
+      slug: 'creative-portfolio',
+      displayName: 'Portfolio',
+      description: 'project case studies',
+      category: 'portfolio',
+      useCase: [],
+    },
+    {
+      slug: 'wellness-therapy',
+      displayName: 'Therapy',
+      description: 'counseling practice',
+      category: 'services',
+      useCase: [],
+    },
+    {
+      slug: 'local-trade',
+      displayName: 'Trade',
+      description: 'plumbers and electricians',
+      category: 'services',
+      useCase: [],
+    },
   ] as never[];
 
   it('auto-selects on a clear match and reports the margin', async () => {
@@ -84,13 +107,26 @@ describe('sigma template classifier', () => {
 
   it('falls back when two templates tie inside the margin', async () => {
     const c = new TemplateClassifier(stub, { minMargin: 0.05 });
-    const r = await c.classify('portfolio of therapy counseling projects', candidates);
+    const r = await c.classify(
+      'portfolio of therapy counseling projects',
+      candidates,
+    );
     expect(r.autoSelect).toBeUndefined();
   });
 
   it('builds intake text and candidate descriptors from safe fields only', () => {
-    expect(__bit({ niche: 'n', description: 'd', primaryGoal: 'g' })).toBe('n. d. g');
-    expect(__dc({ slug: 'a-b', displayName: 'AB', description: 'x', category: 'c', useCase: ['u'] } as never)).toContain('a b');
+    expect(__bit({ niche: 'n', description: 'd', primaryGoal: 'g' })).toBe(
+      'n. d. g',
+    );
+    expect(
+      __dc({
+        slug: 'a-b',
+        displayName: 'AB',
+        description: 'x',
+        category: 'c',
+        useCase: ['u'],
+      } as never),
+    ).toContain('a b');
   });
 });
 
@@ -102,20 +138,35 @@ describe('per-role model resolution', () => {
     maxOutputTokens: 12_000,
     modelOverride: { id: 'base-override' },
     roles: {
-      preview: { modelId: 'z-ai/glm-5.3-flash', modelOverride: { id: 'flash' } },
+      preview: {
+        modelId: 'z-ai/glm-5.3-flash',
+        modelOverride: { id: 'flash' },
+      },
       fullSite: { modelId: 'moonshotai/kimi-k3', thinkingLevel: 'high' },
     },
   });
   const resolve = (role: string) =>
-    (agents as unknown as { resolveRole(r: string): Record<string, unknown> }).resolveRole(role);
+    (
+      agents as unknown as { resolveRole(r: string): Record<string, unknown> }
+    ).resolveRole(role);
 
   it('routes each role to its configured tier', () => {
-    expect(resolve('preview')).toMatchObject({ modelId: 'z-ai/glm-5.3-flash', modelOverride: { id: 'flash' } });
-    expect(resolve('fullSite')).toMatchObject({ modelId: 'moonshotai/kimi-k3', thinkingLevel: 'high' });
+    expect(resolve('preview')).toMatchObject({
+      modelId: 'z-ai/glm-5.3-flash',
+      modelOverride: { id: 'flash' },
+    });
+    expect(resolve('fullSite')).toMatchObject({
+      modelId: 'moonshotai/kimi-k3',
+      thinkingLevel: 'high',
+    });
   });
 
   it('inherits base options for unset roles', () => {
-    expect(resolve('brand')).toMatchObject({ modelId: 'z-ai/glm-5.2', thinkingLevel: 'low', maxOutputTokens: 12_000 });
+    expect(resolve('brand')).toMatchObject({
+      modelId: 'z-ai/glm-5.2',
+      thinkingLevel: 'low',
+      maxOutputTokens: 12_000,
+    });
   });
 
   it('does not leak the base modelOverride onto a role with its own modelId', () => {
@@ -131,7 +182,9 @@ describe('parseBrandConfig fence tolerance', () => {
     expect(() => __pbc(raw, new Set())).toThrowError(/root|schemaVersion/);
   });
   it('still rejects prose-wrapped JSON', () => {
-    expect(() => __pbc('Here you go:\n{"a":1}', new Set())).toThrowError(/not valid JSON/);
+    expect(() => __pbc('Here you go:\n{"a":1}', new Set())).toThrowError(
+      /not valid JSON/,
+    );
   });
 });
 
@@ -158,20 +211,22 @@ describe('Flowstarter lifecycle', () => {
 describe('BrandConfig validation', () => {
   it('accepts a safe CSS font fallback stack and bounded detailed assumptions', () => {
     const config = validBrandConfig();
-    config.typography.fallbackStack = 'Inter, Arial, "Helvetica Neue", sans-serif';
+    config.typography.fallbackStack =
+      'Inter, Arial, "Helvetica Neue", sans-serif';
     config.evidence.assumptions = ['A'.repeat(500)];
 
-    expect(
-      validateBrandConfig(config, new Set(['text-1', 'image-1'])),
-    ).toEqual(config);
+    expect(validateBrandConfig(config, new Set(['text-1', 'image-1']))).toEqual(
+      config,
+    );
   });
 
   it('rejects CSS injection in the font fallback stack', () => {
     const config = validBrandConfig();
-    config.typography.fallbackStack = 'Arial; background: url(https://example.com)';
+    config.typography.fallbackStack =
+      'Arial; background: url(https://example.com)';
 
     expect(() => validateBrandConfig(config, new Set(['intake']))).toThrow(
-      InvalidBrandConfigError
+      InvalidBrandConfigError,
     );
   });
 
@@ -246,7 +301,9 @@ describe('workspace safety', () => {
       },
     ]);
 
-    expect(await readFile(join(root, 'src/content/site-labels.md'), 'utf8')).toBe('copy');
+    expect(
+      await readFile(join(root, 'src/content/site-labels.md'), 'utf8'),
+    ).toBe('copy');
     expect(await readFile(join(root, 'public/images/hero.png'))).toEqual(bytes);
   });
 
@@ -256,7 +313,11 @@ describe('workspace safety', () => {
     const photo = Buffer.from([1, 2, 3, 4]);
 
     const entries = await materializeCachedAssets(root, [
-      { sourceId: 'post0', fileName: 'post0.jpg', contentBase64: photo.toString('base64') },
+      {
+        sourceId: 'post0',
+        fileName: 'post0.jpg',
+        contentBase64: photo.toString('base64'),
+      },
     ]);
 
     expect(entries).toEqual([
@@ -275,7 +336,11 @@ describe('workspace safety', () => {
       Buffer.from([0, 0, 0x03, 0x20, 0, 0, 0x02, 0x58, 8, 6, 0, 0, 0]),
     ]);
     const [pngEntry] = await materializeCachedAssets(root, [
-      { sourceId: 'shot', fileName: 'shot.png', contentBase64: png.toString('base64') },
+      {
+        sourceId: 'shot',
+        fileName: 'shot.png',
+        contentBase64: png.toString('base64'),
+      },
     ]);
     expect(pngEntry).toEqual({
       sourceId: 'shot',
@@ -291,12 +356,20 @@ describe('workspace safety', () => {
 
     await expect(
       materializeCachedAssets(root, [
-        { sourceId: 'x', fileName: '../escape.png', contentBase64: photo.toString('base64') },
+        {
+          sourceId: 'x',
+          fileName: '../escape.png',
+          contentBase64: photo.toString('base64'),
+        },
       ]),
     ).rejects.toThrow('Unsafe cached asset file name');
     await expect(
       materializeCachedAssets(root, [
-        { sourceId: 'x', fileName: 'logo.svg', contentBase64: photo.toString('base64') },
+        {
+          sourceId: 'x',
+          fileName: 'logo.svg',
+          contentBase64: photo.toString('base64'),
+        },
       ]),
     ).rejects.toThrow('Unsafe cached asset file name');
     await expect(
@@ -416,6 +489,157 @@ describe('public intake and editor policy', () => {
   });
 });
 
+describe('the in-depth brief is validated field by field', () => {
+  /** A brief with every part of it filled in, as the dashboard submits it. */
+  function briefIntake(
+    brief: Partial<BusinessIntakePayload> = {},
+  ): BusinessIntakePayload {
+    return {
+      ...(validIntake() as BusinessIntakePayload),
+      offer: 'Warm, practical therapy for founders, in person and online.',
+      projects: [
+        {
+          name: 'Ereno',
+          line: 'A calm inbox for a busy practice.',
+          link: 'https://ereno.example.com',
+          screenshots: [
+            {
+              id: 'asset-1',
+              publicPath: '/flowstarter-media/ereno-1.png',
+              caption: 'The inbox view',
+              width: 1440,
+              height: 900,
+            },
+          ],
+        },
+      ],
+      designReferences: [
+        { id: 'asset-2', publicPath: '/flowstarter-assets/reference-1.png' },
+      ],
+      photos: [
+        {
+          id: 'asset-3',
+          kind: 'portrait',
+          publicPath: '/flowstarter-media/portrait.jpg',
+        },
+      ],
+      palette: {
+        primary: { base: '#2F5D50', onLight: '#2f5d50', onDark: '#8fd4be' },
+        secondary: { base: '#E8DCC8', onLight: '#e8dcc8', onDark: '#3a352c' },
+        accent: { base: '#B3541E', onLight: '#b3541e', onDark: '#f0a06a' },
+        neutral: { base: '#6B6B6B', onLight: '#5f5f5f', onDark: '#a9a49a' },
+        source: 'image',
+      },
+      tone: {
+        adjectives: ['calm', 'practical', 'warm'],
+        voice: 'Plain sentences, no jargon, never a hard sell.',
+      },
+      ...brief,
+    };
+  }
+
+  it('accepts a complete brief', () => {
+    expect(() => assertSafeBusinessIntake(briefIntake())).not.toThrow();
+  });
+
+  it('accepts a brief that has none of it, which is every brief until today', () => {
+    expect(() =>
+      assertSafeBusinessIntake(validIntake() as BusinessIntakePayload),
+    ).not.toThrow();
+  });
+
+  it('refuses an offer that is a description rather than an offer', () => {
+    expect(() =>
+      assertSafeBusinessIntake(briefIntake({ offer: 'a'.repeat(601) })),
+    ).toThrow('offer is too long');
+  });
+
+  it('refuses more projects than a work page can honestly hold', () => {
+    const projects = Array.from({ length: 13 }, (_, index) => ({
+      name: `Project ${index}`,
+    }));
+    expect(() => assertSafeBusinessIntake(briefIntake({ projects }))).toThrow(
+      'Too many projects',
+    );
+  });
+
+  it('refuses a project with no name', () => {
+    expect(() =>
+      assertSafeBusinessIntake(briefIntake({ projects: [{ name: '  ' }] })),
+    ).toThrow('projects[0].name is required');
+  });
+
+  it('refuses a project link that is not public HTTPS', () => {
+    expect(() =>
+      assertSafeBusinessIntake(
+        briefIntake({
+          projects: [{ name: 'Ereno', link: 'http://ereno.example.com' }],
+        }),
+      ),
+    ).toThrow('projects[0].link URL must be public HTTPS');
+  });
+
+  it('refuses an asset path the build cannot serve', () => {
+    expect(() =>
+      assertSafeBusinessIntake(
+        briefIntake({
+          photos: [
+            {
+              id: 'asset-3',
+              kind: 'portrait',
+              publicPath: '/uploads/../etc/passwd',
+            },
+          ],
+        }),
+      ),
+    ).toThrow('photos[0].publicPath is not a path the build can serve');
+    expect(() =>
+      assertSafeBusinessIntake(
+        briefIntake({
+          projects: [
+            {
+              name: 'Ereno',
+              screenshots: [
+                {
+                  id: 'asset-1',
+                  publicPath: 'https://example.com/shot.png',
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+    ).toThrow('screenshots[0].publicPath');
+  });
+
+  it('refuses a palette colour that is not a six-digit hex', () => {
+    const palette = briefIntake().palette!;
+    expect(() =>
+      assertSafeBusinessIntake(
+        briefIntake({
+          palette: {
+            ...palette,
+            accent: { ...palette.accent, onDark: 'rebeccapurple' },
+          },
+        }),
+      ),
+    ).toThrow('palette.accent.onDark is not a six-digit hex colour');
+  });
+
+  it('refuses a fourth tone adjective', () => {
+    expect(() =>
+      assertSafeBusinessIntake(
+        briefIntake({
+          tone: {
+            adjectives: ['calm', 'practical', 'warm', 'bold'],
+            voice: 'Plain sentences.',
+          },
+        }),
+      ),
+    ).toThrow('Too many tone adjectives');
+  });
+});
+
 function validIntake() {
   return {
     projectId: '0f4e1088-8d8f-4f18-83b1-406cc292b23c',
@@ -501,7 +725,6 @@ function validBrandConfig(): BrandConfig {
 }
 
 describe('client media on a delivered site', () => {
-
   /** A real PNG header: 800x600, enough to clear the resolution floor. */
   function png(width = 800, height = 600): Buffer {
     const ihdr = Buffer.alloc(13);
@@ -631,8 +854,8 @@ describe('conversational intake', () => {
   function agentReturning(...turns: string[]) {
     const agents = new __Agents({ provider: 'openrouter', modelId: 'x' });
     let call = 0;
-    (agents as unknown as { runTextSession: unknown }).runTextSession = async () =>
-      turns[Math.min(call++, turns.length - 1)];
+    (agents as unknown as { runTextSession: unknown }).runTextSession =
+      async () => turns[Math.min(call++, turns.length - 1)];
     return agents;
   }
 
@@ -640,7 +863,10 @@ describe('conversational intake', () => {
     const agents = agentReturning(
       JSON.stringify({
         names: [
-          { name: 'Cuptorul Vechi', rationale: 'Plain Romanian for the old oven.' },
+          {
+            name: 'Cuptorul Vechi',
+            rationale: 'Plain Romanian for the old oven.',
+          },
           { name: '', rationale: 'empty name is dropped' },
           { name: 'A'.repeat(40), rationale: 'too long for a wordmark' },
           { name: 'Bad<script>', rationale: 'markup is a model slip' },
@@ -675,7 +901,10 @@ describe('conversational intake', () => {
 
   it('asks one question at a time while the budget allows', async () => {
     const agents = agentReturning(
-      JSON.stringify({ status: 'ask', question: 'What kind of job do you turn down?' }),
+      JSON.stringify({
+        status: 'ask',
+        question: 'What kind of job do you turn down?',
+      }),
     );
 
     const turn = await agents.interviewIntake({
@@ -697,7 +926,9 @@ describe('conversational intake', () => {
       JSON.stringify({
         status: 'ask',
         question: 'And another thing?',
-        documents: [{ topic: 'How We Work', text: 'We quote before we start.' }],
+        documents: [
+          { topic: 'How We Work', text: 'We quote before we start.' },
+        ],
       }),
     );
 
@@ -734,7 +965,9 @@ describe('conversational intake', () => {
 
     expect(turn.status).toBe('complete');
     expect(turn).toMatchObject({
-      documents: [{ topic: 'who-we-turn-away', text: 'Not emergency-only callers.' }],
+      documents: [
+        { topic: 'who-we-turn-away', text: 'Not emergency-only callers.' },
+      ],
     });
   });
 });

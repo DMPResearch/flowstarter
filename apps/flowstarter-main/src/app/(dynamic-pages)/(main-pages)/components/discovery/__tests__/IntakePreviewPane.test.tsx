@@ -109,21 +109,39 @@ describe('KnownSoFar', () => {
   it('fills in as the answers land', () => {
     render(
       <KnownSoFar
-        data={data({ fullName: 'Ana', businessName: 'Sable Fig' })}
+        data={data({
+          fullName: 'Ana',
+          description: 'We roast single origin coffee.',
+        })}
         t={t}
       />
     );
     const list = screen.getByTestId('known-so-far');
     expect(list.querySelectorAll('[data-known="yes"]').length).toBe(2);
     expect(list).toHaveTextContent('Ana');
-    expect(list).toHaveTextContent('Sable Fig');
+    expect(list).toHaveTextContent('We roast single origin coffee.');
+  });
+
+  it('names the networks rather than printing the pasted links', () => {
+    render(
+      <KnownSoFar
+        data={data({
+          instagramUrl: 'https://instagram.com/sablefig',
+          websiteUrl: 'https://sablefig.ro',
+        })}
+        t={t}
+      />
+    );
+    const list = screen.getByTestId('known-so-far');
+    expect(list).toHaveTextContent('Instagram, Website');
+    expect(list).not.toHaveTextContent('instagram.com/sablefig');
   });
 
   it('offers an edit only for a fact the visitor has actually given', async () => {
     const onEdit = vi.fn();
     render(
       <KnownSoFar
-        data={data({ businessName: 'Sable Fig' })}
+        data={data({ description: 'We roast single origin coffee.' })}
         t={t}
         onEdit={onEdit}
       />
@@ -133,7 +151,7 @@ describe('KnownSoFar', () => {
     expect(pencils).toHaveLength(1);
 
     await userEvent.click(pencils[0]);
-    expect(onEdit).toHaveBeenCalledWith('businessName');
+    expect(onEdit).toHaveBeenCalledWith('description');
   });
 
   it('shows no pencils at all when the pane cannot route an edit', () => {

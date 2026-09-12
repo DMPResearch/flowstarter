@@ -12,19 +12,54 @@
  * had all along: the job row. The thresholds are the board's, imported rather
  * than copied, so an operator and a client can never disagree about whether a
  * build is stuck.
+ *
+ * The second lie this rule has to avoid arrived with the in-depth brief. The
+ * build worker will not start a FULL_SITE_BUILD until the client's brief is
+ * ready, so a job can sit in `queued` for days with nothing whatsoever wrong
+ * with it. Reported as a stall, that is an alarm about our own system for a
+ * situation only the client can end, and the support conversation it starts
+ * ends with us explaining that the dashboard was wrong. Hence the third
+ * signal, which is calm, names the brief, and is not trouble.
  */
 import {
   QUEUED_JOB_STALL_MS,
   RUNNING_JOB_STALL_MS,
 } from '@/lib/flowstarter/pipeline/board';
 
-/** The kind of trouble, in the two words the copy is written from. */
-export type BuildAttention = 'failed' | 'stalled';
+/**
+ * What is worth saying about the build, in the words the copy is written from.
+ *
+ * `waiting_on_brief` is not a kind of trouble and must never be shown as one.
+ * The build is queued, healthy, and deliberately not started because the
+ * in-depth brief is not finished, which is a sentence about the client and not
+ * about us. Before it existed, such a build aged past `QUEUED_JOB_STALL_MS`
+ * and was reported as a stall: "Your build has not moved for a while", to
+ * somebody whose build was waiting for them. That is a false alarm that
+ * generates a support conversation and teaches the client the dashboard lies.
+ */
+export type BuildAttention = 'failed' | 'stalled' | 'waiting_on_brief';
 
 export interface ClientBuildSignal {
   /** The job the client is waiting on. The notice dedupes on it. */
   jobId: string;
   attention: BuildAttention;
+}
+
+/**
+ * The second input, beside the job rows.
+ *
+ * `briefReady` is undefined for a caller that has not read the brief, and an
+ * unknown brief is treated as ready: this rule may only ever *suppress* a
+ * stall it can prove is really a wait, never invent a wait from a page that
+ * did not look.
+ */
+export interface ClientBuildContext {
+  /**
+   * Whether the build is allowed to start: the brief is complete, or an
+   * operator has overridden it. The same two conditions the worker's claim
+   * checks in `apps/build-worker/src/job-store.ts`.
+   */
+  briefReady?: boolean;
 }
 
 /** The columns this rule reads. A subset of `flowstarter_agent_jobs`. */
@@ -57,7 +92,8 @@ function msSince(value: string | null | undefined, now: number): number {
  */
 export function clientBuildSignal(
   jobs: readonly ClientBuildJobRow[],
-  now: Date = new Date()
+  now: Date = new Date(),
+  context: ClientBuildContext = {}
 ): ClientBuildSignal | null {
   const at = now.getTime();
   const builds = jobs
@@ -69,6 +105,13 @@ export function clientBuildSignal(
 
   if (job.status === 'failed' || job.status === 'canceled') {
     return { jobId: job.id, attention: 'failed' };
+  }
+  // Before the stall check, and with no threshold of its own: a build waiting
+  // on its client is waiting from the moment it is queued, and there is no
+  // number of hours after which that becomes a stall. It stops being true when
+  // the brief is finished, not when a clock runs out.
+  if (job.status === 'queued' && context.briefReady === false) {
+    return { jobId: job.id, attention: 'waiting_on_brief' };
   }
   if (
     job.status === 'queued' &&

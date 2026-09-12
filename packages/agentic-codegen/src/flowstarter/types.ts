@@ -48,6 +48,77 @@ export interface BusinessIntakePayload {
     publicProfileAnalysis: boolean;
     acceptedAt: string;
   };
+  /** One or two sentences on what they actually sell, in their words. */
+  offer?: string;
+  /** Real products or projects. Empty array means "asked and they have none". */
+  projects?: BriefProject[];
+  /** Screens the client pointed at and said "like this". Reference only. */
+  designReferences?: BriefAsset[];
+  /** The client's own photographs: a portrait, the workplace, the product. */
+  photos?: BriefPhoto[];
+  /** The derived brand palette. Hex, already contrast-checked. */
+  palette?: BriefPalette;
+  /** Three adjectives and a one-line voice note. */
+  tone?: BriefTone;
+}
+
+/**
+ * The in-depth brief, as the client fills it on their dashboard after the
+ * deposit.
+ *
+ * Every field here is optional on the payload for one reason: a brief taken
+ * before today has none of them, and so does every payload a route or a test
+ * builds by hand. Code that reads them must treat absence as "never asked"
+ * and an empty array as "asked, and the answer was none". The two are
+ * different answers and the page-set rule and the invented-project gate both
+ * depend on telling them apart.
+ */
+export interface BriefAsset {
+  /** `assets.id` in the app database, for provenance. */
+  id: string;
+  /** Site-rooted path the build reads, e.g. `/flowstarter-media/hero-1.png`. */
+  publicPath: string;
+  caption?: string;
+  width?: number;
+  height?: number;
+}
+
+export interface BriefProject {
+  name: string;
+  /** One line, the client's own words. */
+  line?: string;
+  /** Validated absolute https URL, or absent. */
+  link?: string;
+  screenshots?: BriefAsset[];
+}
+
+export type BriefPhotoKind = 'portrait' | 'team' | 'workplace' | 'product';
+
+export interface BriefPhoto extends BriefAsset {
+  kind: BriefPhotoKind;
+}
+
+/** Each role carries the value each page mode uses; see the app's brand-palette module. */
+export interface BriefPaletteColour {
+  base: string;
+  onLight: string;
+  onDark: string;
+}
+
+export interface BriefPalette {
+  primary: BriefPaletteColour;
+  secondary: BriefPaletteColour;
+  accent: BriefPaletteColour;
+  neutral: BriefPaletteColour;
+  /** 'image' | 'tone' | 'default' - how much of this was the client's own material. */
+  source: string;
+}
+
+export interface BriefTone {
+  /** Exactly three, lowercase. */
+  adjectives: string[];
+  /** One line. Phrased by a model from the client's own words, never invented. */
+  voice: string;
 }
 
 export interface ScrapedTextDocument {

@@ -118,7 +118,7 @@ describe('intake graph', () => {
     expect(next.ask?.questionId).not.toBe('businessName');
   });
 
-  it('reports complete only once every applicable question — both panels included — is answered', async () => {
+  it('reports complete only once every applicable question is answered', async () => {
     const turn = await startIntakeGraph({
       data: FULLY_ANSWERED,
       answered: EVERY_QUESTION_ANSWERED,
@@ -127,17 +127,17 @@ describe('intake graph', () => {
     expect(turn.ask).toBeNull();
   });
 
-  it('never reports complete while a required commercial panel is still open', async () => {
-    // Every other required question in, the last one (the monthly plan)
-    // deliberately left out. There is no narrowed pool any more: the graph
-    // must still have something to ask.
+  it('never reports complete while a required question is still open', async () => {
+    // Everything else in, the last of the four (the link) deliberately left
+    // out. There is no narrowed pool: the graph must still have something to
+    // ask, and it must be that question rather than the next one along.
     const turn = await startIntakeGraph({
-      data: { ...FULLY_ANSWERED, subscription: '' },
-      answered: EVERY_QUESTION_ANSWERED.filter((id) => id !== 'subscription'),
+      data: FULLY_ANSWERED,
+      answered: EVERY_QUESTION_ANSWERED.filter((id) => id !== 'links'),
     });
     expect(turn.status).not.toBe('complete');
-    expect(turn.ask?.questionId).toBe('subscription');
-    expect(turn.ask?.type).toBe('panel');
+    expect(turn.ask?.questionId).toBe('links');
+    expect(turn.ask?.type).toBe('ask');
   });
 });
 
@@ -148,6 +148,7 @@ const ESSENTIALS_ANSWERED = [
   'email',
   'businessName',
   'description',
+  'offer',
   'industry',
   'goal',
   'commerceMode',
@@ -159,6 +160,7 @@ const ESSENTIALS_FILLED: DiscoveryData = {
   email: 'maria@example.com',
   businessName: 'Clinic',
   description: 'A dental clinic in Cluj with evening appointments.',
+  offer: 'Check-ups, whitening and emergency appointments.',
   industry: 'Therapy & wellness',
   goal: 'Take bookings or appointments',
   commerceMode: 'none',
@@ -286,37 +288,58 @@ describe('resuming a conversation the server no longer remembers', () => {
   });
 });
 
+/**
+ * The pricing panels, and why the graph no longer sees them.
+ *
+ * The build package and the monthly plan used to be the last two turns of the
+ * intake. They are the wizard's deposit step now, asked against a finished
+ * preview, because a price shown before there is anything to price is a number
+ * the visitor has no way to judge. The graph walks the script's applicable
+ * questions, which are scoped to the quick phase, so it cannot reach a panel
+ * at all -- enforced by construction rather than by the graph remembering to
+ * stop at one.
+ *
+ * That the two are still panels, still carry their cards and are still never
+ * phrased by a model is pinned in `script-bridge.test.ts` (`scriptedAsk`) and,
+ * for the question objects themselves, in the discovery suite's
+ * `intake-brief-questions.test.ts`.
+ */
 describe('the pricing panel', () => {
-  // Seven real round trips through the compiled graph (invoke + getState
-  // each) are occasionally slower than the suite's default 10s budget once
-  // every fork is under load from the rest of the suite running alongside
-  // it; the assertions are what matters, not finishing inside the default.
-  it('pauses as a panel, not as something to type into', async () => {
-    const start = await startIntakeGraph({
+  beforeEach(() => {
+    setIntakeGraphDeps({
+      phraseAsk: async ({ scriptedPrompt }) => scriptedPrompt,
+      extractAnswers: async () => [],
+      translate: () => (key) => key,
+    });
+  });
+
+  afterEach(() => {
+    resetIntakeGraphDeps();
+  });
+
+  // Real round trips through the compiled graph (invoke + getState each) are
+  // occasionally slower than the suite's default budget once every fork is
+  // under load from the rest of the suite running alongside it; the
+  // assertions are what matters, not finishing inside the default.
+  it('is never offered, because the conversation runs dry before it', async () => {
+    let turn = await startIntakeGraph({
       data: ESSENTIALS_FILLED,
       answered: ESSENTIALS_ANSWERED,
     });
 
-    // Whatever optional questions remain, the panel is never phrased by a
-    // model: the tiers are priced by rules.
-    let turn = start;
-    for (let step = 0; step < 12 && turn.ask?.kind !== 'panel'; step += 1) {
+    const asked: string[] = [];
+    for (let step = 0; step < 8 && turn.status !== 'complete'; step += 1) {
+      asked.push(turn.ask!.questionId);
+      expect(turn.ask!.type).toBe('ask');
       turn = await resumeIntakeGraph({
         threadId: turn.threadId,
-        resume: { kind: 'skip' },
+        resume: { kind: 'text', text: 'instagram.com/ionescudental' },
       });
     }
 
-    expect(turn.status).toBe('panel');
-    expect(turn.ask?.questionId).toBe('selectedTier');
-    expect(turn.ask?.prompt).not.toContain('Graph:');
-    expect(turn.ask?.options?.length).toBeGreaterThan(0);
-
-    const chosen = await resumeIntakeGraph({
-      threadId: turn.threadId,
-      resume: { kind: 'panel', value: 'pro' },
-    });
-    expect(chosen.data.selectedTier).toBe('pro');
+    expect(turn.status).toBe('complete');
+    expect(asked).not.toContain('selectedTier');
+    expect(asked).not.toContain('subscription');
   }, 60_000);
 });
 
@@ -420,22 +443,34 @@ describe('resume shapes the client may send', () => {
 });
 
 describe('finishing', () => {
-  it('reports complete only once the very last required turn — a commercial panel — is answered', async () => {
-    const start = await startIntakeGraph({
-      data: { ...FULLY_ANSWERED, subscription: '' as const },
-      answered: EVERY_QUESTION_ANSWERED.filter((id) => id !== 'subscription'),
+  beforeEach(() => {
+    setIntakeGraphDeps({
+      phraseAsk: async ({ scriptedPrompt }) => scriptedPrompt,
+      extractAnswers: async () => [],
+      translate: () => (key) => key,
     });
-    expect(start.ask?.questionId).toBe('subscription');
+  });
+
+  afterEach(() => {
+    resetIntakeGraphDeps();
+  });
+
+  it('reports complete only once the very last required turn is answered', async () => {
+    const start = await startIntakeGraph({
+      data: FULLY_ANSWERED,
+      answered: EVERY_QUESTION_ANSWERED.filter((id) => id !== 'links'),
+    });
+    expect(start.ask?.questionId).toBe('links');
     expect(start.status).not.toBe('complete');
 
     const done = await resumeIntakeGraph({
       threadId: start.threadId,
-      resume: { kind: 'panel', value: 'pro' },
+      resume: { kind: 'text', text: 'instagram.com/ionescudental' },
     });
 
     expect(done.status).toBe('complete');
     expect(done.ask).toBeNull();
-    expect(done.data.subscription).toBe('pro');
+    expect(done.data.instagramUrl).toBe('https://instagram.com/ionescudental');
     expect(done.progress.done).toBe(done.progress.total);
   });
 });
@@ -461,6 +496,7 @@ describe('the graph never gets ahead of the script', () => {
       email: 'maria@example.com',
       businessName: 'Ionescu Dental',
       description: 'A boutique dental clinic in Cluj doing cosmetic work.',
+      offer: 'Whitening, veneers and a nervous-patient first visit.',
       industry: 'Therapy & wellness',
       targetAudience: 'Adults in Cluj who avoided the dentist for a decade.',
       links: 'instagram.com/ionescudental',

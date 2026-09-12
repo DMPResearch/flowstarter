@@ -8,11 +8,13 @@ import {
   type Tier,
   DEMO_STATE_KEY,
   EMPTY_DISCOVERY,
-  INFO_STEP,
+  DEPOSIT_STEP,
   LAST_STEP,
+  PREVIEW_STEP,
   STEPS,
   canProceed,
   recommendTier,
+  usesDedicatedSubscription,
 } from './discovery.logic';
 import { DiscoveryStepper } from './DiscoveryStepper';
 import {
@@ -23,10 +25,12 @@ import {
 } from './intake-script';
 import { IntakeConversation } from './steps/IntakeConversation';
 import { IntakeGraphConversation } from './steps/IntakeGraphConversation';
-import { InfoAgentStep } from './steps/InfoAgentStep';
 import { IntakePreviewPane } from './steps/IntakePreviewPane';
+import { useBrandSignals } from './useBrandSignals';
 import { IntakeStage } from './steps/IntakeStage';
 import { PreviewStep } from './steps/PreviewStep';
+import { RecommendationStep } from './steps/RecommendationStep';
+import { SubscriptionStep } from './steps/SubscriptionStep';
 import { derivePreviewSkeleton } from './preview-skeleton';
 
 /**
@@ -36,10 +40,11 @@ import { derivePreviewSkeleton } from './preview-skeleton';
  * set it to fall back to the fully scripted conversation, with no model in
  * the loop at all.
  */
+const IS_TEST =
+  process.env.VITEST === 'true' || process.env.NODE_ENV === 'test';
+
 const USE_INTAKE_GRAPH =
-  process.env.NEXT_PUBLIC_FLOWSTARTER_INTAKE_GRAPH !== 'false' &&
-  process.env.VITEST !== 'true' &&
-  process.env.NODE_ENV !== 'test';
+  process.env.NEXT_PUBLIC_FLOWSTARTER_INTAKE_GRAPH !== 'false' && !IS_TEST;
 
 /**
  * Draft autosave. sessionStorage (not localStorage) on purpose: the draft
@@ -189,7 +194,11 @@ export function DiscoveryWizard({
    */
   useEffect(() => {
     if (step > CONVERSATION_LAST_STEP) return;
-    const target = stepForConversation(data, answered, INFO_STEP);
+    // The quick script running dry is what moves the wizard on, and it moves
+    // it straight to the preview. There is no gap-filling interview in front
+    // of it any more: the questions that used to be there are asked on the
+    // dashboard, after the deposit, where the answers are worth more.
+    const target = stepForConversation(data, answered, PREVIEW_STEP);
     if (target !== step) setStep(target);
   }, [answered, data, step]);
 
@@ -203,7 +212,7 @@ export function DiscoveryWizard({
   // clears its own `wide` flag when it opens, and React runs this child's
   // effects *before* the parent's, so the wizard would otherwise be reset back
   // to narrow a moment after asking for the room it needs.
-  const stage: WizardStage = step >= INFO_STEP ? 'concierge' : 'intake';
+  const stage: WizardStage = step >= PREVIEW_STEP ? 'concierge' : 'intake';
   useEffect(() => {
     onWideChange?.(stage);
     const reassert = setTimeout(() => onWideChange?.(stage), 0);
@@ -216,6 +225,48 @@ export function DiscoveryWizard({
    * what the visitor has said.
    */
   const skeleton = useMemo(() => derivePreviewSkeleton(data), [data]);
+
+  /**
+   * The colours and the voice, read from the visitor's own profiles.
+   *
+   * The hook owns when to ask (one link plus their own words about what they
+   * offer) and asks once per distinct set of inputs, so answering the rest of
+   * the script costs nothing. Disabled under test for the same reason the
+   * intake graph is: a unit test of the conversation should not reach the
+   * network, and every brand rule it would exercise is tested directly.
+   */
+  const brand = useBrandSignals(data, { enabled: !IS_TEST });
+
+  /**
+   * Files the derived palette and voice into the draft, so the preview request
+   * carries what the visitor was shown rather than deriving it a second time.
+   *
+   * Guarded on a change in the values themselves, not on the object identity:
+   * the hook hands back a fresh object on every render and writing it into
+   * state unconditionally would be a loop.
+   */
+  useEffect(() => {
+    if (!brand.palette && !brand.tone && !brand.picture) return;
+    setData((previous) => {
+      const samePalette =
+        JSON.stringify(previous.brandPalette ?? null) ===
+        JSON.stringify(brand.palette ?? null);
+      const sameTone =
+        JSON.stringify(previous.brandVoice ?? null) ===
+        JSON.stringify(brand.tone ?? null);
+      const samePicture =
+        JSON.stringify(previous.brandPicture ?? null) ===
+        JSON.stringify(brand.picture ?? null);
+      if (samePalette && sameTone && samePicture) return previous;
+      return {
+        ...previous,
+        brandPalette: brand.palette,
+        brandVoice: brand.tone,
+        brandUnavailable: brand.unavailable,
+        brandPicture: brand.picture,
+      };
+    });
+  }, [brand.palette, brand.tone, brand.unavailable, brand.picture]);
 
   const update = useCallback(
     <K extends keyof DiscoveryData>(key: K, value: DiscoveryData[K]) => {
@@ -237,12 +288,12 @@ export function DiscoveryWizard({
    * to the composer with the old answer in it; the step follows.
    */
   const handleBack = useCallback(() => {
-    if (step > INFO_STEP) {
-      setStep(INFO_STEP);
+    if (step > PREVIEW_STEP) {
+      setStep(PREVIEW_STEP);
       return;
     }
     setAnswered((previous) => previous.slice(0, -1));
-    if (step === INFO_STEP) setStep(CONVERSATION_LAST_STEP);
+    if (step === PREVIEW_STEP) setStep(CONVERSATION_LAST_STEP);
   }, [step]);
 
   const handleAnswer = useCallback((id: IntakeQuestionId, raw: string) => {
@@ -291,8 +342,8 @@ export function DiscoveryWizard({
           {t(
             talking
               ? 'landing.discovery.chat.title'
-              : step === INFO_STEP
-              ? 'landing.discovery.steps.info.title'
+              : step === DEPOSIT_STEP
+              ? 'landing.discovery.steps.deposit.title'
               : 'landing.discovery.steps.preview.title'
           )}
         </h2>
@@ -316,7 +367,24 @@ export function DiscoveryWizard({
             factTotal={skeleton.facts.length}
             t={t}
             preview={
-              <IntakePreviewPane data={data} t={t} onEdit={requestEdit} />
+              <IntakePreviewPane
+                data={data}
+                t={t}
+                onEdit={requestEdit}
+                brand={{
+                  palette: brand.palette,
+                  tone: brand.tone,
+                  unavailable: brand.unavailable,
+                  loading: brand.loading,
+                  offerPictureUpload: brand.offerPictureUpload,
+                  pictureUploaded: brand.pictureUploaded,
+                  onUploadPicture: brand.uploadPicture,
+                  // Editing the links question is the honest "Adjust": the
+                  // palette is derived, so the way to change it is to change
+                  // what it was derived from.
+                  onAdjust: () => requestEdit('links'),
+                }}
+              />
             }
             conversation={
               USE_INTAKE_GRAPH ? (
@@ -344,16 +412,33 @@ export function DiscoveryWizard({
             }
           />
         )}
-        {step === INFO_STEP && (
-          <InfoAgentStep
+        {/* The preview, and then the money. The visitor has answered four
+            questions and gets a real site to look at; the build package and
+            the monthly plan are asked against it rather than in front of it. */}
+        {step === PREVIEW_STEP && (
+          <PreviewStep
             data={data}
-            setData={setData}
-            // Skipping is a jump to the preview, not a refusal: the wizard
-            // treats this step as passed either way (see `canProceed`).
-            onSkip={() => setStep(LAST_STEP)}
+            t={t}
+            brand={{
+              palette: brand.palette,
+              tone: brand.tone,
+              unavailable: brand.unavailable,
+              loading: brand.loading,
+              offerPictureUpload: brand.offerPictureUpload,
+              pictureUploaded: brand.pictureUploaded,
+              onUploadPicture: brand.uploadPicture,
+            }}
           />
         )}
-        {step === LAST_STEP && <PreviewStep data={data} t={t} />}
+
+        {step === DEPOSIT_STEP && (
+          <div className="flex flex-col gap-6">
+            <RecommendationStep data={data} update={update} t={t} />
+            {!usesDedicatedSubscription(data.selectedTier) && (
+              <SubscriptionStep data={data} update={update} t={t} />
+            )}
+          </div>
+        )}
       </section>
 
       {submitError && (
