@@ -20,6 +20,10 @@
  *   https://app.cal.com/acme/intro    what a signed-in organiser copies
  *   cal.com/acme/intro                no scheme
  *   acme/intro                        the handle on its own
+ *   https://cal.flowstarter.dev/acme/intro-call
+ *                                     the platform's own Cal.com, when
+ *                                     CAL_BASE_URL names one — this is what
+ *                                     the provisioner writes
  *
  * WHAT IS NOT
  *   any other host, including calendly.com and cal.com.evil.example
@@ -28,8 +32,51 @@
  *   the reserved first segments Cal.com uses for its own product surface
  */
 
-/** The only hosts a booking link may live on. */
+/** The hosted Cal.com service's own hosts. */
 export const CAL_COM_HOSTS = ['cal.com', 'www.cal.com', 'app.cal.com'] as const;
+
+/** The one variable these two read. Narrowed so a test can pass a literal. */
+export interface CalHostEnv {
+  CAL_BASE_URL?: string;
+}
+
+/**
+ * The platform's own Cal.com, when there is one.
+ *
+ * Since the platform provisions booking pages on a Cal.com it hosts itself
+ * (`docs/operations/cal.md`), that instance's host is as legitimate a booking
+ * host as cal.com — and it is the only one this product ever writes into the
+ * column by itself. It is read from `CAL_BASE_URL` rather than listed here so
+ * that staging (`cal.flowstarter.dev`) and production (`cal.flowstarter.net`)
+ * do not need a code change to differ, and so that an environment with no
+ * self-hosted instance keeps exactly the old, narrower allow list.
+ *
+ * Only the host is taken from the variable. A malformed value yields null
+ * rather than throwing: the allow list failing closed is the safe direction.
+ */
+export function selfHostedCalHost(
+  env: CalHostEnv = process.env as CalHostEnv
+): string | null {
+  const raw = env.CAL_BASE_URL?.trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw.includes('://') ? raw : `https://${raw}`);
+    if (url.protocol !== 'https:') return null;
+    return url.hostname.toLowerCase() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Every host a booking link may live on, in this environment. */
+export function calLinkHosts(
+  env: CalHostEnv = process.env as CalHostEnv
+): readonly string[] {
+  const self = selfHostedCalHost(env);
+  return self && !(CAL_COM_HOSTS as readonly string[]).includes(self)
+    ? [...CAL_COM_HOSTS, self]
+    : CAL_COM_HOSTS;
+}
 
 /**
  * First path segments that belong to Cal.com's own application rather than to
@@ -37,7 +84,7 @@ export const CAL_COM_HOSTS = ['cal.com', 'www.cal.com', 'app.cal.com'] as const;
  * book, and embedding it would put an error page inside our client's site.
  * Listed rather than guessed, so a reader can see the whole set.
  */
-const RESERVED_SEGMENTS = new Set([
+export const CAL_RESERVED_SEGMENTS = new Set([
   'api',
   'apps',
   'auth',
@@ -80,7 +127,13 @@ export type CalLinkRejection =
   | 'reserved';
 
 export interface CalLink {
-  /** Canonical, always `https://cal.com/...`, never the app or www host. */
+  /**
+   * The host the link was accepted on, lower case. `cal.com` for every hosted
+   * link (the `www.`/`app.` variants collapse into it), or the platform's own
+   * instance for a link that names it.
+   */
+  host: string;
+  /** Canonical: `https://<host>/...`, never the app or www variant. */
   url: string;
   /** The part after the host, with no leading slash. `acme` or `acme/intro`. */
   path: string;
@@ -104,7 +157,11 @@ const MAX_INPUT = 400;
  * `?month=2026-09` out of the address bar constantly, and it carries no
  * meaning once the embed opens.
  */
-export function parseCalLink(raw: string): CalLinkResult {
+export function parseCalLink(
+  raw: string,
+  options: { hosts?: readonly string[] } = {}
+): CalLinkResult {
+  const hosts = options.hosts ?? calLinkHosts();
   const trimmed = (raw ?? '').trim();
   if (!trimmed) return { ok: false, reason: 'empty' };
   if (trimmed.length > MAX_INPUT) return { ok: false, reason: 'too_long' };
@@ -137,9 +194,14 @@ export function parseCalLink(raw: string): CalLinkResult {
   }
 
   const host = url.hostname.toLowerCase();
-  if (!(CAL_COM_HOSTS as readonly string[]).includes(host)) {
+  if (!hosts.includes(host)) {
     return { ok: false, reason: 'host' };
   }
+  // The `www.`/`app.` variants are the same calendar as `cal.com`, so they
+  // collapse; a self-hosted instance is its own host and keeps its name.
+  const canonicalHost = (CAL_COM_HOSTS as readonly string[]).includes(host)
+    ? 'cal.com'
+    : host;
 
   const segments = url.pathname.split('/').filter((part) => part.length > 0);
   if (segments.length < 1 || segments.length > 2) {
@@ -160,14 +222,20 @@ export function parseCalLink(raw: string): CalLinkResult {
 
   const handle = decoded[0];
   const eventSlug = decoded.length > 1 ? decoded[1] : null;
-  if (RESERVED_SEGMENTS.has(handle.toLowerCase())) {
+  if (CAL_RESERVED_SEGMENTS.has(handle.toLowerCase())) {
     return { ok: false, reason: 'reserved' };
   }
 
   const path = eventSlug ? `${handle}/${eventSlug}` : handle;
   return {
     ok: true,
-    link: { url: `https://cal.com/${path}`, path, handle, eventSlug },
+    link: {
+      host: canonicalHost,
+      url: `https://${canonicalHost}/${path}`,
+      path,
+      handle,
+      eventSlug,
+    },
   };
 }
 
@@ -202,7 +270,13 @@ export function calLinkRejectionMessage(reason: CalLinkRejection): string {
   }
 }
 
-/** The embed source for a parsed link, used by the dashboard preview. */
+/**
+ * The embed source for a parsed link, used by the dashboard preview.
+ *
+ * Built from the link's own host, not from a literal: a self-hosted booking
+ * page embedded from cal.com would render somebody else's 404 inside our
+ * client's dashboard.
+ */
 export function calEmbedSrc(link: CalLink): string {
-  return `https://cal.com/${link.path}/embed?layout=month_view&theme=light`;
+  return `https://${link.host}/${link.path}/embed?layout=month_view&theme=light`;
 }

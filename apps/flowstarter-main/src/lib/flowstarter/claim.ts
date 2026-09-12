@@ -20,6 +20,11 @@
  *     browser never sees them and must not be able to dictate what gets built;
  *   - the money. The wizard sends a tier *name*; the euro figure comes from
  *     the same published price table the pricing page quotes.
+ *
+ * A claim also gives the workspace a booking page on the calendar this
+ * platform hosts (`ensureBookingPage` below). It is the last thing it does,
+ * after everything that makes the project the client's, because it is the only
+ * step that talks to another service.
  */
 import type {
   BrandConfig,
@@ -58,6 +63,8 @@ import {
   injectCalComPreviewDemoIntoScaffoldFiles,
   resolveTenantCalComUrl,
 } from './cal-com';
+import { notifyClientBookingPageReady } from './cal-provisioned-notice';
+import { provisionWorkspaceCalendar } from './cal-provisioning';
 import {
   appliedPreviewEdit,
   MAX_CARRIED_EDITS,
@@ -588,6 +595,10 @@ export async function claimPreview(
       ip: input.clientIp,
       userAgent: input.clientUserAgent,
     });
+    // Adopting an existing workspace has to make sure it has a booking page
+    // too: the first claim may have died before provisioning, or run against
+    // an environment that had no Cal configured yet.
+    await ensureBookingPage(existing, input.previewId, input.intakeSummary);
     return {
       workspaceId: existing,
       unlockUrl: unlockUrlFor(existing),
@@ -686,6 +697,9 @@ export async function claimPreview(
       ip: input.clientIp,
       userAgent: input.clientUserAgent,
     });
+    // Idempotent, so the loser of the race asking again costs nothing and
+    // covers the case where the winner died before it got this far.
+    await ensureBookingPage(raced, input.previewId, input.intakeSummary);
     return {
       workspaceId: raced,
       unlockUrl: unlockUrlFor(raced),
@@ -815,6 +829,16 @@ export async function claimPreview(
     ...(membershipError ? { membershipError } : {}),
   });
 
+  // LAST, and after the ledger event above, on purpose. Provisioning opens a
+  // connection to Cal's database and runs six statements against it, so it is
+  // the slowest thing on this path and the one most likely to be unreachable.
+  // Everything that makes the workspace the client's — the artifacts, the
+  // membership, the `preview_claimed` row the rest of the funnel reads — is
+  // already written by the time it runs, so a Cal that is down or slow costs
+  // the client a booking page they can retry from their dashboard, never the
+  // project they just paid for.
+  await ensureBookingPage(workspaceId, input.previewId, input.intakeSummary);
+
   return {
     workspaceId,
     unlockUrl: unlockUrlFor(workspaceId),
@@ -824,6 +848,57 @@ export async function claimPreview(
     ...(membershipError ? { membershipError } : {}),
     intakeChatDocuments,
   };
+}
+
+/**
+ * Gives the claimed workspace a booking page of its own.
+ *
+ * The client's site is built with a booking page on it whether or not anybody
+ * ever pasted a calendar link, so until this existed the one thing on a paid
+ * site that did not work was the one thing a service business most needs. The
+ * platform now hosts the calendar too, so a claim can make the account, the
+ * hours and the link without asking the client for anything.
+ *
+ * CANNOT THROW, and cannot change what `claimPreview` returns. Same contract
+ * as `adoptFunnelPreview` above and for the same reason: this runs after money
+ * has changed hands, and a Cal instance that is down must cost the client a
+ * booking page (which the dashboard can retry) rather than the project.
+ * `provisionWorkspaceCalendar` already swallows its own failures and records
+ * them on the workspace for the tile to read; the try/catch here is the second
+ * belt, for the case where opening the connection itself throws.
+ */
+async function ensureBookingPage(
+  workspaceId: string,
+  previewId: string,
+  intake: Record<string, unknown> | undefined
+): Promise<void> {
+  try {
+    const result = await provisionWorkspaceCalendar({
+      supabase: createSupabaseServiceRoleClient(),
+      workspaceId,
+      intake: intake ?? null,
+      actor: 'claim',
+      notify: notifyClientBookingPageReady,
+    });
+    if (!result.ok) {
+      // Not an error line: `not_yet` is the ordinary state of a laptop with no
+      // Cal configured. What it says is what the client is missing until the
+      // dashboard retry succeeds.
+      console.warn(
+        `[Flowstarter] claim ${previewId} left workspace ${workspaceId} ` +
+          `without a booking page (${result.state}): ${result.reason} ` +
+          'Until it is retried, the booking page on the built site has no ' +
+          'calendar behind it.'
+      );
+    }
+  } catch (error) {
+    console.error(
+      `[Flowstarter] claim ${previewId} could not provision a booking page ` +
+        `for workspace ${workspaceId}; the client keeps the project but the ` +
+        'booking page on their site has no calendar behind it: ' +
+        (error instanceof Error ? error.message : 'unknown error')
+    );
+  }
 }
 
 /**

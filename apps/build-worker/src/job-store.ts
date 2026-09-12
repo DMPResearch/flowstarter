@@ -393,9 +393,14 @@ const CAL_COM = 'cal.com';
  * test would wave through `https://cal.com.attacker.example/book`, and so
  * would a `startsWith`. `normalizeCalLink` is the same gate the injector
  * uses: it parses the host off the value and demands an exact `cal.com`,
- * `www.cal.com` or `app.cal.com`, so a link the worker keeps is a link the
- * embed will accept. The original string is kept, not the normalized handle,
- * because that is what the site data has always carried.
+ * `www.cal.com`, `app.cal.com`, or the platform's own Cal.com named by
+ * `CAL_BASE_URL` — so a link the worker keeps is a link the embed will accept.
+ * The original string is kept, not the normalized handle, because that is what
+ * the site data has always carried.
+ *
+ * That env var matters here. With it unset this worker drops every link the
+ * platform provisioned for itself, and the client's site ships without the
+ * calendar they were emailed a link to. See apps/build-worker/README.md.
  */
 function parseCalComUrl(raw: string | null | undefined): string | null {
   if (typeof raw !== 'string') return null;

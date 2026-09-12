@@ -45,6 +45,7 @@ describe('every template', () => {
       'site-live',
       'build-needs-review',
       'new-booking',
+      'booking-page-ready',
       'change-delivered',
       'welcome',
       'invitation',
@@ -131,6 +132,7 @@ describe('subjects', () => {
       'site-live': 'Your site is live',
       'build-needs-review': 'Your build needs a second look',
       'new-booking': 'New booking on your site',
+      'booking-page-ready': 'Your booking page is ready',
       'change-delivered': 'Your change is live',
       // Was "Welcome to Flowstarter! 🎉". The emoji broke the house style the
       // rest of the set is held to, and an exclamation mark in an inbox list

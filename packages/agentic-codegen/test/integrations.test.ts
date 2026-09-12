@@ -5,10 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   applyIntegrationsToWorkspace,
+  calOriginFromEnv,
   injectCalCom,
   injectCalComPreviewDemo,
   injectIntegrations,
   normalizeCalLink,
+  normalizeCalTarget,
   removeCalComPreviewDemo,
   type FileMap,
 } from '../src/integrations';
@@ -503,5 +505,70 @@ describe('built HTML output', () => {
     );
     expect(out['src/pages/book.astro']).toContain('cal.com/acme/intro/embed');
     expect(out['book/index.html']).not.toContain('cal.com');
+  });
+});
+
+describe('the platform own Cal.com', () => {
+  const SELF_HOSTED = 'https://cal.flowstarter.dev';
+
+  it('reads the origin out of CAL_BASE_URL and fails closed on anything else', () => {
+    expect(calOriginFromEnv({ CAL_BASE_URL: SELF_HOSTED })).toBe(SELF_HOSTED);
+    expect(calOriginFromEnv({ CAL_BASE_URL: 'cal.flowstarter.dev' })).toBe(
+      SELF_HOSTED,
+    );
+    expect(calOriginFromEnv({})).toBeNull();
+    expect(calOriginFromEnv({ CAL_BASE_URL: 'http://cal.example' })).toBeNull();
+    expect(calOriginFromEnv({ CAL_BASE_URL: 'not a url' })).toBeNull();
+  });
+
+  it('reads a link on the configured instance as being on that instance', () => {
+    expect(
+      normalizeCalTarget('https://cal.flowstarter.dev/acme/intro-call', {
+        selfHostedOrigin: SELF_HOSTED,
+      }),
+    ).toEqual({ origin: SELF_HOSTED, link: 'acme/intro-call' });
+  });
+
+  it('refuses that same link when this environment has no such instance', () => {
+    // Otherwise a production build could embed a calendar that only exists on
+    // staging, which is a booking page nobody is watching.
+    expect(
+      normalizeCalTarget('https://cal.flowstarter.dev/acme/intro-call', {
+        selfHostedOrigin: null,
+      }),
+    ).toBeNull();
+  });
+
+  it('still reads a bare handle as cal.com, instance or no instance', () => {
+    // People have pasted bare handles for years; re-pointing them at another
+    // instance would move a client calendar without telling them.
+    expect(
+      normalizeCalTarget('yourname/30min', { selfHostedOrigin: SELF_HOSTED }),
+    ).toEqual({ origin: 'https://cal.com', link: 'yourname/30min' });
+    expect(
+      normalizeCalLink('https://cal.com/yourname', {
+        selfHostedOrigin: SELF_HOSTED,
+      }),
+    ).toBe('yourname');
+  });
+
+  it('embeds a self-hosted booking page from its own origin', () => {
+    const files = {
+      'src/pages/contact.astro': '<div class="book-page__calendar"></div>',
+    };
+    const out = injectCalCom(
+      files,
+      'https://cal.flowstarter.dev/acme/intro-call',
+      { selfHostedOrigin: SELF_HOSTED },
+    );
+    const page = out['src/pages/contact.astro'] ?? '';
+    expect(page).toContain(
+      'https://cal.flowstarter.dev/acme/intro-call/embed?layout=month_view&theme=light',
+    );
+    expect(page).not.toContain('https://cal.com/');
+    // The live embed carries the marker the paid-build gate allows, never the
+    // preview one it fails on.
+    expect(page).toContain('data-flowstarter-cal-embed="true"');
+    expect(page).not.toContain('data-flowstarter-cal-preview="true"');
   });
 });

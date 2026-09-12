@@ -56,15 +56,65 @@ export function BookingSettingsForm({
         setError(json.error ?? 'Could not save your booking link.');
         return;
       }
-      const next: BookingConnection = {
-        connected: Boolean(json.connected),
-        calComUrl: json.calComUrl ?? '',
-        embedSrc: json.embedSrc ?? null,
-        webhookUrl: json.webhookUrl ?? connection.webhookUrl,
-        webhookSecret: json.webhookSecret ?? null,
-      };
-      setConnection(next);
-      setValue(next.calComUrl);
+      apply(json);
+      setSaved(true);
+    } catch {
+      setError('Could not reach the server. Try again in a moment.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function apply(json: Partial<BookingConnection>) {
+    const next: BookingConnection = {
+      connected: Boolean(json.connected),
+      calComUrl: json.calComUrl ?? '',
+      embedSrc: json.embedSrc ?? null,
+      webhookUrl: json.webhookUrl ?? connection.webhookUrl,
+      webhookSecret: json.webhookSecret ?? null,
+    };
+    setConnection(next);
+    setValue(next.calComUrl);
+  }
+
+  /**
+   * Ask the platform to make this client a calendar of their own.
+   *
+   * The claim already does this, so most clients never press it; the ones who
+   * do are the ones whose first attempt failed, or who were claimed before the
+   * platform hosted calendars at all. It is idempotent on the server, so a
+   * second press finds the same page rather than making another one.
+   *
+   * `ok: false` is a 200 with a sentence in it, which is why the failure is
+   * read out of the body rather than off the status: the server has told the
+   * client why, and that sentence is more use than "something went wrong".
+   * The connection is then re-read rather than assembled from the result,
+   * because the embed and the signing secret are the booking page's to
+   * compute and this component has no business guessing at either.
+   */
+  async function provision() {
+    setBusy(true);
+    setError(null);
+    setSaved(false);
+    try {
+      const res = await fetch(`/api/client/booking/${workspaceId}`, {
+        method: 'POST',
+      });
+      const json = (await res.json().catch(() => ({}))) as Partial<{
+        ok: boolean;
+        reason: string;
+        error: string;
+      }>;
+      if (!res.ok || !json.ok) {
+        setError(
+          json.reason ?? json.error ?? 'Could not set up your booking page.'
+        );
+        return;
+      }
+      const reread = await fetch(`/api/client/booking/${workspaceId}`);
+      if (reread.ok) {
+        apply((await reread.json()) as Partial<BookingConnection>);
+      }
       setSaved(true);
     } catch {
       setError('Could not reach the server. Try again in a moment.');
@@ -108,17 +158,6 @@ export function BookingSettingsForm({
           </span>
         </label>
 
-        {error ? (
-          <p className="text-sm text-red-600" role="alert">
-            {error}
-          </p>
-        ) : null}
-        {saved ? (
-          <p className="text-sm text-emerald-700" data-testid="booking-saved">
-            Saved.
-          </p>
-        ) : null}
-
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="submit"
@@ -141,6 +180,48 @@ export function BookingSettingsForm({
           ) : null}
         </div>
       </form>
+
+      {/* Outside the form on purpose: both the paste and the "make me one"
+          button below report through the same two lines, so a client always
+          reads the outcome of whatever they just pressed in one place. */}
+      {error ? (
+        <p className="text-sm text-red-600" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {saved ? (
+        <p className="text-sm text-emerald-700" data-testid="booking-saved">
+          Saved.
+        </p>
+      ) : null}
+
+      <section
+        className="flex flex-col gap-3 rounded-2xl border border-[var(--fs-glass-edge)] bg-white/60 px-5 py-5"
+        data-testid="booking-provision"
+      >
+        <h2 className="text-sm font-semibold text-[var(--fs-ink)]">
+          Or let us make you one
+        </h2>
+        <p className="text-sm text-[var(--fs-ink)]/70">
+          We can make the booking page for you, on our own calendar, and put it
+          straight onto your site. Nothing to sign up for: we email you a link
+          to set a password once it is ready, and you change your hours from
+          there.
+        </p>
+        <button
+          type="button"
+          disabled={busy}
+          data-testid="booking-provision-button"
+          onClick={() => void provision()}
+          className="w-fit rounded-xl border border-[var(--fs-glass-edge)] px-5 py-2.5 text-sm font-semibold text-[var(--fs-ink)] disabled:opacity-60"
+        >
+          {busy
+            ? 'Setting up'
+            : connection.connected
+            ? 'Set it up again'
+            : 'Set up my booking page'}
+        </button>
+      </section>
 
       {connection.connected ? (
         <WebhookInstructions

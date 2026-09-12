@@ -177,36 +177,94 @@ export interface CalComOptions {
   theme?: 'light' | 'dark';
   /** iframe title attribute. Default 'Book an appointment'. */
   title?: string;
+  /**
+   * The platform's own Cal.com origin, for a link that lives on it. Defaults
+   * to `CAL_BASE_URL` in the environment, which is how the build worker gets
+   * it without every call site having to pass it.
+   */
+  selfHostedOrigin?: string | null;
+}
+
+/** The hosted service's own origin, and the only one assumed when none is given. */
+export const CAL_COM_ORIGIN = 'https://cal.com';
+
+/**
+ * The platform's own Cal.com origin, when this environment has one.
+ *
+ * The platform provisions its clients' booking pages on a Cal.com it hosts
+ * itself, so a perfectly valid link can be on `cal.flowstarter.dev` rather
+ * than on `cal.com`. The origin is read from `CAL_BASE_URL` instead of being
+ * listed here, for the same reason the app's `cal-link.ts` does it: staging
+ * and production differ by an environment variable, not by a release.
+ */
+export function calOriginFromEnv(
+  env: { CAL_BASE_URL?: string } = process.env as { CAL_BASE_URL?: string },
+): string | null {
+  const raw = env.CAL_BASE_URL?.trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw.includes('://') ? raw : `https://${raw}`);
+    if (url.protocol !== 'https:') return null;
+    return `https://${url.hostname.toLowerCase()}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Which Cal.com a link points at, and what to ask it for. */
+export interface CalTarget {
+  /** `https://cal.com`, or the platform's own instance. */
+  origin: string;
+  /** The fragment after the origin: "yourname" or "yourname/30min". */
+  link: string;
 }
 
 /**
- * Normalizes a user-supplied Cal.com URL/handle into the link fragment Cal.com
- * expects after `cal.com/`, e.g. "yourname/30min" or "yourname".
+ * Normalizes a user-supplied Cal.com URL/handle into an origin and the link
+ * fragment that follows it.
  *
  * Accepts, and returns the same normalized fragment for:
- *   "yourname"                         → "yourname"
- *   "yourname/30min"                   → "yourname/30min"
- *   "cal.com/yourname"                 → "yourname"
- *   "https://cal.com/yourname/30min"   → "yourname/30min"
- *   "https://app.cal.com/yourname"     → "yourname"
+ *   "yourname"                         -> cal.com, "yourname"
+ *   "yourname/30min"                   -> cal.com, "yourname/30min"
+ *   "cal.com/yourname"                 -> cal.com, "yourname"
+ *   "https://cal.com/yourname/30min"   -> cal.com, "yourname/30min"
+ *   "https://app.cal.com/yourname"     -> cal.com, "yourname"
+ *   "https://cal.flowstarter.dev/acme/intro-call"
+ *                                      -> that origin, "acme/intro-call",
+ *                                         but only when it is the configured
+ *                                         self-hosted origin
  *
- * Returns null for empty input or a URL on a non-Cal.com host (this function
- * only ever produces Cal.com embeds — see docs/INTEGRATIONS-PLAN.md, which
- * prefers Cal.com for new integration code).
+ * Returns null for empty input or a URL on any other host. A bare handle is
+ * still read as cal.com: people have been pasting those for years, and
+ * silently re-pointing them at a different instance would move a client's
+ * booking page without telling them.
  */
-export function normalizeCalLink(
+export function normalizeCalTarget(
   calUrl: string | null | undefined,
-): string | null {
+  opts: { selfHostedOrigin?: string | null } = {},
+): CalTarget | null {
   if (!calUrl) return null;
   let rest = calUrl.trim();
   if (!rest) return null;
 
+  const selfHostedOrigin = opts.selfHostedOrigin ?? calOriginFromEnv();
+  const selfHostedHost = selfHostedOrigin
+    ? selfHostedOrigin.replace(/^https:\/\//i, '').toLowerCase()
+    : null;
+
   rest = rest.replace(/^https?:\/\//i, '');
 
+  let origin = CAL_COM_ORIGIN;
   const hostMatch = rest.match(/^([^/?#]+)/);
   const host = hostMatch?.[1]?.toLowerCase() ?? '';
   if (host.includes('.')) {
-    if (!/^(www\.|app\.)?cal\.com$/.test(host)) return null;
+    if (/^(www\.|app\.)?cal\.com$/.test(host)) {
+      origin = CAL_COM_ORIGIN;
+    } else if (selfHostedHost && host === selfHostedHost) {
+      origin = `https://${selfHostedHost}`;
+    } else {
+      return null;
+    }
     rest = rest.slice(host.length);
   }
 
@@ -219,23 +277,35 @@ export function normalizeCalLink(
   while (end > 0 && rest[end - 1] === '/') end -= 1;
   rest = rest.slice(0, end);
 
-  return rest || null;
+  return rest ? { origin, link: rest } : null;
 }
 
-/** Cal.com's documented no-JS embed route: cal.com/<link>/embed?layout=…&theme=… */
-function calEmbedSrc(calLink: string, opts: CalComOptions): string {
+/**
+ * The link fragment alone, for callers that only need to know whether there is
+ * a usable calendar. Kept because it reads better at those call sites than
+ * `normalizeCalTarget(...)?.link`.
+ */
+export function normalizeCalLink(
+  calUrl: string | null | undefined,
+  opts: { selfHostedOrigin?: string | null } = {},
+): string | null {
+  return normalizeCalTarget(calUrl, opts)?.link ?? null;
+}
+
+/** Cal.com's documented no-JS embed route: <origin>/<link>/embed?layout=…&theme=… */
+function calEmbedSrc(target: CalTarget, opts: CalComOptions): string {
   const layout = opts.layout ?? 'month_view';
   const theme = opts.theme ?? 'light';
-  return `https://cal.com/${calLink}/embed?layout=${layout}&theme=${theme}`;
+  return `${target.origin}/${target.link}/embed?layout=${layout}&theme=${theme}`;
 }
 
 function renderManagedBlock(
-  calLink: string,
+  target: CalTarget,
   opts: CalComOptions,
   standalone: boolean,
 ): string {
   const title = opts.title ?? 'Book an appointment';
-  const src = calEmbedSrc(calLink, opts);
+  const src = calEmbedSrc(target, opts);
   const wrapperOpen = standalone
     ? `<div class="flowstarter-cal-embed" data-flowstarter-cal-embed="true" style="margin:32px 0;border:1px solid var(--border-color, #e5e5e5);border-radius:var(--radius-lg, 12px);overflow:hidden;">`
     : `<div class="book-page__calendar" data-flowstarter-cal-embed="true">`;
@@ -403,14 +473,16 @@ export function injectCalCom(
   calUrl: string | null | undefined,
   opts: CalComOptions = {},
 ): FileMap {
-  const calLink = normalizeCalLink(calUrl);
-  if (!calLink) return removeCalComPreviewDemo(files);
+  const target = normalizeCalTarget(calUrl, {
+    selfHostedOrigin: opts.selfHostedOrigin,
+  });
+  if (!target) return removeCalComPreviewDemo(files);
 
   const targetPath = BOOKING_PAGE_CANDIDATES.find((path) => path in files);
   if (!targetPath) return files;
 
   const before = files[targetPath]!;
-  const block = renderManagedBlock(calLink, opts, wantsStandalone(before));
+  const block = renderManagedBlock(target, opts, wantsStandalone(before));
   const after = spliceBookingBlock(before, block);
   if (!after || after === before) return files;
   return { ...files, [targetPath]: after };

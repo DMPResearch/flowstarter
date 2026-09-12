@@ -5,16 +5,18 @@ sites, but **isolated** from deploy-agent. Three kinds of slot share one
 compose file and one pair of scripts: `main` and `pr-N` for staging, and `prod`
 for production at `flowstarter.net`.
 
-| Path                          | Owner                                        |
-| ----------------------------- | -------------------------------------------- |
-| `/var/www/sites/*`            | Client static sites (deploy-agent)           |
-| `/opt/flowstarter/staging`    | Platform compose + scripts (all slots)       |
-| `/etc/caddy/platform/*.caddy` | Platform vhosts (`main`, `pr-*`, `prod`)     |
-| `/etc/flowstarter/staging.env`| Staging secrets, mode 600                    |
-| `/etc/flowstarter/prod.env`   | Production secrets, mode 600                 |
-| `/etc/flowstarter/tls/`       | Optional Cloudflare Origin CA cert for prod  |
-| `/etc/flowstarter/backup.env` | Backup config (retention, encryption, S3), mode 600 |
-| `/var/backups/flowstarter/`   | Nightly backups, see `docs/operations/backups.md`   |
+| Path                           | Owner                                               |
+| ------------------------------ | --------------------------------------------------- |
+| `/var/www/sites/*`             | Client static sites (deploy-agent)                  |
+| `/opt/flowstarter/staging`     | Platform compose + scripts (all slots)              |
+| `/etc/caddy/platform/*.caddy`  | Platform vhosts (`main`, `pr-*`, `prod`)            |
+| `/etc/flowstarter/staging.env` | Staging secrets, mode 600                           |
+| `/etc/flowstarter/prod.env`    | Production secrets, mode 600                        |
+| `/etc/flowstarter/tls/`        | Optional Cloudflare Origin CA cert for prod         |
+| `/etc/flowstarter/backup.env`  | Backup config (retention, encryption, S3), mode 600 |
+| `/var/backups/flowstarter/`    | Nightly backups, see `docs/operations/backups.md`   |
+| `/opt/flowstarter/cal`         | Self-hosted Cal.com compose file + vhost snippet    |
+| `/etc/flowstarter/cal.env`     | Cal secrets and admin credentials, mode 600         |
 
 The directory is still called `staging` so nothing that already references it
 breaks. It holds every slot.
@@ -94,7 +96,7 @@ picks one of two modes when it writes `/etc/caddy/platform/prod.caddy`:
 
 2. **`tls internal` (fallback).** With no Origin CA certificate on disk the
    snippet uses Caddy's own local CA. Cloudflare cannot chain that to a public
-   root, so Cloudflare SSL/TLS must then be **Full**, *not* Full (strict). The
+   root, so Cloudflare SSL/TLS must then be **Full**, _not_ Full (strict). The
    snippet carries that warning as a comment.
 
 Re-running `deploy-slot.sh prod` after dropping the certificate in place is
@@ -271,6 +273,110 @@ vector, supavisor, imgproxy, mailpit, and realtime. It runs at roughly 1 GB.
 A cx22 fits `main` plus a couple of PR slots; if PR slots pile up, prefer a
 cx32.
 
+## Cal.com
+
+Client booking pages run on **self-hosted Cal.com on this same box**, one Cal
+user per workspace, served at `https://cal.flowstarter.dev`. It is its own
+compose project (`flowstarter-cal`, from `deploy/hetzner-staging/cal/`), and it
+is deliberately not part of the platform slots or the Supabase CLI stack: Cal
+owns its schema and runs `prisma migrate deploy` on every boot, so it gets its
+own Postgres rather than sharing one with product migrations. Why the product
+writes to that database directly, and why there is no Cal API container (the
+`apps/api/v1` image is under the Cal.com Commercial License and refuses every
+request without an Enterprise licence key in production), is written up with
+the evidence in `docs/operations/cal.md`.
+
+| Container             | Image                   | Published on     | What it is                             |
+| --------------------- | ----------------------- | ---------------- | -------------------------------------- |
+| `flowstarter-cal-db`  | `postgres:16-alpine`    | `127.0.0.1:5433` | Cal's own Postgres (`calcom`/`calcom`) |
+| `flowstarter-cal-web` | `calcom/cal.com:v6.2.0` | `127.0.0.1:3200` | the app, proxied by Caddy              |
+
+Both ports are loopback-only and Caddy on 443 is the only way in, for the same
+reason the Supabase stack is (see "Database" above) — with one extra trap that
+bit this box once already: `/etc/docker/daemon.json`'s `{"ip":"127.0.0.1"}`
+only constrains the **default** bridge, and a compose-created network ignores
+it. That is why the Cal network also carries
+`com.docker.network.bridge.host_binding_ipv4: 127.0.0.1`, and why
+`cal-stack.sh check` asserts both the per-port bindings and that driver option.
+**Nobody should call this stack healthy until `check` passes**: a Cal database
+and an unauthenticated first-user setup route published on `0.0.0.0` are past
+`ufw` and reachable from the internet.
+
+DNS is dns-only (grey cloud), so Caddy can answer the ACME challenge itself:
+
+```
+cal.flowstarter.dev          A      <HETZNER_IP>    DNS only
+```
+
+Public signup is closed twice over: `NEXT_PUBLIC_DISABLE_SIGNUP=true` inside
+the app, and two `handle` blocks in `cal.caddy` that 404 `/signup*` and
+`/api/auth/signup*` at the edge. Clients never sign up; they are provisioned
+and set their password through Cal's own reset flow. `cal-stack.sh health`
+checks the edge half of that on every run.
+
+### `/etc/flowstarter/cal.env`
+
+Mode 600, root-owned, written by hand, never by CI — the same rules as
+`prod.env`. Keys only, values belong on the box:
+
+```
+POSTGRES_PASSWORD               # Cal's database password (cal-db and cal-web both read it)
+DATABASE_URL                    # postgresql://calcom:<password>@cal-db:5432/calcom
+NEXTAUTH_SECRET                 # Cal's session secret
+CALENDSO_ENCRYPTION_KEY         # encrypts stored calendar credentials
+NEXTAUTH_URL                    # https://cal.flowstarter.dev/api/auth
+NEXT_PUBLIC_WEBAPP_URL          # https://cal.flowstarter.dev
+NEXT_PUBLIC_DISABLE_SIGNUP      # true
+CAL_ADMIN_USERNAME              # read by cal-stack.sh admin
+CAL_ADMIN_EMAIL                 # read by cal-stack.sh admin
+CAL_ADMIN_PASSWORD              # read by cal-stack.sh admin
+CAL_PROVISIONER_PASSWORD        # generated and appended by cal-stack.sh provisioner-role
+```
+
+### Installing and driving it
+
+`scripts/cal-stack.sh` is the only thing that should run `docker compose`
+against the Cal compose file. Run as root:
+
+```bash
+sudo mkdir -p /opt/flowstarter/cal
+sudo cp deploy/hetzner-staging/cal/docker-compose.yml /opt/flowstarter/cal/
+sudo cp deploy/hetzner-staging/cal/cal.caddy /opt/flowstarter/cal/
+sudo cp deploy/hetzner-staging/scripts/cal-stack.sh /opt/flowstarter/cal/
+sudo chmod +x /opt/flowstarter/cal/cal-stack.sh
+sudo install -m 600 /dev/null /etc/flowstarter/cal.env
+# Fill cal.env in with the keys listed above, then:
+sudo /opt/flowstarter/cal/cal-stack.sh up               # first boot takes minutes: Prisma migrations + app store seed
+sudo /opt/flowstarter/cal/cal-stack.sh check            # must pass before going any further
+sudo /opt/flowstarter/cal/cal-stack.sh install-caddy
+sudo /opt/flowstarter/cal/cal-stack.sh admin
+sudo /opt/flowstarter/cal/cal-stack.sh provisioner-role
+sudo /opt/flowstarter/cal/cal-stack.sh health
+```
+
+| Subcommand         | What it does                                                                                                                                         |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `up`               | `compose up -d`, then waits (bounded, `CAL_HEALTH_TIMEOUT_SECONDS`, default 600s) for both containers to report healthy.                             |
+| `down`             | `compose down`. Refuses `-v`/`--volumes`: that volume is every client's booking page and their bookings.                                             |
+| `status`           | Container names, health, published ports, and the image tag actually running.                                                                        |
+| `check`            | Fails unless every published port is loopback-only and the compose network carries the loopback `host_binding_ipv4` option. Run it after every `up`. |
+| `admin`            | Creates the first Cal admin user from `cal.env`. Idempotent: Cal answers 400 "No setup needed." once any user exists, which counts as success.       |
+| `provisioner-role` | Creates or refreshes `flowstarter_provisioner`, a login role with `SELECT, INSERT, UPDATE` on six tables and no `DELETE` or DDL anywhere.            |
+| `health`           | `GET /auth/login` must be 200, `GET /signup` must be 404, and the loopback port must answer. Non-zero on any failure.                                |
+| `install-caddy`    | Installs `cal.caddy` into `/etc/caddy/platform/` and reloads Caddy.                                                                                  |
+
+Every tunable is an env var with a documented default at the top of the script
+(`CAL_DIR`, `CAL_ENV_FILE`, `CAL_WEB_HOST_PORT`, `CAL_DB_HOST_PORT`,
+`CAL_PUBLIC_URL`, ...). Tests: `bash deploy/hetzner-staging/scripts/cal-stack.test.sh`,
+pure bash with stubbed `docker`/`curl`, no daemon required.
+
+**Backups.** `backup.sh` dumps `flowstarter-cal-db` nightly alongside the
+Supabase stack: it discovers containers by `BACKUP_DB_CONTAINER_PATTERN`
+(default `^supabase_db_|^flowstarter-cal-db$`) and asks each container for its
+own `POSTGRES_USER`/`POSTGRES_DB`, because Cal's are `calcom`/`calcom` and not
+`postgres`. That database holds every client's booking page and every booking
+made against it, and none of it is reproducible from git.
+
 ## Known gaps
 
 - **Signed Storage URLs.** Tenant asset URLs are signed against
@@ -281,6 +387,12 @@ cx32.
   beyond loopback, which is the one thing this setup exists to avoid.
 - **Clerk and Stripe webhooks.** They need their own endpoints pointed at
   `staging.flowstarter.dev`, independent of this database change.
+- **Restoring the Cal dump.** `backup.sh` dumps `flowstarter-cal-db` nightly,
+  but `restore.sh --database <name>` still resolves a container as
+  `supabase_db_<name>` and restores as `postgres`/`postgres`. Restoring Cal
+  today therefore means `docker exec -i flowstarter-cal-db pg_restore -U calcom
+-d calcom --clean --if-exists < db-flowstarter-cal-db.dump` by hand, after
+  verifying the dump against `manifest.sha256` yourself.
 
 ## One-time box setup
 

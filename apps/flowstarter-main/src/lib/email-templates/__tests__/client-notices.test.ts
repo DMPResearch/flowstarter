@@ -12,6 +12,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   balanceInvoiceEmail,
+  bookingPageReadyEmail,
   briefIncompleteEmail,
   buildNeedsReviewEmail,
   changeRequestLiveEmail,
@@ -96,6 +97,15 @@ const ALL: Array<[string, RenderedEmail]> = [
     briefIncompleteEmail({
       briefUrl: BRIEF,
       missing: ['A sentence or two on what you offer.'],
+      businessName: 'Acme',
+    }),
+  ],
+  [
+    'bookingPageReady',
+    bookingPageReadyEmail({
+      bookingUrl: 'https://cal.flowstarter.dev/acme/intro-call',
+      passwordSetupUrl: 'https://cal.flowstarter.dev/auth/forgot-password',
+      dashboardUrl: DASHBOARD,
       businessName: 'Acme',
     }),
   ],
@@ -489,5 +499,76 @@ describe('newEnquiryEmail', () => {
     expect(plain.html).not.toContain('+4');
     expect(plain.text).not.toContain('Phone:');
     expect(plain.html).not.toContain('/contact');
+  });
+});
+
+
+/**
+ * The notice that hands a client an account they did not ask for.
+ *
+ * Two things have to be true of it and of nothing else in this file. The one
+ * button is the password, not the booking link: the link already works, and a
+ * client who clicks the wrong one of two buttons ends up on their own public
+ * page thinking they have done the setup. And the booking address survives
+ * into the plain-text part, because that is the line they forward to someone
+ * else and the part an HTML-stripping client shows them.
+ */
+describe('bookingPageReadyEmail', () => {
+  const BOOKING = 'https://cal.flowstarter.dev/acme-dental/intro-call';
+  const PASSWORD = 'https://cal.flowstarter.dev/auth/forgot-password';
+
+  function mail(overrides: Record<string, unknown> = {}) {
+    return bookingPageReadyEmail({
+      bookingUrl: BOOKING,
+      passwordSetupUrl: PASSWORD,
+      dashboardUrl: DASHBOARD,
+      clientName: 'Darius',
+      businessName: 'Acme Dental',
+      ...overrides,
+    });
+  }
+
+  it('leads with the page being live and makes the password the one action', () => {
+    const rendered = mail();
+
+    expect(rendered.subject).toBe('Your booking page is ready');
+    expect(rendered.html).toContain('Hi Darius,');
+    expect(rendered.html).toContain('Acme Dental');
+    expect(rendered.html).toContain(BOOKING);
+    // Exactly one button, and it is the password rather than the link the
+    // client already has on their own site.
+    expect(rendered.html.match(/class="fs-button"/g)).toHaveLength(1);
+    expect(rendered.html).toContain(`class="fs-button" href="${PASSWORD}"`);
+    expect(rendered.html).toContain('Set your password');
+  });
+
+  it('says what the account is for, in the client’s own terms', () => {
+    const rendered = mail();
+    expect(rendered.html).toContain('To change your times');
+    expect(rendered.html).toContain('see who has booked');
+    // Never the vendor, the username or the event type: none of those is a
+    // fact about the client's business.
+    expect(rendered.html).not.toContain('Cal.com');
+    expect(rendered.html).not.toContain('event type');
+  });
+
+  it('keeps the booking address and the dashboard in the text alternative', () => {
+    const rendered = mail();
+    expect(rendered.text).toContain(BOOKING);
+    expect(rendered.text).toContain(PASSWORD);
+    expect(rendered.text).toContain(DASHBOARD);
+    expect(rendered.text).not.toMatch(/<[a-z/]/i);
+  });
+
+  it('falls back to "your site" with no business name and no client name', () => {
+    const rendered = mail({ businessName: null, clientName: null });
+    expect(rendered.html).toContain('Hi there,');
+    expect(rendered.preheader).toContain('your site');
+  });
+
+  it('escapes a business name that is trying to close the tag it sits in', () => {
+    const rendered = mail({ businessName: '<img src=x onerror=alert(1)>' });
+    expect(rendered.html).not.toContain('<img src=x');
+    expect(rendered.html).toContain('&lt;img src=x');
   });
 });
