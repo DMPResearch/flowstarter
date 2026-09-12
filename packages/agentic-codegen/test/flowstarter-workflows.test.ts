@@ -2488,6 +2488,7 @@ describe('CHANGE_REQUEST_BUILD: the paid change that used to ship nothing', () =
         'the screenshot I uploaded.',
       operatorNote: null,
       seedVersion: 4,
+      assetSelection: 'named' as const,
       assets: [
         {
           assetId: ASSET_ID,
@@ -2921,5 +2922,344 @@ describe('CHANGE_REQUEST_BUILD: the paid change that used to ship nothing', () =
 
     expect(calls).toEqual(['store:failed:CHANGE_REQUEST_NOT_APPLIED']);
     expect(calls).not.toContain('publisher:deploy');
+  });
+
+  // ─── The page budget, on a manifest the size of a real one ───────────────
+
+  /** The five routes workspace c009105e has had since its deposit build. */
+  const SEED_ROUTES = ['(home)', 'about', 'case-studies', 'contact', 'work'];
+
+  /**
+   * The manifest those four failed jobs seeded from, in shape: published Astro
+   * source with five routes, one of them dynamic, and not one path ending in
+   * `.html`. That last fact is the whole bug -- the gate read this as a site
+   * with no pages at all.
+   */
+  function fiveRouteSeed(): Array<{
+    path: string;
+    content: string;
+    type: 'file';
+    encoding?: 'base64';
+  }> {
+    const page = (title: string) =>
+      "---\nimport Base from '../layouts/Base.astro';\n---\n" +
+      `<Base><h1>${title}</h1><p>Written for this client and signed ` +
+      'off by them before the site went live.</p></Base>\n';
+    return [
+      { path: 'src/pages/index.astro', content: page('Studio'), type: 'file' },
+      { path: 'src/pages/about.astro', content: page('About'), type: 'file' },
+      { path: 'src/pages/work.astro', content: page('Work'), type: 'file' },
+      {
+        path: 'src/pages/contact.astro',
+        content: page('Contact'),
+        type: 'file',
+      },
+      {
+        // 7kB, the size of the file the repair pass cut to 355 bytes.
+        path: 'src/pages/case-studies/[slug].astro',
+        content: `${page('Case study')}<!--${'detail '.repeat(1_000)}-->\n`,
+        type: 'file',
+      },
+      { path: 'src/layouts/Base.astro', content: '<slot />', type: 'file' },
+      {
+        path: 'src/content/case-studies/flowstarter.md',
+        content: '---\ntitle: Flowstarter\n---\nWhat we did.\n',
+        type: 'file',
+      },
+      {
+        path: 'public/robots.txt',
+        content: 'User-agent: *\nAllow: /\n',
+        type: 'file',
+      },
+      {
+        path: 'public/flowstarter-media/cr-b104b1e0.jpg',
+        content: Buffer.from('not-really-a-jpeg').toString('base64'),
+        encoding: 'base64',
+        type: 'file',
+      },
+    ];
+  }
+
+  /** A `dist/` with exactly these top-level routes, as Astro emits them. */
+  async function writeDist(
+    root: string,
+    routes: readonly string[],
+    body = '',
+  ): Promise<void> {
+    await rm(join(root, 'dist'), { recursive: true, force: true });
+    for (const route of routes) {
+      const pages =
+        route === '(home)'
+          ? ['index.html']
+          : route === 'case-studies'
+            ? [
+                'case-studies/flowstarter/index.html',
+                'case-studies/riverside/index.html',
+                'case-studies/northwind/index.html',
+              ]
+            : [`${route}/index.html`];
+      for (const page of pages) {
+        const file = join(root, 'dist', page);
+        await mkdir(join(file, '..'), { recursive: true });
+        await writeFile(
+          file,
+          `<html><body><h1>${route}</h1><p>The work this studio has ` +
+            `shipped for its clients.</p>${body}</body></html>`,
+          'utf8',
+        );
+      }
+    }
+  }
+
+  /** One CHANGE_REQUEST_BUILD, with the agent's passes scripted. */
+  async function runChangeBuild(input: {
+    label: string;
+    passes: Array<(root: string) => Promise<void>>;
+    intent?: Record<string, unknown>;
+  }): Promise<{
+    calls: string[];
+    logs: string[];
+    prompts: string[];
+    error: Error | null;
+  }> {
+    const calls: string[] = [];
+    const logs: string[] = [];
+    const prompts: string[] = [];
+    const worktreeRoot = await deepTempDir(`flowstarter-${input.label}`);
+    temporaryDirectories.push(worktreeRoot);
+    const projectId = validIntake().projectId;
+
+    const store: FullSiteBuildJobStore = {
+      claim: async (jobId) => ({
+        id: jobId,
+        projectId,
+        kind: 'CHANGE_REQUEST_BUILD',
+        projectState: ProjectState.LIVE_SUBSCRIPTION,
+        intake: validIntake(),
+        brandConfig: validBrandConfig(),
+        approvedPreviewFiles: fiveRouteSeed(),
+        requiredIntegrations: [],
+        changeRequest: changeIntent(input.intent ?? {}),
+      }),
+      markAgentWorking: async () => undefined,
+      markRebuildStarted: async () => undefined,
+      markRebuilt: async () => undefined,
+      markHumanQa: async () => undefined,
+      markChangeRequestBuildStarted: async () => {
+        calls.push('store:change-started');
+      },
+      saveChangeRequestVersion: async () => {
+        calls.push('store:version-saved');
+        return { version: 5 };
+      },
+      markChangeRequestBuilt: async () => {
+        calls.push('store:change-done');
+      },
+      markFailed: async (_jobId, error) => {
+        calls.push(`store:failed:${error.code}`);
+        logs.push(error.detail);
+      },
+      appendEvent: async (_jobId, event) => {
+        if (event.kind === 'log') logs.push(event.body);
+      },
+    };
+
+    let pass = 0;
+    const agents = {
+      buildFullSite: async (job: {
+        workspaceRoot: string;
+        feedback?: string;
+      }) => {
+        const step = input.passes[pass];
+        pass += 1;
+        calls.push(`agent:pass-${pass}`);
+        prompts.push(job.feedback ?? '');
+        if (step) await step(job.workspaceRoot);
+        return {
+          summary: `pass ${pass}`,
+          changedPaths: [join(job.workspaceRoot, 'src/pages/index.astro')],
+        };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    const worktrees = {
+      discard: async () => undefined,
+      create: async () => ({
+        branch: `change/${projectId}`,
+        path: worktreeRoot,
+      }),
+      commit: async () => 'cha09e5',
+    } as unknown as SafeGitWorktreeManager;
+
+    let error: Error | null = null;
+    try {
+      await new FullSiteBuildWorker(
+        store,
+        worktrees,
+        agents,
+        { validate: async () => undefined } as SiteValidator,
+        {
+          create: async () => {
+            calls.push('publisher:deploy');
+            return { pullRequestUrl: 'x', stagingUrl: 'y' };
+          },
+        } as PullRequestPublisher,
+      ).run(`job-${input.label}`);
+    } catch (thrown) {
+      error = thrown as Error;
+    }
+    return { calls, logs, prompts, error };
+  }
+
+  it('ships the gallery request that failed four times on attempt 1', async () => {
+    // Jobs 4d4f3a40, f9e68f3c, 9f967a07 and 050d83b3, 2026-09-12: the same
+    // five-route manifest, the same request, and PAGE_BUDGET_EXCEEDED every
+    // time because the seed read as a site with zero pages.
+    const { calls, logs, error } = await runChangeBuild({
+      label: 'cr-five-routes',
+      passes: [
+        async (root) =>
+          writeDist(
+            root,
+            SEED_ROUTES,
+            '<img src="/flowstarter-media/cr-b104b1e0.jpg" alt="dashboard">',
+          ),
+      ],
+    });
+
+    expect(error).toBeNull();
+    expect(calls).toEqual([
+      'store:change-started',
+      'agent:pass-1',
+      'store:version-saved',
+      'publisher:deploy',
+      'store:change-done',
+    ]);
+    expect(calls).not.toContain('store:failed:PAGE_BUDGET_EXCEEDED');
+    // One agent pass: no repair was asked for, so nothing was told to delete.
+    expect(calls.filter((call) => call.startsWith('agent:pass-'))).toHaveLength(
+      1,
+    );
+    expect(
+      logs.some((line) => line.includes('left all 5 pages of the site')),
+    ).toBe(true);
+  });
+
+  it('passes a removal request instead of calling the deletions new pages', async () => {
+    const { calls, logs, error } = await runChangeBuild({
+      label: 'cr-removal',
+      intent: {
+        request: 'Please take the work page off the site entirely.',
+        assets: [],
+      },
+      passes: [
+        async (root) =>
+          writeDist(
+            root,
+            SEED_ROUTES.filter((route) => route !== 'work'),
+          ),
+      ],
+    });
+
+    expect(error).toBeNull();
+    expect(calls).toContain('store:change-done');
+    expect(logs.some((line) => line.includes('removed 1 page (work)'))).toBe(
+      true,
+    );
+    expect(logs.every((line) => !line.includes('new pages'))).toBe(true);
+  });
+
+  it('refuses to repair a build that already lost approved routes', async () => {
+    const { calls, logs, error } = await runChangeBuild({
+      label: 'cr-lost-routes',
+      passes: [
+        async (root) =>
+          writeDist(root, ['(home)', 'blog', 'shop', 'pricing', 'careers']),
+      ],
+    });
+
+    expect(error?.message).toContain('the client had already paid for');
+    // One pass and then a stop: no second agent is turned loose on a site
+    // that has already lost pages somebody bought.
+    expect(calls).toEqual([
+      'store:change-started',
+      'agent:pass-1',
+      'store:failed:PAGE_BUDGET_EXCEEDED',
+    ]);
+    expect(logs.some((line) => line.includes('The request stays paid.'))).toBe(
+      true,
+    );
+  });
+
+  it('fails the job when the repair pass damages the site it was trimming', async () => {
+    // Exactly what happened after the gate fired on 2026-09-12: the agent was
+    // told to "remove the pages the request did not ask for", and it emptied
+    // the case-study route and pointed robots.txt at a domain nobody owns.
+    const { calls, error } = await runChangeBuild({
+      label: 'cr-repair-damage',
+      passes: [
+        async (root) =>
+          writeDist(root, [...SEED_ROUTES, 'blog', 'shop', 'pricing']),
+        async (root) => {
+          await writeFile(
+            join(root, 'src/pages/case-studies/[slug].astro'),
+            '---\n---\n<p>Case study</p>\n',
+            'utf8',
+          );
+          await writeFile(
+            join(root, 'public/robots.txt'),
+            'User-agent: *\nSitemap: https://darius-portfolio.example/sitemap.xml\n',
+            'utf8',
+          );
+        },
+      ],
+    });
+
+    expect(error?.message).toContain('damaged the site it was asked to trim');
+    expect(error?.message).toContain('src/pages/case-studies/[slug].astro');
+    expect(error?.message).toContain('darius-portfolio.example');
+    expect(calls).toEqual([
+      'store:change-started',
+      'agent:pass-1',
+      'agent:pass-2',
+      'store:failed:CHANGE_REQUEST_REPAIR_DAMAGED_SITE',
+    ]);
+    expect(calls).not.toContain('store:version-saved');
+    expect(calls).not.toContain('publisher:deploy');
+  });
+
+  it('still fails a repair pass that kept the pages it invented', async () => {
+    const { calls, error, prompts } = await runChangeBuild({
+      label: 'cr-repair-refused',
+      passes: [
+        async (root) =>
+          writeDist(root, [...SEED_ROUTES, 'blog', 'shop', 'pricing']),
+        // Touches something harmless and leaves the invented pages where
+        // they are: no damage to refuse, and still over the allowance.
+        async (root) =>
+          writeFile(join(root, 'src/layouts/Base.astro'), '<slot />\n', 'utf8'),
+      ],
+    });
+
+    expect(error?.message).toContain('added 3 new pages (blog, pricing, shop)');
+    expect(calls).toEqual([
+      'store:change-started',
+      'agent:pass-1',
+      'agent:pass-2',
+      'store:failed:PAGE_BUDGET_EXCEEDED',
+    ]);
+    // The brief it was given named its targets and protected the rest, which
+    // is the sentence the destructive repair of 2026-09-12 never had.
+    const repairBrief = prompts[1] ?? '';
+    expect(repairBrief).toContain(
+      'Delete only these pages, which this pass created and the request did ' +
+        'not ask for: blog, pricing, shop.',
+    );
+    expect(repairBrief).toContain('not emptied, not rewritten, not relinked');
+    expect(repairBrief).toContain('case-studies');
+    expect(repairBrief).toContain('Do not touch robots.txt');
+    expect(repairBrief).not.toContain(
+      'Remove the pages the request did not ask for',
+    );
   });
 });

@@ -3,6 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   changeRequestAssetPath,
   changeRequestBuildPayload,
+  changeRequestPosture,
   currentSiteVersion,
   enqueueChangeRequestBuild,
   selectChangeRequestAssets,
@@ -95,6 +96,36 @@ describe('changeRequestAssetPath', () => {
   });
 });
 
+describe('changeRequestPosture', () => {
+  it('reads a deletion as a deletion', () => {
+    expect(changeRequestPosture('Please remove the blog page entirely')).toBe(
+      'removal'
+    );
+    expect(changeRequestPosture('Take the pricing section down')).toBe(
+      'removal'
+    );
+  });
+
+  it('reads a wording change as copy-only', () => {
+    expect(changeRequestPosture('Fix the typo in the About heading')).toBe(
+      'copy-only'
+    );
+    expect(
+      changeRequestPosture('Reword the first paragraph to be less formal')
+    ).toBe('copy-only');
+  });
+
+  it('treats anything that mentions a picture as possibly wanting one', () => {
+    // Including a deletion: "remove the old photo" is still about pictures.
+    expect(changeRequestPosture('Remove the old logo from the header')).toBe(
+      'other'
+    );
+    expect(
+      changeRequestPosture('Add a gallery with the screenshots I uploaded')
+    ).toBe('other');
+  });
+});
+
 describe('selectChangeRequestAssets', () => {
   it("takes the operator's choice when they made one", () => {
     const other = usable({ id: '1c9d0e93-1d15-4ee8-ba3c-2dc99e5186ff' });
@@ -103,7 +134,8 @@ describe('selectChangeRequestAssets', () => {
       request: 'Add a gallery',
       selectedAssetIds: [other.id],
     });
-    expect(chosen.map((asset) => asset.assetId)).toEqual([other.id]);
+    expect(chosen.assets.map((asset) => asset.assetId)).toEqual([other.id]);
+    expect(chosen.handover).toBe('operator');
   });
 
   it('prefers the pictures the request names by caption', () => {
@@ -115,10 +147,11 @@ describe('selectChangeRequestAssets', () => {
       assets: [usable(), named],
       request: 'Put the operator pipeline screenshot on the case study page',
     });
-    expect(chosen.map((asset) => asset.assetId)).toEqual([named.id]);
+    expect(chosen.assets.map((asset) => asset.assetId)).toEqual([named.id]);
+    expect(chosen.handover).toBe('named');
   });
 
-  it('carries everything rights-confirmed when the request names nothing', () => {
+  it('offers the library, rather than demanding it, when nothing matched', () => {
     const chosen = selectChangeRequestAssets({
       assets: [
         usable(),
@@ -126,13 +159,47 @@ describe('selectChangeRequestAssets', () => {
       ],
       request: 'Please make the case studies look fuller',
     });
-    expect(chosen).toHaveLength(2);
+    expect(chosen.assets).toHaveLength(2);
+    // `library` is what turns the prompt from "use every one of these" into
+    // "available if the request calls for them".
+    expect(chosen.handover).toBe('library');
     // Paths and captions come across, so the prompt can be honest about both.
-    expect(chosen[0]?.publicPath).toBe('/flowstarter-media/cr-b104b1e0.jpg');
-    expect(chosen[0]?.manifestPath).toBe(
+    expect(chosen.assets[0]?.publicPath).toBe(
+      '/flowstarter-media/cr-b104b1e0.jpg'
+    );
+    expect(chosen.assets[0]?.manifestPath).toBe(
       'public/flowstarter-media/cr-b104b1e0.jpg'
     );
-    expect(chosen[0]?.caption).toBe('The Flowstarter client dashboard');
+    expect(chosen.assets[0]?.caption).toBe('The Flowstarter client dashboard');
+  });
+
+  it('hands over nothing at all for a deletion', () => {
+    const chosen = selectChangeRequestAssets({
+      assets: [usable()],
+      request: 'Please delete the blog page, we are never going to write it',
+    });
+    expect(chosen.assets).toEqual([]);
+    expect(chosen.handover).toBe('none');
+  });
+
+  it('hands over nothing at all for a wording change', () => {
+    const chosen = selectChangeRequestAssets({
+      assets: [usable()],
+      request: 'Fix the typo in the About heading, it says "Abuot"',
+    });
+    expect(chosen.assets).toEqual([]);
+    expect(chosen.handover).toBe('none');
+  });
+
+  it('still hands over the named picture for a deletion that names one', () => {
+    const chosen = selectChangeRequestAssets({
+      assets: [usable()],
+      request:
+        'Please delete the Flowstarter client dashboard picture from the ' +
+        'case study',
+    });
+    expect(chosen.assets).toHaveLength(1);
+    expect(chosen.handover).toBe('named');
   });
 
   it('caps how many pictures one request can carry', () => {
@@ -142,7 +209,7 @@ describe('selectChangeRequestAssets', () => {
       })
     );
     expect(
-      selectChangeRequestAssets({ assets: many, request: 'all of them' })
+      selectChangeRequestAssets({ assets: many, request: 'all of them' }).assets
     ).toHaveLength(12);
   });
 });
@@ -159,6 +226,21 @@ describe('changeRequestBuildPayload', () => {
     expect(payload.changeRequest.request).toBe(request().request);
     expect(payload.changeRequest.operatorNote).toBe('Three across on desktop');
     expect(payload.changeRequest.seedVersion).toBe(4);
+    // No handover given: the strict reading, which is what every payload
+    // written before the field existed meant.
+    expect(payload.changeRequest.assetSelection).toBe('named');
+  });
+
+  it('carries the handover the selection rule decided on', () => {
+    expect(
+      changeRequestBuildPayload({
+        row: request(),
+        operatorNote: null,
+        seedVersion: 4,
+        assets: [],
+        assetSelection: 'library',
+      }).changeRequest.assetSelection
+    ).toBe('library');
   });
 });
 

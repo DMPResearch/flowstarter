@@ -6,8 +6,9 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ChangeRequestView } from '@/lib/flowstarter/change-requests';
+import type { ChangeRequestAssetOption } from '@/lib/flowstarter/change-requests-api';
 
-export type { ChangeRequestView };
+export type { ChangeRequestView, ChangeRequestAssetOption };
 
 export const changeRequestsQueryKey = (id: string | undefined) =>
   ['change-requests', id] as const;
@@ -23,7 +24,11 @@ export function useChangeRequests(id: string | undefined) {
   return useQuery({
     queryKey: changeRequestsQueryKey(id),
     enabled: Boolean(id),
-    queryFn: async (): Promise<{ requests: ChangeRequestView[] }> => {
+    queryFn: async (): Promise<{
+      requests: ChangeRequestView[];
+      /** The client's rights-confirmed pictures, for the build card's picker. */
+      assets?: ChangeRequestAssetOption[];
+    }> => {
       const res = await fetch(`/api/admin/projects/${id}/changes`, {
         cache: 'no-store',
       });
