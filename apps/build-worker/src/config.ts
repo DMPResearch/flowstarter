@@ -136,6 +136,16 @@ export interface WorkerConfig {
   validateIsolation: ValidatorIsolationMode;
   /** Null unless `validateIsolation` is `docker`. */
   validateDocker: DockerValidationConfig | null;
+  /**
+   * Swaps in `NoopSiteValidator` (see `validator.ts`) for every job kind.
+   * This is the *only* switch that may do that: `local.stubAgent` replaces
+   * just the Pi coding session (see `agents` in `index.ts`), never the
+   * validator. Unit-test-only by design — `loadConfig` refuses it outright
+   * when the resolved environment is staging or production, so a
+   * misconfigured host can never boot with the real build gate silently
+   * disabled.
+   */
+  skipValidation: boolean;
   buildTimeoutMs: number;
   maxAttempts: number;
   concurrency: number;
@@ -373,6 +383,51 @@ function parseHttpUrl(value: string, key: string): string {
   return value.replace(/\/$/, '');
 }
 
+/**
+ * The same four values `resolveFlowstarterEnv` (flowstarter-main) resolves
+ * to, computed locally rather than imported: this is a private Pi worker
+ * with its own `tsconfig`/module setup, and the two apps agree on the *rule*
+ * (`FLOWSTARTER_ENV`, falling back to `NODE_ENV`) rather than sharing code
+ * across an app boundary neither is meant to depend on.
+ */
+const KNOWN_FLOWSTARTER_ENVS = new Set([
+  'development',
+  'test',
+  'staging',
+  'production',
+]);
+
+function resolveWorkerFlowstarterEnv(env: NodeJS.ProcessEnv): string {
+  const raw = env.FLOWSTARTER_ENV?.trim();
+  if (raw && KNOWN_FLOWSTARTER_ENVS.has(raw)) return raw;
+  if (env.NODE_ENV === 'production') return 'production';
+  if (env.NODE_ENV === 'test') return 'test';
+  return 'development';
+}
+
+/**
+ * `FLOWSTARTER_BUILD_SKIP_VALIDATION` is the *only* thing allowed to swap in
+ * `NoopSiteValidator` — never `FLOWSTARTER_BUILD_STUB_AGENT`, which
+ * replaces just the Pi coding session. It exists for this worker's own unit
+ * tests, which is why a host whose resolved environment is staging or
+ * production refuses to boot with it set: those are exactly the two
+ * environments where a client's build must never skip the real
+ * `pnpm install && pnpm run build` gate.
+ */
+function parseSkipValidation(env: NodeJS.ProcessEnv): boolean {
+  const requested = env.FLOWSTARTER_BUILD_SKIP_VALIDATION === 'true';
+  if (!requested) return false;
+
+  const resolvedEnv = resolveWorkerFlowstarterEnv(env);
+  if (resolvedEnv === 'staging' || resolvedEnv === 'production') {
+    throw new ConfigError(
+      'FLOWSTARTER_BUILD_SKIP_VALIDATION is unit-test-only and is refused ' +
+        `when the resolved environment is staging or production (got "${resolvedEnv}")`,
+    );
+  }
+  return true;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const sharedSecret = required(env, 'FLOWSTARTER_BUILD_WORKER_SECRET');
   if (sharedSecret.length < 32) {
@@ -455,6 +510,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
   const validateIsolation = parseValidatorIsolation(
     env.FLOWSTARTER_BUILD_VALIDATE_ISOLATION,
   );
+  const skipValidation = parseSkipValidation(env);
 
   return {
     port,
@@ -515,6 +571,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
       validateIsolation === 'docker'
         ? parseDockerValidation(env, validateCommands)
         : null,
+    skipValidation,
     buildTimeoutMs: optionalNumber(
       env,
       'FLOWSTARTER_BUILD_TIMEOUT_MS',

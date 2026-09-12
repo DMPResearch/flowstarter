@@ -134,6 +134,8 @@ const CONFIG_ENV_KEYS = [
   'FLOWSTARTER_BUILD_WORKER_PORT',
   'FLOWSTARTER_BUILD_WORKER_HOST',
   'FLOWSTARTER_BUILD_STUB_AGENT',
+  'FLOWSTARTER_BUILD_SKIP_VALIDATION',
+  'FLOWSTARTER_ENV',
   'PI_API_KEY',
   'OPENROUTER_API_KEY',
   'PI_THINKING_LEVEL',
@@ -282,9 +284,7 @@ describe('build worker entry point (src/index.ts)', () => {
       } finally {
         server.close();
       }
-    }, // a cold cache. Every later `boot()` reuses the transformed modules // instrumentation, which is far slower than the default 10s budget on // the full agentic-codegen module graph under v8 coverage // The first dynamic import of src/index.ts in the whole suite pulls in
-    // and comes back in well under a second.
-    30_000);
+    }, 30_000); // and comes back in well under a second. // a cold cache. Every later `boot()` reuses the transformed modules // instrumentation, which is far slower than the default 10s budget on // the full agentic-codegen module graph under v8 coverage // The first dynamic import of src/index.ts in the whole suite pulls in
 
     it('rejects a dispatch with no bearer token', async () => {
       const { baseUrl, server } = await boot(await localEnv());
@@ -570,6 +570,44 @@ describe('build worker entry point (src/index.ts)', () => {
       }
     });
 
+    it("still runs the real, native validator with the stub agent selected -- dev:local's own shape", async () => {
+      // `localEnv()` defaults to `FLOWSTARTER_BUILD_STUB_AGENT: 'true'`, the
+      // same combination `dev:local` boots with. The stub agent replaces
+      // only the Pi coding session; it must never also swap the validator
+      // for the noop one -- that coupling is exactly what let a SITE_REBUILD
+      // package an unbuilt Astro source tree and 404 at the deploy-agent.
+      const { baseUrl, server } = await boot(await localEnv());
+      try {
+        const listeningLine = consoleInfoSpy.mock.calls
+          .map((call: unknown[]) => String(call[0]))
+          .find((line: string) => line.includes('listening on'));
+        expect(listeningLine).toContain('stub agent');
+        expect(listeningLine).toContain('validation native');
+        expect(listeningLine).not.toContain('noop');
+
+        const res = await fetch(`${baseUrl}/health`);
+        expect(res.status).toBe(200);
+      } finally {
+        server.close();
+      }
+    });
+
+    it('names the noop validator in the boot line only when FLOWSTARTER_BUILD_SKIP_VALIDATION is set', async () => {
+      const { server } = await boot(
+        await localEnv({ FLOWSTARTER_BUILD_SKIP_VALIDATION: 'true' }),
+      );
+      try {
+        const listeningLine = consoleInfoSpy.mock.calls
+          .map((call: unknown[]) => String(call[0]))
+          .find((line: string) => line.includes('listening on'));
+        expect(listeningLine).toContain(
+          'validation noop (FLOWSTARTER_BUILD_SKIP_VALIDATION)',
+        );
+      } finally {
+        server.close();
+      }
+    });
+
     it('logs and exits when the local sites bootstrap fails before the server ever listens', async () => {
       vi.resetModules();
       capturedServers.length = 0;
@@ -693,6 +731,42 @@ describe('build worker entry point (src/index.ts)', () => {
         expect(processExitSpy).toHaveBeenCalledWith(1);
         expect(consoleErrorSpy).toHaveBeenCalledWith(
           expect.stringContaining('refusing to start'),
+        );
+        expect(capturedServers).toHaveLength(0);
+      } finally {
+        processExitSpy.mockRestore();
+      }
+    });
+
+    it('refuses to boot with FLOWSTARTER_BUILD_SKIP_VALIDATION set on a staging host', async () => {
+      vi.resetModules();
+      capturedServers.length = 0;
+      resetConfigEnv();
+      Object.assign(process.env, {
+        FLOWSTARTER_BUILD_WORKER_SECRET: SECRET,
+        NEXT_PUBLIC_SUPABASE_URL: 'http://127.0.0.1:54321',
+        SUPABASE_SERVICE_ROLE_KEY: 'service-role-test-key',
+        PI_API_KEY: 'test-pi-key',
+        FLOWSTARTER_REPOSITORY_ROOT: '/srv/flowstarter/sites',
+        FLOWSTARTER_WORKTREES_ROOT: '/srv/flowstarter/worktrees',
+        FLOWSTARTER_SITES_REPO: 'flowstarter/sites',
+        FLOWSTARTER_SITES_GITHUB_TOKEN: 'ghp_token',
+        FLOWSTARTER_BUILD_SKIP_VALIDATION: 'true',
+        FLOWSTARTER_ENV: 'staging',
+      });
+      const processExitSpy = vi
+        .spyOn(process, 'exit')
+        .mockImplementation(() => {
+          throw new Error('process.exit(1) called');
+        });
+
+      try {
+        await expect(import('../src/index')).rejects.toThrow(
+          'process.exit(1) called',
+        );
+        expect(processExitSpy).toHaveBeenCalledWith(1);
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('FLOWSTARTER_BUILD_SKIP_VALIDATION'),
         );
         expect(capturedServers).toHaveLength(0);
       } finally {
