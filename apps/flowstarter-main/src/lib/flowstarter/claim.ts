@@ -44,6 +44,11 @@ import {
   loadFunnelPreview,
   saveFunnelPreview,
 } from '@/lib/hosting/funnel-previews';
+import { CURRENT_RIGHTS_STATEMENT_VERSION } from '@/components/flowstarter/rights-statement';
+import {
+  claimFunnelAssets,
+  confirmFetchedPictureRights,
+} from './funnel-assets';
 import { recordIntakeSubmission } from './intake-submission';
 import { ensureClientMembership } from './membership';
 import { appendClientReplyToCorpus } from './messaging';
@@ -474,6 +479,21 @@ export interface ClaimPreviewInput {
   /** The monthly care plan the visitor confirmed at step 6, by name. */
   subscriptionPlan?: 'starter' | 'pro' | 'max';
   billingCadence?: 'monthly' | 'yearly';
+  /**
+   * The visitor's answer to the claim page's one picture question: "Use my
+   * profile picture on the site".
+   *
+   * A picture we read off their public Instagram, LinkedIn or website is filed
+   * without a rights confirmation, which makes it invisible to
+   * `loadUsableAssets` and unpublishable on a paid site. This is the tap that
+   * changes that, and nothing else does: absent or false, the build falls back
+   * to the placeholder and the Brief asks for a photograph instead.
+   */
+  useProfilePicture?: boolean;
+  /** Recorded on the rights confirmation, as evidence of where it came from. */
+  rightsStatementVersion?: string;
+  clientIp?: string | null;
+  clientUserAgent?: string | null;
   /** Wizard answers, kept on the claim event for provenance. */
   intakeSummary?: Record<string, unknown>;
   /**
@@ -554,7 +574,12 @@ export async function claimPreview(
     );
     // Idempotent, and needed on this path too: the first claim may have died
     // between creating the workspace and extending the preview's TTL.
-    await adoptFunnelPreview(input.previewId, existing);
+    await adoptFunnelPreview(input.previewId, existing, {
+      useProfilePicture: input.useProfilePicture,
+      statementVersion: input.rightsStatementVersion,
+      ip: input.clientIp,
+      userAgent: input.clientUserAgent,
+    });
     return {
       workspaceId: existing,
       unlockUrl: unlockUrlFor(existing),
@@ -632,7 +657,12 @@ export async function claimPreview(
       input.previewId,
       input.intakeChat
     );
-    await adoptFunnelPreview(input.previewId, raced);
+    await adoptFunnelPreview(input.previewId, raced, {
+      useProfilePicture: input.useProfilePicture,
+      statementVersion: input.rightsStatementVersion,
+      ip: input.clientIp,
+      userAgent: input.clientUserAgent,
+    });
     return {
       workspaceId: raced,
       unlockUrl: unlockUrlFor(raced),
@@ -712,7 +742,12 @@ export async function claimPreview(
   // Best effort, and after the artifacts row: a preview record we could not
   // update is a preview that gets torn down early, which is recoverable. A
   // workspace lost to a storage hiccup is not.
-  await adoptFunnelPreview(input.previewId, workspaceId);
+  await adoptFunnelPreview(input.previewId, workspaceId, {
+    useProfilePicture: input.useProfilePicture,
+    statementVersion: input.rightsStatementVersion,
+    ip: input.clientIp,
+    userAgent: input.clientUserAgent,
+  });
 
   // Evidence goes in after the artifacts row exists, because that row is what
   // holds `client_reply_corpus`; before it there is nothing to append to.
@@ -789,9 +824,42 @@ export async function claimPreview(
  */
 async function adoptFunnelPreview(
   previewId: string,
-  workspaceId: string
+  workspaceId: string,
+  rights?: {
+    useProfilePicture?: boolean;
+    statementVersion?: string;
+    ip?: string | null;
+    userAgent?: string | null;
+  }
 ): Promise<void> {
   try {
+    // The pictures first, and outside the artifact's early return: a visitor
+    // whose Instagram would not load uploads a logo before generation starts,
+    // so a preview can have funnel assets and no artifact at all. Carrying
+    // them is what lets `loadUsableAssets` see a file the client gave us
+    // before they had an account.
+    //
+    // The rights confirmation has to be written BEFORE the copy, because the
+    // copy carries `rights_confirmed_at` across verbatim. Doing it after would
+    // confirm the funnel row and hand the workspace an asset the generator
+    // still cannot see, which is the quietest possible way to lose a feature.
+    if (rights?.useProfilePicture) {
+      await confirmFetchedPictureRights({
+        previewId,
+        statementVersion:
+          rights.statementVersion ?? CURRENT_RIGHTS_STATEMENT_VERSION,
+        ip: rights.ip ?? null,
+        userAgent: rights.userAgent ?? null,
+      });
+    }
+    const assets = await claimFunnelAssets({ previewId, workspaceId });
+    if (assets.failed.length > 0) {
+      console.warn(
+        `[Flowstarter] claim ${previewId} could not carry ` +
+          `${assets.failed.length} funnel picture(s) into workspace ${workspaceId}`
+      );
+    }
+
     const row = await claimFunnelPreview({ previewId, workspaceId });
     if (!row?.artifactPath) return;
     await copyFunnelArtifactToTenant({

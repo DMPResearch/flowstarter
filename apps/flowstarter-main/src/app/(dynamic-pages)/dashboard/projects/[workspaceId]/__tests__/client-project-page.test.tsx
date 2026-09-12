@@ -432,11 +432,23 @@ describe('the site overview', () => {
     expect(screen.getAllByTestId('project-stage')).toHaveLength(6);
   });
 
-  it('shows the edits, enquiries, bookings and changes tiles to a member', async () => {
+  it('shows the edits, enquiries, bookings, changes and brief tiles to a member', async () => {
     await renderPage(MINE);
     expect(
       screen.getAllByTestId('site-overview-tile').map((el) => el.dataset.key)
-    ).toEqual(['credits', 'enquiries', 'bookings', 'changes']);
+    ).toEqual(['credits', 'enquiries', 'bookings', 'changes', 'brief']);
+  });
+
+  it('points the brief tile at the page the client fills it in on', async () => {
+    await renderPage(MINE);
+    const brief = screen
+      .getAllByTestId('site-overview-tile')
+      .find((el) => el.dataset.key === 'brief');
+    const href =
+      brief?.getAttribute('href') ??
+      brief?.querySelector('a')?.getAttribute('href') ??
+      brief?.closest('a')?.getAttribute('href');
+    expect(href).toBe(`/dashboard/projects/${MINE}/brief`);
   });
 
   it('counts this month’s proposals against the plan allowance', async () => {

@@ -1,5 +1,5 @@
 /**
- * The four client notices, rendered.
+ * The client notices, rendered.
  *
  * A template test earns its place by pinning the two things that are invisible
  * at the call site and expensive to get wrong in an inbox: the subject line,
@@ -12,6 +12,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   balanceInvoiceEmail,
+  briefIncompleteEmail,
   depositReceivedEmail,
   escapeHtml,
   previewReadyEmail,
@@ -20,6 +21,7 @@ import {
 } from '../client-notices';
 
 const DASHBOARD = 'https://flowstarter.net/dashboard/projects/ws-1';
+const BRIEF = `${DASHBOARD}/brief`;
 
 /**
  * Everything the copy rules call an emoji: the symbol and dingbat blocks, the
@@ -70,6 +72,14 @@ const ALL: Array<[string, RenderedEmail]> = [
       businessName: 'Acme',
     }),
   ],
+  [
+    'briefIncomplete',
+    briefIncompleteEmail({
+      briefUrl: BRIEF,
+      missing: ['A sentence or two on what you offer.'],
+      businessName: 'Acme',
+    }),
+  ],
 ];
 
 describe('client notice house style', () => {
@@ -117,6 +127,101 @@ describe('depositReceivedEmail', () => {
     });
     expect(mail.html).toContain('your site');
     expect(mail.html).toContain('Hi there,');
+  });
+
+  /**
+   * The sentence this email is no longer allowed to say.
+   *
+   * The in-depth brief moved to the client's dashboard and the build now waits
+   * on it, so "Nothing else is needed from you right now" went from reassuring
+   * to false in one commit. A client who reads it waits for a build that is
+   * waiting for them.
+   */
+  it('asks for the brief and links to it when there is one', () => {
+    const mail = depositReceivedEmail({
+      dashboardUrl: DASHBOARD,
+      briefUrl: BRIEF,
+      clientName: 'Darius',
+      businessName: 'Acme Dental',
+    });
+    expect(mail.html).not.toContain('Nothing else is needed from you');
+    expect(mail.html).toContain(
+      'There is one thing we need from you: the detail of what you want on the'
+    );
+    expect(mail.html).toContain(`href="${BRIEF}"`);
+    expect(mail.html).toContain('Fill in your brief');
+    // The dashboard link survives alongside it: the brief is the ask, the
+    // dashboard is still where the work becomes visible.
+    expect(mail.html).toContain(`href="${DASHBOARD}"`);
+    expect(mail.html).toContain('Open your dashboard');
+  });
+
+  it('keeps the old wording exactly when no brief url is given', () => {
+    // Every caller that predates the brief must keep meaning what it meant.
+    const mail = depositReceivedEmail({
+      dashboardUrl: DASHBOARD,
+      businessName: 'Acme',
+    });
+    expect(mail.html).toContain('Nothing else is needed from you right now.');
+    expect(mail.html).not.toContain('Fill in your brief');
+    expect(mail.html).not.toContain('/brief"');
+  });
+});
+
+/**
+ * The ask, which is the one email here that is not a report.
+ *
+ * What has to be true of it: the subject reads correctly alone in an inbox
+ * list (it is about their site, not about a form), every ask is listed rather
+ * than summarised, and a list item cannot close the tag it sits in. The list
+ * comes from `brief-readiness.ts` and its text is ours, but the same escape is
+ * applied anyway: the day one of those strings interpolates a project name,
+ * the escaping has to already be there.
+ */
+describe('briefIncompleteEmail', () => {
+  it('lists every ask and points at one page', () => {
+    const mail = briefIncompleteEmail({
+      briefUrl: BRIEF,
+      missing: [
+        'A sentence or two on what you offer.',
+        'Your products or projects, with a screenshot each.',
+      ],
+      clientName: 'Darius',
+      businessName: 'Acme Dental',
+    });
+
+    expect(mail.subject).toBe('We are waiting on a few things for your site');
+    expect(mail.html).toContain('Hi Darius,');
+    expect(mail.html).toContain('Acme Dental');
+    expect(mail.html).toContain('<li');
+    expect(mail.html).toContain('A sentence or two on what you offer.');
+    expect(mail.html).toContain(
+      'Your products or projects, with a screenshot each.'
+    );
+    // One link, one button. A second destination is a second decision.
+    expect(mail.html).toContain(`href="${BRIEF}"`);
+    expect(mail.html).toContain('Fill in your brief');
+    expect(mail.html.match(/class="button"/g)).toHaveLength(1);
+  });
+
+  it('renders with an empty list rather than an empty tag soup', () => {
+    // Never sent in this state, but a template that throws on an edge case is
+    // a template that takes a caller down with it.
+    const mail = briefIncompleteEmail({ briefUrl: BRIEF, missing: [] });
+    expect(mail.html).toContain('Hi there,');
+    expect(mail.html).toContain('your site');
+    expect(mail.html).not.toContain('<li');
+  });
+
+  it('escapes a missing-item string and a business name', () => {
+    const hostile = '<img src=x onerror=alert(1)>';
+    const mail = briefIncompleteEmail({
+      briefUrl: BRIEF,
+      missing: [hostile],
+      businessName: hostile,
+    });
+    expect(mail.html).not.toContain('<img src=x');
+    expect(mail.html).toContain('&lt;img src=x');
   });
 });
 

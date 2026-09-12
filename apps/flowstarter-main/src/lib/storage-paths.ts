@@ -83,6 +83,19 @@ function assertSafeSegment(value: string, field: string): void {
   }
 }
 
+/**
+ * A content-addressed filename has to be exactly that. Shared by the tenant
+ * asset path and the funnel one so a file cannot be addressed differently on
+ * the two sides of a claim.
+ */
+function assertSha256(sha256: string): void {
+  if (typeof sha256 !== 'string' || !SHA256_PATTERN.test(sha256)) {
+    throw new StoragePathError(
+      `"${String(sha256)}" is not a lowercase sha256 hex digest`
+    );
+  }
+}
+
 export interface AssetObjectPathInput {
   workspaceId: string;
   sha256: string;
@@ -101,11 +114,7 @@ export function assetObjectPath({
 }: AssetObjectPathInput): string {
   assertWorkspaceId(workspaceId);
   assertExtension(extension);
-  if (typeof sha256 !== 'string' || !SHA256_PATTERN.test(sha256)) {
-    throw new StoragePathError(
-      `"${String(sha256)}" is not a lowercase sha256 hex digest`
-    );
-  }
+  assertSha256(sha256);
   return `tenant/${workspaceId}/assets/${sha256.toLowerCase()}.${extension}`;
 }
 
@@ -171,6 +180,54 @@ export function previewArtifactPath({
 export function funnelPreviewArtifactPath(previewId: string): string {
   assertSafeSegment(previewId, 'previewId');
   return `funnel/${previewId}/site.tar.gz`;
+}
+
+/**
+ * `funnel/{previewId}/assets/{sha256}.{ext}` — a picture a visitor uploaded
+ * before there was a workspace to own it.
+ *
+ * The intake asks for an Instagram and a LinkedIn so a palette can be read
+ * from a public profile. Both frequently expose nothing to an anonymous
+ * reader, and the visitor is then offered a single upload instead: a logo or a
+ * profile picture, so the colours still come from their material rather than
+ * from a tone chip. That upload happens before the claim, so it has the same
+ * problem the artifact has and takes the same answer.
+ *
+ * Deliberately under the SAME `funnel/{previewId}/` prefix as the artifact,
+ * not a sibling `funnel-assets/` one, for two concrete reasons:
+ *
+ *   - the bucket's read policy grants `tenant/{workspaceId}/...` and nothing
+ *     else, so anything under `funnel/` is already unreadable by every browser
+ *     session by construction, and
+ *   - the reaper tears a dead preview down by its own prefix. Keeping the
+ *     pictures inside it means an expiring preview takes its uploads with it
+ *     instead of leaving orphans in a directory nothing sweeps.
+ *
+ * On claim the object is copied to `assetObjectPath({workspaceId, sha256, extension})`,
+ * which is where a tenant-owned asset belongs and where the tenant read policy
+ * starts applying to it.
+ */
+export function funnelAssetPath(input: {
+  previewId: string;
+  sha256: string;
+  extension: string;
+}): string {
+  assertSafeSegment(input.previewId, 'previewId');
+  assertSha256(input.sha256);
+  assertExtension(input.extension);
+  return `funnel/${input.previewId}/assets/${input.sha256.toLowerCase()}.${
+    input.extension
+  }`;
+}
+
+/**
+ * The prefix every object belonging to one funnel preview lives under. The
+ * reaper lists and deletes by this, so a preview's artifact and its uploads
+ * go together.
+ */
+export function funnelPreviewPrefix(previewId: string): string {
+  assertSafeSegment(previewId, 'previewId');
+  return `funnel/${previewId}`;
 }
 
 /**

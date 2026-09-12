@@ -774,6 +774,21 @@ describe('telling the client their deposit landed', () => {
     expect(mail().html).toContain('Acme Dental');
   });
 
+  /**
+   * The build is queued on deposit and then waits for the in-depth brief, so
+   * this email is the only thing standing between a client and a build that
+   * sits still for a week while they believe nothing is needed from them.
+   */
+  it('asks for the brief and links straight to the page that holds it', async () => {
+    script.workspace = withClient();
+
+    await enqueueFullBuildFromDeposit(event(), paidIntent());
+
+    expect(mail().html).toContain(`/dashboard/projects/${WORKSPACE_ID}/brief`);
+    expect(mail().html).toContain('Fill in your brief');
+    expect(mail().html).not.toContain('Nothing else is needed from you');
+  });
+
   it('emails the client on the operator invoice path too', async () => {
     script.workspace = withClient();
 

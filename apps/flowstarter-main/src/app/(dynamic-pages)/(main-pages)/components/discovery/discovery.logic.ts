@@ -5,7 +5,7 @@
  * Setup fees in EUR (founding price not exposed publicly here).
  */
 
-export type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+export type Step = 1 | 2 | 3 | 4 | 5 | 6;
 
 export type Tier = 'starter' | 'pro' | 'commerce' | 'custom';
 
@@ -97,9 +97,27 @@ export interface DiscoveryData {
   // Step 2 — business
   industry: string;
   description: string;
+  /**
+   * What they actually sell, in a sentence or two, in their own words.
+   *
+   * Distinct from `description`, which is what the business *is*. This is what
+   * a visitor buys, and it is the one thing the generator cannot honestly
+   * invent: a site that describes a service the owner does not offer is worse
+   * than a site with a thin services section. The longer version is collected
+   * after the deposit, on the dashboard's brief page; this is the quick one,
+   * asked before the preview so the preview has something true to say.
+   */
+  offer: string;
   targetAudience: string;
   instagramUrl: string;
   linkedinUrl: string;
+  /**
+   * An existing site, if they have one. Read for a palette and a tone the same
+   * way the social profiles are, and it is usually the only one of the three
+   * that answers: `BusinessIntakePayload.business.existingWebsiteUrl` has been
+   * in the brief type all along with nothing writing to it.
+   */
+  websiteUrl: string;
 
   // Step 3 — goals. Free-form: chip presets + freetext, comma-joined.
   goal: string;
@@ -149,6 +167,71 @@ export interface DiscoveryData {
   intakeChatDocuments?: IntakeChatDocument[];
   /** '' — not started; 'complete' — agent ran out of asks; 'skipped' — visitor moved on. */
   intakeChatStatus?: '' | 'complete' | 'skipped';
+
+  // The brand step. Derived, not typed: the visitor gives us profile links and
+  // the server reads what those pages expose without a login, derives a
+  // palette by rule and has a model phrase a tone from their own words. All
+  // optional for the same reason the info agent's fields are: a draft saved
+  // before this existed has none of them, and the step never gates the funnel.
+  /** Four colours, each with the value its page mode uses. */
+  brandPalette?: DerivedPalette;
+  /** Three adjectives and a one-line voice note. */
+  brandVoice?: DerivedTone;
+  /**
+   * The networks we could not read, and why, so the wizard can say plainly
+   * that Instagram showed us nothing rather than silently showing a palette
+   * that came from the tone chips.
+   */
+  brandUnavailable?: Array<{ network: string; reason: string }>;
+  /** `funnel_assets.id` for a logo or profile picture uploaded before claim. */
+  brandPictureAssetId?: string;
+  /**
+   * A picture we READ off one of their public pages, filed against the preview
+   * with no rights confirmation on it.
+   *
+   * Distinct from `brandPictureAssetId`, which is a file they handed us. This
+   * one we took, so it dresses the preview and goes no further until the claim
+   * page asks the one question and the visitor says yes. See
+   * `lib/flowstarter/profile-picture.ts`.
+   */
+  brandPicture?: FetchedProfilePicture;
+}
+
+/** Mirrors `PaletteColour` in `lib/flowstarter/brand-palette.ts`. */
+export interface DerivedPaletteColour {
+  base: string;
+  onLight: string;
+  onDark: string;
+}
+
+/** Mirrors `Palette`, minus the adjustment ledger the wizard does not show. */
+export interface DerivedPalette {
+  primary: DerivedPaletteColour;
+  secondary: DerivedPaletteColour;
+  accent: DerivedPaletteColour;
+  neutral: DerivedPaletteColour;
+  /** 'image' | 'tone' | 'default'. How much of this was their own material. */
+  source: string;
+}
+
+/** A profile picture we fetched, as the brand route reports it. */
+export interface FetchedProfilePicture {
+  /** `funnel_assets.id`. */
+  assetId: string;
+  /** 'instagram' | 'linkedin' | 'website'. Named in the consent question. */
+  network: string;
+  width: number | null;
+  height: number | null;
+  /** Short-lived signed URL, or null when it could not be signed. */
+  url: string | null;
+}
+
+/** Mirrors `ToneReading` in `lib/flowstarter/brand-tone.ts`. */
+export interface DerivedTone {
+  adjectives: string[];
+  voice: string;
+  /** 'phrased' | 'chips' | 'default'. */
+  source: string;
 }
 
 /** One turn of the info-agent conversation. `client` is the visitor. */
@@ -169,9 +252,11 @@ export const EMPTY_DISCOVERY: DiscoveryData = {
   businessName: '',
   industry: '',
   description: '',
+  offer: '',
   targetAudience: '',
   instagramUrl: '',
   linkedinUrl: '',
+  websiteUrl: '',
   goal: '',
   secondaryGoals: [],
   brandTone: '',
@@ -192,49 +277,79 @@ export const EMPTY_DISCOVERY: DiscoveryData = {
   intakeChatStatus: '',
 };
 
+/**
+ * The stages, and the whole of the friction decision.
+ *
+ * Four quick ones, then the preview, then the deposit. Everything that used to
+ * sit between the visitor and the preview (goals, commerce, page count, tone,
+ * integrations) moved behind the deposit into the dashboard's Brief, where the
+ * answers are worth more because the person giving them has seen what they are
+ * answering for.
+ *
+ * One question per stage, on purpose. A stage with three fields in it reads as
+ * a form however it is drawn, and the point of this shape is that a visitor
+ * can see the end of it from the beginning.
+ */
 export const STEPS: Array<{ n: Step; key: string }> = [
-  { n: 1, key: 'about' },
-  { n: 2, key: 'business' },
-  { n: 3, key: 'goals' },
-  { n: 4, key: 'commerce' },
-  { n: 5, key: 'recommendation' },
-  { n: 6, key: 'subscription' },
-  // The info agent: the gap-filler between the form and the preview. It has
-  // no locale key of its own — its copy lives in `InfoAgentStep` — so the
-  // wizard supplies the heading for this one step.
-  { n: 7, key: 'info' },
-  { n: 8, key: 'preview' },
+  { n: 1, key: 'name' },
+  { n: 2, key: 'contact' },
+  { n: 3, key: 'business' },
+  { n: 4, key: 'links' },
+  { n: 5, key: 'preview' },
+  { n: 6, key: 'deposit' },
 ];
 
-export const LAST_STEP: Step = 8;
+export const LAST_STEP: Step = 6;
 
-/** The conversational step. Always passable: conversion beats completeness. */
-export const INFO_STEP: Step = 7;
+/** Where the generated preview is shown. The visitor's reward for four answers. */
+export const PREVIEW_STEP: Step = 5;
+
+/**
+ * The two commercial decisions, after the preview.
+ *
+ * A price shown before there is anything to price is a number the visitor has
+ * no way to judge. The build package and the monthly plan are therefore the
+ * last thing asked, once a real site is on the screen next to them.
+ */
+export const DEPOSIT_STEP: Step = 6;
 
 const EMAIL_RE = /^\S+@\S+\.\S+$/;
 
+/**
+ * Whether a stage may be walked past.
+ *
+ * One question per stage, so one clause each, and these four clauses are
+ * exactly the `required: true` questions in the quick phase of
+ * `intake-script.ts`. If the two ever disagree the conversation either blocks
+ * on something the wizard would have let through or walks past a stage the
+ * wizard would have blocked, so a test asserts they match.
+ */
 export function canProceed(step: Step, d: DiscoveryData): boolean {
   switch (step) {
     case 1:
-      return d.fullName.trim().length >= 2 && EMAIL_RE.test(d.email.trim());
+      return d.fullName.trim().length >= 2;
     case 2:
-      return d.description.trim().length >= 10;
+      return EMAIL_RE.test(d.email.trim());
     case 3:
-      return d.goal.trim() !== '';
+      return d.description.trim().length >= 10;
     case 4:
-      return d.commerceMode !== '';
+      // One link, of any of the three kinds. It is the only thing in the quick
+      // intake that carries a colour, a face and a voice, so a preview built
+      // without one is a grey template with the right words on it.
+      return Boolean(
+        d.instagramUrl.trim() ||
+          d.linkedinUrl.trim() ||
+          (d.websiteUrl ?? '').trim()
+      );
     case 5:
-      return d.selectedTier !== '';
+      // The preview never gates: it is the thing the visitor came for.
+      return true;
     case 6:
-      // Commerce uses the dedicated store subscription — nothing to pick.
-      return usesDedicatedSubscription(d.selectedTier) || d.subscription !== '';
-    case 7:
-      // The info agent never gates the funnel. A visitor who wants the
-      // preview now gets the preview now, with placeholders where the answers
-      // would have gone.
-      return true;
-    case 8:
-      return true;
+      // The commercial pair, confirmed against a preview that already exists.
+      return (
+        d.selectedTier !== '' &&
+        (usesDedicatedSubscription(d.selectedTier) || d.subscription !== '')
+      );
   }
 }
 

@@ -310,6 +310,23 @@ export const TENANT_TABLES = [
     updatePatch: { tone_notes: 'rewritten by another tenant' },
   },
   {
+    // The in-depth brief. A member may read their own and nothing else, and
+    // may write none of it: every change goes through the service role behind
+    // /api/client/brief/[workspaceId], which does the validation the jsonb
+    // columns cannot. `ready_at` is the column that matters most here, because
+    // a client who could write their own readiness flag could start a paid
+    // build on an empty brief.
+    table: 'workspace_briefs',
+    tenantKey: 'workspace_id',
+    select: 'workspace_id,offer',
+    seed: (workspaceId, run) => ({
+      workspace_id: workspaceId,
+      offer: `seeded by the RLS check ${run}`,
+    }),
+    updatePatch: { offer: 'rewritten by another tenant' },
+    deniedColumnSelect: 'override_at',
+  },
+  {
     table: 'intake_submissions',
     tenantKey: 'workspace_id',
     select: 'id,workspace_id',
@@ -409,6 +426,13 @@ export const SERVER_ONLY_TABLES = [
   'flowstarter_agent_job_events',
   'flowstarter_project_artifacts',
   'funnel_previews',
+  // Keyed on the preview id, not a workspace: the visitor who uploads a logo
+  // during the intake is anonymous, so there is no tenant to scope the row to
+  // and nothing RLS could usefully say. Same classification and the same
+  // reason as funnel_previews above, and the same protection: RLS on with zero
+  // policies, every grant to anon and authenticated revoked. On claim the row
+  // is copied into `assets`, which IS tenant scoped and IS proved below.
+  'funnel_assets',
   'discovery_leads',
   'custom_inquiries',
   'hosting_servers',

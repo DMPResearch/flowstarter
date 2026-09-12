@@ -8,6 +8,8 @@
  * moments that answer that: the deposit landing, the preview being ready, the
  * balance invoice going out, the site going live, and the one that was missing
  * until a real run needed it, a build that stopped and has to be looked at.
+ * Since the in-depth brief moved to the dashboard there is one more: the
+ * build that cannot start because we are waiting on the client.
  *
  * House style, and the reason these live in one file: each is six lines of
  * prose and a button. Splitting them across four modules would make the
@@ -57,9 +59,40 @@ function greeting(clientName?: string | null): string {
  */
 export function depositReceivedEmail(input: {
   dashboardUrl: string;
+  /**
+   * The brief page, when there is one to point at.
+   *
+   * This email used to end "Nothing else is needed from you right now", and
+   * that sentence stopped being true the day the in-depth brief moved from the
+   * intake to the dashboard: the build is queued and will sit there until the
+   * client writes down what they sell and what they have made. A behaviour
+   * change that leaves the old promise in the outbox is the worst of both,
+   * because the client believes it and then waits.
+   *
+   * Optional, and absent means the old wording verbatim, so no existing caller
+   * quietly starts saying something different.
+   */
+  briefUrl?: string;
   clientName?: string | null;
   businessName?: string | null;
 }): RenderedEmail {
+  const next = input.briefUrl
+    ? `<p>
+      There is one thing we need from you: the detail of what you want on the
+      site. It takes about ten minutes, and the build starts by itself the
+      moment it is done.
+    </p>
+    <div style="text-align: center;">
+      <a href="${input.briefUrl}" class="button">Fill in your brief</a>
+      <a href="${input.dashboardUrl}" class="button">Open your dashboard</a>
+    </div>`
+    : `<p>
+      You can follow the build from your dashboard. We will email you again the
+      moment there is something to look at.
+    </p>
+    <div style="text-align: center;">
+      <a href="${input.dashboardUrl}" class="button">Open your dashboard</a>
+    </div>`;
   return {
     subject: 'Your deposit is in and your build has started',
     html: baseEmailTemplate(`
@@ -67,19 +100,67 @@ export function depositReceivedEmail(input: {
     <p>${greeting(input.clientName)}</p>
     <p>
       Your deposit went through and we have started building
-      ${projectPhrase(input.businessName)}. Nothing else is needed from you
-      right now.
+      ${projectPhrase(input.businessName)}.${
+      input.briefUrl ? '' : ' Nothing else is needed from you right now.'
+    }
     </p>
-    <p>
-      You can follow the build from your dashboard. We will email you again the
-      moment there is something to look at.
-    </p>
-    <div style="text-align: center;">
-      <a href="${input.dashboardUrl}" class="button">Open your dashboard</a>
-    </div>
+    ${next}
     <p class="muted" style="margin-top: 24px;">
       If you did not pay this deposit, reply to this email and we will sort it
       out.
+    </p>
+  `),
+  };
+}
+
+/**
+ * The build is queued and we are waiting on the client.
+ *
+ * The one email in this file that asks for something. Everything else here
+ * reports; this one is the reason a site is not being built yet, so it has to
+ * be specific about what is missing without reading as a form rejection. The
+ * list comes from `brief-readiness.ts`, which produces one concrete ask per
+ * missing thing ("a name, one line, a link, a screenshot") rather than "some
+ * more information", because a client who reads the vague version sends the
+ * vague answer and we are back here a week later.
+ *
+ * Deliberately not apologetic and deliberately not a deadline. Nobody is late:
+ * the deposit bought a site and the site needs their words, which is the whole
+ * message.
+ */
+export function briefIncompleteEmail(input: {
+  briefUrl: string;
+  /** The blocking asks, already written as sentences by the readiness rule. */
+  missing: string[];
+  clientName?: string | null;
+  businessName?: string | null;
+}): RenderedEmail {
+  const items = input.missing
+    .map((entry) => `<li style="margin-bottom: 8px;">${escapeHtml(entry)}</li>`)
+    .join('\n      ');
+  return {
+    subject: 'We are waiting on a few things for your site',
+    html: baseEmailTemplate(`
+    <h1>We are waiting on a few things</h1>
+    <p>${greeting(input.clientName)}</p>
+    <p>
+      Your deposit is in and the build of ${projectPhrase(input.businessName)}
+      is queued. Before it can start we need a short list of things from you,
+      because they are the parts of the site only you can write.
+    </p>
+    <ul style="padding-left: 20px;">
+      ${items}
+    </ul>
+    <p>
+      It all goes on one page and takes about ten minutes. The build starts by
+      itself as soon as it is done, so there is nothing to tell us afterwards.
+    </p>
+    <div style="text-align: center;">
+      <a href="${input.briefUrl}" class="button">Fill in your brief</a>
+    </div>
+    <p class="muted" style="margin-top: 24px;">
+      If something on that list is not going to happen, reply to this email and
+      we will work around it.
     </p>
   `),
   };

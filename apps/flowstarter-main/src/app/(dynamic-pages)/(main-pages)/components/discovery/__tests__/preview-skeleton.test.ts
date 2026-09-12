@@ -30,11 +30,14 @@ describe('derivePreviewSkeleton', () => {
     });
 
     it('still lists all four facts, so the list cannot jump as it fills', () => {
+      // The four the quick intake actually asks about. The business name and
+      // the page count used to sit here and are no longer asked before the
+      // preview, and a list that can never fill reads as broken.
       expect(skeleton.facts.map((fact) => fact.id)).toEqual([
         'fullName',
-        'businessName',
+        'description',
+        'links',
         'brandTone',
-        'pageCount',
       ]);
     });
 
@@ -200,23 +203,46 @@ describe('derivePreviewSkeleton', () => {
       const skeleton = derivePreviewSkeleton(
         data({
           fullName: 'Ana',
-          businessName: 'Sable Fig',
+          description: 'A dental clinic in Cluj.',
+          instagramUrl: 'https://instagram.com/sablefig',
+          websiteUrl: 'https://sablefig.ro',
           brandTone: 'Calm, Warm',
-          pageCount: '5-7',
         })
       );
       expect(skeleton.answeredCount).toBe(4);
       expect(skeleton.facts.map((fact) => fact.value)).toEqual([
         'Ana',
-        'Sable Fig',
+        'A dental clinic in Cluj.',
+        // Named, not spelled out: a pasted profile URL is forty characters of
+        // noise in a list that is meant to be read at a glance.
+        'Instagram, Website',
         'Calm, Warm',
-        '5-7',
       ]);
+    });
+
+    it('names only the networks the visitor actually gave', () => {
+      const skeleton = derivePreviewSkeleton(
+        data({ linkedinUrl: 'https://linkedin.com/in/ana' })
+      );
+      expect(skeleton.facts[2].value).toBe('LinkedIn');
+    });
+
+    it('keeps a long sentence to one line', () => {
+      const skeleton = derivePreviewSkeleton(
+        data({
+          description:
+            'A boutique dental clinic in Cluj doing cosmetic work for nervous patients.',
+        })
+      );
+      const does = skeleton.facts[1].value;
+      expect(does.startsWith('A boutique dental clinic')).toBe(true);
+      expect(does.endsWith('...')).toBe(true);
+      expect(does.length).toBeLessThanOrEqual(51);
     });
 
     it('counts only the answers actually given', () => {
       const skeleton = derivePreviewSkeleton(
-        data({ fullName: 'Ana', businessName: 'Sable Fig' })
+        data({ fullName: 'Ana', description: 'A dental clinic in Cluj.' })
       );
       expect(skeleton.answeredCount).toBe(2);
     });
@@ -225,10 +251,78 @@ describe('derivePreviewSkeleton', () => {
       const skeleton = derivePreviewSkeleton(data());
       expect(skeleton.facts.map((fact) => fact.id)).toEqual([
         'fullName',
-        'businessName',
+        'description',
+        'links',
         'brandTone',
-        'pageCount',
       ]);
+      expect(skeleton.facts.map((fact) => fact.labelKey)).toEqual([
+        'landing.discovery.preview.pane.factName',
+        'landing.discovery.preview.pane.factDoes',
+        'landing.discovery.preview.pane.factLinks',
+        'landing.discovery.preview.pane.factStyle',
+      ]);
+    });
+  });
+
+  /**
+   * The intake stopped asking for the industry, the page count and the
+   * commerce answer, so the skeleton derives them from the one sentence the
+   * visitor did write. Same vocabulary either way -- a derived industry has to
+   * reshape the skeleton exactly as a chosen one did, or the shape the visitor
+   * watched fill in is not the shape the rules produce.
+   */
+  describe('what the intake no longer asks, derived from the sentence', () => {
+    it('gives a clinic its booking band without ever asking the industry', () => {
+      const sections = derivePreviewSkeleton(
+        data({ description: 'A dental clinic in Cluj doing cosmetic work.' })
+      ).sections;
+      expect(sections).toContain('booking');
+      expect(sections).toContain('services');
+    });
+
+    it('gives a roastery a menu instead of a services row', () => {
+      const sections = derivePreviewSkeleton(
+        data({ description: 'We roast and serve single origin coffee.' })
+      ).sections;
+      expect(sections).toContain('menu');
+      expect(sections).not.toContain('services');
+    });
+
+    it('declines rather than guessing when the words point nowhere', () => {
+      const sections = derivePreviewSkeleton(
+        data({ description: 'We do marine survey work in the Black Sea.' })
+      ).sections;
+      expect(sections).toEqual([
+        'hero',
+        'services',
+        'about',
+        'testimonials',
+        'contact',
+      ]);
+    });
+
+    it('never overwrites an answer the visitor actually gave', () => {
+      // A draft from before the cut, or a Brief the client has since
+      // corrected, passes through untouched.
+      const sections = derivePreviewSkeleton(
+        data({
+          description: 'We roast and serve single origin coffee.',
+          industry: 'Photography',
+        })
+      ).sections;
+      expect(sections).toContain('work');
+      expect(sections).not.toContain('menu');
+    });
+
+    it('defaults the page count and the commerce answer rather than inventing one', () => {
+      // 'unsure' and 'none' on purpose: nobody has been asked, and a product
+      // row with no catalogue behind it is the failure this avoids.
+      const skeleton = derivePreviewSkeleton(
+        data({ description: 'We sell roasted coffee beans online.' })
+      );
+      expect(skeleton.navCount).toBe(4);
+      expect(skeleton.cardCount).toBe(3);
+      expect(skeleton.hasProductRow).toBe(false);
     });
   });
 

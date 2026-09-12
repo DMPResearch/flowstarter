@@ -57,6 +57,11 @@ import {
   PLACEHOLDER_COPY_SHIPPED,
 } from './placeholder-copy';
 import {
+  describeInventedProjectFindings,
+  findInventedProjects,
+  INVENTED_PROJECT,
+} from './invented-project';
+import {
   stripPreviewTeaserFromFiles,
   TEASER_IN_PAID_BUILD,
 } from './teaser-rule';
@@ -256,6 +261,9 @@ export class PreviewGenerationPipeline {
       pageCount: input.intake.business.pageCount ?? null,
       businessType: `${input.intake.business.niche} ${input.intake.business.description ?? ''}`,
       hasBookingLink: input.hasBookingLink ?? false,
+      // Rule 6 needs to tell "no projects" from "never asked", so a brief
+      // without the question stays null rather than counting as zero.
+      projectCount: input.intake.projects?.length ?? null,
     });
     const scaffold = prunedScaffold(
       await this.library.scaffold(template.slug),
@@ -1004,6 +1012,26 @@ export function findPlaceholderCopyIssue(
   });
   return findings.length > 0
     ? describePlaceholderFindings(findings)
+    : undefined;
+}
+
+/**
+ * The invented-project gate, over the files a site actually renders.
+ *
+ * The placeholder gate asks whether the site makes a promise it cannot keep.
+ * This asks whether the site claims work that never happened: a case study
+ * headed with a client the brief never mentioned. It has an opinion only when
+ * the brief gave it a list of real projects to check against; with no list it
+ * stays silent, because a brief that was never asked the question cannot be
+ * failed for its answer.
+ */
+export function findInventedProjectIssue(
+  files: readonly { path: string; content: string }[],
+  briefProjectNames: readonly string[],
+): string | undefined {
+  const findings = findInventedProjects(files, briefProjectNames);
+  return findings.length > 0
+    ? describeInventedProjectFindings(findings, briefProjectNames)
     : undefined;
 }
 
@@ -2120,6 +2148,7 @@ export class FullSiteBuildWorker {
         pageCount: job.intake.business.pageCount ?? null,
         businessType: `${job.intake.business.niche} ${job.intake.business.description ?? ''}`,
         hasBookingLink: Boolean(job.calComUrl),
+        projectCount: job.intake.projects?.length ?? null,
       });
       // The approved preview is the preview *after* the teaser was injected.
       // A paid build seeded from it inherits the blur and the "Unlock the
@@ -2351,6 +2380,32 @@ export class FullSiteBuildWorker {
           PLACEHOLDER_COPY_SHIPPED,
           placeholderIssue,
         );
+      }
+
+      // The last output gate, and the one that protects the client's name
+      // rather than the site's shape: every project the work section presents
+      // has to be one the client actually told us about.
+      const briefProjectNames = (job.intake.projects ?? []).map(
+        (project) => project.name,
+      );
+      if (briefProjectNames.length > 0) {
+        await phase('Checking the work section against the brief');
+        let inventedIssue = findInventedProjectIssue(
+          await collectBuiltSiteText(siteRoot),
+          briefProjectNames,
+        );
+        if (inventedIssue) {
+          await say('log', inventedIssue);
+          await pass('Removing invented projects', withApproved(inventedIssue));
+          await check();
+          inventedIssue = findInventedProjectIssue(
+            await collectBuiltSiteText(siteRoot),
+            briefProjectNames,
+          );
+        }
+        if (inventedIssue) {
+          throw new FullSiteBuildFailure(INVENTED_PROJECT, inventedIssue);
+        }
       }
 
       await phase('Committing the site');

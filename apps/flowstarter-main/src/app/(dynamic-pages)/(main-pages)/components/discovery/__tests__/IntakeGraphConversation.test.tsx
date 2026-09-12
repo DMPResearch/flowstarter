@@ -465,7 +465,16 @@ describe('answering resumes the thread', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows the answered history with a skipped question labelled, not left blank', async () => {
+  it('shows the answered history with an empty answer labelled, not left blank', async () => {
+    // Every pre-preview question is required now, so nothing can be skipped
+    // on purpose. The rendering still has to survive the case: a route that
+    // reports a question answered while the script stored nothing for it --
+    // a recovered thread, a fold that validated and wrote no field -- must
+    // draw that turn as an empty answer rather than as a hole in the log.
+    const history = {
+      data: { ...EMPTY_DISCOVERY, fullName: 'Maria Ionescu' },
+      answered: ['fullName', 'links'] as IntakeQuestionId[],
+    };
     global.fetch = vi.fn(async () => ({
       ok: true,
       json: async () =>
@@ -479,16 +488,13 @@ describe('answering resumes the thread', () => {
             prompt: 'What does the business do?',
             required: true,
           },
-          data: { ...EMPTY_DISCOVERY, fullName: 'Maria Ionescu' },
-          answered: ['fullName', 'businessName'],
-          progress: { done: 2, total: 16 },
+          data: history.data,
+          answered: history.answered,
+          progress: { done: 2, total: 4 },
         } satisfies IntakeGraphTurnResult),
     })) as unknown as typeof fetch;
 
-    renderConversation({
-      data: { ...EMPTY_DISCOVERY, fullName: 'Maria Ionescu' },
-      answered: ['fullName', 'businessName'],
-    });
+    renderConversation(history);
 
     const log = await screen.findByRole('log');
     expect(within(log).getByText('Maria Ionescu')).toBeInTheDocument();

@@ -32,6 +32,16 @@
  *    endpoint the client configured on purpose, not editorial content. With
  *    no link the page is not emitted, nothing links to it, and every "book"
  *    call to action points at the contact page instead.
+ * 6. **Real projects decide whether there is a work page at all.** The
+ *    in-depth brief asks the client to list their actual products and
+ *    projects. A brief that lists none gets no work page, whatever the
+ *    priority list says, because a work page with no work is a page of
+ *    invented examples and inventing a client is the most damaging thing the
+ *    generator does. A services brief that lists one or more gets `work`
+ *    ahead of `about`: real projects are the strongest evidence a services
+ *    business can put on a page. A brief that was never asked the question -
+ *    every brief taken before the dashboard existed - behaves exactly as it
+ *    did before, which is why the count is optional and `null` is not zero.
  */
 
 import type { TemplateScaffoldFile } from './types';
@@ -112,6 +122,12 @@ export interface PageSetInput {
   businessType?: string | null;
   /** True only for a booking link that already passed its own validation. */
   hasBookingLink: boolean;
+  /**
+   * How many real projects the brief lists. `null` or absent means the brief
+   * was never asked, and rule 6 then has no opinion; `0` is an answer, and it
+   * is the answer that removes the work page.
+   */
+  projectCount?: number | null;
 }
 
 export interface PageSet {
@@ -146,11 +162,46 @@ export function siteKindFor(businessType: string | null | undefined): SiteKind {
   return PORTFOLIO_SIGNALS.test(businessType ?? '') ? 'portfolio' : 'services';
 }
 
+/**
+ * Rule 6, applied to the priority list before the budget cuts it.
+ *
+ * Reordering here rather than after the cut is deliberate. The budget counts
+ * pages the client paid for, so a brief with no projects should still get the
+ * number of pages it bought - it gets the next page down the list instead of
+ * a short site. A brief that was never asked the question gets the list
+ * unchanged, byte for byte, which is what keeps every pre-existing brief
+ * building exactly as it did.
+ */
+function projectAwarePriority(
+  kind: SiteKind,
+  projectCount: number | null | undefined,
+): readonly string[] {
+  const base = CONTENT_PRIORITY[kind];
+  if (projectCount === null || projectCount === undefined) return base;
+  // A negative count is nonsense, and the honest reading of nonsense here is
+  // the same as zero: nothing to show.
+  if (projectCount <= 0) return base.filter((page) => page !== 'work');
+  if (kind !== 'services') return base;
+  const withoutWork = base.filter((page) => page !== 'work');
+  const beforeAbout = withoutWork.indexOf('about');
+  if (beforeAbout < 0) return base;
+  return [
+    ...withoutWork.slice(0, beforeAbout),
+    'work',
+    ...withoutWork.slice(beforeAbout),
+  ];
+}
+
+/** True when this brief buys a work section at all. Rule 6, asked directly. */
+export function worksSectionAllowed(pageSet: PageSet): boolean {
+  return pageSet.allowed.includes('work');
+}
+
 /** The whole rule, applied. */
 export function derivePageSet(input: PageSetInput): PageSet {
   const kind = siteKindFor(input.businessType);
   const budget = pageBudget(input.pageCount);
-  const priority = CONTENT_PRIORITY[kind];
+  const priority = projectAwarePriority(kind, input.projectCount);
 
   const content = priority.slice(0, Math.max(2, budget));
   const booking = input.hasBookingLink;

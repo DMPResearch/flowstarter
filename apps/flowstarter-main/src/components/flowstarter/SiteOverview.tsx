@@ -17,6 +17,7 @@
 import Link from 'next/link';
 import {
   CalendarCheck,
+  ClipboardList,
   History,
   Mail,
   Pencil,
@@ -37,13 +38,14 @@ import type { SiteOverviewTile, SiteOverviewTileKey } from './site-overview';
  * What each tile is about, as a colour. A client scanning the row should be
  * able to tell enquiries from bookings without reading the labels, so the
  * subject owns the hue: money-and-edits indigo, messages blue, calendar teal,
- * their own work violet, the shop green.
+ * their own work violet, their own words pink, the shop green.
  */
 const SUBJECT_PALETTE: Record<SiteOverviewTileKey, Tone> = {
   credits: 'accent',
   enquiries: 'info',
   bookings: 'teal',
   changes: 'violet',
+  brief: 'pink',
   store: 'ok',
 };
 
@@ -52,6 +54,7 @@ const SUBJECT_ICON: Record<SiteOverviewTileKey, LucideIcon> = {
   enquiries: Mail,
   bookings: CalendarCheck,
   changes: History,
+  brief: ClipboardList,
   store: ShoppingBag,
 };
 

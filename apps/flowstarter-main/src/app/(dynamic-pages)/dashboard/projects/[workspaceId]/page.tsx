@@ -12,6 +12,7 @@ import { notFound, redirect } from 'next/navigation';
 import { requireWorkspaceAccess } from '@/lib/api-auth';
 import { notifyClientBuildNeedsReview } from '@/lib/flowstarter/build-failure-notice';
 import { editCreditPosition } from '@/lib/flowstarter/edit-credits';
+import { loadBriefSnapshot } from '@/lib/flowstarter/brief-data';
 import { loadSiteOverviewCounts } from '@/lib/flowstarter/site-overview-data';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import { OpenAsks } from '@/components/flowstarter/OpenAsks';
@@ -72,6 +73,7 @@ export default async function ClientProjectPage({
     { data: buildRows },
     counts,
     { data: previewRow },
+    brief,
   ] = await Promise.all([
     supabase
       .from('workspace_hosts')
@@ -106,8 +108,18 @@ export default async function ClientProjectPage({
       .order('expires_at', { ascending: false })
       .limit(1)
       .maybeSingle(),
+    // The brief, read through the same loader the brief page uses, so the
+    // tile below and that page cannot disagree about what is outstanding.
+    loadBriefSnapshot(workspaceId),
   ]);
-  const buildSignal = clientBuildSignal(buildRows ?? [], now);
+  // The brief is the second input the signal needs: a FULL_SITE_BUILD that the
+  // worker is deliberately holding back until the brief is ready must not be
+  // reported to the client as a stalled build. Same two conditions the worker
+  // claims on, `ready_at` or an operator override, so the page and the queue
+  // cannot disagree about why nothing is happening.
+  const buildSignal = clientBuildSignal(buildRows ?? [], now, {
+    briefReady: Boolean(brief.brief.readyAt || brief.brief.overrideAt),
+  });
 
   // The client is reading the bad news; this is the same news in their inbox,
   // once per job id. `notifyClientOnce` owns the dedupe and cannot throw, so
@@ -143,6 +155,12 @@ export default async function ClientProjectPage({
   // Credits are spent on the proposal, not the apply, so the number that ran
   // the client's allowance down is the proposed count, not the applied one.
   const tiles = siteOverviewTiles({
+    // The same snapshot the brief page renders, from the same loader, so the
+    // tile and the page can never disagree about what is still outstanding.
+    brief: {
+      href: `/dashboard/projects/${workspaceId}/brief`,
+      readiness: brief.readiness,
+    },
     live: site !== null,
     siteHref: site?.href,
     tier: workspace.tier_name,

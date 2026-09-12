@@ -37,7 +37,7 @@ const SRC_DIR = join(__dirname, '..', 'src');
  * the allow-list below) -- listing it here keeps this test honest about which
  * tables it is deliberately relaxing, rather than skipping them silently.
  *
- * The worker queries five of these today. The rest are listed because the
+ * The worker queries six of these today. The rest are listed because the
  * guard has to be standing before the query arrives, not after: a worker that
  * grows an unfiltered read of `site_versions` next month fails here, at the
  * moment it is written.
@@ -59,6 +59,11 @@ const TENANT_TABLES = new Set([
   'flowstarter_agent_jobs',
   'flowstarter_agent_job_events',
   'flowstarter_project_artifacts',
+  // The in-depth brief the client fills in after the deposit. Read by
+  // `claim()` on every FULL_SITE_BUILD, which is why it is here and not in the
+  // list below: a read of the wrong workspace's row would start a build on one
+  // client's brief under another client's name.
+  'workspace_briefs',
   // Not queried yet. The guard stands anyway.
   'ai_audit_logs',
   'asset_rights_confirmations',
