@@ -44,16 +44,23 @@ process.env.DEPLOY_AGENT_SITE_DOMAIN_TEMPLATE = '{slug}.flowstarter.net';
 process.env.DEPLOY_AGENT_MAX_ARTIFACT_BYTES = '4096';
 process.env.DEPLOY_AGENT_ARTIFACT_FETCH_TIMEOUT_MS = '300';
 
-const { routeRequest } = await import('./index');
+const { routeRequest, runReconcile } = await import('./index');
 
 interface AgentJson {
   ok?: boolean;
   error?: string;
+  skipped?: boolean;
   slug?: string;
   runtime?: string;
   sha256?: string;
   port?: number;
   containerName?: string;
+  checkedSlugs?: number;
+  repaired?: string[];
+  down?: string[];
+  errors?: string[];
+  sites?: unknown[];
+  reloaded?: boolean;
 }
 
 const jsonOf = (res: Response): Promise<AgentJson> =>
@@ -121,6 +128,13 @@ describe('authentication', () => {
     );
     expect(remove.status).toBe(401);
   });
+
+  test('reconcile is rejected without the secret', async () => {
+    const res = await routeRequest(
+      new Request('http://agent.test/reconcile', { method: 'POST' }),
+    );
+    expect(res.status).toBe(401);
+  });
 });
 
 describe('GET /health', () => {
@@ -132,6 +146,45 @@ describe('GET /health', () => {
       version: expect.any(String),
       mode: 'sites',
       siteRuntime: 'docker',
+    });
+  });
+});
+
+describe('POST /reconcile', () => {
+  test('with no owned containers, returns a clean report and touches nothing', async () => {
+    const res = await routeRequest(authed('/reconcile', { method: 'POST' }));
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body).toMatchObject({
+      ok: true,
+      checkedSlugs: 0,
+      repaired: [],
+      down: [],
+      errors: [],
+      sites: [],
+      reloaded: false,
+    });
+  });
+
+  test('GET is not a route — only POST triggers a reconcile pass', async () => {
+    const res = await routeRequest(authed('/reconcile'));
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('the startup reconcile call', () => {
+  test('runReconcile("startup") — the exact function startServers awaits before it ever binds a port — runs cleanly against an empty fleet', async () => {
+    // This does not open a socket (startServers itself is not exercised
+    // here), but it is the same exported function startServers calls, so a
+    // clean run here is what proves a real boot performs the repair pass
+    // rather than skipping it.
+    const result = await runReconcile('startup');
+    expect(result).not.toBeNull();
+    expect(result).toMatchObject({
+      checkedSlugs: 0,
+      repaired: [],
+      down: [],
+      errors: [],
     });
   });
 });

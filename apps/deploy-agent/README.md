@@ -11,6 +11,7 @@ Bootstrap is handled by the cloud-init script in `apps/flowstarter-main/src/lib/
 | `GET` | `/health` | Liveness and configuration; authenticated |
 | `POST` | `/sites/:slug/deploy` | Fetch artifact, extract, write snippet, reload Caddy |
 | `DELETE` | `/sites/:slug` | Remove site dir + snippet, reload Caddy |
+| `POST` | `/reconcile` | Re-check every owned container's real port against its Caddy snippet and repair drift; authenticated |
 | `GET` | `/tls-ask?domain=…` | No auth. 200 if this agent serves that hostname: a final `{slug}` name in sites mode, a preview name in previews mode |
 
 Every endpoint except `/tls-ask` requires `Authorization: Bearer <DEPLOY_AGENT_SHARED_SECRET>`, `/health` included: reaching it is how a connecting host proves the two sides hold the same secret, so an endpoint that answered everybody would prove nothing. `/tls-ask` stays open because Caddy's on-demand TLS ask cannot send a bearer token; it is loopback-only and reveals nothing but whether a hostname is being served. It answers only for names this agent's own templates produce AND that have a snippet on disk, so pointing a DNS record at the box is not enough to have a certificate minted on your behalf.
@@ -78,12 +79,16 @@ container:
   `caddy:2.11.4-alpine` (same hardening as `examples/dmpresearch/Dockerfile`).
 - The container runs `--read-only --cap-drop ALL --security-opt
   no-new-privileges:true`, with `--pids-limit`/`--memory` caps, and
-  publishes its port on loopback only (`-p 127.0.0.1::8080`, Docker-assigned).
-  Every container and image carries `flowstarter.deploy-agent`,
-  `flowstarter.mode` and `flowstarter.slug` labels; `DELETE /sites/:slug`
-  removes only resources carrying this site's labels.
+  publishes its port on loopback only, at a fixed, explicit host port
+  (`-p 127.0.0.1:<port>:8080`, never `127.0.0.1::8080`). Every container
+  and image carries `flowstarter.deploy-agent`, `flowstarter.mode` and
+  `flowstarter.slug` labels; `DELETE /sites/:slug` removes only resources
+  carrying this site's labels.
 - Containers run with `--restart unless-stopped`, so a host reboot or a
-  Docker daemon restart brings every site back without anybody logging in.
+  Docker daemon restart brings every site back without anybody logging in,
+  on the same host port it was already published on. See "Stable ports and
+  reconciliation" below for why the port has to be explicit for that to be
+  true.
 - Deploys are blue/green per slug (two name slots). The new container must
   answer `200` on `/` locally before the Caddy snippet is rewritten to
   `reverse_proxy` it — a 404 is not ready, which is exactly what a build
@@ -106,6 +111,47 @@ Extra env in docker mode:
   the copies compiled into the binary. For patching the base image without
   waiting for a new agent build. A directory that is set but unreadable
   stops the agent at startup rather than silently falling back.
+- `DEPLOY_AGENT_SITE_PORT_RANGE` (default `20000-29999`)
+- `DEPLOY_AGENT_PORTS_STATE_FILE` (default `<SITES_ROOT>/.ports.json`)
+- `DEPLOY_AGENT_RECONCILE_INTERVAL_MS` (default `300000`, five minutes; `0` disables the interval, startup reconciliation still runs)
+
+### Stable ports and reconciliation
+
+A real incident on the first Hetzner host: a site's container published on
+whatever ephemeral host port Docker picked (`-p 127.0.0.1::8080`). After a
+reboot, Docker's `unless-stopped` restart policy brought the container back
+on a *different* ephemeral port, and the site's Caddy snippet still named
+the old one. The container was healthy; the site was a 502.
+
+The fix is that the host port is no longer a surprise:
+
+- Each slug gets a deterministic host port derived from a hash of the slug
+  itself, inside `DEPLOY_AGENT_SITE_PORT_RANGE`. A collision with another
+  slug's port is walked forward to the next free one. The assignment is
+  recorded in a small JSON state file (`src/site-ports.ts`,
+  `DEPLOY_AGENT_PORTS_STATE_FILE`, `/var/www/sites/.ports.json` by
+  default) so it survives an agent restart and holds for the slug's whole
+  lifetime, not just until the next redeploy. `DELETE /sites/:slug` frees
+  the entry for reuse.
+- Blue/green keeps working exactly as before, but the two slots get the
+  two stable ports from that same pair instead of two ephemeral ones, and
+  every `docker run` binds explicitly: `-p 127.0.0.1:<port>:8080`, never
+  `-p 127.0.0.1::8080`. A container's host port is now fixed for its whole
+  life, including across a plain `docker restart`.
+- On top of that, `src/docker-runtime.ts`'s `reconcileDockerSites` runs at
+  startup, on a configurable interval (`DEPLOY_AGENT_RECONCILE_INTERVAL_MS`,
+  five minutes by default), and on demand via `POST /reconcile`. It lists
+  every container this agent owns, reads the port each one actually
+  publishes, and compares it against that site's Caddy snippet (and,
+  informationally, the ports state file). A snippet that disagrees is
+  rewritten to the real port and Caddy is validated and reloaded once for
+  the whole pass; if that reload fails, every rewrite from the pass is put
+  back exactly as it was. A container that does not answer is reported as
+  down and its route is left alone: reconcile never reroutes traffic away
+  from a container just because it is unhealthy, only toward one that is
+  proven healthy. The startup pass is what would have caught the original
+  incident immediately after the reboot rather than leaving the site dark
+  until somebody noticed.
 
 ## Previews mode
 
