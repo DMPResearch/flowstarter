@@ -112,8 +112,18 @@ export async function settleChangeRequestCheckout(
     typeof session.payment_intent === 'string'
       ? session.payment_intent
       : session.payment_intent?.id ?? null;
+  // `markChangeRequestPaid` is the money write, and it throws on both a
+  // database error and a status that Stripe is not allowed to move (only an
+  // `accepted` request becomes `paid`). The webhook turns that into a 500 and
+  // Stripe retries.
   await markChangeRequestPaid(db, row, { paymentIntentId });
-  await db.from('project_events').insert({
+
+  // The timeline entry is not money state. Same contract as
+  // `recordDispatchFailure` in deposit-workflow.ts: losing the note is not a
+  // reason to fail a payment that has already been recorded, and failing here
+  // would send Stripe back to a request that is now `paid`, where the retry
+  // reports `already_paid` and writes the note no sooner.
+  const { error: eventError } = await db.from('project_events').insert({
     workspace_id: workspaceId,
     kind: 'change_request_paid',
     actor: 'stripe',
@@ -124,5 +134,11 @@ export async function settleChangeRequestCheckout(
       checkoutSessionId: session.id,
     },
   });
+  if (eventError) {
+    console.error(
+      `[Flowstarter] change request ${changeRequestId} was paid but its ` +
+        `timeline entry could not be written: ${eventError.message}`
+    );
+  }
   return { changeRequestId, outcome: 'paid' };
 }

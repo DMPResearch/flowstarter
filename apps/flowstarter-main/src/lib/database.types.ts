@@ -1618,6 +1618,42 @@ export type Database = {
           },
         ]
       }
+      stripe_events: {
+        Row: {
+          attempts: number
+          created: string
+          id: string
+          last_error: string | null
+          object_id: string | null
+          outcome: string | null
+          processed_at: string | null
+          received_at: string
+          type: string
+        }
+        Insert: {
+          attempts?: number
+          created: string
+          id: string
+          last_error?: string | null
+          object_id?: string | null
+          outcome?: string | null
+          processed_at?: string | null
+          received_at?: string
+          type: string
+        }
+        Update: {
+          attempts?: number
+          created?: string
+          id?: string
+          last_error?: string | null
+          object_id?: string | null
+          outcome?: string | null
+          processed_at?: string | null
+          received_at?: string
+          type?: string
+        }
+        Relationships: []
+      }
       vault_encrypted_secrets: {
         Row: {
           created_at: string

@@ -173,6 +173,44 @@ export class StripeBilling {
   }
 
   /**
+   * The invoice already recorded on a workspace, as Stripe sees it now.
+   *
+   * This is what makes "send the invoice" safe to press twice. The routes call
+   * it before creating anything, so a retried or double-submitted request
+   * reuses the open invoice instead of billing the same client a second time
+   * for the same milestone.
+   *
+   * Returns null both when there is no recorded invoice and when Stripe cannot
+   * find the one we recorded (a deleted draft, or a row that predates a key
+   * rotation). Neither is a reason to refuse to bill — the caller creates a
+   * fresh invoice — so a lookup failure is logged, not thrown.
+   */
+  async lookupInvoice(invoiceId: string | null | undefined): Promise<{
+    invoiceId: string;
+    hostedUrl: string | null;
+    status: Stripe.Invoice.Status;
+    amountMinor: number;
+  } | null> {
+    if (!invoiceId) return null;
+    try {
+      const invoice = await this.stripe.invoices.retrieve(invoiceId);
+      return {
+        invoiceId,
+        hostedUrl: invoice.hosted_invoice_url ?? null,
+        status: invoice.status ?? 'draft',
+        amountMinor: invoice.amount_due ?? 0,
+      };
+    } catch (e) {
+      console.warn(
+        `[Billing] recorded invoice ${invoiceId} could not be read back from ` +
+          'Stripe; treating it as absent: ' +
+          (e instanceof Error ? e.message : 'unknown error')
+      );
+      return null;
+    }
+  }
+
+  /**
    * Create a Stripe Subscription for the monthly or yearly care fee.
    * `trialPeriodDays` defaults to 30 (first month free) per pricing copy.
    * Caller is responsible for persisting subscription_id and resetting any

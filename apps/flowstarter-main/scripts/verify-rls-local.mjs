@@ -434,6 +434,16 @@ export const SERVER_ONLY_TABLES = [
   // is copied into `assets`, which IS tenant scoped and IS proved below.
   'funnel_assets',
   'discovery_leads',
+  // The Stripe event ledger. Keyed on Stripe's event id, not a workspace: a
+  // Stripe object maps to a workspace only through the metadata the event
+  // carries, and several event types (a booking deposit from an anonymous
+  // prospect, an invoice for a workspace that was never created) have no
+  // workspace at all while still needing a row so they are not reprocessed. A
+  // nullable workspace_id would put it in public.tenant_key_tables() and owe
+  // the guard a membership policy that could never be written, so it is
+  // server-only instead and proved here. See
+  // supabase/migrations/20260912163000_stripe_events.sql.
+  'stripe_events',
   'custom_inquiries',
   'hosting_servers',
   'workspace_billing_profiles',

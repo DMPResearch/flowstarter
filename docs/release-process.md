@@ -126,6 +126,29 @@ Missing Clerk credentials or an unset `STAGING_URL` warn and skip on purpose.
 `deploy-prod` never skips: a missing secret **fails** it, because publishing
 production is the point of a release.
 
+## After a release: Stripe webhooks
+
+A deploy replaces the container the Stripe webhook lands on, so some deliveries
+during the switch get a connection error or a 500. That is expected and safe:
+the route only answers 200 once the state is in the database, and every event
+is written to `public.stripe_events` before it is processed, so Stripe's retry
+finds work rather than an acknowledgement. Nothing is processed twice — an
+event already stamped `processed_at` is skipped and acknowledged — and an event
+that arrives out of order after the outage cannot overwrite newer state.
+
+After a release, check for events the retries never got through:
+
+```sql
+select id, type, object_id, attempts, last_error
+from stripe_events
+where processed_at is null
+order by received_at desc;
+```
+
+Anything listed there is a payment or subscription change that has not been
+applied. `docs/billing/webhooks.md` has the whole contract, the ledger schema,
+and how to reprocess one event by id.
+
 ## Secrets and variables
 
 Depot does not read GitHub's secret store. Import with

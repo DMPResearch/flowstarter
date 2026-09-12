@@ -39,6 +39,32 @@ export function sanitizeDaysUntilDue(raw: unknown): number {
   return Math.floor(n);
 }
 
+/**
+ * What to do with an invoice this workspace already has on Stripe.
+ *
+ * The operator's "send the balance invoice" button is a POST with no
+ * idempotency key behind it, so a double click, a retried request or a second
+ * operator produced a second real invoice for a real customer — two balances
+ * owed for one engagement, and whichever the webhook saw last won. The routes
+ * now look the recorded invoice up first and ask this:
+ *
+ *   reuse        — it is still collectible (draft or open). Hand the client
+ *                  the same hosted link again instead of a second bill.
+ *   already-paid — Stripe says it is settled. Refuse: the workspace row has
+ *                  simply not caught up with its own webhook yet.
+ *   create       — void, uncollectible, or no invoice at all. There is nothing
+ *                  to collect on, so a fresh invoice is the right answer.
+ */
+export type InvoiceReuseVerdict = 'reuse' | 'already-paid' | 'create';
+
+export function invoiceReuseVerdict(
+  status: string | null | undefined
+): InvoiceReuseVerdict {
+  if (status === 'draft' || status === 'open') return 'reuse';
+  if (status === 'paid') return 'already-paid';
+  return 'create';
+}
+
 /** Maps StripeBillingError codes to HTTP status codes. */
 export function mapBillingError(e: unknown): NextResponse {
   if (e instanceof StripeBillingError) {

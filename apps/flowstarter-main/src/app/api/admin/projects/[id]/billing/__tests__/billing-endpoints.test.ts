@@ -26,7 +26,12 @@ const state = vi.hoisted(() => ({
 // ─── Stripe SDK mock ────────────────────────────────────────────────────────
 const stripeMock = {
   customers: { create: vi.fn() },
-  invoices: { create: vi.fn(), finalizeInvoice: vi.fn(), sendInvoice: vi.fn() },
+  invoices: {
+    create: vi.fn(),
+    finalizeInvoice: vi.fn(),
+    sendInvoice: vi.fn(),
+    retrieve: vi.fn(),
+  },
   invoiceItems: { create: vi.fn() },
   subscriptions: {
     create: vi.fn(),
@@ -847,6 +852,137 @@ describe('POST /api/admin/projects/[id]/billing/final-invoice', () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.invoice.clientEmailed).toBe(false);
+  });
+
+  // ─── One bill per milestone, however many times the button is pressed ────
+
+  it('reuses the open invoice instead of billing the client twice', async () => {
+    setupProjectFetchAndUpdate({
+      ...baseProject,
+      stripe_customer_id: 'cus_existing',
+      deposit_status: 'paid',
+      final_status: 'sent',
+      final_invoice_id: 'in_already',
+    });
+    stripeMock.invoices.retrieve.mockResolvedValue({
+      id: 'in_already',
+      hosted_invoice_url: 'https://invoice.stripe.com/already',
+      status: 'open',
+      amount_due: 63920,
+    });
+    const { POST } = await import('../../../[id]/billing/final-invoice/route');
+    const res = await POST(makeReq({}), {
+      params: Promise.resolve({ id: 'proj_1' }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.invoice.reused).toBe(true);
+    expect(body.invoice.id).toBe('in_already');
+    expect(body.invoice.hostedUrl).toBe('https://invoice.stripe.com/already');
+    // The whole point: no second invoice exists on the customer.
+    expect(stripeMock.invoices.create).not.toHaveBeenCalled();
+    // The operator asked for the client to be told, so the same link is sent.
+    expect(clientNotifyMock.notifyClientOnce).toHaveBeenCalledOnce();
+  });
+
+  it('reuses a draft invoice too', async () => {
+    setupProjectFetchAndUpdate({
+      ...baseProject,
+      stripe_customer_id: 'cus_existing',
+      deposit_status: 'paid',
+      final_invoice_id: 'in_draft_left_over',
+    });
+    stripeMock.invoices.retrieve.mockResolvedValue({
+      id: 'in_draft_left_over',
+      hosted_invoice_url: null,
+      status: 'draft',
+      amount_due: 63920,
+    });
+    const { POST } = await import('../../../[id]/billing/final-invoice/route');
+    const res = await POST(makeReq({}), {
+      params: Promise.resolve({ id: 'proj_1' }),
+    });
+    expect(res.status).toBe(200);
+    expect(stripeMock.invoices.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses with 409 when Stripe says the recorded invoice is already paid', async () => {
+    // The workspace row has not caught up with its own webhook. Billing again
+    // would take the balance twice.
+    setupProjectFetchAndUpdate({
+      ...baseProject,
+      stripe_customer_id: 'cus_existing',
+      deposit_status: 'paid',
+      final_status: 'sent',
+      final_invoice_id: 'in_settled',
+    });
+    stripeMock.invoices.retrieve.mockResolvedValue({
+      id: 'in_settled',
+      hosted_invoice_url: 'https://invoice.stripe.com/settled',
+      status: 'paid',
+      amount_due: 0,
+    });
+    const { POST } = await import('../../../[id]/billing/final-invoice/route');
+    const res = await POST(makeReq({}), {
+      params: Promise.resolve({ id: 'proj_1' }),
+    });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.invoiceId).toBe('in_settled');
+    expect(stripeMock.invoices.create).not.toHaveBeenCalled();
+  });
+
+  it('creates a fresh invoice when the recorded one was voided', async () => {
+    setupProjectFetchAndUpdate({
+      ...baseProject,
+      stripe_customer_id: 'cus_existing',
+      deposit_status: 'paid',
+      final_invoice_id: 'in_void',
+    });
+    stripeMock.invoices.retrieve.mockResolvedValue({
+      id: 'in_void',
+      hosted_invoice_url: null,
+      status: 'void',
+      amount_due: 63920,
+    });
+    stripeMock.invoices.create.mockResolvedValue({ id: 'in_draft3' });
+    stripeMock.invoiceItems.create.mockResolvedValue({});
+    stripeMock.invoices.finalizeInvoice.mockResolvedValue({
+      id: 'in_final3',
+      hosted_invoice_url: 'https://invoice.stripe.com/ghi',
+      status: 'open',
+    });
+    const { POST } = await import('../../../[id]/billing/final-invoice/route');
+    const res = await POST(makeReq({}), {
+      params: Promise.resolve({ id: 'proj_1' }),
+    });
+    expect(res.status).toBe(200);
+    expect(stripeMock.invoices.create).toHaveBeenCalledOnce();
+  });
+
+  it('creates a fresh invoice when Stripe cannot find the recorded one', async () => {
+    setupProjectFetchAndUpdate({
+      ...baseProject,
+      stripe_customer_id: 'cus_existing',
+      deposit_status: 'paid',
+      final_invoice_id: 'in_gone',
+    });
+    stripeMock.invoices.retrieve.mockRejectedValue(
+      new Error('No such invoice: in_gone')
+    );
+    stripeMock.invoices.create.mockResolvedValue({ id: 'in_draft4' });
+    stripeMock.invoiceItems.create.mockResolvedValue({});
+    stripeMock.invoices.finalizeInvoice.mockResolvedValue({
+      id: 'in_final4',
+      hosted_invoice_url: 'https://invoice.stripe.com/jkl',
+      status: 'open',
+    });
+    const { POST } = await import('../../../[id]/billing/final-invoice/route');
+    const res = await POST(makeReq({}), {
+      params: Promise.resolve({ id: 'proj_1' }),
+    });
+    expect(res.status).toBe(200);
+    expect(stripeMock.invoices.create).toHaveBeenCalledOnce();
   });
 });
 
