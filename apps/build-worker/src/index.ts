@@ -105,7 +105,13 @@ function report(message: string): void {
   machineLog(message);
 }
 
-const validator = config.local?.stubAgent
+// The validator choice is a rule, not a side effect of the stub agent:
+// SITE_REBUILD and CHANGE_REQUEST_BUILD never call the agent at all, and
+// FULL_SITE_BUILD may run with a stubbed one, but every job kind still has
+// to pass a real `pnpm install && pnpm run build` before its output is
+// packaged or PR'd. Only `config.skipValidation` — refused by config.ts
+// outside development — may swap in the noop validator.
+const validator = config.skipValidation
   ? new NoopSiteValidator()
   : new CommandSiteValidator({
       commands: config.validateCommands,
@@ -275,9 +281,11 @@ async function start(): Promise<void> {
       ? `local deploy via ${config.local.flowstarterMainUrl}` +
         (config.local.stubAgent ? ', stub agent' : '')
       : `repo ${config.github?.owner}/${config.github?.repo}`;
-    const validation = config.validateDocker
-      ? `docker ${config.validateDocker.image}`
-      : 'native';
+    const validation = config.skipValidation
+      ? 'noop (FLOWSTARTER_BUILD_SKIP_VALIDATION)'
+      : config.validateDocker
+        ? `docker ${config.validateDocker.image}`
+        : 'native';
     console.info(
       `[build-worker] v${VERSION} listening on ${config.hostname}:${config.port} ` +
         `(mode ${config.publishMode}, model ${config.pi.modelId}, ` +

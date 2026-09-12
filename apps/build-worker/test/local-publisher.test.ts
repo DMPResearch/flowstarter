@@ -13,6 +13,7 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ArtifactStore, artifactTokenFromPath } from '../src/artifacts';
 import { LocalPublishError, LocalSitePublisher } from '../src/local-publisher';
+import { CommandSiteValidator } from '../src/validator';
 
 const execFileAsync = promisify(execFile);
 
@@ -239,6 +240,118 @@ describe('LocalSitePublisher', () => {
         siteRoot,
       }),
     ).rejects.toThrow(/deploy-agent 502/);
+  });
+});
+
+/**
+ * The bug this covers: `LocalSitePublisher` falls back to packaging the site
+ * root itself when `dist/` does not exist (`resolveSiteOutputDir`), which is
+ * correct for a manifest that is already plain HTML but disastrous for a raw
+ * Astro source tree that was never built -- the deploy-agent then serves
+ * `package.json`/`src/` instead of a site and 404s at `/`. The fix ensures a
+ * `SITE_REBUILD` (and every other job kind) always runs the real
+ * `CommandSiteValidator` first, so `dist/` exists by the time this publisher
+ * ever sees the workspace. This proves that chain end to end, on a fixture
+ * that starts as raw source with no `dist/` at all.
+ */
+describe('LocalSitePublisher after a real validator run', () => {
+  it('packages dist/index.html from a rebuild once the validator has actually built the site', async () => {
+    // A raw, unbuilt workspace: only a manifest and a source file, the exact
+    // shape a SITE_REBUILD worktree has before validation runs. No dist/.
+    const rawSiteRoot = join(scratch, 'raw-site');
+    await mkdir(join(rawSiteRoot, 'src'), { recursive: true });
+    await writeFile(
+      join(rawSiteRoot, 'package.json'),
+      JSON.stringify({ name: 'calm-path', private: true }),
+      'utf8',
+    );
+    await writeFile(
+      join(rawSiteRoot, 'src', 'index.astro'),
+      '<h1>Calm Path (unbuilt)</h1>',
+      'utf8',
+    );
+
+    // The trusted build gate, standing in for `pnpm install && pnpm run
+    // build` with a deterministic command so the test stays hermetic --
+    // the same style `validator.test.ts` uses. It writes the one thing that
+    // matters here: a real dist/index.html.
+    const validator = new CommandSiteValidator({
+      commands: [
+        {
+          bin: 'node',
+          args: [
+            '-e',
+            'require("fs").mkdirSync("dist",{recursive:true});' +
+              'require("fs").writeFileSync("dist/index.html","<h1>Calm Path</h1>");',
+          ],
+        },
+      ],
+      timeoutMs: 10_000,
+    });
+    await validator.validate(rawSiteRoot, 'full');
+
+    const calls: Call[] = [];
+    await publisher({ calls }).create({
+      projectId: PROJECT_ID,
+      branch: `client/flowstarter-${PROJECT_ID}`,
+      worktreePath: join(scratch, 'worktree'),
+      commitSha: 'a'.repeat(40),
+      siteRoot: rawSiteRoot,
+    });
+
+    const extracted = await extractOnlyArtifact();
+    expect(await readFile(join(extracted, 'index.html'), 'utf8')).toContain(
+      'Calm Path',
+    );
+    // Only dist/ was packaged, never the raw source or the manifest that
+    // would have shipped had the validator been skipped (the bug).
+    await expect(
+      readFile(join(extracted, 'package.json'), 'utf8'),
+    ).rejects.toThrow();
+    await expect(
+      readFile(join(extracted, 'src/index.astro'), 'utf8'),
+    ).rejects.toThrow();
+  });
+
+  it('would package the raw source tree if the validator never ran -- the shape of the bug this closes', async () => {
+    // No validator runs here at all: this documents the fallback in
+    // `resolveSiteOutputDir` that makes skipping the real build dangerous,
+    // it does not endorse skipping it. Production and staging can never
+    // reach this path (`FLOWSTARTER_BUILD_SKIP_VALIDATION` is refused
+    // there); this fixture is the raw-source shape a NoopSiteValidator run
+    // would leave behind.
+    const rawSiteRoot = join(scratch, 'unbuilt-site');
+    await mkdir(join(rawSiteRoot, 'src'), { recursive: true });
+    await writeFile(
+      join(rawSiteRoot, 'package.json'),
+      JSON.stringify({ name: 'calm-path', private: true }),
+      'utf8',
+    );
+    await writeFile(
+      join(rawSiteRoot, 'src', 'index.astro'),
+      '<h1>Calm Path (unbuilt)</h1>',
+      'utf8',
+    );
+
+    const calls: Call[] = [];
+    await publisher({ calls }).create({
+      projectId: PROJECT_ID,
+      branch: `client/flowstarter-${PROJECT_ID}`,
+      worktreePath: join(scratch, 'worktree'),
+      commitSha: 'a'.repeat(40),
+      siteRoot: rawSiteRoot,
+    });
+
+    const extracted = await extractOnlyArtifact();
+    // Raw source shipped instead of a built site: no index.html at the
+    // root, only the unbuilt manifest and sources -- the deploy-agent has
+    // nothing to serve at `/` and 404s, exactly as reported.
+    await expect(
+      readFile(join(extracted, 'index.html'), 'utf8'),
+    ).rejects.toThrow();
+    expect(await readFile(join(extracted, 'package.json'), 'utf8')).toContain(
+      'calm-path',
+    );
   });
 });
 

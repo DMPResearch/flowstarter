@@ -37,7 +37,15 @@ and what the owner has to do once to make that true.
   the production one, pointed at the same local Supabase CLI stack
   (`SUPABASE_URL=http://127.0.0.1:54321` and the stack's own service role
   key) rather than a separate cloud project. There is no per-pull-request
-  worker.
+  worker. Its build validator (`pnpm install && pnpm run build`, `dist/`
+  must exist) always runs for every job kind — `FULL_SITE_BUILD`,
+  `SITE_REBUILD` and `CHANGE_REQUEST_BUILD` alike. `FLOWSTARTER_BUILD_STUB_AGENT`
+  (local/dev only) replaces just the Pi coding session, never the validator;
+  the one switch that can is `FLOWSTARTER_BUILD_SKIP_VALIDATION`, documented
+  in `apps/build-worker/.env.example` as unit-test-only, and `loadConfig`
+  refuses to boot with it set once `FLOWSTARTER_ENV` resolves to staging or
+  production — so this host, and any Hetzner slot's worker, can never ship
+  an unbuilt Astro source tree the way a stubbed validator once did.
 
 ## One-time setup, by the owner
 

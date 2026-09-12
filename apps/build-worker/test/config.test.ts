@@ -21,7 +21,10 @@ describe('worker configuration', () => {
     expect(config.port).toBe(8787);
     expect(config.concurrency).toBe(1);
     expect(config.pi.provider).toBe('openrouter');
-    expect(config.github).toMatchObject({ owner: 'flowstarter', repo: 'sites' });
+    expect(config.github).toMatchObject({
+      owner: 'flowstarter',
+      repo: 'sites',
+    });
     expect(config.validateCommands.map((c) => c.bin)).toEqual(['pnpm', 'pnpm']);
     expect(config.stagingUrlTemplate).toContain('{projectId}');
   });
@@ -41,7 +44,9 @@ describe('worker configuration', () => {
 
   it('refuses to start without model credentials', () => {
     expect(() =>
-      loadConfig(validEnv({ PI_API_KEY: undefined, OPENROUTER_API_KEY: undefined })),
+      loadConfig(
+        validEnv({ PI_API_KEY: undefined, OPENROUTER_API_KEY: undefined }),
+      ),
     ).toThrow(ConfigError);
   });
 
@@ -52,27 +57,29 @@ describe('worker configuration', () => {
   });
 
   it('defaults the staging URL template to flowstarter.dev outside production', () => {
-    expect(loadConfig(validEnv({ FLOWSTARTER_ENV: 'development' })).stagingUrlTemplate).toBe(
-      'https://{projectId}.staging.flowstarter.dev',
-    );
-    expect(loadConfig(validEnv({ FLOWSTARTER_ENV: 'staging' })).stagingUrlTemplate).toBe(
-      'https://{projectId}.staging.flowstarter.dev',
-    );
-    expect(loadConfig(validEnv({ FLOWSTARTER_ENV: 'test' })).stagingUrlTemplate).toBe(
-      'https://{projectId}.staging.flowstarter.dev',
-    );
+    expect(
+      loadConfig(validEnv({ FLOWSTARTER_ENV: 'development' }))
+        .stagingUrlTemplate,
+    ).toBe('https://{projectId}.staging.flowstarter.dev');
+    expect(
+      loadConfig(validEnv({ FLOWSTARTER_ENV: 'staging' })).stagingUrlTemplate,
+    ).toBe('https://{projectId}.staging.flowstarter.dev');
+    expect(
+      loadConfig(validEnv({ FLOWSTARTER_ENV: 'test' })).stagingUrlTemplate,
+    ).toBe('https://{projectId}.staging.flowstarter.dev');
   });
 
   it('defaults the staging URL template to flowstarter.net in production', () => {
-    expect(loadConfig(validEnv({ FLOWSTARTER_ENV: 'production' })).stagingUrlTemplate).toBe(
-      'https://{projectId}.staging.flowstarter.net',
-    );
+    expect(
+      loadConfig(validEnv({ FLOWSTARTER_ENV: 'production' }))
+        .stagingUrlTemplate,
+    ).toBe('https://{projectId}.staging.flowstarter.net');
   });
 
   it('falls back to NODE_ENV for the staging URL template when FLOWSTARTER_ENV is unset', () => {
-    expect(loadConfig(validEnv({ NODE_ENV: 'production' })).stagingUrlTemplate).toBe(
-      'https://{projectId}.staging.flowstarter.net',
-    );
+    expect(
+      loadConfig(validEnv({ NODE_ENV: 'production' })).stagingUrlTemplate,
+    ).toBe('https://{projectId}.staging.flowstarter.net');
   });
 
   it('an explicit FLOWSTARTER_STAGING_URL_TEMPLATE always wins', () => {
@@ -80,7 +87,8 @@ describe('worker configuration', () => {
       loadConfig(
         validEnv({
           FLOWSTARTER_ENV: 'production',
-          FLOWSTARTER_STAGING_URL_TEMPLATE: 'https://{projectId}.staging.example.com',
+          FLOWSTARTER_STAGING_URL_TEMPLATE:
+            'https://{projectId}.staging.example.com',
         }),
       ).stagingUrlTemplate,
     ).toBe('https://{projectId}.staging.example.com');
@@ -89,20 +97,24 @@ describe('worker configuration', () => {
   it('refuses a staging template that cannot address the project or is not https', () => {
     expect(() =>
       loadConfig(
-        validEnv({ FLOWSTARTER_STAGING_URL_TEMPLATE: 'https://staging.example.com' }),
+        validEnv({
+          FLOWSTARTER_STAGING_URL_TEMPLATE: 'https://staging.example.com',
+        }),
       ),
     ).toThrow(ConfigError);
     expect(() =>
       loadConfig(
-        validEnv({ FLOWSTARTER_STAGING_URL_TEMPLATE: 'http://{projectId}.example.com' }),
+        validEnv({
+          FLOWSTARTER_STAGING_URL_TEMPLATE: 'http://{projectId}.example.com',
+        }),
       ),
     ).toThrow(ConfigError);
   });
 
   it('refuses a repository that is not owner/repo', () => {
-    expect(() => loadConfig(validEnv({ FLOWSTARTER_SITES_REPO: 'sites' }))).toThrow(
-      ConfigError,
-    );
+    expect(() =>
+      loadConfig(validEnv({ FLOWSTARTER_SITES_REPO: 'sites' })),
+    ).toThrow(ConfigError);
   });
 
   it('parses operator-supplied validate commands', () => {
@@ -124,7 +136,9 @@ describe('worker configuration', () => {
     expect(() =>
       loadConfig(
         validEnv({
-          FLOWSTARTER_BUILD_VALIDATE_COMMANDS: JSON.stringify([['../../bin/sh', '-c']]),
+          FLOWSTARTER_BUILD_VALIDATE_COMMANDS: JSON.stringify([
+            ['../../bin/sh', '-c'],
+          ]),
         }),
       ),
     ).toThrow(ConfigError);
@@ -132,7 +146,9 @@ describe('worker configuration', () => {
 
   it('refuses malformed validate command JSON', () => {
     expect(() =>
-      loadConfig(validEnv({ FLOWSTARTER_BUILD_VALIDATE_COMMANDS: 'pnpm build' })),
+      loadConfig(
+        validEnv({ FLOWSTARTER_BUILD_VALIDATE_COMMANDS: 'pnpm build' }),
+      ),
     ).toThrow(ConfigError);
     expect(() =>
       loadConfig(validEnv({ FLOWSTARTER_BUILD_VALIDATE_COMMANDS: '[]' })),
@@ -201,7 +217,9 @@ describe('worker configuration', () => {
       validEnv({ ...env, FLOWSTARTER_BUILD_VALIDATE_ISOLATION: 'native' }),
     );
     expect(native.validateCommands).toEqual([{ bin: 'make', args: ['build'] }]);
-    expect(() => loadConfig(validEnv(env))).toThrow(/not available in the Docker/);
+    expect(() => loadConfig(validEnv(env))).toThrow(
+      /not available in the Docker/,
+    );
   });
 
   it('refuses Docker settings that would be read as flags or shell text', () => {
@@ -252,17 +270,126 @@ describe('worker configuration', () => {
     ).toThrow(ConfigError);
     expect(() =>
       loadConfig(
-        validEnv({ ...docker, FLOWSTARTER_BUILD_VALIDATE_PNPM_VERSION: 'latest' }),
+        validEnv({
+          ...docker,
+          FLOWSTARTER_BUILD_VALIDATE_PNPM_VERSION: 'latest',
+        }),
       ),
     ).toThrow(ConfigError);
   });
 
   it('refuses an out-of-range concurrency', () => {
-    expect(() => loadConfig(validEnv({ FLOWSTARTER_BUILD_CONCURRENCY: '0' }))).toThrow(
-      ConfigError,
+    expect(() =>
+      loadConfig(validEnv({ FLOWSTARTER_BUILD_CONCURRENCY: '0' })),
+    ).toThrow(ConfigError);
+    expect(() =>
+      loadConfig(validEnv({ FLOWSTARTER_BUILD_CONCURRENCY: '99' })),
+    ).toThrow(ConfigError);
+  });
+});
+
+describe('skipValidation: the only switch allowed to swap in the noop validator', () => {
+  it('defaults to false, so a build is validated for real unless told otherwise', () => {
+    expect(loadConfig(validEnv()).skipValidation).toBe(false);
+  });
+
+  it('is independent of the stub agent -- the stub replaces only the Pi session', () => {
+    // `FLOWSTARTER_BUILD_STUB_AGENT` alone (local mode's dev:local shape)
+    // must never flip `skipValidation`: that coupling is exactly the bug
+    // that let a SITE_REBUILD ship a raw, unbuilt Astro source tree.
+    const config = loadConfig(
+      validEnv({
+        FLOWSTARTER_BUILD_MODE: 'local',
+        FLOWSTARTER_BUILD_STUB_AGENT: 'true',
+        PI_API_KEY: undefined,
+        FLOWSTARTER_REPOSITORY_ROOT: undefined,
+        FLOWSTARTER_WORKTREES_ROOT: undefined,
+        FLOWSTARTER_SITES_REPO: undefined,
+        FLOWSTARTER_SITES_GITHUB_TOKEN: undefined,
+      }),
     );
-    expect(() => loadConfig(validEnv({ FLOWSTARTER_BUILD_CONCURRENCY: '99' }))).toThrow(
-      ConfigError,
-    );
+    expect(config.local?.stubAgent).toBe(true);
+    expect(config.skipValidation).toBe(false);
+  });
+
+  it('turns on only when FLOWSTARTER_BUILD_SKIP_VALIDATION is explicitly "true"', () => {
+    expect(
+      loadConfig(validEnv({ FLOWSTARTER_BUILD_SKIP_VALIDATION: 'true' }))
+        .skipValidation,
+    ).toBe(true);
+    expect(
+      loadConfig(validEnv({ FLOWSTARTER_BUILD_SKIP_VALIDATION: '1' }))
+        .skipValidation,
+    ).toBe(false);
+    expect(
+      loadConfig(validEnv({ FLOWSTARTER_BUILD_SKIP_VALIDATION: 'yes' }))
+        .skipValidation,
+    ).toBe(false);
+  });
+
+  it('is allowed with no FLOWSTARTER_ENV set, which resolves to development', () => {
+    expect(
+      loadConfig(
+        validEnv({
+          FLOWSTARTER_BUILD_SKIP_VALIDATION: 'true',
+          FLOWSTARTER_ENV: undefined,
+          NODE_ENV: undefined,
+        }),
+      ).skipValidation,
+    ).toBe(true);
+  });
+
+  it("is allowed in test, the environment this worker's own suite runs as", () => {
+    expect(
+      loadConfig(
+        validEnv({
+          FLOWSTARTER_BUILD_SKIP_VALIDATION: 'true',
+          FLOWSTARTER_ENV: 'test',
+        }),
+      ).skipValidation,
+    ).toBe(true);
+  });
+
+  it('refuses to boot when asked for on a staging host', () => {
+    expect(() =>
+      loadConfig(
+        validEnv({
+          FLOWSTARTER_BUILD_SKIP_VALIDATION: 'true',
+          FLOWSTARTER_ENV: 'staging',
+        }),
+      ),
+    ).toThrow(ConfigError);
+  });
+
+  it('refuses to boot when asked for on a production host', () => {
+    expect(() =>
+      loadConfig(
+        validEnv({
+          FLOWSTARTER_BUILD_SKIP_VALIDATION: 'true',
+          FLOWSTARTER_ENV: 'production',
+        }),
+      ),
+    ).toThrow(ConfigError);
+  });
+
+  it('falls back to NODE_ENV=production when FLOWSTARTER_ENV is unset', () => {
+    expect(() =>
+      loadConfig(
+        validEnv({
+          FLOWSTARTER_BUILD_SKIP_VALIDATION: 'true',
+          FLOWSTARTER_ENV: undefined,
+          NODE_ENV: 'production',
+        }),
+      ),
+    ).toThrow(ConfigError);
+  });
+
+  it('never throws for staging/production when the flag itself is not set', () => {
+    expect(() =>
+      loadConfig(validEnv({ FLOWSTARTER_ENV: 'production' })),
+    ).not.toThrow();
+    expect(() =>
+      loadConfig(validEnv({ FLOWSTARTER_ENV: 'staging' })),
+    ).not.toThrow();
   });
 });
