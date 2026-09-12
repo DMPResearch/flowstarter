@@ -121,6 +121,12 @@ target is local, or `FLOWSTARTER_ALLOW_REMOTE_SUPABASE=1` is set explicitly.
 Common Nx targets work per project too: `npx nx build <project>`,
 `npx nx typecheck <project>`, `npx nx test <project>`.
 
+Setting up a fresh Mac or a fresh clone: `pnpm dev:bootstrap` checks and
+installs the toolchain (Homebrew, Node 22, pnpm, Docker/OrbStack presence,
+the Supabase and Stripe CLIs, mprocs), wires up the env files, starts the
+local Supabase stack, and finishes with a health summary; `pnpm dev:doctor`
+reports that same summary any time on its own. See `docs/dev-machine.md`.
+
 ## Validation commands
 
 These are the commands CI and the pre-commit hook actually run (see
