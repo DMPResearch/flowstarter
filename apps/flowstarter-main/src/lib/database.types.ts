@@ -119,6 +119,7 @@ export type Database = {
           is_placeholder: boolean
           kind: string | null
           mime: string | null
+          original_name: string | null
           project_id: string | null
           rights_confirmed_at: string | null
           selected: boolean
@@ -143,6 +144,7 @@ export type Database = {
           is_placeholder?: boolean
           kind?: string | null
           mime?: string | null
+          original_name?: string | null
           project_id?: string | null
           rights_confirmed_at?: string | null
           selected?: boolean
@@ -167,6 +169,7 @@ export type Database = {
           is_placeholder?: boolean
           kind?: string | null
           mime?: string | null
+          original_name?: string | null
           project_id?: string | null
           rights_confirmed_at?: string | null
           selected?: boolean

@@ -64,9 +64,11 @@ import {
 } from './invented-project';
 import {
   describePlaceholderImageIssue,
+  describePlaceholderImageRepair,
   findPlaceholderImageReferencesInFiles,
   isGatedPlaceholderImageRole,
   PLACEHOLDER_IMAGE_SHIPPED,
+  type PlaceholderImageFinding,
 } from './placeholder-images';
 import {
   briefInputAssets,
@@ -77,6 +79,10 @@ import {
   stripPreviewTeaserFromFiles,
   TEASER_IN_PAID_BUILD,
 } from './teaser-rule';
+import {
+  sanitiseSeedPlaceholders,
+  type SanitisedSeed,
+} from './seed-placeholders';
 import { applyIntegrationsToWorkspace } from '../integrations';
 import {
   isClientEditablePath,
@@ -1074,12 +1080,60 @@ export function findInventedProjectIssue(
 export function findPlaceholderImageIssue(
   files: readonly { path: string; content: string }[],
 ): string | undefined {
-  const findings = findPlaceholderImageReferencesInFiles(files).filter(
-    (finding) => isGatedPlaceholderImageRole(finding.role),
-  );
+  const findings = findGatedPlaceholderImageFindings(files);
   return findings.length > 0
     ? describePlaceholderImageIssue(findings)
     : undefined;
+}
+
+/**
+ * The same findings, unphrased, so a caller can ask both questions of one
+ * scan: what to put in the failure record, and what to hand the repair pass.
+ * The two differ — the repair brief names the exact files that may be
+ * deleted, and the failure record must not read as an instruction.
+ */
+export function findGatedPlaceholderImageFindings(
+  files: readonly { path: string; content: string }[],
+): PlaceholderImageFinding[] {
+  return findPlaceholderImageReferencesInFiles(files).filter((finding) =>
+    isGatedPlaceholderImageRole(finding.role),
+  );
+}
+
+/**
+ * The seed rule, applied and said out loud.
+ *
+ * The gate of record hashes everything in `dist/`, and Astro copies `public/`
+ * into `dist/` verbatim, so a site published before #110 fails it on the
+ * template asset library its manifest still carries — nine pictures the pages
+ * never pointed at, on a change request that did exactly what it was asked.
+ * The agent cannot be the fix: it is told to leave every other file on the
+ * site exactly as it is. So the seed is cleaned before the agent is started,
+ * and every removal and rewrite goes on the timeline in plain words, because
+ * files disappearing out of a paid client's site is not something a build may
+ * do quietly.
+ */
+async function applySeedPlaceholderRule<
+  T extends { path: string; content: string; encoding?: 'base64' },
+>(
+  files: readonly T[],
+  clientAssetPaths: readonly string[],
+  say: (
+    kind: FullSiteBuildEventKind,
+    body: string,
+    payload?: Record<string, unknown>,
+  ) => Promise<void>,
+): Promise<SanitisedSeed<T>> {
+  const sanitised = sanitiseSeedPlaceholders(files, { clientAssetPaths });
+  if (sanitised.summary) {
+    await say('log', sanitised.summary, {
+      removedPaths: sanitised.removed.map((entry) => entry.path),
+      rewrittenFiles: Array.from(
+        new Set(sanitised.rewritten.map((entry) => entry.file)),
+      ),
+    });
+  }
+  return sanitised;
 }
 
 /** Where a template keeps the copy the agent is meant to rewrite. */
@@ -2248,7 +2302,21 @@ export class FullSiteBuildWorker {
             `${approvedFiles.removedPaths.join(', ')} before the agents start.`,
         );
       }
-      await materializeScaffold(siteRoot, approvedFiles.files);
+      // A funnel preview may use the template's stand-in pictures; a paid
+      // build may not (#110). The preview this build is seeded from was
+      // scaffolded from a template, so it carries the whole asset library —
+      // and the gate of record hashes `dist/`, which `public/` is copied into
+      // whole. Cleaned here rather than asked of the agent: the agent cannot
+      // be held to a rule it is also told not to touch.
+      const cleaned = await applySeedPlaceholderRule(
+        approvedFiles.files,
+        briefInputAssets(job.briefInput ?? null).flatMap((asset) => [
+          asset.manifestPath,
+          asset.publicPath,
+        ]),
+        say,
+      );
+      await materializeScaffold(siteRoot, cleaned.files);
       // The client's free changes are in those files already. Say so on the
       // board: the operator watching this build should be able to read what
       // was promised without opening the preview, and a build that later drops
@@ -2266,7 +2334,7 @@ export class FullSiteBuildWorker {
       // held to. The two are not the same thing for any preview claimed
       // before the phrase rules were fixed, and the difference is said out
       // loud on the board rather than swallowed.
-      const resolved = resolveApprovedEdits(approvedFiles.files, carriedEdits);
+      const resolved = resolveApprovedEdits(cleaned.files, carriedEdits);
       for (const entry of resolved) {
         if (!entry.note) continue;
         await say('log', entry.note, {
@@ -2551,24 +2619,24 @@ export class FullSiteBuildWorker {
       // because the defect it catches is a specific stock image, not an
       // invented name.
       await phase('Checking for placeholder images');
-      let placeholderImageIssue = findPlaceholderImageIssue(
+      let placeholderImages = findGatedPlaceholderImageFindings(
         await collectBuiltSiteText(siteRoot),
       );
-      if (placeholderImageIssue) {
-        await say('log', placeholderImageIssue);
+      if (placeholderImages.length > 0) {
+        await say('log', describePlaceholderImageIssue(placeholderImages));
         await pass(
           'Removing placeholder images',
-          withApproved(placeholderImageIssue),
+          withApproved(describePlaceholderImageRepair(placeholderImages)),
         );
         await check();
-        placeholderImageIssue = findPlaceholderImageIssue(
+        placeholderImages = findGatedPlaceholderImageFindings(
           await collectBuiltSiteText(siteRoot),
         );
       }
-      if (placeholderImageIssue) {
+      if (placeholderImages.length > 0) {
         throw new FullSiteBuildFailure(
           PLACEHOLDER_IMAGE_SHIPPED,
-          placeholderImageIssue,
+          describePlaceholderImageIssue(placeholderImages),
         );
       }
 
@@ -2686,7 +2754,23 @@ export class FullSiteBuildWorker {
       // pictures, which `claim()` has already folded in as real files. The
       // teaser has no business in it; a delivered site should never carry one,
       // and re-stripping costs nothing if it does not.
-      const seeded = stripPreviewTeaserFromFiles(job.approvedPreviewFiles);
+      const teaserFree = stripPreviewTeaserFromFiles(job.approvedPreviewFiles);
+      // The manifest of a site published before #110 carries the template's
+      // own placeholder pictures under `public/images/`, unreferenced and
+      // unread since the day it was generated. Astro copies `public/` into
+      // `dist/` verbatim, so the gate of record fails every rebuild of one at
+      // "Checking the build", before a single request-specific rule runs —
+      // which is what happened to job 2716f978 on a change the agent had
+      // already made correctly. The client's own pictures are named as
+      // untouchable; this rule never removes one.
+      const seeded = await applySeedPlaceholderRule(
+        teaserFree.files,
+        intent.assets.flatMap((asset) => [
+          asset.manifestPath,
+          asset.publicPath,
+        ]),
+        say,
+      );
       await materializeScaffold(siteRoot, seeded.files);
       // Unconditional, for the same reason the teaser strip is: a workspace
       // with no booking link still needs the funnel's blurred cal-preview
@@ -2843,21 +2927,27 @@ export class FullSiteBuildWorker {
       // Same shape, over images: a change request is as paid-for as the
       // first build, so it gets the same rule about honest gaps in content.
       await phase('Checking for placeholder images');
-      let placeholderImageIssue = findPlaceholderImageIssue(
+      let placeholderImages = findGatedPlaceholderImageFindings(
         await collectBuiltSiteText(siteRoot),
       );
-      if (placeholderImageIssue) {
-        await say('log', placeholderImageIssue);
-        await pass('Removing placeholder images', placeholderImageIssue);
+      if (placeholderImages.length > 0) {
+        await say('log', describePlaceholderImageIssue(placeholderImages));
+        // The repair brief names the exact files, because this is the one
+        // pass whose prompt permits deleting a file under `public/` and a
+        // permission without a list is a guess waiting to happen.
+        await pass(
+          'Removing placeholder images',
+          describePlaceholderImageRepair(placeholderImages),
+        );
         await check();
-        placeholderImageIssue = findPlaceholderImageIssue(
+        placeholderImages = findGatedPlaceholderImageFindings(
           await collectBuiltSiteText(siteRoot),
         );
       }
-      if (placeholderImageIssue) {
+      if (placeholderImages.length > 0) {
         throw new FullSiteBuildFailure(
           PLACEHOLDER_IMAGE_SHIPPED,
-          placeholderImageIssue,
+          describePlaceholderImageIssue(placeholderImages),
         );
       }
 
@@ -3017,10 +3107,16 @@ export class FullSiteBuildWorker {
       await phase('Materializing the published edit');
       // A client rebuild is as paid-for as the first build; the teaser has no
       // business in it either, whatever the stored manifest still carries.
-      await materializeScaffold(
-        siteRoot,
+      // Same rule as the change request, for the same reason: a rebuild of a
+      // site published before #110 re-materialises the template's own
+      // placeholder library out of the manifest and fails the gate of record
+      // on files the client's pages never pointed at.
+      const rebuildSeed = await applySeedPlaceholderRule(
         stripPreviewTeaserFromFiles(job.approvedPreviewFiles).files,
+        [],
+        say,
       );
+      await materializeScaffold(siteRoot, rebuildSeed.files);
       // Same rule as the full build: reconcile the Cal.com block
       // unconditionally, whether or not this workspace has a link, so a
       // rebuild can never carry the funnel's blurred demo either.

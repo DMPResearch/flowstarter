@@ -12,6 +12,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
+import type { UsableAsset } from '../generation-assets';
 import { createFakeSupabase } from './fake-supabase';
 
 vi.mock('server-only', () => ({}));
@@ -54,20 +55,27 @@ vi.mock('../pipeline/dispatch', () => ({
 
 /**
  * The rights-filtered reader, and the only one a build may take assets from.
- * Stubbed to one confirmed picture so the payload has something to carry.
+ * Stubbed to one confirmed picture so the payload has something to carry;
+ * individual tests may override it with `mockResolvedValueOnce`.
  */
+const DEFAULT_USABLE_ASSETS: UsableAsset[] = [
+  {
+    id: 'b104b1e0-6d4c-4a3e-9230-13cc17b426a0',
+    storagePath: 'tenant/0f4e1088-8d8f-4f18-83b1-406cc292b23c/assets/a.jpg',
+    mime: 'image/jpeg',
+    width: 1200,
+    height: 750,
+    usableFor: ['section'],
+    caption: 'The workshops room',
+    originalName: 'workshops-room.jpg',
+    createdAt: '2026-09-01T00:00:00.000Z',
+    kind: null,
+  },
+];
+const loadUsableAssets =
+  vi.fn<(workspaceId: string) => Promise<UsableAsset[]>>();
 vi.mock('../generation-assets', () => ({
-  loadUsableAssets: async () => [
-    {
-      id: 'b104b1e0-6d4c-4a3e-9230-13cc17b426a0',
-      storagePath: 'tenant/0f4e1088-8d8f-4f18-83b1-406cc292b23c/assets/a.jpg',
-      mime: 'image/jpeg',
-      width: 1200,
-      height: 750,
-      usableFor: ['section'],
-      caption: 'The workshops room',
-    },
-  ],
+  loadUsableAssets: (workspaceId: string) => loadUsableAssets(workspaceId),
 }));
 
 import {
@@ -133,6 +141,8 @@ beforeEach(() => {
   vi.restoreAllMocks();
   dispatchAgentJob.mockReset();
   dispatchAgentJob.mockResolvedValue(undefined);
+  loadUsableAssets.mockReset();
+  loadUsableAssets.mockResolvedValue(DEFAULT_USABLE_ASSETS);
 });
 
 describe('who may touch a change request', () => {
@@ -199,12 +209,48 @@ describe('listing what the client asked for', () => {
     expect(res.headers.get('Cache-Control')).toBe('private, no-store');
 
     // The build card's picker needs the client's rights-confirmed pictures,
-    // labelled by the client's own caption.
+    // labelled by the client's own caption -- never by the storage path's
+    // content hash, the bug this reader used to have (PR #119).
     expect(body.assets).toEqual([
       {
         id: 'b104b1e0-6d4c-4a3e-9230-13cc17b426a0',
         label: 'The workshops room',
         caption: 'The workshops room',
+        // The fake Supabase client this suite runs against has no `.storage`
+        // surface at all, so `signedAssetUrl` degrades to null here exactly
+        // as it must on a real signing failure -- that degrade path is what
+        // is being proved, not a real signed URL.
+        thumbnailUrl: null,
+      },
+    ]);
+  });
+
+  it('labels a picture by its filename and dimensions when the client left no caption', async () => {
+    seed();
+    loadUsableAssets.mockResolvedValueOnce([
+      {
+        id: 'b104b1e0-6d4c-4a3e-9230-13cc17b426a0',
+        storagePath: 'tenant/0f4e1088-8d8f-4f18-83b1-406cc292b23c/assets/a.jpg',
+        mime: 'image/jpeg',
+        width: 1200,
+        height: 750,
+        usableFor: ['section'],
+        caption: null,
+        originalName: 'front-of-shop.jpg',
+        createdAt: '2026-09-12T08:00:00.000Z',
+        kind: null,
+      },
+    ]);
+
+    const res = await listChangeRequestsHandler(req, ctx());
+    const body = await res.json();
+
+    expect(body.assets).toEqual([
+      {
+        id: 'b104b1e0-6d4c-4a3e-9230-13cc17b426a0',
+        label: 'front-of-shop.jpg — 1200x750 — 12 Sep 2026',
+        caption: null,
+        thumbnailUrl: null,
       },
     ]);
   });

@@ -1,8 +1,14 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { PLACEHOLDER_IMAGE_MANIFEST } from '@flowstarter/agentic-codegen';
+import {
+  describePlaceholderImageRepair,
+  materializeScaffold,
+  PLACEHOLDER_IMAGE_MANIFEST,
+  sanitiseSeedPlaceholders,
+} from '@flowstarter/agentic-codegen';
+import { legacySeedFiles } from '@flowstarter/agentic-codegen/test/lib/legacy-seed';
 import { findPlaceholderImagesInDir } from '../src/output-placeholder-images';
 
 const temporaryDirectories: string[] = [];
@@ -157,5 +163,111 @@ describe('findPlaceholderImagesInDir', () => {
       'utf8',
     );
     await expect(findPlaceholderImagesInDir(root)).resolves.toEqual([]);
+  });
+});
+
+/**
+ * The regression this gate needed: a site published before the gate existed.
+ *
+ * Version 4 of workspace `c009105e-f8ec-42bf-bdcf-cf92bb500f45`, the manifest
+ * job `2716f978-b2ed-474b-b485-f0d5584fbda7` ran against. The agent did the
+ * requested change correctly and the job still failed at "Checking the build",
+ * because the published manifest carries the template's whole `public/images/`
+ * library and Astro copies `public/` into `dist/` verbatim — so the gate of
+ * record hashed nine pictures the pages never pointed at.
+ *
+ * Both halves are asserted here, in one place, because either alone would be
+ * misleading: the seed as published still fails, and the seed put through
+ * `sanitiseSeedPlaceholders` at materialise time passes.
+ */
+describe('a seed published before the placeholder gate existed', () => {
+  /** What Astro does with `public/`: copies it into `dist/`, whole. */
+  async function buildLike(
+    files: readonly {
+      path: string;
+      content: string;
+      encoding?: 'base64';
+    }[],
+  ): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), 'flowstarter-legacy-seed-'));
+    temporaryDirectories.push(root);
+    await materializeScaffold(
+      root,
+      files.map((file) => ({ ...file, type: 'file' as const })),
+    );
+    for (const file of files) {
+      if (!file.path.startsWith('public/')) continue;
+      const out = join(root, 'dist', file.path.slice('public/'.length));
+      await mkdir(join(out, '..'), { recursive: true });
+      await writeFile(
+        out,
+        Buffer.from(
+          file.content,
+          file.encoding === 'base64' ? 'base64' : 'utf8',
+        ),
+      );
+    }
+    // One compiled page, so the dist is a site rather than a folder of images.
+    await writeFile(
+      join(root, 'dist', 'index.html'),
+      '<html><body><h1>Halden &amp; Roe</h1></body></html>',
+      'utf8',
+    );
+    return join(root, 'dist');
+  }
+
+  it('fails the gate exactly as the real job did', async () => {
+    const findings = await findPlaceholderImagesInDir(
+      await buildLike(await legacySeedFiles()),
+    );
+    // Eight gated files, caught twice over — by their catalogued name and by
+    // their bytes — which is why no amount of editing the pages ever cleared
+    // it.
+    expect(
+      new Set(findings.map((finding) => finding.path.split('/').pop())),
+    ).toEqual(
+      new Set([
+        'about-me-photo.svg',
+        'boutique.png',
+        'budget-dark.png',
+        'budget-neoMorphism.png',
+        'hotBlocks.png',
+        'masonry.png',
+        'somalia.png',
+        'sweet-box.webp',
+      ]),
+    );
+  });
+
+  it('passes the gate once the seed rule has run over it', async () => {
+    const sanitised = sanitiseSeedPlaceholders(await legacySeedFiles());
+    await expect(
+      findPlaceholderImagesInDir(await buildLike(sanitised.files)),
+    ).resolves.toEqual([]);
+  });
+
+  it('still ships the client’s own picture and the allowed decoration', async () => {
+    const sanitised = sanitiseSeedPlaceholders(await legacySeedFiles());
+    const dist = await buildLike(sanitised.files);
+    await expect(
+      stat(join(dist, 'flowstarter-media', 'cr-b104b1e0.jpg')),
+    ).resolves.toBeTruthy();
+    await expect(
+      stat(join(dist, 'images', 'studio-portrait.svg')),
+    ).resolves.toBeTruthy();
+  });
+
+  it('names the exact files a repair pass may delete', async () => {
+    const findings = await findPlaceholderImagesInDir(
+      await buildLike(await legacySeedFiles()),
+    );
+    const brief = describePlaceholderImageRepair(findings);
+    // #119's lesson: a repair brief that does not name its targets is an
+    // invitation to guess at a paid site.
+    expect(brief).toContain('  - public/images/about-me-photo.svg');
+    expect(brief).toContain('  - public/images/boutique.png');
+    expect(brief).toContain('Delete exactly these and no other file');
+    // The one the gate allows is never on the list.
+    expect(brief).not.toContain('studio-portrait.svg');
   });
 });

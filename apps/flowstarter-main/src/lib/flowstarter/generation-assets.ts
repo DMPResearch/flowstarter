@@ -26,6 +26,15 @@ export interface UsableAsset {
   usableFor: string[];
   caption: string | null;
   /**
+   * The browser's own filename, kept for display only (the operator's
+   * change-request asset picker leans on it when there is no caption). It is
+   * never the storage key — that is the content hash in `storagePath` — so
+   * this can be null, empty-ish, or absent without anything breaking.
+   */
+  originalName: string | null;
+  /** When the file was uploaded, for the same picker's "no caption" label. */
+  createdAt: string | null;
+  /**
    * The role the app stored on the row: `portrait` for the one photograph the
    * client picked as themselves, null otherwise. Read here rather than
    * inferred, because the about section is the one place it decides anything
@@ -43,6 +52,8 @@ interface AssetRow {
   height: number | null;
   usable_for: string[] | null;
   caption: string | null;
+  original_name: string | null;
+  created_at: string | null;
   kind: string | null;
   rights_confirmed_at: string | null;
 }
@@ -54,7 +65,7 @@ export async function loadUsableAssets(
   const { data, error } = await withTenant(supabase, workspaceId)
     .from('assets')
     .select(
-      'id, storage_path, mime, width, height, usable_for, caption, kind, rights_confirmed_at'
+      'id, storage_path, mime, width, height, usable_for, caption, original_name, created_at, kind, rights_confirmed_at'
     )
     .not('rights_confirmed_at', 'is', null);
   if (error) throw error;
@@ -70,6 +81,8 @@ export async function loadUsableAssets(
       height: row.height,
       usableFor: row.usable_for ?? [],
       caption: row.caption,
+      originalName: row.original_name,
+      createdAt: row.created_at,
       kind: row.kind,
     }));
 }

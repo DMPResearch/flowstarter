@@ -513,3 +513,50 @@ export function describePlaceholderImageIssue(
     `typographic tile instead of stock art. Fix: ${detail}${overflow}.`
   );
 }
+
+/**
+ * The files a repair pass is allowed to delete, named one per line.
+ *
+ * A repair brief that does not name its targets is an invitation to guess at
+ * a paid site (#119 paid for that lesson with a 355-byte case-study page).
+ * These are the template's own stand-in pictures, by the exact path they have
+ * in the worktree, and deleting one of them is always the right answer: no
+ * page should point at it, and the gate hashes `dist/`, which `public/` is
+ * copied into whole, so a file left behind fails the build even once every
+ * reference to it is gone.
+ */
+export function placeholderImageFilesToDelete(
+  findings: readonly PlaceholderImageFinding[],
+): string[] {
+  const paths = new Set<string>();
+  for (const finding of findings) {
+    if (!finding.asset) continue;
+    if (!isGatedPlaceholderImageRole(finding.asset.role)) continue;
+    paths.add(finding.asset.path);
+  }
+  return Array.from(paths).sort();
+}
+
+/**
+ * The whole repair brief: what is wrong, and the exact files that may go.
+ *
+ * Separate from {@link describePlaceholderImageIssue}, which is the gate's
+ * verdict and belongs in the job's failure record unchanged. This is what an
+ * agent is handed, and it is the only place in the change-request prompt set
+ * that grants permission to delete a file under `public/`.
+ */
+export function describePlaceholderImageRepair(
+  findings: readonly PlaceholderImageFinding[],
+): string {
+  const deletable = placeholderImageFilesToDelete(findings);
+  if (deletable.length === 0) return describePlaceholderImageIssue(findings);
+  return (
+    `${describePlaceholderImageIssue(findings)}\n\n` +
+    'These files are the template’s own placeholder pictures. Delete ' +
+    'each one from the worktree, and take out every reference to it, leaving ' +
+    'the component’s own no-image fallback to render:\n' +
+    deletable.map((path) => `  - ${path}`).join('\n') +
+    '\nDelete exactly these and no other file under public/. Add nothing ' +
+    'under public/ and replace nothing under it.'
+  );
+}

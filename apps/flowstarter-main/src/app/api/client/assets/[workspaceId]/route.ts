@@ -155,6 +155,7 @@ export async function POST(
           file: verified,
           slot,
           kind,
+          originalName: sanitizedOriginalName(file),
         })
       );
     }
@@ -197,6 +198,27 @@ function fileLabel(file: File): string {
   const name = typeof file.name === 'string' ? file.name : '';
   // Never echo a raw filename: it is attacker-controlled and lands in the DOM.
   return name.replace(/[^\w.\- ]+/g, '').slice(0, 80) || 'That file';
+}
+
+/**
+ * Comfortably longer than any real camera or phone filename, short enough
+ * that a pathological one cannot bloat a row or an operator's picker.
+ */
+const MAX_ORIGINAL_NAME_CHARS = 120;
+
+/**
+ * `file.name`, kept only as prose for later display — the operator's
+ * change-request asset picker, eventually. It is trimmed, stripped of any
+ * directory component (a hostile or merely confused browser can send
+ * `../../etc/passwd.jpg`; only the last segment survives), and capped. It is
+ * a caption, never a path: it is stored as `assets.original_name` and never
+ * reaches `assetObjectPath` or a storage call.
+ */
+function sanitizedOriginalName(file: File): string | null {
+  const raw = typeof file.name === 'string' ? file.name : '';
+  const basename = raw.split(/[\\/]/).pop() ?? '';
+  const trimmed = basename.trim().slice(0, MAX_ORIGINAL_NAME_CHARS);
+  return trimmed || null;
 }
 
 function stringField(form: FormData, key: string): string | null {
