@@ -154,7 +154,18 @@ jobs:
             fi
           fi
 
-          release_id=$(gh api "repos/${REPO}/releases/tags/${TAG}" --jq '.id')
+          # NOT `releases/tags/${TAG}`: that endpoint only resolves PUBLISHED
+          # releases. The release this job just opened is a DRAFT, and a draft
+          # is not attached to its tag until it is published, so the by-tag
+          # lookup answers 404 and `set -e` kills the job — every first release
+          # of a tag, which is every release. Listing and matching on
+          # `tag_name` sees drafts too.
+          release_id=$(gh api "repos/${REPO}/releases" --paginate \
+            --jq "[.[] | select(.tag_name==\"${TAG}\")][0].id // empty")
+          if [ -z "$release_id" ]; then
+            echo "::error::No release found for tag ${TAG}, draft or published."
+            exit 1
+          fi
           echo "release_id=${release_id}" >> "$GITHUB_OUTPUT"
           echo "created=${created}" >> "$GITHUB_OUTPUT"
 
