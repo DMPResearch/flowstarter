@@ -40,6 +40,7 @@ import {
   quoteMinorForTier,
 } from '@/lib/flowstarter/claim';
 import { GUEST_DEPOSIT_KIND } from '@/lib/flowstarter/guest-deposit';
+import { readJsonCapped } from '@/lib/net/ingress';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -128,12 +129,20 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid preview id' }, { status: 400 });
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
+  // Capped as it streams rather than buffered and measured afterwards: an
+  // anonymous body arrives in whatever size the sender chooses, and a chunked
+  // one advertises no size at all. Codex F07.
+  const read = await readJsonCapped(request);
+  if (read.status === 'too_large') {
+    return NextResponse.json(
+      { error: 'That request is too large.' },
+      { status: 413 }
+    );
+  }
+  if (read.status === 'invalid') {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
+  const body: unknown = read.value;
 
   const parsed = GuestDepositSchema.safeParse(body);
   if (!parsed.success) {

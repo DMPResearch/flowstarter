@@ -22,6 +22,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { sendEmail } from '@/lib/email';
+import { readJsonCapped } from '@/lib/net/ingress';
 
 function inquiryStore() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -237,12 +238,20 @@ function buildAcknowledgmentEmail(inquiry: Inquiry): {
 }
 
 export async function POST(request: NextRequest) {
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
+  // Capped as it streams rather than buffered and measured afterwards: an
+  // anonymous body arrives in whatever size the sender chooses, and a chunked
+  // one advertises no size at all. Codex F07.
+  const read = await readJsonCapped(request);
+  if (read.status === 'too_large') {
+    return NextResponse.json(
+      { error: 'That request is too large.' },
+      { status: 413 }
+    );
+  }
+  if (read.status === 'invalid') {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
+  const body: unknown = read.value;
 
   const parsed = InquirySchema.safeParse(body);
   // Layer 1+2: honeypot + min-fill-time → silent success (don't tip off bots).

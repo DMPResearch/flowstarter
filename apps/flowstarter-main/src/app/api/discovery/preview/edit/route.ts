@@ -18,6 +18,7 @@ import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { isOpenRouterConfigured } from '@/lib/ai/client';
 import { callLlm } from '@/lib/ai/llm';
+import { readJsonCapped } from '@/lib/net/ingress';
 import {
   MAX_DEMO_EDITS,
   isDemoSite,
@@ -68,12 +69,20 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Too many edits' }, { status: 429 });
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
+  // Capped as it streams rather than buffered and measured afterwards: an
+  // anonymous body arrives in whatever size the sender chooses, and a chunked
+  // one advertises no size at all. Codex F07.
+  const read = await readJsonCapped(request);
+  if (read.status === 'too_large') {
+    return NextResponse.json(
+      { error: 'That request is too large.' },
+      { status: 413 }
+    );
+  }
+  if (read.status === 'invalid') {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
+  const body: unknown = read.value;
   const parsed = EditSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(

@@ -48,6 +48,7 @@ import {
 import { readProfileSignals } from '@/lib/flowstarter/profile-fetch';
 import { captureProfilePicture } from '@/lib/flowstarter/profile-picture';
 import { parseProfileLinks } from '@/lib/flowstarter/profile-signals';
+import { readJsonCapped } from '@/lib/net/ingress';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -149,15 +150,21 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
+  // Capped as it streams, not measured after it is buffered. Codex F07.
+  const read = await readJsonCapped(request);
+  if (read.status === 'too_large') {
+    return NextResponse.json(
+      { error: 'That is more than we can read', code: 'TOO_LARGE' },
+      { status: 413 }
+    );
+  }
+  if (read.status === 'invalid') {
     return NextResponse.json(
       { error: 'Body must be JSON', code: 'BAD_REQUEST' },
       { status: 400 }
     );
   }
+  const body: unknown = read.value;
 
   const parsed = Schema.safeParse(body);
   if (!parsed.success) {

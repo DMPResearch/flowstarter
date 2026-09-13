@@ -58,6 +58,8 @@
  * one happened rather than being shown an empty palette with no explanation.
  */
 
+import { isIpLiteral, isPublicAddress } from '@/lib/net/ip-rules';
+
 // ---------------------------------------------------------------------------
 // Links
 // ---------------------------------------------------------------------------
@@ -87,13 +89,20 @@ export interface ProfileLink {
   handle: string | null;
 }
 
-/** Hosts that are never fetched: loopback, link-local and the private ranges. */
-const PRIVATE_HOST_RE =
-  /^(localhost$|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|\[?::1\]?$|0\.0\.0\.0$)/i;
-
 /**
- * True when a URL is safe to request from the server: https, a real hostname,
- * not a private or loopback address, and no credentials in the authority.
+ * True when a URL is worth attempting: https, no credentials in the authority,
+ * a real hostname, and — when the host is written as an address rather than a
+ * name — a public one, by the shared rule in `lib/net/ip-rules.ts`.
+ *
+ * A SYNTACTIC PRE-CHECK, AND NOT THE SECURITY BOUNDARY. This used to be the
+ * boundary, and that was finding F02: it tested the hostname TEXT against a
+ * regex of private ranges, which refuses an attacker who types `127.0.0.1` and
+ * waves through `images.attacker.test` with an A record of 169.254.169.254.
+ * The destination is now decided by `lib/net/safe-fetch.ts`, after resolution,
+ * against every address the name answers with, on a connection pinned to the
+ * address that was checked. What is left here is a cheap filter that drops a
+ * URL which could never succeed — an `http://` og:image, a `mailto:` — without
+ * spending a DNS question on it, and a rule the pure modules can call.
  */
 export function isPublicHttpUrl(raw: string): boolean {
   let url: URL;
@@ -104,8 +113,11 @@ export function isPublicHttpUrl(raw: string): boolean {
   }
   if (url.protocol !== 'https:') return false;
   if (url.username || url.password) return false;
-  if (!url.hostname.includes('.') && url.hostname !== 'localhost') return false;
-  return !PRIVATE_HOST_RE.test(url.hostname);
+  const hostname = url.hostname.replace(/^\[|\]$/g, '');
+  if (isIpLiteral(hostname)) return isPublicAddress(hostname);
+  // A bare name with no dot is a machine on the local network, whatever it
+  // resolves to; `localhost` is only the most obvious member of that set.
+  return hostname.includes('.');
 }
 
 function normaliseUrl(raw: string | null | undefined): URL | null {

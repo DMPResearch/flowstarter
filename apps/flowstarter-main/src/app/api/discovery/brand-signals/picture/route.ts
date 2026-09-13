@@ -40,6 +40,12 @@ import {
   FunnelAssetError,
   storeFunnelAsset,
 } from '@/lib/flowstarter/funnel-assets';
+import {
+  imageDecodeGate,
+  imagePixelBudget,
+  readFormDataCapped,
+} from '@/lib/net/ingress';
+import { ingressConfig } from '@/lib/net/net-config';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -48,8 +54,20 @@ export const dynamic = 'force-dynamic';
  * A logo or a profile picture, not a photo library. Deliberately a quarter of
  * the client uploader's 8 MiB: the only thing we do with this file is read
  * four colours out of a downscaled copy of it.
+ *
+ * The number itself lives in `lib/net/net-config.ts` as `maxAnonBodyBytes` and
+ * is read per request rather than written here, because the same cap has to
+ * bound the STREAM as well as the finished file — one a route knows about and
+ * the body reader does not is a cap that is enforced too late, which is the
+ * whole of Codex F07.
  */
-export const MAX_PICTURE_BYTES = 2 * 1024 * 1024;
+
+/** The cap as the visitor reads it, so the number is never said twice. */
+function tooLargeMessage(maxBytes: number): string {
+  return `That picture is larger than ${Math.floor(
+    maxBytes / (1024 * 1024)
+  )}MB. A logo or a headshot is fine.`;
+}
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -83,30 +101,30 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
+  const limits = ingressConfig();
   const contentType = request.headers.get('content-type') ?? '';
   if (!contentType.includes('multipart/form-data')) {
     return bad('Send the picture as a form upload.');
   }
 
-  // Refuse on the declared length before buffering anything: a cap enforced
-  // only after the body is in memory is not a cap.
-  const declared = Number(request.headers.get('content-length') ?? '0');
-  if (declared > MAX_PICTURE_BYTES) {
+  // THE FIX FOR CODEX F07, and the order is the whole of it. What was here
+  // trusted `Content-Length` and then called `request.formData()`, which
+  // buffers the entire body before anything measures it: a chunked upload
+  // carries no length at all, so `?? '0'` read "no header" as "no bytes" and
+  // the cap was enforced after the allocation it existed to prevent. The
+  // reader below counts bytes as they arrive and abandons the stream the
+  // moment the total passes the cap, whatever the headers said.
+  const body = await readFormDataCapped(request, limits.maxAnonBodyBytes);
+  if (body.status === 'too_large') {
     return NextResponse.json(
-      {
-        error: 'That picture is larger than 2MB. A logo or a headshot is fine.',
-        code: 'TOO_LARGE',
-      },
+      { error: tooLargeMessage(limits.maxAnonBodyBytes), code: 'TOO_LARGE' },
       { status: 413 }
     );
   }
-
-  let form: FormData;
-  try {
-    form = await request.formData();
-  } catch {
+  if (body.status === 'invalid') {
     return bad('That upload did not arrive in one piece. Try again.');
   }
+  const form = body.form;
 
   const previewId = String(form.get('previewId') ?? '').trim();
   if (!UUID.test(previewId)) {
@@ -139,10 +157,26 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   if (!(file instanceof File) || file.size === 0) {
     return bad('No picture arrived with that request.');
   }
-  if (file.size > MAX_PICTURE_BYTES) {
+  if (file.size > limits.maxAnonBodyBytes) {
+    return NextResponse.json(
+      { error: tooLargeMessage(limits.maxAnonBodyBytes), code: 'TOO_LARGE' },
+      { status: 413 }
+    );
+  }
+
+  const bytes = Buffer.from(await file.arrayBuffer());
+
+  // Pixels, not bytes. A PNG whose header declares 40000x40000 fits in this
+  // route's size cap with room to spare and costs about six gigabytes to
+  // decode, so the dimensions are read out of the header — no decoder
+  // involved — and refused before anything allocates one.
+  if (
+    imagePixelBudget(bytes, limits.maxImagePixels).status === 'too_many_pixels'
+  ) {
     return NextResponse.json(
       {
-        error: 'That picture is larger than 2MB. A logo or a headshot is fine.',
+        error:
+          'That picture is too many pixels to work with. Send a smaller one.',
         code: 'TOO_LARGE',
       },
       { status: 413 }
@@ -151,8 +185,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   try {
     // The same byte sniff the client uploader uses. The declared content type
-    // is a claim; the magic bytes are the fact.
-    const verified = verifyUpload(Buffer.from(await file.arrayBuffer()));
+    // is a claim; the magic bytes are the fact. Through the process-wide gate,
+    // because a burst of anonymous uploads all hashing and probing multi-
+    // megabyte buffers at once is the amplification this route is the softest
+    // target for.
+    const verified = await imageDecodeGate(limits).run(async () =>
+      verifyUpload(bytes)
+    );
     const row = await storeFunnelAsset({
       previewId,
       file: verified,
