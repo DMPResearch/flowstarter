@@ -197,6 +197,40 @@ describe('safeExtractTarball', () => {
     }
   });
 
+  test('rejects a small, highly compressible archive before fully decompressing it', async () => {
+    // A single repeated byte compresses to almost nothing, so the archive
+    // on disk stays tiny while its decompressed size is far past a small
+    // extraction limit — exactly the shape a decompression bomb takes. The
+    // old code called `gunzipSync` with no output bound and only checked
+    // the entry count/total size afterward, so this content would be fully
+    // materialized (tens of megabytes here; unbounded in principle) before
+    // any limit was ever consulted. Bounding the decompression itself means
+    // this rejects for exceeding the *extraction* limit without ever
+    // allocating a buffer anywhere near the decompressed size.
+    const bomb = 'x'.repeat(32 * 1024 * 1024);
+    const tarballPath = await writeFixture([{ path: 'bomb.bin', content: bomb }]);
+    const compressed = await stat(tarballPath);
+    // Sanity-check the fixture is actually bomb-shaped: tiny on disk, huge
+    // once decompressed. If this ever fails, the test below would pass for
+    // the wrong reason.
+    expect(compressed.size).toBeLessThan(64 * 1024);
+
+    const destDir = await mkdtemp(join(tmpdir(), 'tar-safety-dest-'));
+    try {
+      await expect(
+        safeExtractTarball(tarballPath, destDir, {
+          maxTotalBytes: 1024,
+          maxEntries: 10,
+        })
+      ).rejects.toThrow(TarSafetyError);
+      // Nothing was written — validation (now including the decompression
+      // bound) runs to completion before any entry is materialized.
+      await expect(readFile(join(destDir, 'bomb.bin'))).rejects.toThrow();
+    } finally {
+      await rm(destDir, { recursive: true, force: true });
+    }
+  });
+
   test('accepts the ./-prefixed entries `tar -C dist .` writes', async () => {
     const tarballPath = await writeFixture([
       { path: './', typeflag: '5' },

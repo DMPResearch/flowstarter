@@ -32,7 +32,7 @@ export function createFakeSupabase(): FakeDb {
   const rows = (table: string): Row[] => (tables[table] ??= []);
 
   function builder(table: string) {
-    let mode: 'select' | 'insert' | 'update' = 'select';
+    let mode: 'select' | 'insert' | 'update' | 'delete' = 'select';
     const filters: Array<[string, unknown]> = [];
     let payload: Row[] = [];
     let orderColumn: string | undefined;
@@ -49,6 +49,17 @@ export function createFakeSupabase(): FakeDb {
           if (column.endsWith('__neq')) {
             const real = column.slice(0, -'__neq'.length);
             return row[real] !== value;
+          }
+          if (column.endsWith('__lt')) {
+            const real = column.slice(0, -'__lt'.length);
+            // Every caller of `.lt()` in this codebase compares ISO 8601
+            // timestamps of the same fixed-width shape, for which string
+            // order is chronological order.
+            return String(row[real] ?? '') < String(value ?? '');
+          }
+          if (column.endsWith('__lte')) {
+            const real = column.slice(0, -'__lte'.length);
+            return String(row[real] ?? '') <= String(value ?? '');
           }
           return Array.isArray(value)
             ? value.includes(row[column])
@@ -98,6 +109,11 @@ export function createFakeSupabase(): FakeDb {
         for (const row of target) Object.assign(row, payload[0]);
         return { data: detach(target), error: null };
       }
+      if (mode === 'delete') {
+        const target = new Set(selected());
+        tables[table] = rows(table).filter((row) => !target.has(row));
+        return { data: null, error: null };
+      }
       return { data: detach(selected()), error: null };
     }
 
@@ -115,6 +131,10 @@ export function createFakeSupabase(): FakeDb {
         payload = [values];
         return self;
       },
+      delete() {
+        mode = 'delete';
+        return self;
+      },
       eq(column: string, value: unknown) {
         filters.push([column, value]);
         return self;
@@ -127,6 +147,23 @@ export function createFakeSupabase(): FakeDb {
       /** `in('status', [...])`: the same filter list, matched by membership. */
       in(column: string, values: unknown[]) {
         filters.push([column, values]);
+        return self;
+      },
+      /** `lt('event_marker', value)`: the compare-and-set predicate. */
+      lt(column: string, value: unknown) {
+        filters.push([`${column}__lt`, value]);
+        return self;
+      },
+      /** `lte('expires_at', value)`: the reaper's "due" sweep. */
+      lte(column: string, value: unknown) {
+        filters.push([`${column}__lte`, value]);
+        return self;
+      },
+      /** `match({ id, billing_version })`: several `eq()` filters at once. */
+      match(criteria: Record<string, unknown>) {
+        for (const [column, value] of Object.entries(criteria)) {
+          filters.push([column, value]);
+        }
         return self;
       },
       not(column: string, operator: string, value: unknown) {

@@ -29,6 +29,7 @@ import 'server-only';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import type { Database } from '@/lib/database.types';
+import { loadFunnelPreview } from '@/lib/hosting/funnel-previews';
 import {
   assetObjectPath,
   assertTenantPath,
@@ -48,9 +49,51 @@ export const SIGNED_URL_TTL_SECONDS = 300;
 /**
  * At most one picture per preview is the product rule: this is a fallback for
  * a palette, not an asset library. The cap is enforced here rather than in the
- * route so a second entry point cannot quietly lift it.
+ * route so a second entry point cannot quietly lift it, and enforced
+ * atomically by `reserve_funnel_upload_slot` (see `reserveFunnelUploadSlot`
+ * below) rather than by a read-then-insert this module used to do, which two
+ * concurrent uploads for the same preview could both pass.
  */
 export const MAX_FUNNEL_ASSETS_PER_PREVIEW = 3;
+
+/**
+ * How long a preview id may hold reserved upload quota with no preview ever
+ * generated from it, in hours.
+ *
+ * This is deliberately much shorter than a generated preview's own TTL
+ * (`DEFAULT_PREVIEW_TTL_DAYS` in `funnel-previews.ts`): it bounds the window
+ * in which an upload with nothing built from it yet — the visitor answers
+ * the profile-links question, uploads a logo, and closes the tab — can sit
+ * before `reapExpiredFunnelUploadSessions` collects it. A preview that *is*
+ * generated gets its own row in `funnel_previews` and is reaped on that
+ * table's own, longer TTL instead; see the module doc comment above.
+ *
+ * `FLOWSTARTER_FUNNEL_UPLOAD_SESSION_TTL_HOURS` overrides it. A value that is
+ * not a positive number is ignored rather than obeyed, the same convention
+ * `previewTtlDays` uses.
+ */
+export const DEFAULT_FUNNEL_UPLOAD_SESSION_TTL_HOURS = 24;
+
+const HOUR_MS = 60 * 60_000;
+
+export function funnelUploadSessionTtlHours(
+  env: Record<string, string | undefined> = process.env
+): number {
+  const raw = Number(env.FLOWSTARTER_FUNNEL_UPLOAD_SESSION_TTL_HOURS?.trim());
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return DEFAULT_FUNNEL_UPLOAD_SESSION_TTL_HOURS;
+  }
+  return raw;
+}
+
+export function funnelUploadSessionTtlMs(
+  env: Record<string, string | undefined> = process.env
+): number {
+  return funnelUploadSessionTtlHours(env) * HOUR_MS;
+}
+
+/** The TTL this process was started with. */
+export const FUNNEL_UPLOAD_SESSION_TTL_MS = funnelUploadSessionTtlMs();
 
 export interface FunnelAssetRow {
   id: string;
@@ -186,6 +229,37 @@ export class FunnelAssetError extends Error {
 }
 
 /**
+ * Atomically finds-or-creates this preview's upload session and attempts to
+ * reserve one of its `MAX_FUNNEL_ASSETS_PER_PREVIEW` slots, via the database
+ * function in `20260913180000_funnel_upload_sessions.sql`.
+ *
+ * The session this creates is also what makes an upload that never becomes a
+ * preview reapable at all: see `reapExpiredFunnelUploadSessions` below and
+ * the migration's module comment for the gap this closes.
+ *
+ * A slot reserved here is never given back — not on a duplicate-content
+ * insert conflict below, and not if the storage upload itself fails. That is
+ * a deliberate trade against complexity: the session's own short TTL bounds
+ * how long an over-reserved slot can matter, whereas crediting a slot back
+ * on every failure path would need its own compensating transaction for a
+ * problem that self-heals in hours.
+ */
+async function reserveFunnelUploadSlot(
+  previewId: string,
+  supabase: ServiceClient
+): Promise<boolean> {
+  const { data, error } = await supabase.rpc('reserve_funnel_upload_slot', {
+    p_preview_id: previewId,
+    p_max_assets: MAX_FUNNEL_ASSETS_PER_PREVIEW,
+    p_ttl_seconds: Math.floor(FUNNEL_UPLOAD_SESSION_TTL_MS / 1000),
+  });
+  if (error) throw error;
+  // A `returns table` function comes back as an array of rows.
+  const row = Array.isArray(data) ? data[0] : data;
+  return Boolean(row?.reserved);
+}
+
+/**
  * Writes the object and the row. Content addressed, so the same picture
  * uploaded twice resolves to one row rather than two.
  *
@@ -207,7 +281,15 @@ export async function storeFunnelAsset(
   const rows = (existing.data ?? []) as unknown as RawRow[];
   const already = rows.find((row) => row.sha256 === file.sha256);
   if (already) return toRow(already);
-  if (rows.length >= MAX_FUNNEL_ASSETS_PER_PREVIEW) {
+
+  // The cap, enforced atomically: a `select count(*)` here (as this used to
+  // do) followed by an `insert` below leaves a gap two concurrent uploads
+  // for the same preview can both pass. `reserve_funnel_upload_slot` folds
+  // the find-or-create of this preview's upload session and the guarded
+  // increment of its counter into one round trip the database serializes on
+  // its own row lock.
+  const reserved = await reserveFunnelUploadSlot(previewId, supabase);
+  if (!reserved) {
     throw new FunnelAssetError(
       'That is more pictures than this step takes. One is enough.',
       400
@@ -513,6 +595,110 @@ export async function deleteFunnelAssets(input: {
     .eq('preview_id', input.previewId);
   if (deleted.error) throw deleted.error;
   return { removed: paths.length };
+}
+
+export interface ReapedUploadSession {
+  previewId: string;
+  /** True when no `funnel_previews` row ever existed for this preview id —
+   * the genuine "uploaded, never generated a preview" abandonment. */
+  orphaned: boolean;
+  picturesRemoved: number;
+}
+
+export interface ReapUploadSessionsResult {
+  considered: number;
+  sessionsRemoved: number;
+  picturesRemoved: number;
+  failed: number;
+  sessions: ReapedUploadSession[];
+}
+
+/**
+ * Sweeps `funnel_upload_sessions` past their own TTL — independent of
+ * `funnel_previews`, which is the whole point (see the migration's module
+ * comment and `reserveFunnelUploadSlot` above).
+ *
+ * For a session whose preview id never became a real preview, this deletes
+ * the `funnel_assets` rows and storage objects it was reserving quota for —
+ * the orphan `funnel_assets.preview_id` has no foreign key to sweep by
+ * itself. For a session whose preview id DID become a preview (claimed or
+ * not, expired or not), the assets are left alone: they are that preview's
+ * responsibility now, reaped on its own TTL by `reapExpiredPreviews` — this
+ * only removes the now-unneeded session bookkeeping row.
+ *
+ * Failure is per-row and non-fatal, the same convention `reapExpiredPreviews`
+ * uses: one session whose storage delete fails must not stop the rest of the
+ * sweep.
+ */
+export async function reapExpiredFunnelUploadSessions(
+  options: { now?: Date; limit?: number; supabase?: ServiceClient } = {}
+): Promise<ReapUploadSessionsResult> {
+  const supabase = options.supabase ?? createSupabaseServiceRoleClient();
+  const now = options.now ?? new Date();
+  const limit = options.limit ?? 50;
+
+  const { data, error } = await supabase
+    .from('funnel_upload_sessions')
+    .select('id, preview_id')
+    .lte('expires_at', now.toISOString())
+    .order('expires_at', { ascending: true })
+    .limit(limit);
+  if (error) throw error;
+  const candidates = (data ?? []) as Array<{ id: string; preview_id: string }>;
+
+  const result: ReapUploadSessionsResult = {
+    considered: candidates.length,
+    sessionsRemoved: 0,
+    picturesRemoved: 0,
+    failed: 0,
+    sessions: [],
+  };
+
+  for (const candidate of candidates) {
+    try {
+      // A preview row existing at all — claimed, unclaimed, expired or not —
+      // means this upload's assets are that row's responsibility now; only
+      // its absence means this session's own TTL is the only thing that was
+      // ever going to reap them.
+      const preview = await loadFunnelPreview(candidate.preview_id, {
+        includeExpired: true,
+        supabase,
+      });
+      const orphaned = !preview;
+
+      let picturesRemoved = 0;
+      if (orphaned) {
+        const deleted = await deleteFunnelAssets({
+          previewId: candidate.preview_id,
+          supabase,
+        });
+        picturesRemoved = deleted.removed;
+      }
+
+      const { error: deleteError } = await supabase
+        .from('funnel_upload_sessions')
+        .delete()
+        .eq('id', candidate.id);
+      if (deleteError) throw deleteError;
+
+      result.sessionsRemoved += 1;
+      result.picturesRemoved += picturesRemoved;
+      result.sessions.push({
+        previewId: candidate.preview_id,
+        orphaned,
+        picturesRemoved,
+      });
+    } catch (error) {
+      result.failed += 1;
+      console.warn(
+        `[funnel-upload-sessions] could not reap session for preview ` +
+          `${candidate.preview_id}: ` +
+          (error instanceof Error ? error.message : 'unknown error')
+      );
+    }
+  }
+
+  return result;
 }
 
 /**

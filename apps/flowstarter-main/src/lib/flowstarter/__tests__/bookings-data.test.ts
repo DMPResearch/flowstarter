@@ -32,6 +32,7 @@ interface Recorded {
   table: string;
   mode: 'select' | 'insert' | 'update';
   eq: Array<[string, unknown]>;
+  lt?: [string, unknown];
   values?: Record<string, unknown>;
   order?: [string, { ascending?: boolean; nullsFirst?: boolean } | undefined];
   limit?: number;
@@ -63,6 +64,10 @@ function fakeSupabase(answer: Answer) {
           query.eq.push([column, value]);
           return builder;
         },
+        lt(column: string, value: unknown) {
+          query.lt = [column, value];
+          return builder;
+        },
         order(
           column: string,
           options?: { ascending?: boolean; nullsFirst?: boolean }
@@ -92,6 +97,9 @@ function fakeSupabase(answer: Answer) {
 }
 
 const ok = () => ({ data: null, error: null });
+/** A successful compare-and-set update: one row matched the `.lt()`
+ * predicate and was written. */
+const updated = (id = 'row-1') => ({ data: [{ id }], error: null });
 
 function event(overrides: Partial<CalBookingEvent> = {}): CalBookingEvent {
   return {
@@ -104,6 +112,7 @@ function event(overrides: Partial<CalBookingEvent> = {}): CalBookingEvent {
     endAt: '2026-09-15T10:00:00.000Z',
     attendeeName: 'Ada Roe',
     attendeeEmail: 'ada@example.com',
+    eventMarker: '2026-09-11T08:00:00.000Z',
     ...overrides,
   };
 }
@@ -162,6 +171,7 @@ describe('recordCalBooking', () => {
               status: 'booked',
               start_at: '2026-09-15T09:30:00.000Z',
               end_at: '2026-09-15T10:00:00.000Z',
+              event_marker: '2026-09-11T08:00:00.000Z',
             },
             error: null,
           }
@@ -190,9 +200,12 @@ describe('recordCalBooking', () => {
               status: 'rescheduled',
               start_at: '2026-09-15T09:30:00.000Z',
               end_at: '2026-09-15T10:00:00.000Z',
+              event_marker: '2026-09-10T00:00:00.000Z',
             },
             error: null,
           }
+        : query.mode === 'update'
+        ? updated()
         : ok()
     );
     const result = await recordCalBooking(db.client, {
@@ -202,6 +215,8 @@ describe('recordCalBooking', () => {
         status: 'rescheduled',
         startAt: '2026-09-16T14:00:00.000Z',
         endAt: '2026-09-16T14:30:00.000Z',
+        // Later than the stored row's marker — a genuine second reschedule.
+        eventMarker: '2026-09-11T08:00:00.000Z',
       }),
       payload: {},
     });
@@ -212,10 +227,14 @@ describe('recordCalBooking', () => {
     expect(writes[0].values).toMatchObject({
       start_at: '2026-09-16T14:00:00.000Z',
     });
+    // The compare-and-set predicate — not just the id/workspace filter.
+    expect(writes[0].lt).toEqual(['event_marker', '2026-09-11T08:00:00.000Z']);
   });
 
   // The other half: a late `booked` (BOOKING_CREATED) delivered after a
   // reschedule must not overwrite the moved booking back to its old time.
+  // The stored row's marker is later than the late delivery's, so the
+  // ordering check refuses it before content is even compared.
   it('refuses a late create that arrives after a reschedule', async () => {
     const db = fakeSupabase((query) =>
       query.mode === 'select'
@@ -225,6 +244,7 @@ describe('recordCalBooking', () => {
               status: 'rescheduled',
               start_at: '2026-09-16T14:00:00.000Z',
               end_at: '2026-09-16T14:30:00.000Z',
+              event_marker: '2026-09-12T00:00:00.000Z',
             },
             error: null,
           }
@@ -232,6 +252,7 @@ describe('recordCalBooking', () => {
     );
     const result = await recordCalBooking(db.client, {
       workspaceId: WORKSPACE,
+      // Default eventMarker (2026-09-11) is older than the row's (2026-09-12).
       event: event(),
       payload: {},
     });
@@ -244,7 +265,16 @@ describe('recordCalBooking', () => {
   it('updates in place when the booking moved, and never inserts a second row', async () => {
     const db = fakeSupabase((query) =>
       query.mode === 'select'
-        ? { data: { id: 'row-1', status: 'booked' }, error: null }
+        ? {
+            data: {
+              id: 'row-1',
+              status: 'booked',
+              event_marker: '2026-09-10T00:00:00.000Z',
+            },
+            error: null,
+          }
+        : query.mode === 'update'
+        ? updated()
         : ok()
     );
     const result = await recordCalBooking(db.client, {
@@ -279,20 +309,90 @@ describe('recordCalBooking', () => {
   });
 
   // The race the read cannot see: two copies of one delivery, handled at
-  // once. The index wins, and the loser is a no-op rather than a 500 that
-  // makes Cal.com send a third copy.
-  it('treats a unique violation as the duplicate it is', async () => {
-    const db = fakeSupabase((query) =>
-      query.mode === 'insert'
-        ? { data: null, error: { code: '23505', message: 'duplicate key' } }
-        : ok()
-    );
+  // once. The index wins, and the second copy re-reads and re-evaluates
+  // rather than assuming the race means "replay" — that copy might be a
+  // genuinely different delivery, not another copy of this one.
+  it('treats a unique violation as a duplicate once the reread confirms it is one', async () => {
+    let selects = 0;
+    const db = fakeSupabase((query) => {
+      if (query.mode === 'insert') {
+        return {
+          data: null,
+          error: { code: '23505', message: 'duplicate key' },
+        };
+      }
+      if (query.mode === 'select') {
+        selects += 1;
+        // Nothing yet on the first read — this delivery decides to insert
+        // and loses the race. The reread after the conflict finds exactly
+        // what this same delivery would have inserted: a genuine replay.
+        if (selects === 1) return { data: null, error: null };
+        return {
+          data: {
+            id: 'row-1',
+            status: 'booked',
+            start_at: '2026-09-15T09:30:00.000Z',
+            end_at: '2026-09-15T10:00:00.000Z',
+            event_marker: '2026-09-11T08:00:00.000Z',
+          },
+          error: null,
+        };
+      }
+      return ok();
+    });
     const result = await recordCalBooking(db.client, {
       workspaceId: WORKSPACE,
       event: event(),
       payload: {},
     });
     expect(result.action).toEqual({ kind: 'skip', reason: 'replayed' });
+    expect(selects).toBe(2);
+  });
+
+  // The bug this reread exists to close: the old code labelled every insert
+  // conflict "replayed" without looking at what actually won the race. Here
+  // the competing delivery that landed first was a CREATE; this delivery is
+  // a later CANCEL for the very same (brand new) uid. Losing the insert race
+  // must not mean losing the cancellation.
+  it('re-evaluates an insert conflict rather than assuming it is a replay of this delivery', async () => {
+    let selects = 0;
+    const db = fakeSupabase((query) => {
+      if (query.mode === 'insert') {
+        return {
+          data: null,
+          error: { code: '23505', message: 'duplicate key' },
+        };
+      }
+      if (query.mode === 'select') {
+        selects += 1;
+        if (selects === 1) return { data: null, error: null };
+        // The delivery that won the insert race: a CREATE, older marker.
+        return {
+          data: {
+            id: 'row-1',
+            status: 'booked',
+            start_at: '2026-09-15T09:30:00.000Z',
+            end_at: '2026-09-15T10:00:00.000Z',
+            event_marker: '2026-09-11T08:00:00.000Z',
+          },
+          error: null,
+        };
+      }
+      return query.mode === 'update' ? updated() : ok();
+    });
+    const result = await recordCalBooking(db.client, {
+      workspaceId: WORKSPACE,
+      event: event({
+        trigger: 'BOOKING_CANCELLED',
+        status: 'cancelled',
+        eventMarker: '2026-09-11T09:00:00.000Z',
+      }),
+      payload: {},
+    });
+    expect(result.action).toEqual({ kind: 'update' });
+    const writes = db.queries.filter((query) => query.mode === 'update');
+    expect(writes).toHaveLength(1);
+    expect(writes[0].values).toMatchObject({ status: 'cancelled' });
   });
 
   // A genuine storage failure must not be acknowledged as "replayed" — the

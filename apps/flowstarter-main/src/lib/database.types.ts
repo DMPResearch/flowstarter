@@ -1203,6 +1203,33 @@ export type Database = {
           },
         ]
       }
+      funnel_upload_sessions: {
+        Row: {
+          assets_reserved: number
+          created_at: string
+          expires_at: string
+          id: string
+          max_assets: number
+          preview_id: string
+        }
+        Insert: {
+          assets_reserved?: number
+          created_at?: string
+          expires_at: string
+          id?: string
+          max_assets: number
+          preview_id: string
+        }
+        Update: {
+          assets_reserved?: number
+          created_at?: string
+          expires_at?: string
+          id?: string
+          max_assets?: number
+          preview_id?: string
+        }
+        Relationships: []
+      }
       intake_submissions: {
         Row: {
           created_at: string
@@ -1748,6 +1775,7 @@ export type Database = {
           attendee_name: string | null
           created_at: string
           end_at: string | null
+          event_marker: string
           event_type_slug: string | null
           external_uid: string
           id: string
@@ -1764,6 +1792,7 @@ export type Database = {
           attendee_name?: string | null
           created_at?: string
           end_at?: string | null
+          event_marker?: string
           event_type_slug?: string | null
           external_uid: string
           id?: string
@@ -1780,6 +1809,7 @@ export type Database = {
           attendee_name?: string | null
           created_at?: string
           end_at?: string | null
+          event_marker?: string
           event_type_slug?: string | null
           external_uid?: string
           id?: string
@@ -1922,6 +1952,7 @@ export type Database = {
         Row: {
           balance_payment_intent_id: string | null
           balance_percent: number
+          billing_version: number
           billing_currency: string
           billing_interval: string
           cal_com_url: string | null
@@ -1998,6 +2029,7 @@ export type Database = {
         Insert: {
           balance_payment_intent_id?: string | null
           balance_percent?: number
+          billing_version?: number
           billing_currency?: string
           billing_interval?: string
           cal_com_url?: string | null
@@ -2074,6 +2106,7 @@ export type Database = {
         Update: {
           balance_payment_intent_id?: string | null
           balance_percent?: number
+          billing_version?: number
           billing_currency?: string
           billing_interval?: string
           cal_com_url?: string | null
@@ -2179,6 +2212,14 @@ export type Database = {
         Returns: undefined
       }
       is_workspace_member: { Args: { ws: string }; Returns: boolean }
+      reserve_funnel_upload_slot: {
+        Args: {
+          p_max_assets: number
+          p_preview_id: string
+          p_ttl_seconds: number
+        }
+        Returns: { reserved: boolean; session_id: string }[]
+      }
       tenant_path_workspace_id: {
         Args: { object_name: string }
         Returns: string

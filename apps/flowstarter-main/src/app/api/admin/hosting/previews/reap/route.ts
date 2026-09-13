@@ -69,5 +69,6 @@ export async function POST(req: NextRequest) {
     failed: result.failed,
     dryRun: result.dryRun,
     previews: result.previews,
+    uploadSessions: result.uploadSessions,
   });
 }

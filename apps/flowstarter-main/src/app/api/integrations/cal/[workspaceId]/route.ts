@@ -114,7 +114,10 @@ export async function POST(
     return unauthorized();
   }
 
-  const parsed = parseCalBookingEvent(rawBody);
+  // The fallback ordering marker for a delivery whose body carries none of
+  // Cal.com's own timestamps — see `CalBookingEvent.eventMarker`. Read here,
+  // at the I/O boundary, rather than inside the otherwise-pure parser.
+  const parsed = parseCalBookingEvent(rawBody, new Date().toISOString());
   if (!parsed.ok) {
     // Signed by us, so it is genuinely Cal.com, and a trigger we do not handle
     // is not an error. 200 stops the retries for a body that will never

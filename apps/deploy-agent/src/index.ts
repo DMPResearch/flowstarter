@@ -148,6 +148,26 @@ const ARTIFACT_FETCH_TIMEOUT_MS = Number(
 const SHA256_HEX = /^[0-9a-f]{64}$/i;
 
 /**
+ * Bounds how many deploys this agent runs at once, and how many more may
+ * wait for a slot before it starts refusing new ones.
+ *
+ * Each deploy fetches a caller-supplied artifact, decompresses and
+ * extracts it — bounded work per request (see `MAX_ARTIFACT_DOWNLOAD_BYTES`,
+ * `ARTIFACT_FETCH_TIMEOUT_MS` and `tar-safety.ts`'s expansion limit), but
+ * `withSlugLock` only serializes deploys of the *same* slug. Nothing else
+ * stops a caller — or a compromised/slow artifact origin — from opening
+ * enough simultaneous deploys across different slugs to exhaust this
+ * host's memory, disk and file descriptors even though any single deploy
+ * stays within its own limits.
+ */
+const DEPLOY_CONCURRENCY_LIMIT = Number(
+  process.env.DEPLOY_AGENT_DEPLOY_CONCURRENCY ?? 4,
+);
+const DEPLOY_QUEUE_LIMIT = Number(
+  process.env.DEPLOY_AGENT_DEPLOY_QUEUE_LIMIT ?? 16,
+);
+
+/**
  * The range a site's stable host port is hashed into (see `site-ports.ts`).
  * `20000-29999` by default: well above the well-known ports and Caddy's own
  * 80/443/9080, well below the ephemeral range the kernel hands out on its
@@ -294,6 +314,70 @@ function authorized(req: Request): boolean {
  * not global, so one slow site's build never blocks another's.
  */
 const slugLocks = new Map<string, Promise<unknown>>();
+
+/** Thrown by `DeploySemaphore.acquire` when both its running slots and its
+ * wait queue are full. Distinguished from other errors so the route handler
+ * can answer 503 rather than 500 — the caller should retry, not treat this
+ * as a broken deploy. */
+export class DeployQueueFullError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DeployQueueFullError';
+  }
+}
+
+/**
+ * A counting semaphore bounding global deploy concurrency, with a capped
+ * FIFO wait queue rather than an unbounded one — an unbounded queue would
+ * just move the resource exhaustion from "too many deploys running" to
+ * "too many deploys queued", each holding its request open and its
+ * artifact bytes (if already fetched by the caller) in flight.
+ */
+class DeploySemaphore {
+  private active = 0;
+  private readonly waiters: Array<() => void> = [];
+
+  constructor(
+    private readonly limit: number,
+    private readonly queueLimit: number,
+  ) {}
+
+  get activeCount(): number {
+    return this.active;
+  }
+
+  get queuedCount(): number {
+    return this.waiters.length;
+  }
+
+  async acquire(): Promise<() => void> {
+    if (this.active >= this.limit) {
+      if (this.waiters.length >= this.queueLimit) {
+        throw new DeployQueueFullError(
+          'too many deploys are already running or queued on this host; try again shortly',
+        );
+      }
+      await new Promise<void>((resolve) => this.waiters.push(resolve));
+    }
+    this.active++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.active--;
+      const next = this.waiters.shift();
+      if (next) next();
+    };
+  }
+}
+
+// Exported so tests can saturate it directly — acquiring/releasing through
+// the real HTTP route would mean racing Bun's scheduling to land the right
+// number of requests inside the limit and the queue at once.
+export const deploySemaphore = new DeploySemaphore(
+  DEPLOY_CONCURRENCY_LIMIT,
+  DEPLOY_QUEUE_LIMIT,
+);
 
 function withSlugLock<T>(slug: string, fn: () => Promise<T>): Promise<T> {
   const previous = slugLocks.get(slug) ?? Promise.resolve();
@@ -581,45 +665,66 @@ async function fetchAndVerify(
     throw new Error('artifact fetch failed: invalid URL');
   }
 
+  // The deadline has to bound the whole fetch — headers *and* body — or a
+  // compromised/slow origin can send status/headers promptly and then
+  // dribble the body indefinitely, holding this request (and the slug lock
+  // its caller took) open forever. Clearing the timer as soon as headers
+  // arrive, before `readBounded` ever reads a body byte, was exactly that
+  // gap: it left body consumption unbounded. So the timer stays armed for
+  // this function's full duration and is only ever cleared once, in the
+  // `finally` around everything it guards.
   const controller = new AbortController();
   const timeout = setTimeout(
     () => controller.abort(),
     ARTIFACT_FETCH_TIMEOUT_MS,
   );
-  let res: Response;
   try {
-    res = await fetchSameHost(parsed, {
-      headers: { 'User-Agent': `flowstarter-deploy-agent/${VERSION}` },
-      signal: controller.signal,
-    });
-  } catch (e) {
-    if (e instanceof Error && e.name === 'AbortError') {
-      throw new Error('artifact fetch timed out');
+    let res: Response;
+    try {
+      res = await fetchSameHost(parsed, {
+        headers: { 'User-Agent': `flowstarter-deploy-agent/${VERSION}` },
+        signal: controller.signal,
+      });
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') {
+        throw new Error('artifact fetch timed out');
+      }
+      // Rethrow our own redirect/host errors verbatim; wrap anything else
+      // (network errors from `fetch` itself often carry the URL in `cause`).
+      if (e instanceof Error && e.message.startsWith('artifact fetch failed')) {
+        throw e;
+      }
+      throw new Error('artifact fetch failed: could not reach the origin');
     }
-    // Rethrow our own redirect/host errors verbatim; wrap anything else
-    // (network errors from `fetch` itself often carry the URL in `cause`).
-    if (e instanceof Error && e.message.startsWith('artifact fetch failed')) {
+    if (!res.ok) {
+      throw new Error(`artifact fetch failed: origin returned ${res.status}`);
+    }
+
+    let buf: Uint8Array;
+    try {
+      buf = await readBounded(res, MAX_ARTIFACT_DOWNLOAD_BYTES, () =>
+        controller.abort(),
+      );
+    } catch (e) {
+      // The same signal aborts a stalled body read once the deadline set
+      // above fires — surface that the same way a stalled header fetch is
+      // surfaced, rather than the reader's generic AbortError.
+      if (e instanceof Error && e.name === 'AbortError') {
+        throw new Error('artifact fetch timed out');
+      }
       throw e;
     }
-    throw new Error('artifact fetch failed: could not reach the origin');
+    const hash = createHash('sha256').update(buf).digest('hex');
+    if (expectedSha256.toLowerCase() !== hash) {
+      throw new Error(`sha256 mismatch: expected ${expectedSha256}, got ${hash}`);
+    }
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const tarballPath = join(TEMP_ROOT, `${stamp}.tar.gz`);
+    await writeFile(tarballPath, buf);
+    return { tarballPath, actualSha256: hash, sizeBytes: buf.length };
   } finally {
     clearTimeout(timeout);
   }
-  if (!res.ok) {
-    throw new Error(`artifact fetch failed: origin returned ${res.status}`);
-  }
-
-  const buf = await readBounded(res, MAX_ARTIFACT_DOWNLOAD_BYTES, () =>
-    controller.abort(),
-  );
-  const hash = createHash('sha256').update(buf).digest('hex');
-  if (expectedSha256.toLowerCase() !== hash) {
-    throw new Error(`sha256 mismatch: expected ${expectedSha256}, got ${hash}`);
-  }
-  const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const tarballPath = join(TEMP_ROOT, `${stamp}.tar.gz`);
-  await writeFile(tarballPath, buf);
-  return { tarballPath, actualSha256: hash, sizeBytes: buf.length };
 }
 
 async function extractTarball(
@@ -1194,7 +1299,20 @@ export async function routeRequest(req: Request): Promise<Response> {
     }
     if (req.method === 'POST' && url.pathname === `/sites/${slug}/deploy`) {
       const body = await readBody(req);
-      return withSlugLock(slug, () => handleDeploy(slug, body));
+      let release: () => void;
+      try {
+        release = await deploySemaphore.acquire();
+      } catch (e) {
+        if (e instanceof DeployQueueFullError) {
+          return jsonResponse({ error: e.message }, 503);
+        }
+        throw e;
+      }
+      try {
+        return await withSlugLock(slug, () => handleDeploy(slug, body));
+      } finally {
+        release();
+      }
     }
     if (req.method === 'DELETE' && url.pathname === `/sites/${slug}`) {
       return withSlugLock(slug, () => handleRemove(slug));

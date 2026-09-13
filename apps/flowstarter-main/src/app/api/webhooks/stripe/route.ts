@@ -50,6 +50,10 @@ import {
   periodEndIsCurrent,
 } from '@/lib/billing/money-state';
 import {
+  casUpdateWorkspaceMoneyState,
+  loadWorkspaceMoneyState,
+} from '@/lib/billing/workspace-money-write';
+import {
   claimStripeEvent,
   finishStripeEvent,
   latestAppliedCreated,
@@ -63,7 +67,7 @@ function getStripe(): Stripe {
   return new Stripe(key, { apiVersion: '2026-02-25.clover' });
 }
 
-type ServiceClient = ReturnType<typeof createSupabaseServiceRoleClient>;
+export type ServiceClient = ReturnType<typeof createSupabaseServiceRoleClient>;
 
 /**
  * What a handler did, which is also what the ledger records.
@@ -76,7 +80,7 @@ type ServiceClient = ReturnType<typeof createSupabaseServiceRoleClient>;
  * All three are final and all three answer 200. A handler that cannot finish
  * throws instead, and the route answers 500.
  */
-type HandlerOutcome = 'processed' | 'ignored' | 'superseded';
+export type HandlerOutcome = 'processed' | 'ignored' | 'superseded';
 
 /**
  * Stripe writes to `invoice.metadata.workspaceId` (and historically projectId).
@@ -91,68 +95,6 @@ function workspaceIdFromMetadata(
   const pj = meta['projectId'];
   if (typeof pj === 'string' && pj.length > 0) return pj;
   return undefined;
-}
-
-/**
- * One workspace update, with its result read.
- *
- * The whole defect this file was rewritten for is the missing half of this
- * function. `await supabase.from(...).update(...)` resolves perfectly happily
- * when the write failed; the failure is in `{ error }`, and nothing was
- * reading it. Throwing here is what turns a lost payment into a 500 and a
- * Stripe retry.
- */
-async function updateWorkspace(
-  supabase: ServiceClient,
-  workspaceId: string,
-  values: Record<string, unknown>,
-  what: string
-): Promise<void> {
-  const { error } = await supabase
-    .from('workspaces')
-    .update(values)
-    .eq('id', workspaceId);
-  if (error) {
-    throw new Error(
-      `[Stripe] ${what} failed for workspace ${workspaceId}: ${error.message}`
-    );
-  }
-}
-
-/** The workspace columns the money handlers decide on. */
-interface WorkspaceMoneyState {
-  deposit_status: string | null;
-  final_status: string | null;
-  subscription_status: string | null;
-  stripe_subscription_id: string | null;
-  subscription_next_billing: string | null;
-}
-
-/**
- * The workspace's current money state, or null when there is no such
- * workspace.
- *
- * A read error throws: deciding whether a payment may be applied from a row we
- * failed to load would be guessing, and guessing is what a 500 exists to
- * avoid.
- */
-async function loadWorkspaceMoneyState(
-  supabase: ServiceClient,
-  workspaceId: string
-): Promise<WorkspaceMoneyState | null> {
-  const { data, error } = await supabase
-    .from('workspaces')
-    .select(
-      'deposit_status, final_status, subscription_status, stripe_subscription_id, subscription_next_billing'
-    )
-    .eq('id', workspaceId)
-    .maybeSingle();
-  if (error) {
-    throw new Error(
-      `[Stripe] could not read workspace ${workspaceId}: ${error.message}`
-    );
-  }
-  return (data as WorkspaceMoneyState | null) ?? null;
 }
 
 /**
@@ -233,21 +175,26 @@ async function handleInvoicePaymentSucceeded(
   const now = new Date().toISOString();
 
   if (invoiceType === 'deposit') {
-    // Monotonic: a redelivery or a late duplicate must not rewrite the moment
-    // the money landed, but it must still reach the enqueue below, which is
-    // the half that was missing when the lifecycle stalled.
-    if (paymentStatusAdvances(workspace.deposit_status, 'paid')) {
-      await updateWorkspace(
-        supabase,
-        workspaceId,
-        {
-          deposit_status: 'paid',
-          deposit_paid_at: now,
-          outstanding_payment: false,
-        },
-        'deposit paid'
-      );
-    }
+    // Monotonic: a redelivery, a late duplicate, or a concurrent write that
+    // already applied this must not rewrite the moment the money landed —
+    // `decide` reruns against fresh state on a version conflict and returns
+    // null once that is true, rather than this call assuming its own first
+    // read still holds. Either way this must still reach the enqueue below,
+    // which is the half that was missing when the lifecycle stalled.
+    await casUpdateWorkspaceMoneyState(
+      supabase,
+      workspaceId,
+      'deposit paid',
+      workspace,
+      (state) =>
+        paymentStatusAdvances(state.deposit_status, 'paid')
+          ? {
+              deposit_status: 'paid',
+              deposit_paid_at: now,
+              outstanding_payment: false,
+            }
+          : null
+    );
 
     // A concierge workspace also advances PREVIEW_READY -> DEPOSIT_PAID and
     // enqueues the full-site build. Marking the invoice paid without this is
@@ -261,18 +208,20 @@ async function handleInvoicePaymentSucceeded(
     }
   }
   if (invoiceType === 'final') {
-    if (paymentStatusAdvances(workspace.final_status, 'paid')) {
-      await updateWorkspace(
-        supabase,
-        workspaceId,
-        {
-          final_status: 'paid',
-          final_paid_at: now,
-          outstanding_payment: false,
-        },
-        'final paid'
-      );
-    }
+    await casUpdateWorkspaceMoneyState(
+      supabase,
+      workspaceId,
+      'final paid',
+      workspace,
+      (state) =>
+        paymentStatusAdvances(state.final_status, 'paid')
+          ? {
+              final_status: 'paid',
+              final_paid_at: now,
+              outstanding_payment: false,
+            }
+          : null
+    );
   }
   console.info(
     `[Stripe] payment_succeeded -- ${invoiceType} for workspace ${workspaceId}`
@@ -301,29 +250,34 @@ async function handleInvoiceOverdue(
   const workspace = await loadWorkspaceMoneyState(supabase, workspaceId);
   if (!workspace) return 'ignored';
 
-  const current =
-    invoiceType === 'deposit'
-      ? workspace.deposit_status
-      : workspace.final_status;
   // The sequence this guards is real and unremarkable: Stripe marks an invoice
   // overdue, the client pays it minutes later, and the two events arrive in
-  // the wrong order. Paid is terminal, so the overdue is dropped.
-  if (!paymentStatusAdvances(current, 'overdue')) {
+  // the wrong order — or arrive concurrently and race each other's write.
+  // Paid is terminal, so the overdue is dropped whichever way that happens:
+  // `decide` reads the current status fresh on every attempt, including the
+  // reread after a version conflict, rather than trusting the status this
+  // call originally loaded.
+  const wrote = await casUpdateWorkspaceMoneyState(
+    supabase,
+    workspaceId,
+    `${invoiceType} overdue`,
+    workspace,
+    (state) => {
+      const current =
+        invoiceType === 'deposit' ? state.deposit_status : state.final_status;
+      if (!paymentStatusAdvances(current, 'overdue')) return null;
+      return invoiceType === 'deposit'
+        ? { deposit_status: 'overdue', outstanding_payment: true }
+        : { final_status: 'overdue', outstanding_payment: true };
+    }
+  );
+  if (!wrote) {
     console.info(
       `[Stripe] overdue -- ${invoiceType} for workspace ${workspaceId} is ` +
-        `already ${current}; not regressing it`
+        `already settled or newer; not regressing it`
     );
     return 'superseded';
   }
-
-  await updateWorkspace(
-    supabase,
-    workspaceId,
-    invoiceType === 'deposit'
-      ? { deposit_status: 'overdue', outstanding_payment: true }
-      : { final_status: 'overdue', outstanding_payment: true },
-    `${invoiceType} overdue`
-  );
   console.warn(
     `[Stripe] overdue -- ${invoiceType} for workspace ${workspaceId}`
   );
@@ -352,25 +306,29 @@ async function handleInvoicePaymentFailed(
 
   // A failed attempt on an invoice that has since settled is history, not a
   // debt: flagging the workspace outstanding over it would put a paid client
-  // back in the chase queue.
+  // back in the chase queue. Rechecked against fresh state on a version
+  // conflict, so a payment that settled concurrently with this delivery is
+  // still caught even though this call's own read predates it.
   const invoiceType = invoice.metadata?.invoiceType;
-  const settled =
-    (invoiceType === 'deposit' && workspace.deposit_status === 'paid') ||
-    (invoiceType === 'final' && workspace.final_status === 'paid');
-  if (settled) {
+  const wrote = await casUpdateWorkspaceMoneyState(
+    supabase,
+    workspaceId,
+    'payment failed',
+    workspace,
+    (state) => {
+      const settled =
+        (invoiceType === 'deposit' && state.deposit_status === 'paid') ||
+        (invoiceType === 'final' && state.final_status === 'paid');
+      return settled ? null : { outstanding_payment: true };
+    }
+  );
+  if (!wrote) {
     console.info(
       `[Stripe] payment_failed for workspace ${workspaceId} on an already ` +
         `paid ${invoiceType} invoice; ignoring`
     );
     return 'superseded';
   }
-
-  await updateWorkspace(
-    supabase,
-    workspaceId,
-    { outstanding_payment: true },
-    'payment failed'
-  );
   console.warn(`[Stripe] payment_failed for workspace ${workspaceId}`);
   return 'processed';
 }
@@ -401,54 +359,64 @@ async function handleSubscriptionEvent(
     ? new Date(periodEnd * 1000).toISOString()
     : null;
 
-  if (
-    !carePlanTransitionAllowed({
-      from: workspace.subscription_status,
-      to: status,
-      storedSubscriptionId: workspace.stripe_subscription_id,
-      eventSubscriptionId: subscription.id,
-    })
-  ) {
-    console.warn(
-      `[Stripe] subscription ${subscription.id} -> ${status} refused for ` +
-        `workspace ${workspaceId}: not a transition Stripe's lifecycle makes ` +
-        `from ${workspace.subscription_status}`
-    );
-    return 'superseded';
-  }
-
-  // The second ordering signal, for the case where two events genuinely share
-  // a created second and the re-fetch above was not reached (no object id, or
-  // the same subscription seen through a different event): a billing period
-  // never moves backwards.
-  const storedPeriodEnd = workspace.subscription_next_billing
-    ? Math.floor(new Date(workspace.subscription_next_billing).getTime() / 1000)
-    : null;
-  if (
-    workspace.stripe_subscription_id === subscription.id &&
-    !periodEndIsCurrent({
-      candidatePeriodEnd: periodEnd,
-      storedPeriodEnd,
-    })
-  ) {
-    console.warn(
-      `[Stripe] subscription ${subscription.id} carries an older billing ` +
-        `period than workspace ${workspaceId} already holds; refusing`
-    );
-    return 'superseded';
-  }
-
-  await updateWorkspace(
+  // Both transition checks below are re-run inside `decide` against
+  // whatever state is current at write time — including the reread after a
+  // version conflict — rather than only against `workspace` as first read.
+  // That is what lets two subscription events for the same object converge
+  // on the same result regardless of which one's write reaches Postgres
+  // first: whichever finishes second sees the first one's already-applied
+  // state here, not its own stale snapshot.
+  const wrote = await casUpdateWorkspaceMoneyState(
     supabase,
     workspaceId,
-    {
-      subscription_status: status,
-      stripe_subscription_id: subscription.id,
-      subscription_next_billing: nextBilling,
-      outstanding_payment: subscription.status === 'past_due',
-    },
-    'subscription state'
+    'subscription state',
+    workspace,
+    (state) => {
+      if (
+        !carePlanTransitionAllowed({
+          from: state.subscription_status,
+          to: status,
+          storedSubscriptionId: state.stripe_subscription_id,
+          eventSubscriptionId: subscription.id,
+        })
+      ) {
+        return null;
+      }
+
+      // The second ordering signal, for the case where two events genuinely
+      // share a created second and the re-fetch above was not reached (no
+      // object id, or the same subscription seen through a different
+      // event): a billing period never moves backwards.
+      const storedPeriodEnd = state.subscription_next_billing
+        ? Math.floor(new Date(state.subscription_next_billing).getTime() / 1000)
+        : null;
+      if (
+        state.stripe_subscription_id === subscription.id &&
+        !periodEndIsCurrent({
+          candidatePeriodEnd: periodEnd,
+          storedPeriodEnd,
+        })
+      ) {
+        return null;
+      }
+
+      return {
+        subscription_status: status,
+        stripe_subscription_id: subscription.id,
+        subscription_next_billing: nextBilling,
+        outstanding_payment: subscription.status === 'past_due',
+      };
+    }
   );
+
+  if (!wrote) {
+    console.warn(
+      `[Stripe] subscription ${subscription.id} -> ${status} refused for ` +
+        `workspace ${workspaceId}: not a transition Stripe's lifecycle makes, ` +
+        `or an older billing period than what is already stored`
+    );
+    return 'superseded';
+  }
 
   console.info(
     `[Stripe] subscription ${subscription.id} -> ${status} for workspace ${workspaceId}`
@@ -661,7 +629,13 @@ async function handleBookingDepositPaid(
  * this app does not act on can be acknowledged. Anything that throws here has
  * already been decided to be worth retrying.
  */
-async function processEvent(
+/**
+ * Exported so tests can drive the ordering/money-state machinery with
+ * synthetic events and a fake service client directly, the way `POST`
+ * itself does after signature verification and the ledger claim — without
+ * needing a real Stripe signature or a real webhook secret to reach it.
+ */
+export async function processEvent(
   supabase: ServiceClient,
   event: Stripe.Event
 ): Promise<HandlerOutcome> {

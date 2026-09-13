@@ -78,13 +78,28 @@ function post(
   );
 }
 
+// A fresh, later `createdAt` every time this is *called* — the way Cal.com
+// stamps a genuinely new delivery. A replayed delivery in these tests reuses
+// a previously captured string wholesale (see "the same delivery arrives a
+// second time" below) instead of calling this again, so it keeps the
+// original timestamp byte for byte, exactly like a real Cal.com retry. This
+// is what lets a test express "the booking was created, then rescheduled,
+// then rescheduled again" as three separate `body()` calls and have the
+// event-order marker (`CalBookingEvent.eventMarker`) actually order them,
+// rather than every delivery in the file racing on one fixed timestamp.
+const BASE_CREATED_AT_MS = Date.UTC(2026, 8, 11, 8, 0, 0);
+let deliveryCount = 0;
+
 function body(
   trigger = 'BOOKING_CREATED',
   payload: Record<string, unknown> = {}
 ): string {
+  deliveryCount += 1;
   return JSON.stringify({
     triggerEvent: trigger,
-    createdAt: '2026-09-11T08:00:00.000Z',
+    createdAt: new Date(
+      BASE_CREATED_AT_MS + deliveryCount * 1000
+    ).toISOString(),
     payload: {
       uid: 'bk_abc123',
       title: 'Intro call',
