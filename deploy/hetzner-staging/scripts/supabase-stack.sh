@@ -231,8 +231,46 @@ cmd_ensure() {
   echo "Supabase stack started."
 }
 
+# Two migration files stamped with the same version (the 14-digit prefix
+# before the first underscore) is not something `supabase migration up`
+# reports clearly: it applies whichever one sorts first and either silently
+# skips the other or leaves the CLI's own bookkeeping confused, which is how
+# a stale copy of a renamed migration (PR #140,
+# 20260913120000_assets_original_name.sql renamed to
+# 20260913121000_assets_original_name.sql, but the old sync step never
+# deleted files the repo no longer had) turned into a raw database error
+# instead of a message anyone deploying could act on. Sync is authoritative
+# now (see staging-deploy.yml), so this should never fire in practice; it
+# stays as a guard against the next way two files can end up sharing a
+# version, and fails with both filenames named instead of a `migration up`
+# stack trace.
+check_no_duplicate_migration_versions() {
+  local dir="${REPO_DIR}/supabase/migrations"
+  [[ -d "$dir" ]] || return 0
+
+  local dupes
+  dupes="$(
+    find "$dir" -maxdepth 1 -type f -name '*.sql' -exec basename {} \; \
+      | sed -nE 's/^([0-9]{14})_.*\.sql$/\1/p' \
+      | sort | uniq -d
+  )"
+  [[ -z "$dupes" ]] && return 0
+
+  echo "supabase-stack.sh migrate: refusing to run — two migration files share the same version." >&2
+  local version
+  while IFS= read -r version; do
+    [[ -z "$version" ]] && continue
+    echo "  version ${version}:" >&2
+    find "$dir" -maxdepth 1 -type f -name "${version}_*.sql" -exec basename {} \; \
+      | sort | sed 's/^/    /' >&2
+  done <<<"$dupes"
+  echo "Rename one of them so its version (the leading timestamp, not just the slug) is unique, then redeploy." >&2
+  exit 1
+}
+
 cmd_migrate() {
   require_repo_dir
+  check_no_duplicate_migration_versions
   echo "Applying migrations against the local stack..."
   # --include-all, because a migration's timestamp is when it was WRITTEN and
   # the order they reach `main` is when they were MERGED, and the two disagree
