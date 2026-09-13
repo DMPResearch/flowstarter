@@ -3,12 +3,12 @@ import { siteLabels } from '../lib/site-data';
 import SectionBlock from './design-system/SectionBlock.astro';
 import StatItem from './design-system/StatItem.astro';
 
-const { stats } = siteLabels;
+const stats = (siteLabels as any).stats ?? {};
 ---
 
 <SectionBlock className="stats" tone="light" padding="compact">
   <div class="stats__inner container" data-stats-section>
-    {stats.items.map((stat) => (
+    {(stats.items ?? []).map((stat) => (
       <StatItem number={stat.number} label={stat.label} />
     ))}
   </div>

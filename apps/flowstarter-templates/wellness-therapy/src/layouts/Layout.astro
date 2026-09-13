@@ -5,7 +5,7 @@ interface Props {
   title?: string;
 }
 
-const { siteMeta } = siteLabels;
+const siteMeta = (siteLabels as any).siteMeta ?? {};
 const { title = siteMeta.title } = Astro.props;
 ---
 

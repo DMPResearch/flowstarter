@@ -14,6 +14,14 @@ import { NextRequest } from 'next/server';
 
 vi.mock('server-only', () => ({}));
 
+// The MCP prerequisite is now a real `GET /health` probe (see
+// generation-availability.ts) rather than a plain "is the URL set" check;
+// this suite is about rate limiting and budget-reason wiring, not that probe,
+// so it stubs prerequisites as satisfied instead of hitting the network.
+vi.mock('@/lib/discovery/generation-availability', () => ({
+  missingGenerationPrerequisites: vi.fn(async () => []),
+}));
+
 vi.mock('@/lib/email', () => ({
   sendEmail: vi.fn(async () => ({ success: true })),
 }));

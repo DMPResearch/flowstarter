@@ -4,7 +4,7 @@ import SectionBlock from './design-system/SectionBlock.astro';
 import SectionHeading from './design-system/SectionHeading.astro';
 import VennStatement from './design-system/VennStatement.astro';
 
-const { about } = siteLabels;
+const about = (siteLabels as any).about ?? {};
 ---
 
 <SectionBlock id="about" className="about" tone="dark">

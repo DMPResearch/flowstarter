@@ -4,7 +4,7 @@ import SectionBlock from './design-system/SectionBlock.astro';
 import QuoteBlock from './design-system/QuoteBlock.astro';
 import TestimonialAuthor from './design-system/TestimonialAuthor.astro';
 
-const { testimonials } = siteLabels;
+const testimonials = (siteLabels as any).testimonials ?? [];
 
 // Split into 3 columns for masonry
 const col0: any[] = [];

@@ -3684,3 +3684,266 @@ describe('the in-depth brief reaches generation', () => {
     expect(calls).toContain('store:failed:INVENTED_PROJECT');
   });
 });
+
+describe('a missing required content block is repaired, not retried', () => {
+  // No `hero`, matching the production incident: an agent pass that wrote
+  // `site-labels.md` without it, which used to crash `Hero.astro` and now
+  // (a separate, already-shipped fix) just renders an empty fold. The
+  // absence itself is still worth catching and filling in, source-side.
+  const MISSING_HERO_LABELS = `---
+siteMeta:
+  title: "Calm Path Therapy"
+  description: "Therapy practice."
+header:
+  logo: "Calm Path Therapy"
+contactPage:
+  titleLines:
+    - text: "Get in touch"
+  introText: "Reach out to us."
+---
+`;
+
+  const TEMPLATE_LABELS = `---
+siteMeta:
+  title: "Template Co"
+  description: "A placeholder business."
+hero:
+  title: "A headline that sells the template"
+  text: "Placeholder hero copy."
+  actions:
+    - label: "Get in touch"
+      href: "/contact"
+contactPage:
+  titleLines:
+    - text: "Contact us"
+  introText: ""
+---
+`;
+
+  it('preview pipeline: fills in the missing hero from the intake and reports it on the timeline', async () => {
+    const intake = validIntake();
+    const phases: string[] = [];
+    const validatedContents: string[] = [];
+    let finalContent = '';
+
+    const agents = {
+      analyzeBrand: async () => validBrandConfig(),
+      selectTemplate: async () => ({
+        slug: 'wellness-therapy',
+        reason: 'Fits.',
+        matchedSignals: ['therapy'],
+        confidence: 0.9,
+      }),
+      buildPreview: async (input: { workspaceRoot: string }) => {
+        await mkdir(join(input.workspaceRoot, 'src/content'), {
+          recursive: true,
+        });
+        await writeFile(
+          join(input.workspaceRoot, 'src/content/site-labels.md'),
+          MISSING_HERO_LABELS,
+          'utf8',
+        );
+        return {
+          summary: 'done',
+          changedPaths: ['src/content/site-labels.md'],
+        };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    const library: TemplateLibrary = {
+      search: async () => [],
+      getDetails: async () => ({}),
+      scaffold: async (slug) => ({
+        template: {
+          metadata: {
+            slug,
+            displayName: 'Wellness & Therapy',
+            description: 'Trust-led service template.',
+            category: 'services',
+            useCase: ['therapy'],
+            fileCount: 1,
+            totalLOC: 1,
+          },
+          config: {},
+        },
+        files: [
+          {
+            path: 'src/content/site-labels.md',
+            content: TEMPLATE_LABELS,
+            type: 'file',
+          },
+        ],
+      }),
+      close: async () => undefined,
+    };
+
+    const validator: SiteValidator = {
+      validate: async (workspaceRoot) => {
+        validatedContents.push(
+          await readFile(
+            join(workspaceRoot, 'src/content/site-labels.md'),
+            'utf8',
+          ),
+        );
+      },
+    };
+
+    const publisher: PreviewPublisher = {
+      publish: async (input) => {
+        finalContent = await readFile(
+          join(input.workspaceRoot, 'src/content/site-labels.md'),
+          'utf8',
+        );
+        return {
+          previewUrl: 'https://preview.flowstarter.net/x',
+          artifactUrl: 's3://x',
+          files: [],
+        };
+      },
+    };
+
+    const pipeline = new PreviewGenerationPipeline(
+      agents,
+      library,
+      validator,
+      publisher,
+    );
+    await pipeline.run({
+      intake,
+      corpus: validCorpus(intake.projectId),
+      cachedAssets: [],
+      onPhase: (phase) => phases.push(phase),
+    });
+
+    // Named explicitly, so an operator watching the timeline can see why the
+    // preview has content the agent never wrote.
+    expect(
+      phases.some(
+        (phase) =>
+          phase.includes('missing hero') && phase.includes('deterministically'),
+      ),
+    ).toBe(true);
+    // The build/validate step ran against the already-repaired file, not the
+    // broken one, and it still ran (no skip).
+    expect(validatedContents).toHaveLength(1);
+    expect(validatedContents[0]).toContain('hero:');
+    expect(finalContent).toContain('hero:');
+    expect(finalContent).toContain('Calm Path Therapy');
+    expect(finalContent).toContain('/contact');
+  });
+
+  it('full-site build: fills in the missing hero from the intake and reports it on the timeline', async () => {
+    const projectId = validIntake().projectId;
+    const worktreeRoot = await deepTempDir(
+      'flowstarter-worker-required-blocks',
+    );
+    temporaryDirectories.push(worktreeRoot);
+    const siteRoot = join(worktreeRoot, 'generated-sites', projectId);
+    const events: Array<{ kind: string; body: string }> = [];
+    let validations = 0;
+
+    const store: FullSiteBuildJobStore = {
+      claim: async (jobId) => ({
+        id: jobId,
+        projectId,
+        kind: 'FULL_SITE_BUILD',
+        projectState: ProjectState.DEPOSIT_PAID,
+        intake: validIntake(),
+        brandConfig: validBrandConfig(),
+        approvedPreviewFiles: [
+          {
+            path: 'src/content/site.md',
+            content: 'Approved preview',
+            type: 'file',
+          },
+        ],
+        requiredIntegrations: [],
+        previewIntent: {
+          previewId: 'preview-1',
+          manifest: {
+            ref: 'funnel_previews:preview-1',
+            artifactPath: null,
+            templateSlug: 'wellness-therapy',
+            fileCount: 1,
+          },
+          edits: [],
+          brief: {
+            businessName: 'Calm Path Therapy',
+            niche: 'Therapy practice',
+            location: 'Cluj-Napoca, Romania',
+          },
+          capturedAt: '2026-09-08T10:00:00.000Z',
+        },
+      }),
+      markAgentWorking: async () => undefined,
+      markRebuildStarted: async () => undefined,
+      markRebuilt: async () => undefined,
+      markHumanQa: async () => undefined,
+      markFailed: async () => undefined,
+      appendEvent: async (_jobId, event) => {
+        events.push({ kind: event.kind, body: event.body });
+      },
+    };
+    const worktrees = {
+      create: async () => ({
+        branch: `client/flowstarter-${projectId}`,
+        path: worktreeRoot,
+      }),
+      commit: async () => 'abc123',
+    } as unknown as SafeGitWorktreeManager;
+    const agents = {
+      buildFullSite: async (input: { workspaceRoot: string }) => {
+        await mkdir(join(input.workspaceRoot, 'src/content'), {
+          recursive: true,
+        });
+        await writeFile(
+          join(input.workspaceRoot, 'src/content/site-labels.md'),
+          MISSING_HERO_LABELS,
+          'utf8',
+        );
+        return {
+          summary: 'done',
+          changedPaths: ['src/content/site-labels.md'],
+        };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+    const validator: SiteValidator = {
+      validate: async () => {
+        validations += 1;
+      },
+    };
+    const pullRequests: PullRequestPublisher = {
+      create: async () => ({
+        pullRequestUrl: 'https://example.test/pr/1',
+        stagingUrl: 'https://staging.test',
+      }),
+    };
+
+    await new FullSiteBuildWorker(
+      store,
+      worktrees,
+      agents,
+      validator,
+      pullRequests,
+    ).run('job-required-blocks');
+
+    const logs = events.filter((e) => e.kind === 'log').map((e) => e.body);
+    expect(
+      logs.some(
+        (body) =>
+          body.includes('missing hero') && body.includes('deterministically'),
+      ),
+    ).toBe(true);
+    // The build/validate step still ran exactly once (no skip, no retry of
+    // the whole agent pass).
+    expect(validations).toBe(1);
+
+    const finalContent = await readFile(
+      join(siteRoot, 'src/content/site-labels.md'),
+      'utf8',
+    );
+    expect(finalContent).toContain('hero:');
+    expect(finalContent).toContain('Calm Path Therapy');
+    expect(finalContent).toContain('/contact');
+  });
+});

@@ -18,25 +18,60 @@ export interface FlowstarterMcpTemplateLibraryOptions {
 }
 
 export class FlowstarterMcpTemplateLibrary implements TemplateLibrary {
-  private readonly client = new Client({ name: 'flowstarter-build-worker', version: '1.0.0' });
-  private readonly transport: StreamableHTTPClientTransport;
+  private client: Client;
+  private transport: StreamableHTTPClientTransport;
   private connected = false;
 
   constructor(private readonly options: FlowstarterMcpTemplateLibraryOptions) {
     if (options.internalToken.length < 32) {
-      throw new Error('FLOWSTARTER_MCP_INTERNAL_TOKEN must contain at least 32 characters');
+      throw new Error(
+        'FLOWSTARTER_MCP_INTERNAL_TOKEN must contain at least 32 characters',
+      );
     }
     const endpoint = new URL(options.endpoint);
-    const loopback = endpoint.hostname === 'localhost' || endpoint.hostname === '127.0.0.1';
-    if (endpoint.protocol !== 'https:' && !(loopback && endpoint.protocol === 'http:')) {
-      throw new Error('Template MCP endpoint must use HTTPS (HTTP is allowed only on loopback)');
+    const loopback =
+      endpoint.hostname === 'localhost' || endpoint.hostname === '127.0.0.1';
+    if (
+      endpoint.protocol !== 'https:' &&
+      !(loopback && endpoint.protocol === 'http:')
+    ) {
+      throw new Error(
+        'Template MCP endpoint must use HTTPS (HTTP is allowed only on loopback)',
+      );
     }
-    this.transport = new StreamableHTTPClientTransport(endpoint);
+    const fresh = this.freshConnection(endpoint);
+    this.client = fresh.client;
+    this.transport = fresh.transport;
+  }
+
+  /**
+   * A brand new client/transport pair. Used once by the constructor and
+   * again by `call()`'s failure path: the SDK's `StreamableHTTPClientTransport`
+   * marks itself "started" the moment `client.connect()` is called on it,
+   * even if that connect then fails (server down, refused, DNS). Retrying
+   * `connect()` on the SAME transport after a failed attempt throws
+   * `StreamableHTTPClientTransport already started!` instead of the original,
+   * honest connection error — which is exactly what masked a real incident's
+   * cause. Replacing both objects after a failed connect means the next
+   * attempt starts clean.
+   */
+  private freshConnection(endpoint: URL): {
+    client: Client;
+    transport: StreamableHTTPClientTransport;
+  } {
+    return {
+      client: new Client({
+        name: 'flowstarter-build-worker',
+        version: '1.0.0',
+      }),
+      transport: new StreamableHTTPClientTransport(endpoint),
+    };
   }
 
   async search(query: string): Promise<TemplateCandidate[]> {
     const normalized = query.trim().slice(0, 300);
-    if (!normalized) throw new TypeError('Template search query cannot be empty');
+    if (!normalized)
+      throw new TypeError('Template search query cannot be empty');
     let payload = await this.call('search_templates', { query: normalized });
     if (!isRecord(payload) || !Array.isArray(payload.templates)) {
       throw new Error('Template MCP returned an invalid search response');
@@ -56,7 +91,8 @@ export class FlowstarterMcpTemplateLibrary implements TemplateLibrary {
   async getDetails(slug: string): Promise<Record<string, unknown>> {
     assertSlug(slug);
     const payload = await this.call('get_template_details', { slug });
-    if (!isRecord(payload)) throw new Error('Template MCP returned invalid template details');
+    if (!isRecord(payload))
+      throw new Error('Template MCP returned invalid template details');
     return payload;
   }
 
@@ -64,7 +100,10 @@ export class FlowstarterMcpTemplateLibrary implements TemplateLibrary {
     assertSlug(slug);
     const payload = await this.call('scaffold_template', { slug });
     if (!isRecord(payload) || !isRecord(payload.scaffold)) {
-      const detail = isRecord(payload) && typeof payload.error === 'string' ? `: ${payload.error}` : '';
+      const detail =
+        isRecord(payload) && typeof payload.error === 'string'
+          ? `: ${payload.error}`
+          : '';
       throw new Error(`Template MCP could not scaffold ${slug}${detail}`);
     }
 
@@ -72,13 +111,22 @@ export class FlowstarterMcpTemplateLibrary implements TemplateLibrary {
     if (!isRecord(scaffold.template) || !Array.isArray(scaffold.files)) {
       throw new Error('Template MCP returned an invalid scaffold payload');
     }
-    if (scaffold.files.length === 0 || scaffold.files.length > MAX_SCAFFOLD_FILES) {
-      throw new Error('Template scaffold file count is outside the allowed range');
+    if (
+      scaffold.files.length === 0 ||
+      scaffold.files.length > MAX_SCAFFOLD_FILES
+    ) {
+      throw new Error(
+        'Template scaffold file count is outside the allowed range',
+      );
     }
 
     let totalBytes = 0;
     const files = scaffold.files.map((file, index) => {
-      if (!isRecord(file) || typeof file.path !== 'string' || typeof file.content !== 'string') {
+      if (
+        !isRecord(file) ||
+        typeof file.path !== 'string' ||
+        typeof file.content !== 'string'
+      ) {
         throw new Error(`Template scaffold file ${index} is invalid`);
       }
       assertSafeScaffoldPath(file.path);
@@ -89,9 +137,15 @@ export class FlowstarterMcpTemplateLibrary implements TemplateLibrary {
       totalBytes += binary
         ? Math.floor((file.content.length * 3) / 4)
         : Buffer.byteLength(file.content, 'utf8');
-      if (totalBytes > MAX_SCAFFOLD_BYTES) throw new Error('Template scaffold exceeds size limit');
+      if (totalBytes > MAX_SCAFFOLD_BYTES)
+        throw new Error('Template scaffold exceeds size limit');
       return binary
-        ? { path: file.path, content: file.content, encoding: 'base64' as const, type: 'file' as const }
+        ? {
+            path: file.path,
+            content: file.content,
+            encoding: 'base64' as const,
+            type: 'file' as const,
+          }
         : { path: file.path, content: file.content, type: 'file' as const };
     });
 
@@ -100,7 +154,8 @@ export class FlowstarterMcpTemplateLibrary implements TemplateLibrary {
       throw new Error('Template scaffold metadata is invalid');
     }
     const metadata = parseCandidate(template.metadata);
-    if (metadata.slug !== slug) throw new Error('Template scaffold slug does not match the selection');
+    if (metadata.slug !== slug)
+      throw new Error('Template scaffold slug does not match the selection');
 
     return {
       template: {
@@ -120,10 +175,25 @@ export class FlowstarterMcpTemplateLibrary implements TemplateLibrary {
     this.connected = false;
   }
 
-  private async call(name: string, args: Record<string, unknown>): Promise<unknown> {
+  private async call(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<unknown> {
     if (!this.connected) {
-      await this.client.connect(this.transport);
-      this.connected = true;
+      try {
+        await this.client.connect(this.transport);
+        this.connected = true;
+      } catch (error) {
+        // The transport is now internally "started" even though connect
+        // failed. Replace it (and the client) so the NEXT call — whether a
+        // caller's own retry or a fresh attempt on this same instance — hits
+        // a clean transport instead of "already started!", and re-throw the
+        // real error rather than swallowing it.
+        const fresh = this.freshConnection(new URL(this.options.endpoint));
+        this.client = fresh.client;
+        this.transport = fresh.transport;
+        throw error;
+      }
     }
     const result = await this.client.callTool({
       name,
@@ -133,11 +203,16 @@ export class FlowstarterMcpTemplateLibrary implements TemplateLibrary {
     const text = blocks
       .filter(
         (block: unknown): block is { type: 'text'; text: string } =>
-          isRecord(block) && block.type === 'text' && typeof block.text === 'string'
+          isRecord(block) &&
+          block.type === 'text' &&
+          typeof block.text === 'string',
       )
       .map((block) => block.text)
       .join('\n');
-    if (result.isError) throw new Error(`Template MCP tool ${name} failed: ${text.slice(0, 500)}`);
+    if (result.isError)
+      throw new Error(
+        `Template MCP tool ${name} failed: ${text.slice(0, 500)}`,
+      );
     try {
       return JSON.parse(text) as unknown;
     } catch {
@@ -157,11 +232,11 @@ function parseCandidate(value: unknown): TemplateCandidate {
     useCase: stringArray(value.useCase),
     fileCount: requireNonNegativeNumber(
       value.fileCount ?? stats.fileCount,
-      'fileCount'
+      'fileCount',
     ),
     totalLOC: requireNonNegativeNumber(
       value.totalLOC ?? stats.totalLOC,
-      'totalLOC'
+      'totalLOC',
     ),
   };
   assertSlug(candidate.slug);
@@ -169,7 +244,8 @@ function parseCandidate(value: unknown): TemplateCandidate {
 }
 
 function assertSlug(slug: string): void {
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) throw new TypeError('Invalid template slug');
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))
+    throw new TypeError('Invalid template slug');
 }
 
 export function assertSafeScaffoldPath(relativePath: string): void {
@@ -179,8 +255,12 @@ export function assertSafeScaffoldPath(relativePath: string): void {
     relativePath.length > 300 ||
     relativePath.includes('\\') ||
     relativePath.startsWith('/') ||
-    segments.some((segment) => segment === '' || segment === '.' || segment === '..') ||
-    segments.some((segment) => segment === '.env' || segment.startsWith('.env.')) ||
+    segments.some(
+      (segment) => segment === '' || segment === '.' || segment === '..',
+    ) ||
+    segments.some(
+      (segment) => segment === '.env' || segment.startsWith('.env.'),
+    ) ||
     relativePath === '.git' ||
     relativePath.startsWith('.git/') ||
     relativePath === 'node_modules' ||
@@ -195,7 +275,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function requireString(value: unknown, field: string): string {
-  if (typeof value !== 'string' || value.trim().length === 0 || value.length > 2_000) {
+  if (
+    typeof value !== 'string' ||
+    value.trim().length === 0 ||
+    value.length > 2_000
+  ) {
     throw new Error(`Invalid template field ${field}`);
   }
   return value;
@@ -210,5 +294,7 @@ function requireNonNegativeNumber(value: unknown, field: string): number {
 
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === 'string').slice(0, 100);
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .slice(0, 100);
 }

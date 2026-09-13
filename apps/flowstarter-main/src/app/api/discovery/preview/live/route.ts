@@ -400,7 +400,7 @@ export async function POST(req: NextRequest) {
   // hand and emailed) instead of watching a job that was never going to
   // finish. `reason: 'not-configured'` is what the wizard reads to tell this
   // apart from a budget-blocked or malformed-intake skip.
-  const missingPrerequisites = missingGenerationPrerequisites();
+  const missingPrerequisites = await missingGenerationPrerequisites();
   if (missingPrerequisites.length > 0) {
     console.warn(
       `[Flowstarter] preview generation is not configured in this environment; missing: ${missingPrerequisites.join(

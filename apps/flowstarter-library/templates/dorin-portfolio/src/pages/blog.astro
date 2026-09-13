@@ -6,7 +6,7 @@ import CTASection from '../components/CTASection.astro';
 import AnimatedWordTitle from '../components/shared/AnimatedWordTitle.astro';
 import { siteLabels } from '../lib/site-data';
 
-const { articles } = (siteLabels as any).blogPage;
+const { articles } = (siteLabels as any).blogPage ?? {};
 ---
 
 <Layout title="Blog — Portfolio">
@@ -28,7 +28,7 @@ const { articles } = (siteLabels as any).blogPage;
     </section>
 
     <section class="blog-grid container">
-      {articles.map((article: any, index: number) => (
+      {(articles ?? []).map((article: any, index: number) => (
         <article
           class="blog-card"
           data-blog-reveal

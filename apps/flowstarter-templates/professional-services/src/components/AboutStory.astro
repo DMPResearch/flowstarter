@@ -3,7 +3,8 @@ import { frontmatter as siteLabels } from '../content/site-labels.md';
 import SectionBlock from './design-system/SectionBlock.astro';
 import ActionButton from './design-system/ActionButton.astro';
 
-const { aboutStory, header } = siteLabels;
+const aboutStory = (siteLabels as any).aboutStory ?? {};
+const header = (siteLabels as any).header ?? {};
 
 // The photo here is the client's own — the generator places a cachedAssets
 // or intake.photos portrait, or leaves this field absent. A brief with no
@@ -43,7 +44,7 @@ const initials = (() => {
     <div class="about-story__content">
       <h2 class="about-story__title">{aboutStory.title}</h2>
       <div class="about-story__text-group">
-        {aboutStory.paragraphs.map((paragraph) => (
+        {(aboutStory.paragraphs ?? []).map((paragraph) => (
           <p class="about-story__text">{paragraph}</p>
         ))}
       </div>

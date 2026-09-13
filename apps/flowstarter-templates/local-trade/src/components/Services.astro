@@ -26,8 +26,8 @@ interface Props {
 
 const { showCta = true } = Astro.props;
 
-const { services: servicesLabels } = siteLabels;
-const services = servicesLabels.items.map((item, index) => ({
+const servicesLabels = (siteLabels as any).services ?? {};
+const services = (servicesLabels.items ?? []).map((item, index) => ({
   ...item,
   icon: serviceIcons[index % serviceIcons.length],
 }));

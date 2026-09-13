@@ -4,7 +4,7 @@ import SectionBlock from './design-system/SectionBlock.astro';
 import SectionHeading from './design-system/SectionHeading.astro';
 import NumberedFeatureItem from './design-system/NumberedFeatureItem.astro';
 
-const { expertise } = siteLabels;
+const expertise = (siteLabels as any).expertise ?? {};
 ---
 
 <SectionBlock id="expertise" className="expertise" tone="none">
@@ -17,7 +17,7 @@ const { expertise } = siteLabels;
       />
     </div>
     <div class="expertise__right" data-expertise-list>
-      {expertise.items.map((item, index) => (
+      {(expertise.items ?? []).map((item, index) => (
         <NumberedFeatureItem
           number={item.number}
           title={item.title}

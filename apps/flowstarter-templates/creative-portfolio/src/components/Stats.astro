@@ -3,7 +3,7 @@ import { frontmatter as siteLabels } from '../content/site-labels.md';
 import SectionBlock from './design-system/SectionBlock.astro';
 import StatItem from './design-system/StatItem.astro';
 
-const { stats } = siteLabels;
+const stats = (siteLabels as any).stats ?? {};
 ---
 
 <SectionBlock className="stats" tone="dark" padding="compact">
@@ -13,7 +13,7 @@ const { stats } = siteLabels;
       <h2 class="stats__title">A decade of deliberate work</h2>
     </div>
     <div class="stats__inner" data-stats-section>
-      {stats.items.map((stat) => (
+      {(stats.items ?? []).map((stat) => (
         <StatItem number={stat.number} label={stat.label} />
       ))}
     </div>

@@ -4,7 +4,8 @@ import SectionBlock from './design-system/SectionBlock.astro';
 import CaseStudyCard from './design-system/CaseStudyCard.astro';
 import ActionButton from './design-system/ActionButton.astro';
 
-const { caseStudies } = siteLabels;
+const caseStudies = (siteLabels as any).caseStudies ?? {};
+const projects = caseStudies.projects ?? [];
 interface Props {
   showCta?: boolean;
   ctaHref?: string;
@@ -17,8 +18,8 @@ const {
   layout = 'masonry',
 } = Astro.props;
 
-const leftProjects = caseStudies.projects.filter((_, index) => index % 2 === 0);
-const rightProjects = caseStudies.projects.filter((_, index) => index % 2 === 1);
+const leftProjects = projects.filter((_, index) => index % 2 === 0);
+const rightProjects = projects.filter((_, index) => index % 2 === 1);
 ---
 
 <SectionBlock id="case-studies" className="case-studies">
@@ -67,7 +68,7 @@ const rightProjects = caseStudies.projects.filter((_, index) => index % 2 === 1)
 
     {layout === 'list' && (
       <div class="case-studies__list">
-        {caseStudies.projects.map((project, index) => (
+        {projects.map((project, index) => (
           <article class="case-studies__list-item" data-case-reveal style={`--reveal-delay: ${index * 60}ms`}>
             <a href={project.href} class="case-studies__list-image">
               {project.imageSrc
