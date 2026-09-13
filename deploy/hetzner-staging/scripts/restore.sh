@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 # Restores ONE database, OR the site tree (or one site within it), from a
 # dated directory backup.sh produced under $BACKUP_ROOT. Never restores
-# /etc/flowstarter: that tarball holds secrets and is encrypted, and putting
-# secrets back onto a box is rare enough and dangerous enough that it stays a
-# deliberate by-hand operation (decrypt with `age --decrypt` or `gpg
-# --decrypt` using the same recipient/passphrase backup.sh used, then extract
-# with `tar -xzf`), not something a script should do unattended.
+# /etc/flowstarter: that tarball holds secrets, and putting secrets back onto
+# a box is rare enough and dangerous enough that it stays a deliberate
+# by-hand operation (decrypt with `age --decrypt` or `gpg --decrypt` using
+# the same recipient/passphrase backup.sh used, then extract with
+# `tar -xzf`), not something a script should do unattended.
+#
+# Database dumps ARE decrypted automatically here (security audit
+# 2026-09-13, Claude M2 / Codex F15 — the dumps are the one artifact that
+# carries real tenant data, so a disaster-recovery restore cannot be a
+# routine drill if it first requires a human to decrypt by hand). The dump
+# filename's own extension (`.dump.age` or `.dump.gpg`) says which tool
+# encrypted it; see backup-crypto.sh, shared with backup.sh so the two can
+# never disagree about which tool won or what a passphrase file's required
+# mode is.
 #
 # Usage:
 #   restore.sh --date YYYY-MM-DD --database <project_id> [--dry-run]
@@ -27,17 +36,27 @@
 # container or path) and exits before touching anything. A real restore
 # always verifies the artifact's sha256 against the backup's manifest.sha256
 # first and refuses if it does not match; a backup that fails its own
-# checksum is not something to restore from blind.
+# checksum is not something to restore from blind. Verification runs against
+# the CIPHERTEXT on disk, before any decryption is attempted.
 #
 # Env overrides (same names and defaults as backup.sh, since a restore reads
 # what a backup wrote):
-#   BACKUP_ROOT   root of the backup tree, default /var/backups/flowstarter
-#   SITES_DIR     client sites tree, default /var/www/sites
+#   BACKUP_ROOT                 root of the backup tree, default /var/backups/flowstarter
+#   SITES_DIR                   client sites tree, default /var/www/sites
+#   BACKUP_AGE_IDENTITY_FILE    age private key file, for decrypting an
+#                                 age-encrypted dump (age also accepts an
+#                                 interactive passphrase prompt with none set)
+#   BACKUP_GPG_PASSPHRASE_FILE  default /etc/flowstarter/backup-gpg-passphrase,
+#                                 for decrypting a gpg-encrypted dump
 #
 # Run as root for a real (non-dry-run) restore: it writes into a Docker
 # container and into /var/www/sites.
 
 set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./backup-crypto.sh
+source "${HERE}/backup-crypto.sh"
 
 BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/flowstarter}"
 SITES_DIR="${SITES_DIR:-/var/www/sites}"
@@ -230,13 +249,30 @@ restore_database() {
   local dest_dir="$1"
   local container
   container="$(resolve_container)"
-  local dump_file="db-${container}.dump"
-  local dump_path="${dest_dir}/${dump_file}"
 
-  if [[ ! -f "$dump_path" ]]; then
-    echo "No dump found at ${dump_path} for --database ${DATABASE}." >&2
+  # backup.sh names an encrypted dump db-<container>.dump.age or
+  # db-<container>.dump.gpg, by whichever tool it used; a bare .dump with no
+  # encryption extension is only ever a pre-fix backup made before database
+  # dumps started being encrypted (security audit 2026-09-13, M2/F15) and is
+  # restored as-is, unencrypted.
+  local dump_file="" enc_ext=""
+  local candidate
+  for candidate in "db-${container}.dump.age" "db-${container}.dump.gpg" "db-${container}.dump"; do
+    if [[ -f "${dest_dir}/${candidate}" ]]; then
+      dump_file="$candidate"
+      case "$candidate" in
+        *.age) enc_ext="age" ;;
+        *.gpg) enc_ext="gpg" ;;
+      esac
+      break
+    fi
+  done
+  if [[ -z "$dump_file" ]]; then
+    echo "No dump found at ${dest_dir}/db-${container}.dump{.age,.gpg} for --database ${DATABASE}." >&2
     exit 1
   fi
+  local dump_path="${dest_dir}/${dump_file}"
+
   verify_manifest_entry "$dest_dir" "$dump_file"
 
   if ! docker ps --format '{{.Names}}' | grep -qxF "$container"; then
@@ -250,6 +286,9 @@ restore_database() {
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "[dry-run] Would restore ${dump_path}"
+    if [[ -n "$enc_ext" ]]; then
+      echo "[dry-run]   decrypted with ${enc_ext}, then piped into:"
+    fi
     echo "[dry-run]   into container ${container}, database ${db}, as ${user}, via:"
     echo "[dry-run]   docker exec -i ${container} pg_restore -w -U ${user} -d ${db} --clean --if-exists"
     echo "[dry-run] No changes made."
@@ -264,7 +303,12 @@ restore_database() {
   # recovery drill against a freshly started stack.
   # `-w` for the same reason backup.sh passes it: a restore run from a
   # terminal-less context must fail rather than sit on a password prompt.
-  docker exec -i "$container" pg_restore -w -U "$user" -d "$db" --clean --if-exists <"$dump_path"
+  if [[ -n "$enc_ext" ]]; then
+    decrypt_stream "$enc_ext" <"$dump_path" |
+      docker exec -i "$container" pg_restore -w -U "$user" -d "$db" --clean --if-exists
+  else
+    docker exec -i "$container" pg_restore -w -U "$user" -d "$db" --clean --if-exists <"$dump_path"
+  fi
   echo "Restore complete."
 }
 
