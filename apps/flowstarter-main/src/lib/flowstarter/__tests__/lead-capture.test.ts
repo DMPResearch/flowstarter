@@ -126,6 +126,16 @@ describe('the token', () => {
       leadCaptureEndpoint('https://flowstarter.net/', 'a'.repeat(43))
     ).toBe(expected);
   });
+
+  it('keeps an http origin as http, rather than upgrading it to a scheme nothing is listening on', () => {
+    // A development app origin (`publicAppOrigin()` on a laptop with nothing
+    // else configured) is honestly `http://localhost:3000`, and forcing it to
+    // `https` here would point the injected form at a certificate that does
+    // not exist.
+    expect(leadCaptureEndpoint('http://localhost:3000', 'a'.repeat(43))).toBe(
+      `http://localhost:3000/api/leads/capture/${'a'.repeat(43)}`
+    );
+  });
 });
 
 describe('ensureLeadCaptureToken', () => {

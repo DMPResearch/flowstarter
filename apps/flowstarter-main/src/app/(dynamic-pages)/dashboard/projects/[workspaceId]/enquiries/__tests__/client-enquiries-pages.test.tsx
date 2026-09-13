@@ -146,6 +146,7 @@ function lead(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  process.env.FLOWSTARTER_ENV = 'production';
   process.env.PLATFORM_DOMAIN = 'flowstarter.test';
   state.authorizedFor = [MINE];
   state.workspaces = [workspaceRow()];

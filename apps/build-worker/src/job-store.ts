@@ -33,7 +33,7 @@ import {
   type PreviewIntent,
   type TemplateScaffoldFile,
 } from '@flowstarter/agentic-codegen';
-import { resolvePlatformDomain } from '@flowstarter/platform-config';
+import { publicAppOrigin } from '@flowstarter/platform-config';
 import {
   loadChangeRequestAssetFiles,
   loadTenantAssetFiles,
@@ -416,11 +416,20 @@ function parseCalComUrl(raw: string | null | undefined): string | null {
  * Where this workspace's contact form posts, or null.
  *
  * Two things decide it and neither is in the job payload: the workspace's own
- * `lead_capture_token`, and the platform host this process belongs to, which
- * `resolvePlatformDomain()` reads from its own environment. That is why the
- * URL is assembled here rather than sent by whoever queued the job - a build
- * worker running against the dev zone must not write a production endpoint
- * into a site because a queued row said so.
+ * `lead_capture_token`, and where *this process's own app* answers, which
+ * `publicAppOrigin()` reads from its own environment. That is why the URL is
+ * assembled here rather than sent by whoever queued the job - a build worker
+ * running against the dev zone must not write a production endpoint into a
+ * site because a queued row said so.
+ *
+ * `publicAppOrigin()`, not `resolvePlatformDomain()`. The old code used the
+ * bare platform domain (`https://flowstarter.dev` in development and on the
+ * shared staging box), which is the zone *client sites* are hosted under, not
+ * where this app answers; nothing listens at that apex outside production, so
+ * every enquiry from a site built off a dev or staging worker landed on a
+ * 404. `publicAppOrigin()` is the same rule `resolvePlatformOrigins()` in
+ * `config.ts` uses for this generated site's CSP allowlist, so the origin a
+ * form posts to and the origin its CSP permits can never drift apart.
  *
  * The token shape is checked rather than trusted for the same reason the Cal
  * link's host is: this string ends up in public HTML, and a token carrying a
@@ -433,7 +442,7 @@ function leadCaptureEndpointFor(raw: string | null | undefined): string | null {
   if (typeof raw !== 'string') return null;
   const token = raw.trim();
   if (!LEAD_CAPTURE_TOKEN.test(token)) return null;
-  return `https://${resolvePlatformDomain()}/api/leads/capture/${token}`;
+  return `${publicAppOrigin()}/api/leads/capture/${token}`;
 }
 
 /** The three kinds this worker runs, off the ledger row's free-text column. */

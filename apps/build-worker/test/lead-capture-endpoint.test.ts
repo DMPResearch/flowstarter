@@ -1,16 +1,23 @@
 /**
  * Where a built site posts its enquiries, decided by the worker.
  *
- * Two decisions are being defended, and neither of them is in the job payload:
+ * Three decisions are being defended, and none of them is in the job payload:
  *
- *  1. THE HOST is this process's own, through `resolvePlatformDomain()`. A
- *     worker running against the dev zone must not write a production endpoint
- *     into somebody's site because a queued row said so.
+ *  1. THE ORIGIN is this process's own, through `publicAppOrigin()` -- not
+ *     `resolvePlatformDomain()`, which names the zone client sites are hosted
+ *     under and is a different question everywhere but production. A worker
+ *     running against the dev or staging zone must write an endpoint
+ *     something actually answers at, not the bare apex, and must never write
+ *     a production endpoint into somebody's site because a queued row said
+ *     so.
  *  2. THE TOKEN is checked rather than trusted. It ends up in public HTML, so
  *     a value carrying a slash would change the path, a value carrying a dot
  *     could collide with the preview shape the endpoint refuses, and a
  *     workspace id is short enough to be refused by the same rule that makes
  *     the id not be the key.
+ *  3. `FLOWSTARTER_PUBLIC_APP_ORIGIN` overrides every guess outright, for a
+ *     slot (a PR staging box) that answers somewhere other than its
+ *     environment's default subdomain.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ProjectState } from '@flowstarter/agentic-codegen';
@@ -47,28 +54,68 @@ const jobWith = (leadCaptureToken: string | null | undefined) =>
     leadCaptureToken,
   });
 
-const previous = process.env.PLATFORM_DOMAIN;
+const ENV_KEYS = [
+  'FLOWSTARTER_ENV',
+  'NODE_ENV',
+  'PLATFORM_DOMAIN',
+  'FLOWSTARTER_PUBLIC_APP_ORIGIN',
+  'NEXT_PUBLIC_SITE_URL',
+  'PORT',
+] as const;
+
+const previous: Record<string, string | undefined> = {};
 
 beforeEach(() => {
+  for (const key of ENV_KEYS) previous[key] = process.env[key];
+  // The suite's own baseline: a production-shaped process, the way the
+  // pre-existing cases here always assumed.
+  process.env.FLOWSTARTER_ENV = 'production';
   process.env.PLATFORM_DOMAIN = 'flowstarter.test';
 });
 
 afterEach(() => {
-  if (previous === undefined) delete process.env.PLATFORM_DOMAIN;
-  else process.env.PLATFORM_DOMAIN = previous;
+  for (const key of ENV_KEYS) {
+    if (previous[key] === undefined) delete process.env[key];
+    else process.env[key] = previous[key];
+  }
 });
 
 describe('leadCaptureEndpoint on the job', () => {
-  it('is built from the token and this process own platform host', () => {
+  it('is built from the token and this process own platform origin, in production', () => {
     expect(jobWith(TOKEN).leadCaptureEndpoint).toBe(
       `https://flowstarter.test/api/leads/capture/${TOKEN}`,
     );
   });
 
-  it('follows the host this process is configured for, not a queued value', () => {
+  it('follows the domain this process is configured for, not a queued value', () => {
     process.env.PLATFORM_DOMAIN = 'flowstarter.dev';
     expect(jobWith(TOKEN).leadCaptureEndpoint).toBe(
       `https://flowstarter.dev/api/leads/capture/${TOKEN}`,
+    );
+  });
+
+  it('posts to staging.{domain} on the shared staging box, where the bare apex 404s', () => {
+    process.env.FLOWSTARTER_ENV = 'staging';
+    delete process.env.PLATFORM_DOMAIN;
+    expect(jobWith(TOKEN).leadCaptureEndpoint).toBe(
+      `https://staging.flowstarter.dev/api/leads/capture/${TOKEN}`,
+    );
+  });
+
+  it('posts to NEXT_PUBLIC_SITE_URL in development, not flowstarter.dev', () => {
+    process.env.FLOWSTARTER_ENV = 'development';
+    delete process.env.PLATFORM_DOMAIN;
+    process.env.NEXT_PUBLIC_SITE_URL = 'http://localhost:3067';
+    expect(jobWith(TOKEN).leadCaptureEndpoint).toBe(
+      `http://localhost:3067/api/leads/capture/${TOKEN}`,
+    );
+  });
+
+  it('is overridden outright by FLOWSTARTER_PUBLIC_APP_ORIGIN, for a slot on its own subdomain', () => {
+    process.env.FLOWSTARTER_PUBLIC_APP_ORIGIN =
+      'https://pr-7.staging.flowstarter.dev';
+    expect(jobWith(TOKEN).leadCaptureEndpoint).toBe(
+      `https://pr-7.staging.flowstarter.dev/api/leads/capture/${TOKEN}`,
     );
   });
 
