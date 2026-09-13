@@ -210,10 +210,88 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** An `<img>`/`<source>`/`<image>` element, however it is closed. */
-const IMAGE_ELEMENT = /<(img|source|image)\b[^>]*\/?>(?:\s*<\/\1>)?/gi;
-/** A whole CSS declaration whose value is a `url(...)`. */
-const CSS_DECLARATION = /[^;{}\n]*:\s*[^;{}]*url\([^)]*\)[^;{}]*;?/gi;
+/**
+ * An `<img>`/`<source>`/`<image>` element, however it is closed.
+ *
+ * `[^>]*` already absorbs a self-closing slash, so there is no `\/?` before
+ * the `>`: two ways to match the same character is exactly the ambiguity that
+ * makes a pattern backtrack (CodeQL js/polynomial-redos), and it would buy
+ * nothing here.
+ */
+const IMAGE_ELEMENT = /<(img|source|image)\b[^>]*>(?:\s*<\/\1>)?/gi;
+
+/** Where one CSS declaration carrying a `url(...)` begins and ends. */
+export interface CssUrlDeclaration {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/**
+ * Where one declaration stops, scanning either way from its `url(...)`.
+ *
+ * `;`, the braces and the newline are CSS's own boundaries. The quotes and
+ * `>` are there because this also reads markup: a
+ * `style="background: url(...)"` on a div survives the element pass above,
+ * and a scan that ran past the closing quote would take the rest of the page
+ * with it.
+ */
+const DECLARATION_BOUNDARY = new Set([';', '{', '}', '"', "'", '>', '\n']);
+
+/**
+ * Every CSS declaration whose value carries a `url(...)`, in source order,
+ * found by a forward scan.
+ *
+ * A regular expression for this shape — a property, a colon, a value, a url,
+ * more value — repeats two overlapping character classes either side of the
+ * colon and backtracks polynomially on input that never completes the match
+ * (CodeQL js/polynomial-redos). What it reads is a stylesheet out of a
+ * client's own published manifest, which is as large as they like, so it is
+ * scanned the way `headingMarkups` scans built HTML in `invented-project.ts`.
+ *
+ * The pass is linear: every backward scan stops at the end of the declaration
+ * the previous one found, so no character is read twice.
+ */
+export function cssUrlDeclarations(source: string): CssUrlDeclaration[] {
+  const found: CssUrlDeclaration[] = [];
+  const lower = source.toLowerCase();
+  let floor = 0;
+  let at = 0;
+  while (at < lower.length) {
+    const url = lower.indexOf('url(', at);
+    if (url < 0) break;
+    const close = source.indexOf(')', url + 'url('.length);
+    if (close < 0) break;
+
+    let start = url;
+    while (
+      start > floor &&
+      !DECLARATION_BOUNDARY.has(source[start - 1] as string)
+    )
+      start -= 1;
+
+    let end = close + 1;
+    while (
+      end < source.length &&
+      !DECLARATION_BOUNDARY.has(source[end] as string)
+    )
+      end += 1;
+    // The terminator goes with the declaration only when it is the
+    // declaration's own semicolon; a brace or a quote belongs to whatever
+    // encloses it.
+    if (source[end] === ';') end += 1;
+
+    // A declaration has a colon between its property and its value. Without
+    // one this `url(` is in something else — an `@import`, a comment, prose.
+    if (source.slice(start, url).includes(':')) {
+      found.push({ start, end, text: source.slice(start, end) });
+    }
+    at = Math.max(close + 1, end);
+    floor = end;
+  }
+  return found;
+}
+
 /** Any attribute whose value carries the reference. */
 function attributePattern(reference: string): RegExp {
   return new RegExp(
@@ -295,16 +373,24 @@ function rewriteReference(
   // 3. CSS: the declaration goes with the url, so no property is left half
   //    written.
   if (content.includes(reference)) {
-    content = content.replace(CSS_DECLARATION, (declaration) => {
-      if (!declaration.includes(reference)) return declaration;
+    const declarations = cssUrlDeclarations(content).filter((declaration) =>
+      declaration.text.includes(reference),
+    );
+    for (let index = 0; index < declarations.length; index += 1) {
       rewrites.push({
         file: path,
         reference,
         slot: classifyPlaceholderSlot({ role, section: path, key: 'css' }),
         section: 'stylesheet',
       });
-      return '';
-    });
+    }
+    // Cut from the back, so an earlier declaration's offsets are still the
+    // offsets of the string being cut.
+    for (let index = declarations.length - 1; index >= 0; index -= 1) {
+      const declaration = declarations[index] as CssUrlDeclaration;
+      content =
+        content.slice(0, declaration.start) + content.slice(declaration.end);
+    }
   }
 
   // 4. Anything else that named it in an attribute — a component prop, say,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   classifyPlaceholderSlot,
+  cssUrlDeclarations,
   describeSeedPlaceholderSanitisation,
   findPlaceholderImageReferencesInFiles,
   isGatedPlaceholderImageRole,
@@ -256,6 +257,45 @@ describe('sanitiseSeedPlaceholders: the seed of a site published before #110', (
     ]);
   });
 
+  it('takes an inline background off a page without taking the page with it', () => {
+    const bytes = '<svg>work thumb</svg>';
+    const result = sanitiseSeedPlaceholders(
+      [
+        {
+          path: 'public/images/thumb.svg',
+          content: bytes,
+          type: 'file' as const,
+        },
+        {
+          path: 'src/pages/work.astro',
+          content:
+            '<div style="background: url(/images/thumb.svg)">\n' +
+            '  <h2>Halden Press</h2>\n' +
+            '</div>\n',
+          type: 'file' as const,
+        },
+      ],
+      {
+        manifest: [
+          {
+            id: 'test-thumb',
+            template: 'test',
+            path: 'public/images/thumb.svg',
+            role: 'work-thumb' as const,
+            sha256: sha256Hex(bytes),
+            why: 'a stand-in',
+          },
+        ],
+      },
+    );
+    const astro = result.files.find(
+      (file) => file.path === 'src/pages/work.astro',
+    );
+    expect(astro?.content).toBe(
+      '<div style="">\n  <h2>Halden Press</h2>\n</div>\n',
+    );
+  });
+
   it('blanks a component prop, so the component renders its own fallback', () => {
     const bytes = '<svg>portrait</svg>';
     const result = sanitiseSeedPlaceholders(
@@ -289,6 +329,63 @@ describe('sanitiseSeedPlaceholders: the seed of a site published before #110', (
     );
     expect(about?.content).toBe('<AboutStory imageSrc="" name="Roe" />\n');
     expect(result.rewritten[0]?.slot).toBe('portrait');
+  });
+});
+
+describe('cssUrlDeclarations', () => {
+  // A regular expression for this shape repeats two overlapping character
+  // classes either side of the colon, which CodeQL flags as
+  // js/polynomial-redos — and the input is a stylesheet out of a client's own
+  // manifest, as large as they care to make it. These pin the scan that
+  // replaced it.
+  it('reads a declaration and takes its semicolon with it', () => {
+    const css = '.tile {\n  background-image: url("/images/x.svg");\n}\n';
+    expect(cssUrlDeclarations(css).map((entry) => entry.text)).toEqual([
+      '  background-image: url("/images/x.svg");',
+    ]);
+  });
+
+  it('keeps the rest of the value, and stops at the brace without eating it', () => {
+    const css = '.tile { background: url(/x.svg) no-repeat center }';
+    expect(cssUrlDeclarations(css).map((entry) => entry.text)).toEqual([
+      ' background: url(/x.svg) no-repeat center ',
+    ]);
+  });
+
+  it('finds each declaration in a sheet, once', () => {
+    const css =
+      '.a { background: url(/1.svg); }\n.b { background: url(/2.svg); }\n';
+    expect(cssUrlDeclarations(css).map((entry) => entry.text)).toEqual([
+      ' background: url(/1.svg);',
+      ' background: url(/2.svg);',
+    ]);
+  });
+
+  it('ignores a url that is not in a declaration at all', () => {
+    // No colon between the boundary and the `url(`, so this is an at-rule or
+    // prose, not a property whose picture we are taking away.
+    expect(cssUrlDeclarations('@import url(/theme.css);')).toEqual([]);
+    expect(cssUrlDeclarations('see url(/images/x.svg) for the source')).toEqual(
+      [],
+    );
+  });
+
+  it('stops at the closing quote of a style attribute', () => {
+    // The case the old pattern got wrong: its trailing `[^;{}]*` ran to the
+    // end of the file, so removing one inline background took the whole rest
+    // of the page with it.
+    const html =
+      '<div style="background: url(/images/x.svg)">Everything after this ' +
+      'is the client\u2019s paid-for page.</div>';
+    expect(cssUrlDeclarations(html).map((entry) => entry.text)).toEqual([
+      'background: url(/images/x.svg)',
+    ]);
+  });
+
+  it('gives up on an unterminated url rather than scanning to the end', () => {
+    expect(cssUrlDeclarations('.a { background: url(/images/x.svg')).toEqual(
+      [],
+    );
   });
 });
 
