@@ -250,7 +250,9 @@ function stripIpv4Port(entry: string): string {
 function isInTrustedRanges(ip: string, ranges: readonly string[]): boolean {
   const candidate = stripIpv4Port(ip);
   return ranges.some((cidr) =>
-    cidr.includes(':') ? ipv6InCidr(candidate, cidr) : ipv4InCidr(candidate, cidr)
+    cidr.includes(':')
+      ? ipv6InCidr(candidate, cidr)
+      : ipv4InCidr(candidate, cidr)
   );
 }
 

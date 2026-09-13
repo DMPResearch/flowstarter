@@ -249,4 +249,3 @@ function baseHeaders(origin: string | null = null): Record<string, string> {
     'Cache-Control': 'no-store',
   };
 }
-

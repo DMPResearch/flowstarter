@@ -25,7 +25,7 @@ import { createClient } from '@supabase/supabase-js';
  *
  * Security audit 2026-09-13 (Claude H4; Codex F06) found two further
  * problems, both fixed at the database layer (see
- * supabase/migrations/20260913120000_funnel_budget_reservation.sql):
+ * supabase/migrations/20260913130000_funnel_budget_reservation.sql):
  *
  *   - {@link funnelBudgetState} used to sum `cost_eur` by fetching individual
  *     rows and adding them in JavaScript, which silently truncated once the
@@ -360,7 +360,7 @@ function reservationAccountingUnavailable(
 /**
  * Reserve `estimateEur` against both the global monthly cap and the
  * per-caller cap, atomically, before starting an expensive run. See
- * `supabase/migrations/20260913120000_funnel_budget_reservation.sql`'s
+ * `supabase/migrations/20260913130000_funnel_budget_reservation.sql`'s
  * `reserve_funnel_spend` for the transaction/locking detail.
  *
  * On success, the caller MUST eventually call {@link settleFunnelReservation}

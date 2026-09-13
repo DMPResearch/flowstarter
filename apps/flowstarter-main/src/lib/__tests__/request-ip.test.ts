@@ -170,7 +170,10 @@ describe('clientIp — the required test table: no header, one hop, spoofed pref
   });
 
   it('an empty X-Forwarded-For value falls back to X-Real-Ip', () => {
-    const headers = headersOf({ 'x-forwarded-for': '', 'x-real-ip': '203.0.113.1' });
+    const headers = headersOf({
+      'x-forwarded-for': '',
+      'x-real-ip': '203.0.113.1',
+    });
     expect(clientIp(headers, PROD_ENV)).toBe('203.0.113.1');
   });
 
