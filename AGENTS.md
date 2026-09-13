@@ -49,8 +49,11 @@ Do not relitigate these in a pull request.
   `ro.ts`, `en/`). It uses no em dashes and no emojis. Hard-coding a visible
   string in a component instead of the dictionary is a defect.
 - Commit messages the worker creates must match the policy in
-  `packages/agentic-codegen/src/flowstarter/worktree.ts`, which accepts
-  exactly two shapes and rejects everything else.
+  `packages/agentic-codegen/src/flowstarter/worktree.ts`, which accepts exactly
+  the shapes in `BUILD_COMMIT_SUBJECTS` — one per build kind — and rejects
+  everything else. Never write the subject at a call site: a new build kind
+  gets a row in that table and calls `buildCommitMessage(kind, projectId)`, so
+  the emitter and the policy cannot disagree the way they did on 2026-09-13.
 
 ## Tooling
 

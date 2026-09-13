@@ -7,6 +7,7 @@ import {
   findPlaceholderImageByHash,
   findPlaceholderImageMarkersInText,
   findPlaceholderImageReferencesInFiles,
+  GATED_PLACEHOLDER_IMAGE_HASHES,
   GATED_PLACEHOLDER_IMAGE_ROLES,
   isGatedPlaceholderImageRole,
   PLACEHOLDER_IMAGE_FILENAME_PREFIX,
@@ -47,14 +48,50 @@ describe('the manifest', () => {
   });
 
   it('records the incident: creative-portfolio and dorin-portfolio ship the same portrait placeholder', () => {
-    const portraits = PLACEHOLDER_IMAGE_MANIFEST.filter(
-      (asset) => asset.role === 'portrait',
+    const guide = PLACEHOLDER_IMAGE_MANIFEST.filter(
+      (asset) => asset.path === 'public/images/about-me-photo.svg',
     );
-    expect(portraits.map((asset) => asset.template).sort()).toEqual([
+    expect(guide.every((asset) => asset.role === 'portrait')).toBe(true);
+    expect(guide.map((asset) => asset.template).sort()).toEqual([
       'creative-portfolio',
       'dorin-portfolio',
     ]);
-    expect(new Set(portraits.map((asset) => asset.sha256)).size).toBe(1);
+    expect(new Set(guide.map((asset) => asset.sha256)).size).toBe(1);
+  });
+
+  it('gates studio-portrait.svg, the picture a client called the generic template one', () => {
+    // Catalogued `decoration` until 2026-09-14, which is why the seed cleaner
+    // left it on the home story section of a site through three paid change
+    // requests. The bytes are a stand-in for a photograph, so the role is
+    // `portrait` and the gate refuses it in a paid build.
+    const asset = PLACEHOLDER_IMAGE_MANIFEST.find(
+      (row) => row.id === 'creative-portfolio-studio-portrait',
+    );
+    expect(asset?.role).toBe('portrait');
+    expect(isGatedPlaceholderImageRole(asset!.role)).toBe(true);
+    expect(GATED_PLACEHOLDER_IMAGE_HASHES.has(asset!.sha256)).toBe(true);
+  });
+
+  it('describes each file by its own bytes, not by the other one’s', () => {
+    // The two `why` strings were swapped: `about-me-photo.svg` was described
+    // as "a circle on a grid with an orange frame", which is what
+    // `studio-portrait.svg` is. Only the prose was wrong — both hashes were
+    // always right — but the prose is what the agent and the operator read in
+    // the failure message.
+    const guide = PLACEHOLDER_IMAGE_MANIFEST.find(
+      (row) => row.id === 'creative-portfolio-about-me-photo',
+    )!;
+    const portrait = PLACEHOLDER_IMAGE_MANIFEST.find(
+      (row) => row.id === 'creative-portfolio-studio-portrait',
+    )!;
+    // about-me-photo.svg: cream ground, two concentric circles, black squares.
+    expect(guide.why).toMatch(/cream/i);
+    expect(guide.why).toMatch(/concentric circles/i);
+    expect(guide.why).not.toMatch(/orange frame/i);
+    // studio-portrait.svg: dark ground, grid rules, one circle, orange frame.
+    expect(portrait.why).toMatch(/dark ground/i);
+    expect(portrait.why).toMatch(/orange frame/i);
+    expect(portrait.why).not.toMatch(/cream/i);
   });
 });
 
@@ -73,9 +110,17 @@ describe('findPlaceholderImageByFilename', () => {
 
   it('does not flag a decoration or hero asset', () => {
     expect(
-      findPlaceholderImageByFilename('images/studio-portrait.svg'),
+      findPlaceholderImageByFilename('images/studio-desk.svg'),
     ).toBeUndefined();
     expect(findPlaceholderImageByFilename('images/hero.png')).toBeUndefined();
+  });
+
+  it('flags studio-portrait.svg, which used to be catalogued as decoration', () => {
+    const finding = findPlaceholderImageByFilename(
+      'images/studio-portrait.svg',
+    );
+    expect(finding?.role).toBe('portrait');
+    expect(finding?.asset?.id).toBe('creative-portfolio-studio-portrait');
   });
 
   it('recognizes the naming convention for a future template', () => {
@@ -214,11 +259,22 @@ describe('findPlaceholderImageReferencesInFiles', () => {
       {
         path: 'dist/about/index.html',
         content:
-          '<img src="/images/studio-portrait.svg" alt="" />' +
+          '<img src="/images/studio-desk.svg" alt="" />' +
           '<img src="/images/hero.png" alt="" />',
       },
     ]);
     expect(findings).toEqual([]);
+  });
+
+  it('catches the home story portrait a paid site still carried', () => {
+    const findings = findPlaceholderImageReferencesInFiles([
+      {
+        path: 'dist/index.html',
+        content:
+          '<img src="/images/studio-portrait.svg" alt="In the studio" />',
+      },
+    ]);
+    expect(findings.map((finding) => finding.role)).toEqual(['portrait']);
   });
 
   it('says nothing about a page with the client’s own photo', () => {

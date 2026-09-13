@@ -52,6 +52,10 @@ import {
   type LeasedJobRow,
   type PublishedResult,
 } from './leases';
+import {
+  appendFailureToLedger,
+  firstRecordedFailureCode,
+} from './failure-policy';
 import { withTenant } from './tenancy';
 
 const UUID =
@@ -128,7 +132,8 @@ export interface JobLedgerRow extends LeasedJobRow {
 /** Every column a claim or a recovery decision is made from. */
 const LEDGER_COLUMNS =
   'id, workspace_id, kind, status, attempt_count, max_attempts, run_after, ' +
-  'started_at, leased_by, lease_expires_at, lease_fence, payload';
+  'started_at, leased_by, lease_expires_at, lease_fence, error_code, ' +
+  'error_detail, payload';
 
 export interface ProjectArtifactRow {
   intake_payload: unknown;
@@ -1585,6 +1590,70 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
   }
 
   /**
+   * Takes back a version this job saved and never published.
+   *
+   * The guard is the whole design. Three `eq`s and an `is`: the workspace
+   * (through `withTenant`), the version number, `created_by` naming *this*
+   * job's change-request build, and `published_at` still null. A version an
+   * operator published in the meantime, one a client's own publish wrote, or
+   * one belonging to another job matches none of them and is returned as
+   * `false` rather than deleted -- there is no argument under which a build
+   * that failed should remove a version somebody is looking at.
+   *
+   * `saveChangeRequestVersion` also mirrors the manifest into
+   * `flowstarter_project_artifacts`, which the worker and the deploy path both
+   * read, so the rollback restores that mirror to the highest version that
+   * still exists. When no version remains there is nothing to restore it to
+   * and the mirror is left alone: a workspace whose only version was this one
+   * has a preview manifest that predates versioning, and overwriting it with
+   * an empty manifest would be the worse failure.
+   *
+   * Deliberately *not* fenced, unlike every other write here. An attempt that
+   * lost its lease is exactly the attempt most likely to have left a version
+   * behind, and refusing its cleanup would strand the row this method exists
+   * to remove. It is safe because the guard names a version number: the run
+   * that overtook this one takes the next free number, so a rollback can only
+   * ever reach the row its own save wrote.
+   */
+  async discardChangeRequestVersion(
+    jobId: string,
+    input: { changeRequestId: string; version: number },
+  ): Promise<boolean> {
+    const workspaceId = await this.workspaceFor(jobId);
+    const { data, error } = await withTenant(this.client, workspaceId)
+      .from('site_versions')
+      .delete()
+      .eq('version', input.version)
+      .eq('created_by', `system:change_request_build:${jobId}`)
+      .is('published_at', null)
+      .select('version')
+      .maybeSingle<{ version: number }>();
+    if (error) throw error;
+    if (!data) return false;
+
+    const { data: latest, error: readError } = await withTenant(
+      this.client,
+      workspaceId,
+    )
+      .from('site_versions')
+      .select('manifest')
+      .order('version', { ascending: false })
+      .limit(1)
+      .maybeSingle<{ manifest: unknown }>();
+    if (readError) throw readError;
+    if (!latest) return true;
+
+    const { error: mirrorError } = await withTenant(this.client, workspaceId)
+      .from('flowstarter_project_artifacts')
+      .update({
+        preview_manifest: latest.manifest,
+        updated_at: new Date(this.now()).toISOString(),
+      });
+    if (mirrorError) throw mirrorError;
+    return true;
+  }
+
+  /**
    * The last thing a change-request build does, and the only thing that tells
    * anybody the work shipped.
    *
@@ -1689,15 +1758,36 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
   ): Promise<void> {
     const at = this.now();
     const now = new Date(at).toISOString();
+    const detail = failure.detail.slice(0, 2_000);
+    // `error_code` is what is wrong with this job *now*, and a retry rightly
+    // replaces it. What a retry must not do is erase what the first attempt
+    // said: four PAGE_BUDGET_EXCEEDED jobs and one PLACEHOLDER_IMAGE_SHIPPED
+    // in workspace c009105e read CHANGE_REQUEST_BUILD_FAILED today because
+    // their last retry overwrote the verdict that mattered. So each attempt
+    // appends to a ledger on the payload, and the first code it holds is
+    // mirrored into a column an operator can query without touching JSON.
+    //
+    // The read happens before the fenced write and is not a race: an attempt
+    // that has been overtaken writes nothing at all, whatever it read.
+    const existing = await this.currentPayload(jobId);
+    const attempt = this.attemptsSoFar(jobId);
+    const failures = appendFailureToLedger(existing, {
+      attempt,
+      code: failure.code,
+      detail,
+      at: now,
+    });
     const { data, error } = await this.fencedJobUpdate(jobId, {
       status: 'failed',
       error_code: failure.code,
-      error_detail: failure.detail.slice(0, 2_000),
+      error_detail: detail,
+      error_code_first: firstRecordedFailureCode(existing, failure.code),
+      payload: { ...existing, failures },
       finished_at: now,
       updated_at: now,
       leased_by: null,
       lease_expires_at: null,
-      run_after: nextRunAfter(at, this.attemptsSoFar(jobId), this.backoff),
+      run_after: nextRunAfter(at, attempt, this.backoff),
     })
       .select('workspace_id')
       .maybeSingle<{ workspace_id: string }>();

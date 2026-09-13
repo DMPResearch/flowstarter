@@ -108,7 +108,13 @@ describe('claimVerdict', () => {
   });
 
   it('honours backoff recorded on the row', () => {
-    const backingOff = row({ status: 'failed', run_after: iso(30_000) });
+    // A lease this worker lost is the retryable kind of failure, so what is
+    // being asserted here is the backoff and nothing else.
+    const backingOff = row({
+      status: 'failed',
+      error_code: 'BUILD_LEASE_EXPIRED',
+      run_after: iso(30_000),
+    });
     expect(claimVerdict(backingOff, RULES)).toEqual({
       claimable: false,
       reason: 'not-due',
@@ -120,13 +126,107 @@ describe('claimVerdict', () => {
   });
 
   it('stops retrying once the budget on the row is spent', () => {
-    expect(
-      claimVerdict(row({ status: 'failed', attempt_count: 3 }), RULES),
-    ).toEqual({ claimable: false, reason: 'attempts-exhausted' });
+    const spent = row({
+      status: 'failed',
+      error_code: 'BUILD_LEASE_EXPIRED',
+      attempt_count: 3,
+    });
+    expect(claimVerdict(spent, RULES)).toEqual({
+      claimable: false,
+      reason: 'attempts-exhausted',
+    });
     // An operator re-dispatch raises max_attempts on the row, and the row wins.
+    expect(claimVerdict({ ...spent, max_attempts: 4 }, RULES)).toEqual({
+      claimable: true,
+      recovered: false,
+    });
+  });
+
+  // ─── Which failures are worth another attempt ───────────────────────────
+
+  /**
+   * Job `b52b241f-686b-4871-bc64-21cf61fb5f79`, 2026-09-13: the commit-message
+   * policy refused a change-request build, and #120's sweep retried it twice
+   * more. Three full agent passes, thirty-one minutes, the same deterministic
+   * answer each time -- and the first recorded code overwritten by the last.
+   */
+  it('refuses to re-run a build a gate already refused', () => {
+    for (const code of [
+      'PAGE_BUDGET_EXCEEDED',
+      'PLACEHOLDER_IMAGE_SHIPPED',
+      'GENERATED_HTML_UNSAFE',
+      'CHANGE_REQUEST_NOT_APPLIED',
+      'INVALID_PROJECT_STATE',
+    ]) {
+      expect(
+        claimVerdict(
+          row({ status: 'failed', attempt_count: 1, error_code: code }),
+          RULES,
+        ),
+      ).toEqual({ claimable: false, reason: 'terminal-verdict' });
+    }
+  });
+
+  it('still retries a build the machinery lost', () => {
     expect(
       claimVerdict(
-        row({ status: 'failed', attempt_count: 3, max_attempts: 4 }),
+        row({
+          status: 'failed',
+          attempt_count: 1,
+          error_code: 'BUILD_LEASE_EXPIRED',
+        }),
+        RULES,
+      ),
+    ).toEqual({ claimable: true, recovered: false });
+    // An unrecognised throw whose message names a transient cause counts too:
+    // the generic code says "something threw", and the detail is the evidence.
+    expect(
+      claimVerdict(
+        row({
+          status: 'failed',
+          attempt_count: 1,
+          error_code: 'CHANGE_REQUEST_BUILD_FAILED',
+          error_detail: 'fetch failed: ECONNRESET registry.npmjs.org',
+        }),
+        RULES,
+      ),
+    ).toEqual({ claimable: true, recovered: false });
+  });
+
+  it('leaves a failure nobody can explain to an operator', () => {
+    // No code, or a generic one with nothing transient in it. A retry here is
+    // a guess with a client's build budget, and the row on the operator board
+    // is the honest outcome. A re-dispatch clears `error_code` and sets
+    // `queued`, which is a person deciding to spend the attempt.
+    expect(
+      claimVerdict(row({ status: 'failed', attempt_count: 1 }), RULES),
+    ).toEqual({ claimable: false, reason: 'terminal-verdict' });
+    expect(
+      claimVerdict(
+        row({
+          status: 'failed',
+          attempt_count: 1,
+          error_code: 'CHANGE_REQUEST_BUILD_FAILED',
+          error_detail:
+            'Commit message is outside the Flowstarter build policy',
+        }),
+        RULES,
+      ),
+    ).toEqual({ claimable: false, reason: 'terminal-verdict' });
+  });
+
+  it('never applies the failure rule to a queued or parked row', () => {
+    // `error_code` survives on a row an operator re-queued by hand in an older
+    // build of the board, and a queued job is not a failed one.
+    expect(
+      claimVerdict(
+        row({ status: 'queued', error_code: 'PAGE_BUDGET_EXCEEDED' }),
+        RULES,
+      ),
+    ).toEqual({ claimable: true, recovered: false });
+    expect(
+      claimVerdict(
+        row({ status: 'waiting_brief', error_code: 'PAGE_BUDGET_EXCEEDED' }),
         RULES,
       ),
     ).toEqual({ claimable: true, recovered: false });

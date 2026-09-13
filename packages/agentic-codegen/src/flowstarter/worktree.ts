@@ -13,6 +13,80 @@ export interface GitWorktree {
   path: string;
 }
 
+/**
+ * The kinds of build this repository commits for. Declared here, next to the
+ * policy that decides what each one may write, rather than in `workflows.ts`:
+ * the policy cannot import the workflow module (the workflow imports this one),
+ * and a kind that exists in one file and not the other is exactly the defect
+ * below.
+ */
+export type FlowstarterBuildKind = 'FULL_SITE_BUILD' | 'SITE_REBUILD' | 'CHANGE_REQUEST_BUILD';
+
+/**
+ * The one table of commit subjects, keyed by the build kind that writes it.
+ *
+ * There used to be two lists: a pair of regular expressions in `commit()`, and
+ * three template literals at three call sites in `workflows.ts`.
+ * `CHANGE_REQUEST_BUILD` was on the second and not the first, so every paid
+ * change request that reached the end of its build -- gates passed, version
+ * saved -- died on "Commit message is outside the Flowstarter build policy"
+ * (job `b52b241f-686b-4871-bc64-21cf61fb5f79`, 2026-09-13). A fourth kind
+ * would have repeated it.
+ *
+ * So the emitter and the policy now read the same rows. Adding a kind is a row
+ * here; leaving one out is a type error at `buildCommitMessage` rather than a
+ * failure at the last step of a build somebody paid for.
+ *
+ * Every subject names the project id and nothing else, which is what keeps
+ * arbitrary text out of the history of a client's site.
+ */
+export const BUILD_COMMIT_SUBJECTS: Readonly<Record<FlowstarterBuildKind, string>> = {
+  /** The first commit of a project, from the paid full build. */
+  FULL_SITE_BUILD: 'build: initialize Flowstarter site',
+  /** A client's already-approved published edit, put live. */
+  SITE_REBUILD: 'build: publish client edit to site',
+  /** A paid change request, applied to the site the client already has. */
+  CHANGE_REQUEST_BUILD: 'build: apply paid change request to site',
+};
+
+/**
+ * How a project id may appear in a commit subject. Deliberately the same
+ * character class the policy has always used: `assertUuid` is what decides
+ * whether an id is canonical, and it runs on the emitting side.
+ */
+const COMMIT_PROJECT_ID_PATTERN = '[0-9a-f-]{36}';
+
+function commitPolicyPattern(subject: string): RegExp {
+  const literal = subject.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${literal} ${COMMIT_PROJECT_ID_PATTERN}$`);
+}
+
+/**
+ * The commit message this kind of build writes for this project.
+ *
+ * The emitter checks its own output against the policy before returning it, so
+ * a subject written in a shape the policy cannot read fails here, in a unit
+ * test, rather than after an agent pass a client has paid for.
+ */
+export function buildCommitMessage(kind: FlowstarterBuildKind, projectId: string): string {
+  const subject = BUILD_COMMIT_SUBJECTS[kind];
+  if (!subject) {
+    throw new TypeError(`No Flowstarter commit shape is defined for build kind ${kind}`);
+  }
+  const message = `${subject} ${assertUuid(projectId)}`;
+  if (!isFlowstarterBuildCommitMessage(message)) {
+    throw new TypeError(`The commit subject for ${kind} is outside the Flowstarter build policy`);
+  }
+  return message;
+}
+
+/** True when this message is one the table above says a build may write. */
+export function isFlowstarterBuildCommitMessage(message: string): boolean {
+  return Object.values(BUILD_COMMIT_SUBJECTS).some((subject) =>
+    commitPolicyPattern(subject).test(message),
+  );
+}
+
 export interface SafeGitWorktreeManagerOptions {
   repositoryRoot: string;
   worktreesRoot: string;
@@ -98,14 +172,9 @@ export class SafeGitWorktreeManager {
 
   async commit(worktree: GitWorktree, message: string): Promise<string> {
     assertSafeGitRef(worktree.branch, 'branch');
-    // Two shapes are policy: FULL_SITE_BUILD's first commit for a project,
-    // and SITE_REBUILD's commit of a client's already-approved published
-    // edit. Both name the project id and nothing else, so neither can smuggle
-    // arbitrary text into history.
-    const allowed =
-      /^build: initialize Flowstarter site [0-9a-f-]{36}$/.test(message) ||
-      /^build: publish client edit to site [0-9a-f-]{36}$/.test(message);
-    if (!allowed) {
+    // The policy and the emitter read one table, `BUILD_COMMIT_SUBJECTS`, so a
+    // build kind cannot be allowed to write a message the policy refuses.
+    if (!isFlowstarterBuildCommitMessage(message)) {
       throw new Error('Commit message is outside the Flowstarter build policy');
     }
     const root = await realpath(worktree.path);

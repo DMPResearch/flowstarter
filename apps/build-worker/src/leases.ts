@@ -19,7 +19,17 @@
  * tested without a database and asserted on directly. The Supabase writes that
  * act on these verdicts live in `job-store.ts`; the loop that calls them lives
  * in `durable-queue.ts`.
+ *
+ * One thing a lease does not decide: whether a *failed* row is worth taking
+ * again. Putting `failed` on the sweep's list (#120) meant every historically
+ * failed job was retried, including ones a gate had deterministically refused
+ * — three agent passes to reach the same verdict, and the first verdict
+ * overwritten by the last. `failure-policy.ts` holds that rule and
+ * `claimVerdict` asks it, so there is still exactly one place that decides
+ * what this worker may pick up.
  */
+
+import { isRetryableBuildFailure } from './failure-policy';
 
 /**
  * Kinds this worker knows how to run. Both halves of the pipeline arrive at
@@ -75,6 +85,9 @@ export interface LeasedJobRow {
    * existed reads as {@link UNFENCED_TOKEN}.
    */
   lease_fence?: number | null;
+  /** What the last attempt failed with, which decides whether to retry it. */
+  error_code?: string | null;
+  error_detail?: string | null;
   payload?: unknown;
 }
 
@@ -97,7 +110,9 @@ export type ClaimRefusal =
   | 'attempts-exhausted'
   | 'not-due'
   | 'leased'
-  | 'running-without-lease';
+  | 'running-without-lease'
+  /** A gate or a policy refused this build; another pass would refuse it too. */
+  | 'terminal-verdict';
 
 export type ClaimVerdict =
   | { claimable: true; recovered: boolean }
@@ -186,6 +201,14 @@ export function claimVerdict(
     // holder wins: two workers on one worktree is the failure this prevents.
     if (parseTime(row.lease_expires_at) !== null && leaseHeld(row, rules)) {
       return { claimable: false, reason: 'leased' };
+    }
+    // A failed row is retried only when what failed was the machinery. A gate
+    // verdict is not flaky, and re-running it spends a model pass to reach the
+    // same answer while overwriting the code that said it. An operator
+    // re-dispatch clears `error_code` and sets `queued`, so a person can still
+    // decide to spend the attempt.
+    if (row.status === 'failed' && !isRetryableBuildFailure(row)) {
+      return { claimable: false, reason: 'terminal-verdict' };
     }
     return isDue(row, rules.now)
       ? { claimable: true, recovered: false }

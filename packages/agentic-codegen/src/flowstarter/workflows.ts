@@ -26,9 +26,11 @@ import { listSiteImageSlots } from './site-media';
 import { assertSafeBusinessIntake } from './intake-guard';
 import type { TemplateLibrary } from './template-library-mcp';
 import {
+  buildCommitMessage,
   createPreviewWorkspace,
   materializeScaffold,
   SafeGitWorktreeManager,
+  type FlowstarterBuildKind,
   type GitWorktree,
 } from './worktree';
 import { ProjectState } from './types';
@@ -1508,7 +1510,7 @@ export interface FullSiteBuildJob {
    * change request being done: one agent pass over the site the client already
    * has, seeded from the manifest their editor last wrote.
    */
-  kind: 'FULL_SITE_BUILD' | 'SITE_REBUILD' | 'CHANGE_REQUEST_BUILD';
+  kind: FlowstarterBuildKind;
   projectState: ProjectState;
   intake: BusinessIntakePayload;
   brandConfig: BrandConfig;
@@ -1618,6 +1620,20 @@ export interface FullSiteBuildJobStore {
     jobId: string,
     input: { changeRequestId: string; files: TemplateScaffoldFile[] },
   ): Promise<{ version: number }>;
+  /**
+   * Undoes {@link saveChangeRequestVersion} when the run that saved it failed
+   * before publishing. Returns true when the row was removed, false when it
+   * was not this build's to remove — a version somebody published in the
+   * meantime, or one another job wrote — which is not an error: leaving it is
+   * the safe answer and the board says so.
+   *
+   * Optional, so a store written before this still builds; the workflow then
+   * reports the version as left behind rather than pretending it is gone.
+   */
+  discardChangeRequestVersion?(
+    jobId: string,
+    input: { changeRequestId: string; version: number },
+  ): Promise<boolean>;
   /**
    * The end of a change-request build: the version is marked published, the
    * job succeeds, and the request moves paid -> done with the version on it.
@@ -2959,7 +2975,7 @@ export class FullSiteBuildWorker {
       await phase('Committing the site');
       const commitSha = await this.worktrees.commit(
         worktree,
-        `build: initialize Flowstarter site ${job.projectId.toLowerCase()}`,
+        buildCommitMessage(job.kind, job.projectId),
       );
       await phase('Publishing for review');
       // The last point at which this attempt can still be stopped for free.
@@ -3068,6 +3084,17 @@ export class FullSiteBuildWorker {
       });
       return;
     }
+
+    /**
+     * The version this run saved, until the run has published it.
+     *
+     * Non-null between `saveChangeRequestVersion` and `markChangeRequestBuilt`
+     * and nowhere else, which is exactly the window in which a failure would
+     * leave a finished, gate-clean build in `site_versions` that nothing will
+     * ever publish. Version 5 of workspace c009105e is that row: 94 files,
+     * `published_at` null, from the run whose commit step refused the message.
+     */
+    let unpublishedVersion: number | null = null;
 
     try {
       await phase('Preparing a clean worktree');
@@ -3346,10 +3373,20 @@ export class FullSiteBuildWorker {
         throw new FullSiteBuildFailure(GENERATED_HTML_UNSAFE, markupIssue);
       }
 
-      // The manifest is saved before anything is published, so the version the
-      // client is told about exists before the sentence is true, and a deploy
-      // that fails leaves a saved-but-unpublished version rather than a live
-      // site nobody can name.
+      // Commit first, then save. The other order is what stranded version 5 of
+      // workspace c009105e: the version was written, the commit step refused
+      // the message, and the workspace was left holding a finished build with
+      // `published_at` null that nothing would ever publish. The commit is the
+      // cheap, local, reversible half — a worktree nobody has seen — and the
+      // version row is the half a client is told about, so the version is
+      // taken last and rolled back by the catch below if anything after it
+      // throws. A failed run leaves no unpublished version behind.
+      await phase('Committing the site');
+      const commitSha = await this.worktrees.commit(
+        worktree,
+        buildCommitMessage(job.kind, job.projectId),
+      );
+
       await phase('Saving the new version of the site');
       const files = await readSiteWorkspaceFiles(siteRoot);
       const saved = await this.store.saveChangeRequestVersion?.(jobId, {
@@ -3363,17 +3400,13 @@ export class FullSiteBuildWorker {
             'could not be recorded and was not published.',
         );
       }
+      unpublishedVersion = saved.version;
       await say(
         'log',
         `Saved ${files.length} files as version ${saved.version} of the site.`,
         { version: saved.version, files: files.length },
       );
 
-      await phase('Committing the site');
-      const commitSha = await this.worktrees.commit(
-        worktree,
-        `build: apply paid change request to site ${job.projectId.toLowerCase()}`,
-      );
       await phase('Publishing');
       // A change request publishes over a site the client is already using, so
       // the attempt proves it still owns the job before it touches it.
@@ -3396,12 +3429,23 @@ export class FullSiteBuildWorker {
         changeRequestId: intent.changeRequestId,
         version: saved.version,
       });
+      // Published, and the request now says so. There is nothing left to roll
+      // back, and a later failure must not take a live version away.
+      unpublishedVersion = null;
       await phase(`Live, in version ${saved.version}`);
     } catch (error) {
       const detail =
         error instanceof Error
           ? error.message
           : 'Unknown change request build failure';
+      if (unpublishedVersion !== null) {
+        await this.rollBackUnpublishedVersion(
+          jobId,
+          intent.changeRequestId,
+          unpublishedVersion,
+          say,
+        );
+      }
       await say('log', `Change request build failed: ${detail}`);
       await this.recordFailure(jobId, {
         code:
@@ -3416,6 +3460,62 @@ export class FullSiteBuildWorker {
     } finally {
       await log?.flush();
       await this.releaseOutput(builtOutput);
+    }
+  }
+
+  /**
+   * Takes back the site version a failed change-request run saved.
+   *
+   * A version with `published_at` null and no request pointing at it is a
+   * finished build nothing will ever publish: the client cannot see it, the
+   * operator board does not offer it, and the next attempt saves another one
+   * beside it. Rolling it back means the only way a version exists is a run
+   * that finished, which is the same rule `markChangeRequestBuilt` already
+   * applies to the request's own `paid -> done` move.
+   *
+   * Never throws. The failure that brought us here is the one the operator
+   * needs to read, and a rollback that could not run must not replace it — it
+   * says so on the board and lets the original error through. A store that
+   * cannot roll back (an older worker, a test double) is the same case.
+   */
+  private async rollBackUnpublishedVersion(
+    jobId: string,
+    changeRequestId: string,
+    version: number,
+    say: (
+      kind: FullSiteBuildEventKind,
+      body: string,
+      payload?: Record<string, unknown>,
+    ) => Promise<void>,
+  ): Promise<void> {
+    try {
+      const discarded = await this.store.discardChangeRequestVersion?.(jobId, {
+        changeRequestId,
+        version,
+      });
+      if (discarded === true) {
+        await say(
+          'log',
+          `Rolled back version ${version}: this run did not publish it, so ` +
+            'the site is left exactly as the client last saw it.',
+          { version },
+        );
+        return;
+      }
+      await say(
+        'log',
+        `Version ${version} was left in place: it is no longer this build's ` +
+          'to remove. An operator should decide what happens to it.',
+        { version },
+      );
+    } catch (rollbackError) {
+      await say(
+        'log',
+        `Version ${version} could not be rolled back: ` +
+          `${rollbackError instanceof Error ? rollbackError.message : 'unknown'}. ` +
+          'It is unpublished, and an operator should decide what happens to it.',
+        { version },
+      );
     }
   }
 
@@ -3510,7 +3610,7 @@ export class FullSiteBuildWorker {
       await phase('Committing the site');
       const commitSha = await this.worktrees.commit(
         worktree,
-        `build: publish client edit to site ${job.projectId.toLowerCase()}`,
+        buildCommitMessage(job.kind, job.projectId),
       );
       await phase('Publishing');
       // A rebuild replaces a live site, which is the most expensive thing a

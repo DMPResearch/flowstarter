@@ -286,9 +286,9 @@ describe('CommandSiteValidator', () => {
           args: [
             '-e',
             'const fs=require("node:fs");fs.mkdirSync("dist/images",{recursive:true});' +
-              'fs.writeFileSync("dist/images/studio-portrait.svg","<svg><!-- abstract --></svg>","utf8");' +
+              'fs.writeFileSync("dist/images/studio-desk.svg","<svg><!-- abstract --></svg>","utf8");' +
               'fs.writeFileSync("dist/index.html",' +
-              '"<img src=\\"/images/studio-portrait.svg\\" alt=\\"\\" />","utf8")',
+              '"<img src=\\"/images/studio-desk.svg\\" alt=\\"\\" />","utf8")',
           ],
         },
       ],

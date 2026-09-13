@@ -71,11 +71,28 @@ describe('claim eligibility', () => {
   });
 
   it('retries a failed job until the attempt budget is spent', () => {
+    // A lost lease is the retryable kind of failure. A gate verdict is not,
+    // and `leases.test.ts` asserts that half of the rule.
+    const lost = { status: 'failed', error_code: 'BUILD_LEASE_EXPIRED' };
+    expect(isClaimable(ledgerRow({ ...lost, attempt_count: 2 }), 3)).toBe(true);
+    expect(isClaimable(ledgerRow({ ...lost, attempt_count: 3 }), 3)).toBe(
+      false,
+    );
+  });
+
+  it('will not re-run a build a gate refused, however many attempts are left', () => {
+    // Job b52b241f, 2026-09-13: a deterministic refusal retried twice more,
+    // three full agent passes, and the first recorded code overwritten by the
+    // last. An operator re-dispatch clears `error_code` and sets `queued`.
     expect(
-      isClaimable(ledgerRow({ status: 'failed', attempt_count: 2 }), 3),
-    ).toBe(true);
-    expect(
-      isClaimable(ledgerRow({ status: 'failed', attempt_count: 3 }), 3),
+      isClaimable(
+        ledgerRow({
+          status: 'failed',
+          attempt_count: 1,
+          error_code: 'PAGE_BUDGET_EXCEEDED',
+        }),
+        3,
+      ),
     ).toBe(false);
   });
 
@@ -1403,7 +1420,11 @@ describe('SupabaseFullSiteBuildJobStore', () => {
   describe('markFailed', () => {
     it('records the failure and rolls the workspace back to DEPOSIT_PAID for a retry', async () => {
       const { client, calls } = makeScriptedClient({
-        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        flowstarter_agent_jobs: [
+          // The payload read: the failure ledger is appended to, not replaced.
+          { data: { payload: { trigger: 'deposit_paid' } } },
+          { data: { workspace_id: WORKSPACE_ID } },
+        ],
         workspaces: [{ error: null }],
       });
       const store = new SupabaseFullSiteBuildJobStore(client, {
@@ -1415,11 +1436,21 @@ describe('SupabaseFullSiteBuildJobStore', () => {
         detail: 'timed out',
       });
 
-      const jobUpdate = calls.find((c) => c.table === 'flowstarter_agent_jobs');
+      const jobUpdate = calls.find(
+        (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+      );
       expect(jobUpdate?.values).toMatchObject({
         status: 'failed',
         error_code: 'BUILD_TIMEOUT',
         error_detail: 'timed out',
+        // Nothing failed before this, so the first code is this one.
+        error_code_first: 'BUILD_TIMEOUT',
+        payload: {
+          trigger: 'deposit_paid',
+          failures: [
+            { attempt: 1, code: 'BUILD_TIMEOUT', detail: 'timed out' },
+          ],
+        },
       });
       expect(jobUpdate?.eqCalls).toContainEqual(['id', 'job-1']);
 
@@ -1436,7 +1467,10 @@ describe('SupabaseFullSiteBuildJobStore', () => {
 
     it('truncates the error detail to 2000 characters', async () => {
       const { client, calls } = makeScriptedClient({
-        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        flowstarter_agent_jobs: [
+          { data: { payload: {} } },
+          { data: { workspace_id: WORKSPACE_ID } },
+        ],
         workspaces: [{ error: null }],
       });
       const store = new SupabaseFullSiteBuildJobStore(client, {
@@ -1445,16 +1479,72 @@ describe('SupabaseFullSiteBuildJobStore', () => {
 
       await store.markFailed('job-1', { code: 'X', detail: 'y'.repeat(3_000) });
 
-      const jobUpdate = calls.find((c) => c.table === 'flowstarter_agent_jobs');
+      const jobUpdate = calls.find(
+        (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+      );
       expect(
         (jobUpdate?.values as { error_detail: string }).error_detail,
       ).toHaveLength(2_000);
     });
 
+    it('keeps the code the first attempt failed with across a retry', async () => {
+      // The defect this exists for: four PAGE_BUDGET_EXCEEDED jobs and one
+      // PLACEHOLDER_IMAGE_SHIPPED in workspace c009105e read
+      // CHANGE_REQUEST_BUILD_FAILED today, because each retry overwrote
+      // `error_code` with the reason its *last* attempt died.
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          {
+            data: {
+              payload: {
+                failures: [
+                  {
+                    attempt: 1,
+                    code: 'PAGE_BUDGET_EXCEEDED',
+                    detail: 'added 5 new pages',
+                    at: '2026-09-13T21:00:00.000Z',
+                  },
+                ],
+              },
+            },
+          },
+          { data: { workspace_id: WORKSPACE_ID } },
+        ],
+        workspaces: [{ error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.markFailed('job-1', {
+        code: 'CHANGE_REQUEST_BUILD_FAILED',
+        detail: 'Commit message is outside the Flowstarter build policy',
+      });
+
+      const jobUpdate = calls.find(
+        (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+      );
+      const values = jobUpdate?.values as {
+        error_code: string;
+        error_code_first: string;
+        payload: { failures: Array<{ code: string }> };
+      };
+      // What is wrong now, and what was wrong first, are both readable.
+      expect(values.error_code).toBe('CHANGE_REQUEST_BUILD_FAILED');
+      expect(values.error_code_first).toBe('PAGE_BUDGET_EXCEEDED');
+      expect(values.payload.failures.map((entry) => entry.code)).toEqual([
+        'PAGE_BUDGET_EXCEEDED',
+        'CHANGE_REQUEST_BUILD_FAILED',
+      ]);
+    });
+
     it('propagates a Supabase error from the job update', async () => {
       const error = dbError('update failed');
       const { client } = makeScriptedClient({
-        flowstarter_agent_jobs: [{ data: null, error }],
+        flowstarter_agent_jobs: [
+          { data: { payload: {} } },
+          { data: null, error },
+        ],
       });
       const store = new SupabaseFullSiteBuildJobStore(client, {
         maxAttempts: 3,
@@ -1468,7 +1558,10 @@ describe('SupabaseFullSiteBuildJobStore', () => {
     it('propagates a Supabase error from the workspace rollback', async () => {
       const error = dbError('rollback failed');
       const { client } = makeScriptedClient({
-        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        flowstarter_agent_jobs: [
+          { data: { payload: {} } },
+          { data: { workspace_id: WORKSPACE_ID } },
+        ],
         workspaces: [{ error }],
       });
       const store = new SupabaseFullSiteBuildJobStore(client, {
@@ -1555,6 +1648,115 @@ describe('SupabaseFullSiteBuildJobStore', () => {
       );
       expect(mirror?.op).toBe('update');
       expect(mirror?.eqCalls).toContainEqual(['workspace_id', WORKSPACE_ID]);
+    });
+
+    it('takes back a version this job saved and never published', async () => {
+      // Version 5 of workspace c009105e, in shape: 94 files, `published_at`
+      // null, from a run whose commit step refused the message. The guard is
+      // the point -- the version, this job's own `created_by`, and still
+      // unpublished, all four of them or nothing happens.
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        site_versions: [
+          { data: { version: 5 } },
+          { data: { manifest: { files: [{ path: 'a.md', content: '4' }] } } },
+        ],
+        flowstarter_project_artifacts: [{ error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.discardChangeRequestVersion('job-1', {
+          changeRequestId: CHANGE_ID,
+          version: 5,
+        }),
+      ).resolves.toBe(true);
+
+      const removal = calls.find(
+        (call) => call.table === 'site_versions' && call.op === 'delete',
+      );
+      expect(removal?.eqCalls).toContainEqual(['workspace_id', WORKSPACE_ID]);
+      expect(removal?.eqCalls).toContainEqual(['version', 5]);
+      expect(removal?.eqCalls).toContainEqual([
+        'created_by',
+        'system:change_request_build:job-1',
+      ]);
+      expect(removal?.eqCalls).toContainEqual(['is:published_at', null]);
+
+      // The artifact mirror is restored to the version that is now newest, so
+      // the worker and the deploy path do not read a manifest for a row that
+      // no longer exists.
+      const mirror = calls.find(
+        (call) => call.table === 'flowstarter_project_artifacts',
+      );
+      expect(mirror?.op).toBe('update');
+      expect(mirror?.values).toMatchObject({
+        preview_manifest: { files: [{ path: 'a.md', content: '4' }] },
+      });
+    });
+
+    it('refuses to remove a version that is not this build’s', async () => {
+      // Published in the meantime, or written by another job: the delete
+      // matches nothing and the answer is false, not an error.
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        site_versions: [{ data: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.discardChangeRequestVersion('job-1', {
+          changeRequestId: CHANGE_ID,
+          version: 5,
+        }),
+      ).resolves.toBe(false);
+      expect(
+        calls.some((call) => call.table === 'flowstarter_project_artifacts'),
+      ).toBe(false);
+    });
+
+    it('leaves the mirror alone when no version is left to restore it to', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        site_versions: [{ data: { version: 1 } }, { data: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.discardChangeRequestVersion('job-1', {
+          changeRequestId: CHANGE_ID,
+          version: 1,
+        }),
+      ).resolves.toBe(true);
+      // Overwriting a pre-versioning preview manifest with an empty one would
+      // be the worse failure.
+      expect(
+        calls.some((call) => call.table === 'flowstarter_project_artifacts'),
+      ).toBe(false);
+    });
+
+    it('surfaces a Supabase error from the rollback rather than swallowing it', async () => {
+      const error = dbError('delete failed');
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        site_versions: [{ data: null, error }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.discardChangeRequestVersion('job-1', {
+          changeRequestId: CHANGE_ID,
+          version: 5,
+        }),
+      ).rejects.toBe(error);
     });
 
     it('starts at version 1 for a site that was never edited', async () => {
@@ -2387,6 +2589,9 @@ describe('SupabaseFullSiteBuildJobStore leases', () => {
       const { client, calls } = makeScriptedClient({
         flowstarter_agent_jobs: [
           { data: [row] },
+          // markFailed reads the payload before it writes, so the ledger of
+          // attempts is appended to rather than replaced.
+          { data: { payload: {} } },
           { data: { workspace_id: WORKSPACE_ID } },
         ],
         workspaces: [{ data: null, error: null }],
@@ -2433,23 +2638,42 @@ describe('SupabaseFullSiteBuildJobStore leases', () => {
               leasedRow({ id: 'held-1', lease_expires_at: iso(60_000) }),
               // Nobody is running this one any more.
               leasedRow({ id: 'abandoned-1' }),
-              // A retry whose backoff has elapsed, and one whose has not.
+              // A retry whose backoff has elapsed, and one whose has not. Both
+              // lost a lease rather than failing a gate, which is what makes
+              // them retries at all.
               ledgerRow({
                 id: 'retry-1',
                 status: 'failed',
                 attempt_count: 1,
+                error_code: 'BUILD_LEASE_EXPIRED',
                 run_after: iso(-1),
               }),
               ledgerRow({
                 id: 'backing-off-1',
                 status: 'failed',
                 attempt_count: 1,
+                error_code: 'BUILD_LEASE_EXPIRED',
                 run_after: iso(60_000),
               }),
               // Not ours to run.
               ledgerRow({ id: 'inline-1', kind: 'INLINE_EDIT' }),
               // Out of attempts.
-              ledgerRow({ id: 'spent-1', status: 'failed', attempt_count: 3 }),
+              ledgerRow({
+                id: 'spent-1',
+                status: 'failed',
+                attempt_count: 3,
+                error_code: 'BUILD_LEASE_EXPIRED',
+              }),
+              // Attempts left, but a gate refused this build. Retrying it
+              // would spend an agent pass to reach the same verdict and
+              // overwrite the verdict itself.
+              ledgerRow({
+                id: 'refused-1',
+                status: 'failed',
+                attempt_count: 1,
+                error_code: 'PLACEHOLDER_IMAGE_SHIPPED',
+                run_after: iso(-1),
+              }),
             ],
           },
         ],
@@ -2491,14 +2715,17 @@ describe('SupabaseFullSiteBuildJobStore leases', () => {
   describe('markFailed', () => {
     it('records the backoff on the row and drops the lease', async () => {
       const { client, calls } = makeScriptedClient({
-        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        flowstarter_agent_jobs: [
+          { data: { payload: {} } },
+          { data: { workspace_id: WORKSPACE_ID } },
+        ],
         workspaces: [{ data: null, error: null }],
       });
       const store = new SupabaseFullSiteBuildJobStore(client, options);
 
       await store.markFailed('job-1', { code: 'BUILD_FAILED', detail: 'boom' });
 
-      expect(calls[0]?.values).toMatchObject({
+      expect(calls[1]?.values).toMatchObject({
         status: 'failed',
         leased_by: null,
         lease_expires_at: null,
@@ -2508,12 +2735,19 @@ describe('SupabaseFullSiteBuildJobStore leases', () => {
     });
 
     it('backs off further on a later attempt', async () => {
-      const row = ledgerRow({ status: 'failed', attempt_count: 1 });
+      const row = ledgerRow({
+        status: 'failed',
+        attempt_count: 1,
+        // Retryable: the first attempt lost its lease rather than failing a
+        // gate, so this worker may take it again.
+        error_code: 'BUILD_LEASE_EXPIRED',
+      });
       const { client, calls } = makeScriptedClient({
         workspace_briefs: [readyBrief()],
         flowstarter_agent_jobs: [
           { data: row },
           { data: { id: row.id } },
+          { data: { payload: {} } },
           { data: { workspace_id: WORKSPACE_ID } },
         ],
         workspaces: [
@@ -2644,6 +2878,45 @@ describe('lease fencing', () => {
     expect(finish?.eqCalls).toContainEqual(['lease_fence', 1]);
   });
 
+  it('writes the failure ledger through the fence, never around it', async () => {
+    // #136's rule and this one meet here: appending to the ledger is still a
+    // write, so an attempt that was overtaken must not make it. The payload
+    // read before it is harmless -- a read decides nothing -- but the update
+    // carries the holder and the token like every other write in this file.
+    const row = ledgerRow();
+    const base = claimScript(row, { id: row.id });
+    const { client, calls } = makeScriptedClient({
+      ...base,
+      flowstarter_agent_jobs: [
+        { data: row },
+        { data: { id: row.id } },
+        { data: { payload: {} } },
+        { data: { workspace_id: WORKSPACE_ID } },
+      ],
+      // The claim's own workspace read, then markFailed's state rollback.
+      workspaces: [...base.workspaces, { error: null }],
+    });
+    const store = new SupabaseFullSiteBuildJobStore(client, {
+      maxAttempts: 3,
+      owner: WORKER_OWNER,
+    });
+    await store.claim(row.id);
+
+    await store.markFailed(row.id, {
+      code: 'PAGE_BUDGET_EXCEEDED',
+      detail: 'added 5 new pages',
+    });
+
+    const failure = calls
+      .filter((c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update')
+      .at(-1);
+    expect(failure?.eqCalls).toContainEqual(['leased_by', WORKER_OWNER]);
+    expect(failure?.eqCalls).toContainEqual(['lease_fence', 1]);
+    expect(failure?.values).toMatchObject({
+      error_code_first: 'PAGE_BUDGET_EXCEEDED',
+    });
+  });
+
   it('refuses to fail a job that was taken from it', async () => {
     const row = ledgerRow();
     const { client } = makeScriptedClient({
@@ -2651,6 +2924,9 @@ describe('lease fencing', () => {
       flowstarter_agent_jobs: [
         { data: row },
         { data: { id: row.id } },
+        // The failure ledger's payload read, which happens before the fenced
+        // write and decides nothing on its own.
+        { data: { payload: {} } },
         { data: null, error: null },
       ],
     });
