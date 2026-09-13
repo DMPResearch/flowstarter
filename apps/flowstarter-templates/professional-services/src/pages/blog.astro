@@ -6,7 +6,7 @@ import CTASection from '../components/CTASection.astro';
 import AnimatedWordTitle from '../components/shared/AnimatedWordTitle.astro';
 import { frontmatter as siteLabels } from '../content/site-labels.md';
 
-const { articles } = (siteLabels as any).blogPage;
+const { articles } = (siteLabels as any).blogPage ?? {};
 import { pageTitle } from '../lib/site-data';
 ---
 
@@ -29,7 +29,7 @@ import { pageTitle } from '../lib/site-data';
     </section>
 
     <section class="blog-grid container">
-      {articles.map((article: any, index: number) => (
+      {(articles ?? []).map((article: any, index: number) => (
         <article
           class="blog-card"
           data-blog-reveal

@@ -14,6 +14,17 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { scrubbedPreviewEnv } from './local-preview-env';
+import {
+  formatHeadTail,
+  resolveBuildErrorBudget,
+} from './static-preview-build';
+
+/**
+ * A pure memory bound on the accumulated stderr while the runner is still
+ * streaming — comfortably larger than the head+tail budget below reads, so
+ * the error message built from it below never finds its head already gone.
+ */
+const MAX_BUFFERED_STDERR_BYTES = 64 * 1024;
 
 export interface LocalFastEditResult {
   ok: boolean;
@@ -35,7 +46,7 @@ export async function fastEditLocal(
     model?: string;
     criticModel?: string;
     timeoutMs?: number;
-  }
+  },
 ): Promise<LocalFastEditResult> {
   // The runner reads the instruction from a file (it can contain quotes,
   // newlines, anything) — same contract as the sandbox invocation.
@@ -67,7 +78,9 @@ export async function fastEditLocal(
         stdout += chunk.toString('utf8');
       });
       child.stderr.on('data', (chunk: Buffer) => {
-        stderr = `${stderr}${chunk.toString('utf8')}`.slice(-2_000);
+        stderr = `${stderr}${chunk.toString('utf8')}`.slice(
+          -MAX_BUFFERED_STDERR_BYTES,
+        );
       });
       const timer = setTimeout(() => {
         child.kill('SIGKILL');
@@ -109,7 +122,9 @@ export async function fastEditLocal(
             code === 0
               ? 'fast edit: no result'
               : `fast edit exit ${code}${
-                  stderr ? `: ${stderr.slice(-300)}` : ''
+                  stderr
+                    ? `: ${formatHeadTail(stderr, resolveBuildErrorBudget())}`
+                    : ''
                 }`,
         });
       });

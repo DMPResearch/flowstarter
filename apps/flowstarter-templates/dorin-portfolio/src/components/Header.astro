@@ -6,7 +6,7 @@ import NavLinks from './design-system/NavLinks.astro';
 import ActionButton from './design-system/ActionButton.astro';
 import MenuButton from './design-system/MenuButton.astro';
 
-const { header } = siteLabels;
+const header = (siteLabels as any).header ?? {};
 const defaultNavLinks = getHeaderNavLinks();
 interface NavLink {
   label: string;

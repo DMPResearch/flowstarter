@@ -51,6 +51,19 @@ export const PREVIEW_BUILD_PARENT = 'flowstarter-preview-builds';
 /** Long enough for a cold Astro build of a full template, short enough to fail. */
 const DEFAULT_BUILD_TIMEOUT_MS = 240_000;
 
+/**
+ * How much of a failed build's stderr to keep, from the front and from the
+ * back. A real Astro failure's message (`[ERROR] TypeError: ...`) sits near
+ * the FRONT of stderr, with its first stack frame or two; the frame that
+ * shows where the build actually died sits at the very end. Keeping only one
+ * end throws the other away — which is how an operator once got handed an
+ * unreadable fragment starting mid-path instead of the error. Head is sized
+ * generously enough for a typical error message plus a couple of frames;
+ * tail matches what this file already showed before this fix.
+ */
+const DEFAULT_BUILD_ERROR_HEAD_BYTES = 2_000;
+const DEFAULT_BUILD_ERROR_TAIL_BYTES = 600;
+
 /** Output caps, mirrored from the sandbox build so the two cannot disagree. */
 const MAX_ENTRIES = 5_000;
 const MAX_TOTAL_BYTES = 100 * 1024 * 1024;
@@ -81,6 +94,62 @@ export class StaticPreviewBuildError extends Error {
     super(message);
     this.name = 'StaticPreviewBuildError';
   }
+}
+
+/** How much of a failed build's output survives into the thrown error. */
+export interface ErrorOutputBudget {
+  headBytes: number;
+  tailBytes: number;
+}
+
+/**
+ * Resolves {@link DEFAULT_BUILD_ERROR_HEAD_BYTES} and
+ * {@link DEFAULT_BUILD_ERROR_TAIL_BYTES}, each overridable the same way
+ * `FLOWSTARTER_PREVIEW_BUILD_TIMEOUT_MS` overrides the build timeout below:
+ * `FLOWSTARTER_PREVIEW_BUILD_ERROR_HEAD_BYTES` and
+ * `FLOWSTARTER_PREVIEW_BUILD_ERROR_TAIL_BYTES`. Exported so a sibling that
+ * truncates a failed child process's output the same way (see
+ * `local-fast-edit.ts`) reads the same two knobs instead of inventing its
+ * own.
+ */
+export function resolveBuildErrorBudget(
+  env: Record<string, string | undefined> = process.env
+): ErrorOutputBudget {
+  const configuredHead = Number(
+    env.FLOWSTARTER_PREVIEW_BUILD_ERROR_HEAD_BYTES?.trim()
+  );
+  const configuredTail = Number(
+    env.FLOWSTARTER_PREVIEW_BUILD_ERROR_TAIL_BYTES?.trim()
+  );
+  return {
+    headBytes:
+      Number.isFinite(configuredHead) && configuredHead > 0
+        ? configuredHead
+        : DEFAULT_BUILD_ERROR_HEAD_BYTES,
+    tailBytes:
+      Number.isFinite(configuredTail) && configuredTail > 0
+        ? configuredTail
+        : DEFAULT_BUILD_ERROR_TAIL_BYTES,
+  };
+}
+
+/**
+ * Bounds a chunk of a failed child process's output to a head and a tail, so
+ * neither the real error message (almost always near the front) nor the
+ * frame that shows where it died (the end) gets discarded — only the middle,
+ * which is what a plain `.slice(-N)` used to throw away in its entirety.
+ */
+export function formatHeadTail(raw: string, budget: ErrorOutputBudget): string {
+  const collapsed = String(raw ?? '')
+    .trim()
+    .replace(/\s+/g, ' ');
+  if (!collapsed) return '';
+  const head = collapsed.slice(0, budget.headBytes);
+  const headTruncated = collapsed.length > budget.headBytes;
+  const tail = collapsed.slice(-budget.tailBytes);
+  return `${head}${headTruncated ? '…' : ''}${
+    tail && tail !== head ? `\n…\n${tail}` : ''
+  }`;
 }
 
 /**
@@ -149,7 +218,8 @@ function buildEnv(): NodeJS.ProcessEnv {
 function runAstroBuild(
   cwd: string,
   astroBin: string,
-  timeoutMs: number
+  timeoutMs: number,
+  errorBudget: ErrorOutputBudget
 ): Promise<void> {
   return new Promise((resolveBuild, rejectBuild) => {
     const child = execFile(
@@ -167,15 +237,14 @@ function runAstroBuild(
       (error, _stdout, stderr) => {
         if (!error) return resolveBuild();
         // Never quote the child's whole output back: it can be long and it is
-        // generated content. The tail is enough to tell a missing dependency
-        // from a syntax error in a page the model wrote.
-        const tail = String(stderr ?? '')
-          .trim()
-          .replace(/\s+/g, ' ')
-          .slice(-600);
+        // generated content. Head AND tail, not just the tail — the real
+        // `[ERROR] ...` message is almost always near the front, and a
+        // tail-only slice used to throw it away, leaving an operator staring
+        // at a stack-frame fragment with no message attached to it.
+        const formatted = formatHeadTail(String(stderr ?? ''), errorBudget);
         rejectBuild(
           new StaticPreviewBuildError(
-            `the preview did not build${tail ? `: ${tail}` : ''}`
+            `the preview did not build${formatted ? `: ${formatted}` : ''}`
           )
         );
       }
@@ -255,6 +324,10 @@ export interface BuildStaticPreviewInput {
   workspaceRoot: string;
   /** Overrides {@link DEFAULT_BUILD_TIMEOUT_MS}; for tests and slow hosts. */
   timeoutMs?: number;
+  /** Overrides the env-configured head budget from {@link resolveBuildErrorBudget}; for tests. */
+  headBytes?: number;
+  /** Overrides the env-configured tail budget from {@link resolveBuildErrorBudget}; for tests. */
+  tailBytes?: number;
   /** Reuse an existing copy (a rebuild after a free edit) instead of copying. */
   existingWorkspaceRoot?: string;
 }
@@ -277,6 +350,11 @@ export async function buildStaticPreview(
     (Number.isFinite(configured) && configured > 0
       ? configured
       : DEFAULT_BUILD_TIMEOUT_MS);
+  const envErrorBudget = resolveBuildErrorBudget();
+  const errorBudget: ErrorOutputBudget = {
+    headBytes: input.headBytes ?? envErrorBudget.headBytes,
+    tailBytes: input.tailBytes ?? envErrorBudget.tailBytes,
+  };
 
   let workspaceRoot = input.existingWorkspaceRoot ?? '';
   const owned = !input.existingWorkspaceRoot;
@@ -314,7 +392,7 @@ export async function buildStaticPreview(
       '.bin',
       'astro'
     );
-    await runAstroBuild(workspaceRoot, astroBin, timeoutMs);
+    await runAstroBuild(workspaceRoot, astroBin, timeoutMs, errorBudget);
     const files = await collectDistFiles(distRoot);
     return { files, workspaceRoot, distRoot, cleanup };
   } catch (error) {

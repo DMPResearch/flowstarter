@@ -3,7 +3,7 @@ import { frontmatter as siteLabels } from '../content/site-labels.md';
 import SectionBlock from './design-system/SectionBlock.astro';
 import ActionButton from './design-system/ActionButton.astro';
 
-const { hero } = siteLabels;
+const hero = (siteLabels as any).hero ?? {};
 const heroHighlights = [
   'that solve real problems',
   'move complex products forward',
@@ -59,7 +59,7 @@ const heroParagraphSegments = heroParagraphs.map((paragraph) =>
           ))}
         </p>
         <div class="hero__actions">
-          {hero.actions.map((action) => (
+          {(hero.actions ?? []).map((action) => (
             <ActionButton
               href={action.href}
               label={action.label}

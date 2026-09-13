@@ -6,7 +6,7 @@ import NavLinks from './design-system/NavLinks.astro';
 import ActionButton from './design-system/ActionButton.astro';
 import MenuButton from './design-system/MenuButton.astro';
 
-const { header } = siteLabels;
+const header = (siteLabels as any).header ?? {};
 // Defaults come from the content layer: a hardcoded literal here survives
 // personalization untouched, leaving an English button on a site written in
 // another language (the agent may not edit components).

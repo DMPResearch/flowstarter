@@ -113,6 +113,10 @@ import {
   type ChangeRequestIntent,
 } from './change-request-build';
 import { BUILT_OUTPUT_DIR, resolveContainedOutputDir } from './site-export';
+import {
+  findMissingLabelBlocks,
+  repairMissingLabelBlocks,
+} from './required-label-blocks';
 
 /**
  * What a trusted validation leaves behind for everything downstream to read.
@@ -563,6 +567,31 @@ export class PreviewGenerationPipeline {
             `[integrity] restored ${integrity.paths.join(', ')} from the template. ${integrity.feedback.slice(-700)}`,
           );
         }
+      }
+
+      // Last-resort content gate. An agent pass that dropped a required
+      // top-level block (seen in production: a `site-labels.md` with no
+      // `hero` at all) leaves a page structurally empty rather than broken —
+      // the build no longer crashes on it, but the fold or the contact page
+      // renders with nothing in it. Retrying the whole (expensive,
+      // non-deterministic) agent pass for one missing block is not worth it;
+      // filling it in from the intake is deterministic and cheap, so it
+      // happens here instead, right before the workspace is checked.
+      const missingLabelBlocks = await findMissingLabelBlocks(
+        workspace.root,
+        template.slug,
+      );
+      if (missingLabelBlocks.length > 0) {
+        input.onPhase?.(
+          `The generated content was missing ${missingLabelBlocks.join(', ')}; filled it in deterministically from the intake instead of retrying the whole generation.`,
+        );
+        await repairMissingLabelBlocks(workspace.root, missingLabelBlocks, {
+          businessName: input.intake.business.name,
+          offer: input.intake.offer,
+          ...(input.hasBookingLink
+            ? { ctaLabel: 'Book now', ctaHref: '/book' }
+            : { ctaLabel: 'Get in touch', ctaHref: '/contact' }),
+        });
       }
 
       input.onPhase?.('Checking the preview');
@@ -2707,6 +2736,30 @@ export class FullSiteBuildWorker {
       );
       if (build.changedPaths.length === 0) {
         throw new Error('Full-site agent finished without modifying any file');
+      }
+      // Same last-resort content gate as the preview pipeline: a required
+      // top-level block the agent pass dropped (e.g. no `hero` at all) is
+      // filled in deterministically from the intake here rather than paying
+      // for another full agent pass over one missing block. The template
+      // slug travels with the preview intent the build seeded from; a build
+      // with none (or an unrecognised slug) requires nothing here and this
+      // is a no-op.
+      const missingLabelBlocks = await findMissingLabelBlocks(
+        siteRoot,
+        job.previewIntent?.manifest.templateSlug ?? '',
+      );
+      if (missingLabelBlocks.length > 0) {
+        await say(
+          'log',
+          `The generated content was missing ${missingLabelBlocks.join(', ')}; filled it in deterministically from the intake instead of retrying the whole generation.`,
+        );
+        await repairMissingLabelBlocks(siteRoot, missingLabelBlocks, {
+          businessName: job.intake.business.name,
+          offer: job.intake.offer,
+          ...(job.calComUrl
+            ? { ctaLabel: 'Book now', ctaHref: '/book' }
+            : { ctaLabel: 'Get in touch', ctaHref: '/contact' }),
+        });
       }
       await check();
       // Anything the team said while the agents were busy lands now, in one

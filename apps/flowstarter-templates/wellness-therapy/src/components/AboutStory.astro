@@ -4,7 +4,7 @@ import SectionBlock from './design-system/SectionBlock.astro';
 import ActionButton from './design-system/ActionButton.astro';
 import OrganicVisual from './design-system/OrganicVisual.astro';
 
-const { aboutStory } = siteLabels;
+const aboutStory = (siteLabels as any).aboutStory ?? {};
 const aboutStoryImage =
   typeof aboutStory.imageSrc === 'string' ? aboutStory.imageSrc.trim() : '';
 ---
@@ -21,7 +21,7 @@ const aboutStoryImage =
     <div class="about-story__content">
       <h2 class="about-story__title">{aboutStory.title}</h2>
       <div class="about-story__text-group">
-        {aboutStory.paragraphs.map((paragraph) => (
+        {(aboutStory.paragraphs ?? []).map((paragraph) => (
           <p class="about-story__text">{paragraph}</p>
         ))}
       </div>

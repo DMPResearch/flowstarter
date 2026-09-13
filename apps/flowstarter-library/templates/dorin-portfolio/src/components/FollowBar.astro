@@ -4,7 +4,7 @@ import SectionBlock from './design-system/SectionBlock.astro';
 import OverlineText from './design-system/OverlineText.astro';
 import SocialTextList from './design-system/SocialTextList.astro';
 
-const { followBar } = siteLabels;
+const followBar = (siteLabels as any).followBar ?? {};
 ---
 
 <SectionBlock className="follow-bar" tone="light" padding="tight" topBorder={true} bottomBorder={true}>

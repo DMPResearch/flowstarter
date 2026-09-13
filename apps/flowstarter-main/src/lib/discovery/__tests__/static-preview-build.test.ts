@@ -194,6 +194,118 @@ describe('buildStaticPreview', () => {
     ).toBe(false);
   });
 
+  it('keeps a distinguishing marker near the front AND the back of a long build failure', async () => {
+    // A synthetic failure well over both the head and tail byte budgets: a
+    // real `[ERROR] ...` message at the very start, ~200 padding lines that
+    // a naive `.slice(-N)` tail would let bury it, then the stack frame that
+    // shows where the build actually died at the very end.
+    const script = `#!/bin/sh
+{
+  echo "[ERROR] TypeError: Cannot read properties of undefined (reading 'image')"
+  echo "    at renderImage (/workspace/src/components/Hero.astro:42:18)"
+  i=0
+  while [ $i -lt 200 ]; do
+    echo "padding line $i to push the real message out of a naive tail slice"
+    i=$((i+1))
+  done
+  echo "    at AstroComponentInstance.render (.../server_abc123.mjs:6652:28)"
+} >&2
+exit 1
+`;
+    const source = await workspaceWithStubAstro(script);
+    let thrown: StaticPreviewBuildError | undefined;
+    await buildStaticPreview({
+      projectId: 'e1d1c7a1-0000-4000-8000-00000000000a',
+      templateSlug: 'nowhere',
+      workspaceRoot: source,
+      timeoutMs: 20_000,
+    }).catch((error: StaticPreviewBuildError) => {
+      thrown = error;
+    });
+    expect(thrown).toBeInstanceOf(StaticPreviewBuildError);
+    expect(thrown?.message.length).toBeGreaterThan(2_600);
+    expect(thrown?.message).toContain(
+      "[ERROR] TypeError: Cannot read properties of undefined (reading 'image')"
+    );
+    expect(thrown?.message).toContain(
+      'at AstroComponentInstance.render (.../server_abc123.mjs:6652:28)'
+    );
+  });
+
+  it('respects a configured head budget, cutting off before the front marker when it is set small', async () => {
+    const script = `#!/bin/sh
+{
+  echo "[ERROR] TypeError: Cannot read properties of undefined (reading 'image')"
+  i=0
+  while [ $i -lt 200 ]; do
+    echo "padding line $i to push the real message out of a naive tail slice"
+    i=$((i+1))
+  done
+  echo "    at AstroComponentInstance.render (.../server_abc123.mjs:6652:28)"
+} >&2
+exit 1
+`;
+    const source = await workspaceWithStubAstro(script);
+    let thrown: StaticPreviewBuildError | undefined;
+    await buildStaticPreview({
+      projectId: 'e1d1c7a1-0000-4000-8000-00000000000b',
+      templateSlug: 'nowhere',
+      workspaceRoot: source,
+      timeoutMs: 20_000,
+      headBytes: 10,
+    }).catch((error: StaticPreviewBuildError) => {
+      thrown = error;
+    });
+    expect(thrown).toBeInstanceOf(StaticPreviewBuildError);
+    // A 10-byte head cannot contain the whole marker.
+    expect(thrown?.message).not.toContain(
+      "TypeError: Cannot read properties of undefined (reading 'image')"
+    );
+    // The tail budget is untouched, so the back of the failure still shows.
+    expect(thrown?.message).toContain(
+      'at AstroComponentInstance.render (.../server_abc123.mjs:6652:28)'
+    );
+  });
+
+  it('respects FLOWSTARTER_PREVIEW_BUILD_ERROR_HEAD_BYTES when no explicit override is given', async () => {
+    const script = `#!/bin/sh
+{
+  echo "[ERROR] TypeError: Cannot read properties of undefined (reading 'image')"
+  i=0
+  while [ $i -lt 200 ]; do
+    echo "padding line $i to push the real message out of a naive tail slice"
+    i=$((i+1))
+  done
+  echo "    at AstroComponentInstance.render (.../server_abc123.mjs:6652:28)"
+} >&2
+exit 1
+`;
+    const source = await workspaceWithStubAstro(script);
+    const previous = process.env.FLOWSTARTER_PREVIEW_BUILD_ERROR_HEAD_BYTES;
+    process.env.FLOWSTARTER_PREVIEW_BUILD_ERROR_HEAD_BYTES = '10';
+    let thrown: StaticPreviewBuildError | undefined;
+    try {
+      await buildStaticPreview({
+        projectId: 'e1d1c7a1-0000-4000-8000-00000000000c',
+        templateSlug: 'nowhere',
+        workspaceRoot: source,
+        timeoutMs: 20_000,
+      }).catch((error: StaticPreviewBuildError) => {
+        thrown = error;
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.FLOWSTARTER_PREVIEW_BUILD_ERROR_HEAD_BYTES;
+      } else {
+        process.env.FLOWSTARTER_PREVIEW_BUILD_ERROR_HEAD_BYTES = previous;
+      }
+    }
+    expect(thrown).toBeInstanceOf(StaticPreviewBuildError);
+    expect(thrown?.message).not.toContain(
+      "TypeError: Cannot read properties of undefined (reading 'image')"
+    );
+  });
+
   it('kills a build that will not finish', async () => {
     const source = await workspaceWithStubAstro('#!/bin/sh\nsleep 30\n');
     await expect(
