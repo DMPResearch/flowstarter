@@ -108,6 +108,12 @@ export default defineConfig({
         // `app/api/webhooks/**`, so the same bar.
         'app/api/integrations/**': MONEY_AND_DATA,
         'app/api/client/**': MONEY_AND_DATA,
+        // The two routes that mint a Clerk sign-in ticket. The ticket is a
+        // bearer credential for the whole account, operator sessions
+        // included, so the destination rule they apply is money-and-data
+        // code by any reading (Codex audit F01).
+        'app/api/auth/transfer-redirect/**': MONEY_AND_DATA,
+        'app/api/auth/transfer-token/**': MONEY_AND_DATA,
         'app/api/admin/projects/**': MONEY_AND_DATA,
         'app/api/team/projects/**': MONEY_AND_DATA,
       },
