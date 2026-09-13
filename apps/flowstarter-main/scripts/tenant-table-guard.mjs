@@ -8,11 +8,21 @@
  * nothing about a green CI run would say so.
  *
  * So this script asks the database instead of asking the list. It enumerates
- * every table in `public` that carries `workspace_id`, `project_id` or
- * `claimed_workspace_id` - through public.tenant_key_tables(), because
- * PostgREST does not expose information_schema - and fails unless each one is
- * either named in the verifier's TENANT_TABLES, named in its
- * SERVER_ONLY_TABLES, or listed in the ALLOW_LIST below with a reason.
+ * every table in `public` that carries a tenant or personal-data key column
+ * - `workspace_id`, `project_id`, `claimed_workspace_id`, `clerk_user_id`,
+ * `user_id`, `lead_capture_token`, `preview_id`, `site_id`, `booking_id` or
+ * `email` - through public.tenant_key_tables(), because PostgREST does not
+ * expose information_schema - and fails unless each one is either named in
+ * the verifier's TENANT_TABLES, named in its SERVER_ONLY_TABLES, or listed
+ * in the ALLOW_LIST below with a reason.
+ *
+ * Security audit 2026-09-13 (Claude, M4): the inventory originally asked
+ * only for the first three column names, so a table keyed on
+ * `clerk_user_id`, `email` or any other tenant/personal-data shape could
+ * ship with no isolation proof and CI would stay green - the empty
+ * ALLOW_LIST read as "everything is proved" when it actually meant
+ * "everything the inventory could see is proved". See
+ * supabase/migrations/20260913100000_tenant_table_guard_widen_inventory.sql.
  *
  * The two lists are imported from verify-rls-local.mjs rather than copied, so
  * adding a table to the proof is one line and the guard agrees automatically.
@@ -75,7 +85,7 @@ function mintServiceKey() {
       role: 'service_role',
       iat: now,
       exp: now + 600,
-    }),
+    })
   );
   const signature = createHmac('sha256', JWT_SECRET)
     .update(`${header}.${payload}`)
@@ -92,7 +102,7 @@ const SERVICE_KEY =
 if (!SERVICE_KEY) {
   console.error(
     'Missing the local JWT secret. Start the stack with `supabase start`, or set ' +
-      'SUPABASE_JWT_SECRET (or SUPABASE_SERVICE_ROLE_KEY).',
+      'SUPABASE_JWT_SECRET (or SUPABASE_SERVICE_ROLE_KEY).'
   );
   process.exit(2);
 }
@@ -114,10 +124,64 @@ async function tenantKeyTables() {
     throw new Error(
       `tenant_key_tables() returned ${response.status}. Has ` +
         '20260909143500_tenant_isolation_hardening.sql been applied to this stack? ' +
-        `Body: ${text.slice(0, 300)}`,
+        `Body: ${text.slice(0, 300)}`
     );
   }
   return JSON.parse(text);
+}
+
+// ─── The rule ────────────────────────────────────────────────────────────
+//
+// Pure and exported so it has a fast unit test
+// (tenant-table-guard.classify.test.mjs) independent of a live stack: the
+// live run above proves the SQL side (the inventory really is every table
+// with a tenant key); this proves the classification side (given an
+// inventory, the right tables are flagged unaccounted or stale). Neither
+// test alone would have caught both the original three-column blind spot
+// and a classification-logic regression.
+export function classifyInventory(
+  inventory,
+  { tenantTables, serverOnlyTables, allowList }
+) {
+  const proved = new Map();
+  for (const entry of tenantTables) proved.set(entry.table, 'tenant-scoped');
+  for (const table of serverOnlyTables) {
+    if (!proved.has(table)) proved.set(table, 'server-only');
+  }
+  const allowed = new Map(
+    allowList.map((entry) => [entry.table, entry.reason])
+  );
+
+  const rows = [];
+  const unaccounted = [];
+  for (const row of inventory) {
+    if (proved.has(row.table_name)) {
+      rows.push({ ...row, status: 'ok', detail: proved.get(row.table_name) });
+    } else if (allowed.has(row.table_name)) {
+      rows.push({
+        ...row,
+        status: 'allowed',
+        detail: allowed.get(row.table_name),
+      });
+    } else {
+      rows.push({ ...row, status: 'unproved', detail: null });
+      unaccounted.push(row.table_name);
+    }
+  }
+
+  const inventoryNames = new Set(inventory.map((row) => row.table_name));
+  const stale = allowList
+    .filter(
+      (entry) => !inventoryNames.has(entry.table) || proved.has(entry.table)
+    )
+    .map((entry) => ({
+      ...entry,
+      why: proved.has(entry.table)
+        ? 'it is now proved by the verifier'
+        : 'the table no longer exists',
+    }));
+
+  return { rows, unaccounted, stale };
 }
 
 // ─── The run ───────────────────────────────────────────────────────────────
@@ -126,48 +190,33 @@ async function main() {
   console.log(`Supabase: ${API_URL}`);
   const inventory = await tenantKeyTables();
   inventory.sort((left, right) =>
-    left.table_name.localeCompare(right.table_name),
+    left.table_name.localeCompare(right.table_name)
   );
 
-  const proved = new Map();
-  for (const entry of TENANT_TABLES) proved.set(entry.table, 'tenant-scoped');
-  for (const table of SERVER_ONLY_TABLES) {
-    if (!proved.has(table)) proved.set(table, 'server-only');
-  }
-  const allowed = new Map(
-    ALLOW_LIST.map((entry) => [entry.table, entry.reason]),
-  );
-
-  const unaccounted = [];
   console.log(`\n${inventory.length} tables in public carry a tenant key.\n`);
-  for (const row of inventory) {
+  const { rows, unaccounted, stale } = classifyInventory(inventory, {
+    tenantTables: TENANT_TABLES,
+    serverOnlyTables: SERVER_ONLY_TABLES,
+    allowList: ALLOW_LIST,
+  });
+
+  for (const row of rows) {
     const columns = row.tenant_columns.join(', ');
-    if (proved.has(row.table_name)) {
+    if (row.status === 'ok') {
       console.log(
-        `  ok        ${row.table_name} (${columns}) - proved as ${proved.get(row.table_name)}`,
+        `  ok        ${row.table_name} (${columns}) - proved as ${row.detail}`
       );
-    } else if (allowed.has(row.table_name)) {
-      console.log(
-        `  allowed   ${row.table_name} (${columns}) - ${allowed.get(row.table_name)}`,
-      );
+    } else if (row.status === 'allowed') {
+      console.log(`  allowed   ${row.table_name} (${columns}) - ${row.detail}`);
     } else {
       console.log(`  UNPROVED  ${row.table_name} (${columns})`);
-      unaccounted.push(row.table_name);
     }
   }
-
-  const inventoryNames = new Set(inventory.map((row) => row.table_name));
-  const stale = ALLOW_LIST.filter(
-    (entry) => !inventoryNames.has(entry.table) || proved.has(entry.table),
-  );
 
   if (stale.length > 0) {
     console.error('\nStale ALLOW_LIST entries. Remove them:');
     for (const entry of stale) {
-      const why = proved.has(entry.table)
-        ? 'it is now proved by the verifier'
-        : 'the table no longer exists';
-      console.error(`  ${entry.table} - ${why}`);
+      console.error(`  ${entry.table} - ${entry.why}`);
     }
   }
 
@@ -178,7 +227,7 @@ async function main() {
         unaccounted.map((table) => `  ${table}`).join('\n') +
         '\n\nAdd each one to TENANT_TABLES (tenant-scoped, membership policies) or to ' +
         'SERVER_ONLY_TABLES (no grant for anon or authenticated) in that file, or to ' +
-        "this script's ALLOW_LIST with a reason.",
+        "this script's ALLOW_LIST with a reason."
     );
   }
 
@@ -186,7 +235,15 @@ async function main() {
   console.log('\nEvery table with a tenant key is proved.');
 }
 
-main().catch((error) => {
-  console.error(error.message ?? error);
-  process.exit(1);
-});
+// Guarded so a test can `import { classifyInventory } from
+// './tenant-table-guard.mjs'` without triggering a live network call and a
+// possible `process.exit` — only running this file directly (`node
+// scripts/tenant-table-guard.mjs`) starts the real run.
+const isEntryPoint =
+  process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
+if (isEntryPoint) {
+  main().catch((error) => {
+    console.error(error.message ?? error);
+    process.exit(1);
+  });
+}
