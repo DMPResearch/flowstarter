@@ -23,6 +23,7 @@ import {
   MAX_DEMO_EDITS,
   isDemoSite,
 } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/discovery.logic';
+import { clientIp } from '@/lib/request-ip';
 
 const EditSchema = z.object({
   demoId: z.string().uuid().nullish(),
@@ -61,10 +62,7 @@ RULES:
 - Keep copy concise and professional. Honor the instruction; if it's out of scope, make the closest reasonable on-brand change.`;
 
 export async function POST(request: NextRequest) {
-  const ip =
-    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    request.headers.get('x-real-ip') ||
-    'unknown';
+  const ip = clientIp(request.headers);
   if (limited(ip)) {
     return NextResponse.json({ error: 'Too many edits' }, { status: 429 });
   }

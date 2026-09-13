@@ -41,6 +41,7 @@ import {
 } from '@/lib/flowstarter/claim';
 import { GUEST_DEPOSIT_KIND } from '@/lib/flowstarter/guest-deposit';
 import { readJsonCapped } from '@/lib/net/ingress';
+import { clientIp } from '@/lib/request-ip';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -116,10 +117,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ demoId: string }> }
 ): Promise<NextResponse> {
-  const ip =
-    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    request.headers.get('x-real-ip') ||
-    'unknown';
+  const ip = clientIp(request.headers);
   if (isRateLimited(ip)) {
     return NextResponse.json({ error: 'Too many attempts' }, { status: 429 });
   }

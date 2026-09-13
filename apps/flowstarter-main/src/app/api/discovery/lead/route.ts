@@ -15,6 +15,7 @@ import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import { sendEmail } from '@/lib/email';
 import { readJsonCapped } from '@/lib/net/ingress';
+import { clientIp } from '@/lib/request-ip';
 import { containsAgentControlInstructions } from '@flowstarter/agentic-codegen/src/flowstarter/intake-guard';
 
 /**
@@ -140,10 +141,7 @@ function buildEmailHtml(lead: DiscoveryLead): string {
 }
 
 export async function POST(request: NextRequest) {
-  const ip =
-    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    request.headers.get('x-real-ip') ||
-    'unknown';
+  const ip = clientIp(request.headers);
 
   if (isRateLimited(ip)) {
     return NextResponse.json(

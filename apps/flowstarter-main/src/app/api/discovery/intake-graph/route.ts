@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { funnelBudgetState } from '@/lib/ai/funnel-cost';
 import { aiModerateContent } from '@/lib/ai/moderate';
 import { readJsonCapped } from '@/lib/net/ingress';
+import { clientIp } from '@/lib/request-ip';
 import {
   resetIntakeGraphDeps,
   resumeIntakeGraph,
@@ -67,14 +68,6 @@ function isRateLimited(ip: string): boolean {
   return entry.count > RATE_LIMIT;
 }
 
-function clientIp(request: NextRequest): string {
-  return (
-    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    request.headers.get('x-real-ip') ||
-    'unknown'
-  );
-}
-
 async function withScriptedOnly<T>(run: () => Promise<T>): Promise<T> {
   setIntakeGraphDeps({
     phraseAsk: async ({ scriptedPrompt }) => scriptedPrompt,
@@ -96,7 +89,7 @@ async function withScriptedOnly<T>(run: () => Promise<T>): Promise<T> {
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  if (isRateLimited(clientIp(request))) {
+  if (isRateLimited(clientIp(request.headers))) {
     return NextResponse.json({ error: 'Too many attempts' }, { status: 429 });
   }
 

@@ -192,7 +192,11 @@ function confirm(workspaceId: string, body: unknown): NextRequest {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-forwarded-for': '203.0.113.7, 10.0.0.1',
+        // Client-sent prefix, then the real peer address a reverse proxy
+        // would append. The rightmost entry is the one that must be
+        // recorded (security audit 2026-09-13, H3) — never the leftmost,
+        // which the client controls.
+        'x-forwarded-for': '10.0.0.1, 203.0.113.7',
         'user-agent': 'TestBrowser/1.0',
       },
       body: JSON.stringify(body),
@@ -542,7 +546,7 @@ describe('rights confirmation', () => {
       statement_version: '2026-08-30',
       user_agent: 'TestBrowser/1.0',
     });
-    // First hop of the proxy chain only.
+    // The rightmost (real) hop of the proxy chain, never the client-sent prefix.
     expect(record?.ip).toBe('203.0.113.7');
   });
 
@@ -763,8 +767,13 @@ describe('verifying the bytes themselves', () => {
   });
 
   it('reads the caller ip from the proxy chain, or admits it has none', () => {
+    // Security audit 2026-09-13 (Claude, H3): the RIGHTMOST entry is the one
+    // a trusted reverse proxy actually appended; the leftmost is whatever
+    // the client itself sent and must never be trusted. No trusted proxy is
+    // configured here (the default outside staging/production), so nothing
+    // in the chain is peeled and the rightmost hop is returned as-is.
     const forwarded = new Request('http://localhost', {
-      headers: { 'x-forwarded-for': '203.0.113.7, 10.0.0.1' },
+      headers: { 'x-forwarded-for': '10.0.0.1, 203.0.113.7' },
     });
     expect(clientIp(forwarded)).toBe('203.0.113.7');
     const real = new Request('http://localhost', {

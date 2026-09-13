@@ -22,6 +22,7 @@ import {
   type Tier,
   bookingDepositAmount,
 } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/discovery.logic';
+import { clientIp } from '@/lib/request-ip';
 
 const STRIPE_API_VERSION = '2026-02-25.clover' as const;
 
@@ -65,10 +66,7 @@ function requestOrigin(request: NextRequest): string {
 }
 
 export async function POST(request: NextRequest) {
-  const ip =
-    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    request.headers.get('x-real-ip') ||
-    'unknown';
+  const ip = clientIp(request.headers);
   if (isRateLimited(ip)) {
     return NextResponse.json({ error: 'Too many attempts' }, { status: 429 });
   }

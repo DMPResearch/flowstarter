@@ -18,8 +18,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import { resolveOperatorNotifyEmail, sendEmail } from '@/lib/email';
-import { contactRateLimiter } from '@/lib/rate-limit';
 import { readJsonCapped } from '@/lib/net/ingress';
+import { contactRateLimiter } from '@/lib/rate-limit';
+import { clientIp } from '@/lib/request-ip';
 
 const ContactSchema = z.object({
   name: z
@@ -42,14 +43,6 @@ const ContactSchema = z.object({
   // this schema keeps working unchanged.
   website: z.string().optional(),
 });
-
-function clientIp(request: NextRequest): string {
-  return (
-    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    request.headers.get('x-real-ip') ||
-    'unknown'
-  );
-}
 
 function escapeHtml(value: string): string {
   return value
@@ -113,7 +106,7 @@ export async function POST(request: NextRequest) {
   // Per-IP rate limit, same helper the public lead-capture and custom-inquiry
   // routes use. Checked before any parsing, so an oversized or malformed
   // body from an abusive client is also cheap to reject.
-  if (contactRateLimiter.check(clientIp(request)).limited) {
+  if (contactRateLimiter.check(clientIp(request.headers)).limited) {
     return NextResponse.json(
       { error: 'Too many messages. Please try again in a minute.' },
       { status: 429 }

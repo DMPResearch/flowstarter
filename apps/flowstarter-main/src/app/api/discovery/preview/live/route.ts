@@ -23,6 +23,7 @@ import { llmActionConfig, recordLlmUsage } from '@/lib/ai/llm';
 import { missingGenerationPrerequisites } from '@/lib/discovery/generation-availability';
 import { createJob, getJob, updateJob } from '@/lib/discovery/live-jobs';
 import { isTransientPipelineFailure } from '@/lib/discovery/preview-failure';
+import { clientIp } from '@/lib/request-ip';
 import { previewUrlForClient } from '@/lib/discovery/local-preview-frame';
 import { sendPreviewReadyEmail } from '@/lib/discovery/preview-ready-email';
 import { readPreviewWorkspaceFiles } from '@/lib/discovery/preview-workspace';
@@ -244,13 +245,6 @@ const GLM_53_FLASH = {
   thinkingLevelMap: { xhigh: 'xhigh' },
 } as const;
 
-function clientIp(req: NextRequest): string {
-  return (
-    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    req.headers.get('x-real-ip') ||
-    'unknown'
-  );
-}
 
 function buildPiEvidence(
   demoId: string,
@@ -374,7 +368,7 @@ export async function POST(req: NextRequest) {
   // Pi generation run, `maxDuration = 300`), and until now had no limit at
   // all — see the MVP readiness review, "Security". Computed once and reused
   // below for the job's own `ip` field.
-  const ip = clientIp(req);
+  const ip = clientIp(req.headers);
   if (discoveryPreviewLiveRateLimiter.check(ip).limited) {
     return NextResponse.json(
       { skip: true, reason: 'rate-limited' },
