@@ -19,7 +19,7 @@
  *  4. WHOSE LINK IT IS. The point of the column is that a client's site books
  *     into the client's calendar, never a shared Flowstarter one.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 // Static imports: vi.mock is hoisted above them, and the app's tsconfig does
 // not allow top-level await in tests.
@@ -108,6 +108,12 @@ function secretOf(workspaceId: string): unknown {
 }
 
 beforeEach(() => {
+  // calWebhookUrl() (through publicCallbackOrigin()) is env-driven; pin this
+  // suite to a production-shaped process so the webhook URL it asserts is
+  // stable, the way the app actually runs in the one environment where
+  // nothing else is set either.
+  vi.stubEnv('FLOWSTARTER_ENV', 'production');
+  vi.stubEnv('PLATFORM_DOMAIN', 'flowstarter.net');
   db.reset();
   authState.userId = 'user_client_a';
   authState.role = undefined;
@@ -118,6 +124,10 @@ beforeEach(() => {
   db.seed('workspace_memberships', [
     { workspace_id: WORKSPACE_A, clerk_user_id: 'user_client_a' },
   ]);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe('a booking link that is not yours', () => {

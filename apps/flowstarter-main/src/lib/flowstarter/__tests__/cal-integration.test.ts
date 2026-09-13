@@ -78,15 +78,50 @@ beforeEach(() => {
 
 describe('calWebhookUrl', () => {
   it('is absolute, because it is pasted into somebody else’s settings screen', () => {
+    vi.stubEnv('FLOWSTARTER_ENV', 'production');
+    vi.stubEnv('PLATFORM_DOMAIN', 'flowstarter.net');
     expect(calWebhookUrl(WORKSPACE)).toBe(
       `https://flowstarter.net/api/integrations/cal/${WORKSPACE}`
     );
+    vi.unstubAllEnvs();
   });
 
-  it('follows the configured origin, with no trailing slash left on it', () => {
-    vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'https://staging.flowstarter.dev/');
+  it('is staging.{domain} in staging, not the bare apex nothing answers on', () => {
+    vi.stubEnv('FLOWSTARTER_ENV', 'staging');
     expect(calWebhookUrl(WORKSPACE)).toBe(
       `https://staging.flowstarter.dev/api/integrations/cal/${WORKSPACE}`
+    );
+    vi.unstubAllEnvs();
+  });
+
+  it('uses NEXT_PUBLIC_SITE_URL in development, not a LAN address Cal.com cannot reach on its own', () => {
+    vi.stubEnv('FLOWSTARTER_ENV', 'development');
+    vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'http://192.168.1.5:3000/');
+    expect(calWebhookUrl(WORKSPACE)).toBe(
+      `http://192.168.1.5:3000/api/integrations/cal/${WORKSPACE}`
+    );
+    vi.unstubAllEnvs();
+  });
+
+  it('falls back to http://localhost:{PORT} in development with nothing else set', () => {
+    vi.stubEnv('FLOWSTARTER_ENV', 'development');
+    vi.stubEnv('NEXT_PUBLIC_SITE_URL', '');
+    vi.stubEnv('PORT', '3100');
+    expect(calWebhookUrl(WORKSPACE)).toBe(
+      `http://localhost:3100/api/integrations/cal/${WORKSPACE}`
+    );
+    vi.unstubAllEnvs();
+  });
+
+  it('is overridable with FLOWSTARTER_PUBLIC_CALLBACK_ORIGIN, for a tunnel in front of a laptop', () => {
+    vi.stubEnv('FLOWSTARTER_ENV', 'development');
+    vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'http://192.168.1.5:3000');
+    vi.stubEnv(
+      'FLOWSTARTER_PUBLIC_CALLBACK_ORIGIN',
+      'https://my-tunnel.trycloudflare.com/'
+    );
+    expect(calWebhookUrl(WORKSPACE)).toBe(
+      `https://my-tunnel.trycloudflare.com/api/integrations/cal/${WORKSPACE}`
     );
     vi.unstubAllEnvs();
   });

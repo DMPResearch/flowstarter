@@ -14,6 +14,7 @@
  */
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
+import { publicAppOrigin } from '@flowstarter/platform-config';
 import { requireWorkspaceAccess } from '@/lib/api-auth';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import { LeadCaptureSettings } from '@/components/flowstarter/LeadCaptureSettings';
@@ -21,7 +22,6 @@ import {
   ensureLeadCaptureToken,
   leadCaptureEndpoint,
 } from '@/lib/flowstarter/lead-capture';
-import { siteRootDomain } from '@/lib/hosting/site-hostnames';
 import { workspaceDisplayName } from '../../../client-workspaces';
 
 export const dynamic = 'force-dynamic';
@@ -52,7 +52,7 @@ export default async function ClientEnquiriesPage({
   const capture = await ensureLeadCaptureToken(supabase, workspaceId);
   if (!capture) notFound();
 
-  const endpoint = leadCaptureEndpoint(siteRootDomain(), capture.token);
+  const endpoint = leadCaptureEndpoint(publicAppOrigin(), capture.token);
 
   return (
     <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-5 py-12">

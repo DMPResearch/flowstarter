@@ -9,7 +9,10 @@
 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolvePlatformDomain } from '@flowstarter/platform-config';
+import {
+  publicAppOrigin,
+  resolvePlatformDomain,
+} from '@flowstarter/platform-config';
 import {
   DEFAULT_OUTPUT_EXPORT_LIMITS,
   type OutputExportLimits,
@@ -723,10 +726,15 @@ function parseSkipValidation(env: NodeJS.ProcessEnv): boolean {
  * A generated site is allowed to talk to exactly one place that is not
  * itself: the Flowstarter API that its contact form files enquiries into.
  * That address is configuration — the worker's own `FLOWSTARTER_MAIN_URL`
- * where one is set, and the platform domain the environment resolves to
- * otherwise (the same rule `resolvePlatformDomain` applies everywhere else) —
- * so neither the gate nor the site's Content-Security-Policy carries a
- * hostname of its own.
+ * where one is set, and `publicAppOrigin()` otherwise, so neither the gate
+ * nor the site's Content-Security-Policy carries a hostname of its own.
+ *
+ * `publicAppOrigin()`, not the bare platform domain: that is the same rule
+ * `leadCaptureEndpointFor()` in `job-store.ts` uses to build the URL this
+ * worker actually injects into the site's form action, so the origin a form
+ * posts to and the origin its CSP allows can never drift apart. Before this,
+ * the two were computed by two different rules that only agreed in
+ * production — this fixes the CSP half of the same bug.
  */
 export function resolvePlatformOrigins(env: NodeJS.ProcessEnv): string[] {
   const origins: string[] = [];
@@ -744,10 +752,14 @@ export function resolvePlatformOrigins(env: NodeJS.ProcessEnv): string[] {
   };
   add(env.FLOWSTARTER_MAIN_URL);
   add(
-    `https://${resolvePlatformDomain({
+    publicAppOrigin({
       flowstarterEnv: env.FLOWSTARTER_ENV,
       nodeEnv: env.NODE_ENV,
-    })}`,
+      platformDomain: env.PLATFORM_DOMAIN || env.NEXT_PUBLIC_PLATFORM_DOMAIN,
+      publicAppOrigin: env.FLOWSTARTER_PUBLIC_APP_ORIGIN,
+      siteUrl: env.NEXT_PUBLIC_SITE_URL,
+      port: env.PORT,
+    }),
   );
   return origins;
 }

@@ -108,6 +108,66 @@ describe('worker configuration', () => {
     ).toBe('https://{projectId}.staging.example.com');
   });
 
+  describe('platformOrigins', () => {
+    // This is the allowlist a generated site's CSP and its build-time markup
+    // gate both read (`siteMarkupPolicy({ platformOrigins })`), and it has to
+    // name the exact origin `leadCaptureEndpointFor()` in `job-store.ts`
+    // wrote into that same site's form action, or the visitor's browser
+    // blocks the very request the CSP exists to allow. Both now go through
+    // `publicAppOrigin()`, so they cannot drift apart the way a bare
+    // `resolvePlatformDomain()` origin and a `publicAppOrigin()` origin did in
+    // every environment but production.
+    it('is the bare platform domain in production', () => {
+      expect(
+        loadConfig(
+          validEnv({ FLOWSTARTER_ENV: 'production', ...PREPARED_IMAGE }),
+        ).platformOrigins,
+      ).toContain('https://flowstarter.net');
+    });
+
+    it('is staging.{domain} in staging, not the bare apex nothing answers on', () => {
+      expect(
+        loadConfig(validEnv({ FLOWSTARTER_ENV: 'staging', ...PREPARED_IMAGE }))
+          .platformOrigins,
+      ).toContain('https://staging.flowstarter.dev');
+    });
+
+    it('is NEXT_PUBLIC_SITE_URL in development, not the bare platform domain', () => {
+      const origins = loadConfig(
+        validEnv({
+          FLOWSTARTER_ENV: 'development',
+          NEXT_PUBLIC_SITE_URL: 'http://localhost:3067',
+        }),
+      ).platformOrigins;
+      expect(origins).toContain('http://localhost:3067');
+      expect(origins).not.toContain('https://flowstarter.dev');
+    });
+
+    it('still carries FLOWSTARTER_MAIN_URL alongside the app origin', () => {
+      const origins = loadConfig(
+        validEnv({
+          FLOWSTARTER_ENV: 'production',
+          FLOWSTARTER_MAIN_URL: 'https://internal.example.com',
+          ...PREPARED_IMAGE,
+        }),
+      ).platformOrigins;
+      expect(origins).toContain('https://internal.example.com');
+      expect(origins).toContain('https://flowstarter.net');
+    });
+
+    it('is overridden outright by FLOWSTARTER_PUBLIC_APP_ORIGIN', () => {
+      const origins = loadConfig(
+        validEnv({
+          FLOWSTARTER_ENV: 'staging',
+          FLOWSTARTER_PUBLIC_APP_ORIGIN: 'https://pr-7.staging.flowstarter.dev',
+          ...PREPARED_IMAGE,
+        }),
+      ).platformOrigins;
+      expect(origins).toContain('https://pr-7.staging.flowstarter.dev');
+      expect(origins).not.toContain('https://staging.flowstarter.dev');
+    });
+  });
+
   it('refuses a staging template that cannot address the project or is not https', () => {
     expect(() =>
       loadConfig(

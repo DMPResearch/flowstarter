@@ -464,3 +464,18 @@ export type {
   AuthTransferRefusal,
   AuthTransferSurface,
 } from './auth-transfer-policy';
+
+// ---------------------------------------------------------------------------
+// Public app / callback origin (where the app answers, and where a third
+// party's servers must be able to reach it — a separate question from the
+// domain a client site is hosted under).
+// ---------------------------------------------------------------------------
+
+export {
+  PUBLIC_APP_ORIGIN_ENV,
+  PUBLIC_CALLBACK_ORIGIN_ENV,
+  publicAppOrigin,
+  publicCallbackOrigin,
+  readPublicOriginEnvFromProcess,
+} from './public-origin';
+export type { PublicOriginEnvInput } from './public-origin';

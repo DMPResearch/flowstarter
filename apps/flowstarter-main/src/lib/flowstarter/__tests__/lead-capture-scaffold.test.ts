@@ -7,7 +7,7 @@
  * nothing. These assert that a preview gets the same injected script the paid
  * build gets, pointed at a token the endpoint provably refuses.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   injectLeadCapturePreviewIntoScaffoldFiles,
   previewLeadCaptureEndpoint,
@@ -26,7 +26,12 @@ const page = [
 ].join('\n');
 
 beforeEach(() => {
-  process.env.PLATFORM_DOMAIN = 'flowstarter.test';
+  vi.stubEnv('FLOWSTARTER_ENV', 'production');
+  vi.stubEnv('PLATFORM_DOMAIN', 'flowstarter.test');
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe('previewLeadCaptureEndpoint', () => {
@@ -37,6 +42,25 @@ describe('previewLeadCaptureEndpoint', () => {
     );
     const token = endpoint.split('/capture/')[1]!;
     expect(isLeadCaptureToken(token)).toBe(false);
+  });
+
+  it('posts to staging.{domain} on the shared staging box, not the bare apex nothing answers on', () => {
+    vi.stubEnv('FLOWSTARTER_ENV', 'staging');
+    vi.stubEnv('PLATFORM_DOMAIN', '');
+    const endpoint = previewLeadCaptureEndpoint(PREVIEW_ID);
+    expect(endpoint).toBe(
+      `https://staging.flowstarter.dev/api/leads/capture/${PREVIEW_TOKEN_PREFIX}${PREVIEW_ID}`
+    );
+  });
+
+  it('posts to NEXT_PUBLIC_SITE_URL on a developer machine, not flowstarter.dev', () => {
+    vi.stubEnv('FLOWSTARTER_ENV', 'development');
+    vi.stubEnv('PLATFORM_DOMAIN', '');
+    vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'http://localhost:3000');
+    const endpoint = previewLeadCaptureEndpoint(PREVIEW_ID);
+    expect(endpoint).toBe(
+      `http://localhost:3000/api/leads/capture/${PREVIEW_TOKEN_PREFIX}${PREVIEW_ID}`
+    );
   });
 });
 

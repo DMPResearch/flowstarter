@@ -101,14 +101,49 @@ export function isLeadCaptureToken(value: unknown): value is string {
  * Where a site posts. One builder, used by the codegen injector through the
  * site config it writes and by the dashboard's embed snippet, so the path can
  * never be spelled two ways.
+ *
+ * `platformOrigin` is where the *app* answers -- `publicAppOrigin()` from
+ * `@flowstarter/platform-config`, never `siteRootDomain()`. The two agree in
+ * production, where the app is the domain's apex, and disagree everywhere
+ * else: `siteRootDomain()` names the zone client sites are hosted under
+ * (`flowstarter.dev` in development and on the shared staging box), and
+ * nothing answers at that bare apex there. A site built from a dev or staging
+ * stack that posted to it was posting every enquiry into a 404.
+ *
+ * A scheme on `platformOrigin` is kept rather than forced to `https`, so a
+ * bare host (`flowstarter.net`) still defaults to `https` the way callers
+ * have always been able to pass it, and an explicit `http://localhost:3000`
+ * -- the honest answer in development -- is not silently upgraded to a
+ * scheme nothing is listening on.
  */
 export function leadCaptureEndpoint(
-  platformHost: string,
+  platformOrigin: string,
   token: string
 ): string {
-  return `https://${platformHost
-    .replace(/^https?:\/\//, '')
-    .replace(/\/+$/, '')}/api/leads/capture/${token}`;
+  const trimmed = platformOrigin.trim();
+  const lower = trimmed.toLowerCase();
+  const hasScheme = lower.startsWith('http://') || lower.startsWith('https://');
+  const withScheme = hasScheme ? trimmed : `https://${trimmed}`;
+  const origin = stripTrailingSlashes(withScheme);
+  return `${origin}/api/leads/capture/${token}`;
+}
+
+const SLASH_CHAR_CODE = '/'.charCodeAt(0);
+
+/**
+ * A plain index walk, not a `/\/+$/`-shaped regex: `platformOrigin` above is
+ * a parameter of an exported function, which CodeQL's polynomial-redos query
+ * (js/polynomial-redos) treats as library input regardless of how trusted the
+ * one caller in this codebase happens to be, and flagged the identically
+ * shaped pattern in `@flowstarter/platform-config`'s `stripTrailingSlash`.
+ * The loop settles the question instead of arguing the input is short.
+ */
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === SLASH_CHAR_CODE) {
+    end -= 1;
+  }
+  return value.slice(0, end);
 }
 
 // ─── Minting, on demand and on rotation ────────────────────────────────────

@@ -124,6 +124,8 @@ RESEND_API_KEY=<transactional email key>
 AUTH_TRANSFER_APP_ORIGIN=https://flowstarter.net     # optional; see below
 AUTH_TRANSFER_EDITOR_ORIGIN=https://code.flowstarter.net
 AUTH_TRANSFER_LIBRARY_ORIGIN=https://library.flowstarter.net
+# FLOWSTARTER_PUBLIC_APP_ORIGIN=      # optional; unset here, see below
+# FLOWSTARTER_PUBLIC_CALLBACK_ORIGIN= # optional; development-only, see below
 
 # Discovery-funnel preview publishing (apps/flowstarter-main/src/lib/discovery).
 # The previews deploy-agent's own instance, port and secret — never the
@@ -155,6 +157,25 @@ as a browser talking to one project and the server to another.
 platform domain from the request hostname first and falls back to
 `flowstarter.dev`. That fallback is right for staging and wrong for production,
 so production names its domain explicitly. Staging needs no such line.
+
+**`FLOWSTARTER_PUBLIC_APP_ORIGIN` / `FLOWSTARTER_PUBLIC_CALLBACK_ORIGIN`**
+(`packages/platform-config/src/public-origin.ts`) name where the app itself is
+publicly served, and where a third party's servers (Cal.com's webhook
+delivery) must be able to reach it — a different question from `PLATFORM_DOMAIN`,
+which names the zone _client sites_ are hosted under. The two only agree in
+production. Neither needs setting on `main` or `prod`: `publicAppOrigin()`
+already derives `https://flowstarter.net` in production and
+`https://staging.flowstarter.dev` in staging from `FLOWSTARTER_ENV` alone,
+which is also why a client site's contact-form endpoint and its Cal.com
+webhook subscriber URL now resolve correctly there without either variable —
+before this rule existed, both were built from the bare platform domain (a
+404 on this box outside production) or from `NEXT_PUBLIC_SITE_URL` (a LAN
+address on a developer's laptop). Set `FLOWSTARTER_PUBLIC_APP_ORIGIN` on a
+`pr-N` slot only if that slot's own contact-form and Cal.com testing need to
+resolve to its own ephemeral hostname (`https://pr-N.staging.flowstarter.dev`)
+rather than the `main` slot's; leave it unset otherwise. Set
+`FLOWSTARTER_PUBLIC_CALLBACK_ORIGIN` only in development, for a tunnel in
+front of a laptop Cal.com's servers cannot otherwise reach.
 
 `deploy-slot.sh` rewrites the `FLOWSTARTER_ENV` line on every deploy, so a slot
 cannot inherit the wrong environment from a stale file.

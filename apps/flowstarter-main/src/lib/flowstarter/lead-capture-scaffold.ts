@@ -12,9 +12,9 @@
  * shows. The alternative was a preview whose contact form silently did nothing
  * when clicked, which is how a visitor learns not to trust the rest of it.
  */
+import { publicAppOrigin } from '@flowstarter/platform-config';
 import { injectLeadCapture, type FileMap } from '@flowstarter/agentic-codegen';
 import { leadCaptureEndpoint, previewLeadCaptureToken } from './lead-capture';
-import { siteRootDomain } from '@/lib/hosting/site-hostnames';
 
 function mapScaffoldFiles<T extends { path: string; content: string }>(
   files: readonly T[],
@@ -35,10 +35,16 @@ function mapScaffoldFiles<T extends { path: string; content: string }>(
   return changed ? out : (files as T[]);
 }
 
-/** The endpoint a preview's form posts to, which the endpoint then refuses. */
+/**
+ * The endpoint a preview's form posts to, which the endpoint then refuses.
+ *
+ * `publicAppOrigin()`, not `siteRootDomain()`: the form posts to the app, not
+ * to the zone the preview itself is hosted under, and those two only agree in
+ * production. See the comment on `leadCaptureEndpoint()`.
+ */
 export function previewLeadCaptureEndpoint(previewId: string): string {
   return leadCaptureEndpoint(
-    siteRootDomain(),
+    publicAppOrigin(),
     previewLeadCaptureToken(previewId)
   );
 }

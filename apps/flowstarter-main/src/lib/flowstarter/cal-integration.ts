@@ -22,6 +22,7 @@
  */
 import { randomBytes } from 'crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { publicCallbackOrigin } from '@flowstarter/platform-config';
 import type { Database, Json } from '@/lib/database.types';
 import {
   calEmbedSrc,
@@ -48,18 +49,20 @@ export interface CalConnection {
 /**
  * The absolute URL Cal.com posts to.
  *
- * Absolute, and falling back to the production origin, for the same reason the
- * dashboard link in an email is: this string is copied into a third party's
- * settings screen, where a relative path is not a degraded link but a broken
- * one.
+ * Absolute, for the same reason the dashboard link in an email is: this
+ * string is copied into a third party's settings screen, where a relative
+ * path is not a degraded link but a broken one.
+ *
+ * `publicCallbackOrigin()`, not `NEXT_PUBLIC_SITE_URL` directly: on a laptop
+ * that env var is whatever the developer's machine answers on -- localhost or
+ * a LAN address -- and Cal.com's own servers can reach neither. The rule
+ * defaults to `publicAppOrigin()` (the bare domain in production, `staging.`
+ * in front of it in staging) and is overridable on its own with
+ * `FLOWSTARTER_PUBLIC_CALLBACK_ORIGIN` for the one case that still needs it:
+ * a tunnel in front of a development machine.
  */
 export function calWebhookUrl(workspaceId: string): string {
-  const base = (
-    process.env.NEXT_PUBLIC_SITE_URL?.trim() ||
-    process.env.NEXT_PUBLIC_APP_URL?.trim() ||
-    'https://flowstarter.net'
-  ).replace(/\/+$/, '');
-  return `${base}/api/integrations/cal/${workspaceId}`;
+  return `${publicCallbackOrigin()}/api/integrations/cal/${workspaceId}`;
 }
 
 function connectionFrom(
