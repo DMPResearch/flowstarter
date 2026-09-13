@@ -283,6 +283,17 @@ the local stack (`"target":"local"`), never a remote one.
 gate asserts `"env":"production"` instead. Nothing on this box migrates the
 production database.
 
+**Concurrent deploys.** Every staging slot shares this one stack and one
+Caddy config directory, so `deploy-slot.sh` wraps the `ensure`/`check`/
+`migrate` section, and separately the Caddy write-then-reload, in `flock` on
+`STAGING_LOCK_FILE` (default `${STAGING_ROOT}/deploy.lock`). Two lanes
+deploying in the same minute (`main` and a `pr-N`, or two `pr-N`s) queue for
+those steps instead of racing them; a waiter gives up after
+`STAGING_LOCK_TIMEOUT` seconds (default 300) and names the lock file and, if
+available, which slot/pid last held it. Per-slot work -- the image pull,
+`docker compose up`, the health wait -- is not locked and still runs in
+parallel across slots.
+
 **RAM.** The trimmed stack keeps gotrue, kong, postgrest, storage-api,
 postgres-meta, and postgres, and excludes studio, edge-runtime, logflare,
 vector, supavisor, imgproxy, mailpit, and realtime. It runs at roughly 1 GB.

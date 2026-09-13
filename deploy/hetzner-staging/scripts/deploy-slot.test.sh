@@ -219,6 +219,174 @@ else
 fi
 rm -f "$ROOT/bin/sleep"
 
+# ── Locking: the shared Supabase stack and Caddy sections serialise ────────
+# Two lanes deploying at once on the real host raced supabase-stack.sh and
+# the Caddy write-then-reload, failing one at random (pr-127, 2026-09-14).
+# These cases run the real deploy-slot.sh twice at once against stubs that
+# sleep while "inside" the locked sections, so an actual overlap -- not just
+# a passing exit code -- is what would fail the test.
+echo "deploy-slot.sh: locking"
+export HEALTH_BODY='{"ok":true,"supabase":{"env":"staging","target":"local","host":"127.0.0.1"}}'
+ENV_FILE="$ROOT/etc/staging.env"
+: >"$ENV_FILE"
+
+CONC_ROOT="$ROOT/conc"
+mkdir -p "$CONC_ROOT"
+ORDER_LOG="$CONC_ROOT/order.log"
+BUSY_FLAG="$CONC_ROOT/busy"
+export ORDER_LOG BUSY_FLAG
+: >"$ORDER_LOG"
+rm -f "$BUSY_FLAG"
+
+# Both stubs share $BUSY_FLAG/$ORDER_LOG, so this catches an overlap between
+# ANY two lock holders, not just two calls to the same stub: one process's
+# Supabase-stack section racing another's Caddy section would be exactly the
+# kind of interleave the real incident hit.
+cat >"$ROOT/opt/supabase-stack.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "supabase-stack $*" >> "$STUB_LOG"
+if [ "$1" = "ensure" ]; then
+  if [ -e "$BUSY_FLAG" ]; then
+    echo "OVERLAP supabase-stack($$) found $(cat "$BUSY_FLAG")" >> "$ORDER_LOG"
+  fi
+  echo "supabase-stack($$)" > "$BUSY_FLAG"
+  echo "ENTER supabase-stack($$)" >> "$ORDER_LOG"
+  sleep 0.4
+  echo "EXIT supabase-stack($$)" >> "$ORDER_LOG"
+  rm -f "$BUSY_FLAG"
+fi
+exit 0
+STUB
+cat >"$ROOT/bin/systemctl" <<'STUB'
+#!/usr/bin/env bash
+echo "systemctl $*" >> "$STUB_LOG"
+if [ -e "$BUSY_FLAG" ]; then
+  echo "OVERLAP systemctl($$) found $(cat "$BUSY_FLAG")" >> "$ORDER_LOG"
+fi
+echo "systemctl($$)" > "$BUSY_FLAG"
+echo "ENTER systemctl($$)" >> "$ORDER_LOG"
+sleep 0.4
+echo "EXIT systemctl($$)" >> "$ORDER_LOG"
+rm -f "$BUSY_FLAG"
+exit 0
+STUB
+chmod +x "$ROOT/opt/supabase-stack.sh" "$ROOT/bin/systemctl"
+
+# Sets $LAST_BG_PID rather than returning the pid through a `$(...)` command
+# substitution: that runs in its own subshell, so the backgrounded job would
+# be that subshell's child, not this script's -- and `wait` only works on a
+# direct child.
+deploy_bg() {
+  local slot="$1" tag="$2" outfile="$3" logfile="$4"
+  (
+    STAGING_ROOT="$ROOT/opt" \
+      CADDY_PLATFORM_DIR="$ROOT/caddy" \
+      PROD_TLS_DIR="$ROOT/tls" \
+      SUPABASE_STACK_SCRIPT="$ROOT/opt/supabase-stack.sh" \
+      FLOWSTARTER_ENV_FILE="$ENV_FILE" \
+      STUB_LOG="$logfile" \
+      bash "$DEPLOY" "$slot" "ghcr.io/x/y:$tag" >"$outfile" 2>&1
+  ) &
+  LAST_BG_PID=$!
+}
+
+: >"$CONC_ROOT/out-main"
+: >"$CONC_ROOT/out-pr9"
+deploy_bg main sha-main "$CONC_ROOT/out-main" "$CONC_ROOT/log-main"
+pid_main="$LAST_BG_PID"
+deploy_bg pr-9 sha-pr9 "$CONC_ROOT/out-pr9" "$CONC_ROOT/log-pr9"
+pid_pr9="$LAST_BG_PID"
+rc_main=0
+rc_pr9=0
+wait "$pid_main" || rc_main=$?
+wait "$pid_pr9" || rc_pr9=$?
+
+if [ "$rc_main" -eq 0 ] && [ "$rc_pr9" -eq 0 ]; then
+  ok "two concurrent deploys both still succeed"
+else
+  no "two concurrent deploys both still succeed" "main rc=${rc_main} pr-9 rc=${rc_pr9}"
+fi
+if ! grep -q OVERLAP "$ORDER_LOG"; then
+  ok "two concurrent deploys serialise the shared Supabase-stack/Caddy sections"
+else
+  no "two concurrent deploys serialise the shared Supabase-stack/Caddy sections" "$(cat "$ORDER_LOG")"
+fi
+
+echo "deploy-slot.sh: the lock is released when a locked step fails"
+: >"$ENV_FILE"
+cat >"$ROOT/opt/supabase-stack.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "supabase-stack $*" >> "$STUB_LOG"
+[ "$1" = "check" ] && exit 1
+exit 0
+STUB
+chmod +x "$ROOT/opt/supabase-stack.sh"
+out="$(run_deploy main ghcr.io/x/y:will-fail)"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  ok "a failing locked step exits non-zero"
+else
+  no "a failing locked step exits non-zero" "exited 0"
+fi
+
+# A working stub, and a short timeout: if the failed run above left the flock
+# held, this would time out after 2s instead of succeeding immediately.
+cat >"$ROOT/opt/supabase-stack.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "supabase-stack $*" >> "$STUB_LOG"
+exit 0
+STUB
+chmod +x "$ROOT/opt/supabase-stack.sh"
+export STAGING_LOCK_TIMEOUT=2
+out2="$(run_deploy main ghcr.io/x/y:after-failure)"
+rc2=$?
+unset STAGING_LOCK_TIMEOUT
+if [ "$rc2" -eq 0 ]; then
+  ok "the lock from the failed run is released, so the next deploy does not wait out the timeout"
+else
+  no "the lock from the failed run is released, so the next deploy does not wait out the timeout" "$out2"
+fi
+
+echo "deploy-slot.sh: the lock wait times out with a clear message"
+: >"$ENV_FILE"
+LOCK_FILE="$ROOT/opt/deploy.lock"
+: >"$LOCK_FILE"
+printf 'slot=pr-999 pid=99999 step=stuck-test since=2026-01-01T00:00:00Z\n' >"${LOCK_FILE}.holder"
+(
+  exec 9>"$LOCK_FILE"
+  flock 9
+  sleep 3
+) >/dev/null 2>&1 &
+holder_pid=$!
+sleep 0.3
+export STAGING_LOCK_TIMEOUT=1
+out="$(run_deploy main ghcr.io/x/y:blocked)"
+rc=$?
+unset STAGING_LOCK_TIMEOUT
+wait "$holder_pid" 2>/dev/null || true
+if [ "$rc" -ne 0 ]; then
+  ok "deploy-slot.sh fails rather than wait forever once the lock's timeout elapses"
+else
+  no "deploy-slot.sh fails rather than wait forever once the lock's timeout elapses" "exited 0"
+fi
+assert_contains "$out" "$LOCK_FILE" "the timeout message names the lock file path"
+assert_contains "$out" "pr-999" "the timeout message names the stuck holder"
+rm -f "${LOCK_FILE}.holder" "$LOCK_FILE"
+
+# Restore the plain stubs the rest of the suite (and destroy-slot.sh below,
+# which also reloads Caddy through systemctl) expects.
+cat >"$ROOT/bin/systemctl" <<'STUB'
+#!/usr/bin/env bash
+echo "systemctl $*" >> "$STUB_LOG"
+exit 0
+STUB
+cat >"$ROOT/opt/supabase-stack.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "supabase-stack $*" >> "$STUB_LOG"
+exit 0
+STUB
+chmod +x "$ROOT/bin/systemctl" "$ROOT/opt/supabase-stack.sh"
+
 # ── destroy-slot.sh ─────────────────────────────────────────────────────────
 echo "destroy-slot.sh"
 run_destroy() {
