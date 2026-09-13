@@ -11,6 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
+  LeaseLostError,
   ProjectState,
   briefInputAssets,
   isPreviewToolingPath,
@@ -42,9 +43,11 @@ import {
   CLAIMABLE_KINDS,
   claimVerdict,
   leaseOwner,
+  nextFencingToken,
   nextRunAfter,
   publishedResult,
   staleLeaseAction,
+  UNFENCED_TOKEN,
   type BackoffRules,
   type LeasedJobRow,
   type PublishedResult,
@@ -125,7 +128,7 @@ export interface JobLedgerRow extends LeasedJobRow {
 /** Every column a claim or a recovery decision is made from. */
 const LEDGER_COLUMNS =
   'id, workspace_id, kind, status, attempt_count, max_attempts, run_after, ' +
-  'started_at, leased_by, lease_expires_at, payload';
+  'started_at, leased_by, lease_expires_at, lease_fence, payload';
 
 export interface ProjectArtifactRow {
   intake_payload: unknown;
@@ -605,8 +608,118 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
    */
   private readonly attemptsByJob = new Map<string, number>();
 
+  /**
+   * The fencing token each job was claimed with by *this* run.
+   *
+   * A lease says somebody is running the job. This says which run — and that
+   * is the question the last two statements of a build actually turn on. A
+   * worker whose heartbeats were late long enough for another worker to
+   * reclaim the job is still holding a finished site and a connection to the
+   * database; without a token, the ledger cannot tell its `succeeded` from the
+   * one the new attempt is about to write, and it takes the last one it is
+   * given. Every write below therefore carries the token it claimed with, and
+   * the database decides.
+   *
+   * A job not in this map is one this process never claimed — a recovery write
+   * during startup reconciliation, or an event about a job parked on its
+   * brief. Those guard on the dead holder they read instead, which is the
+   * strongest statement available about a row nobody is running.
+   */
+  private readonly fenceByJob = new Map<string, number>();
+
   private attemptsSoFar(jobId: string): number {
     return this.attemptsByJob.get(jobId) ?? 1;
+  }
+
+  /**
+   * What this run may still claim to be. Undefined means "never claimed here",
+   * which is not the same as "lost": the first is a recovery write, the second
+   * is a write that must not happen at all.
+   */
+  private fenceFor(jobId: string): number | undefined {
+    return this.fenceByJob.get(jobId);
+  }
+
+  /**
+   * Jobs this run has been told it no longer holds.
+   *
+   * Separate from simply forgetting the token, because the two happen for
+   * opposite reasons: a job is forgotten when it *finishes*, and the last
+   * lines of a finished build still belong on its timeline. A job is in here
+   * only when the database or the heartbeat has said somebody else has it.
+   */
+  private readonly lostJobs = new Set<string>();
+
+  /** Clears what this run remembers about a job it is done with. */
+  private forget(jobId: string): void {
+    this.fenceByJob.delete(jobId);
+    this.attemptsByJob.delete(jobId);
+    this.workspaceByJob.delete(jobId);
+  }
+
+  /**
+   * The refusal, phrased once. Thrown wherever a fenced write comes back
+   * having changed nothing, because the only way that happens is that the row
+   * carries a different holder or a newer token than this run does.
+   */
+  private lost(jobId: string, action: string): LeaseLostError {
+    this.lostJobs.add(jobId);
+    this.forget(jobId);
+    return new LeaseLostError(
+      `Refusing to ${action} job ${jobId}: this worker's lease expired and the ` +
+        'job has been claimed by another run. Nothing from this attempt is ' +
+        'written to the ledger.',
+    );
+  }
+
+  /**
+   * An update to the job row that only lands while this run still owns it.
+   *
+   * The filter is the whole rule: the row id, the holder this process wrote at
+   * claim time, and the token that claim minted. Two of the three would be
+   * enough on a good day — the third is for the day a worker is restarted fast
+   * enough to reuse an owner string.
+   */
+  private fencedJobUpdate(jobId: string, values: Record<string, unknown>) {
+    const query = this.client
+      .from('flowstarter_agent_jobs')
+      .update(values)
+      .eq('id', jobId);
+    const fence = this.fenceFor(jobId);
+    if (fence === undefined) return query;
+    return query.eq('leased_by', this.owner).eq('lease_fence', fence);
+  }
+
+  /**
+   * Publish authorisation: the token this run holds, checked against the row.
+   *
+   * Asked immediately before a publish, which is the one step no later
+   * compare-and-set can undo — the client's site is on the host, or their
+   * change request has been announced as live, and a `succeeded` row that is
+   * later refused does not take any of that back. Silent for a job this
+   * process never claimed, which is the only honest answer for a row it holds
+   * no token for.
+   */
+  async assertHoldsLease(jobId: string): Promise<void> {
+    const fence = this.fenceFor(jobId);
+    if (fence === undefined) return;
+    const { data, error } = await this.client
+      .from('flowstarter_agent_jobs')
+      .select('leased_by, lease_fence, status')
+      .eq('id', jobId)
+      .maybeSingle<{
+        leased_by: string | null;
+        lease_fence: number | null;
+        status: string;
+      }>();
+    if (error) throw error;
+    if (
+      !data ||
+      data.leased_by !== this.owner ||
+      (data.lease_fence ?? UNFENCED_TOKEN) !== fence
+    ) {
+      throw this.lost(jobId, 'publish');
+    }
   }
 
   private leaseRules(): {
@@ -639,7 +752,8 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
    */
   async heartbeat(jobId: string): Promise<boolean> {
     const now = this.now();
-    const { data, error } = await this.client
+    const fence = this.fenceFor(jobId);
+    const renewal = this.client
       .from('flowstarter_agent_jobs')
       .update({
         ...this.leaseFields(now),
@@ -647,10 +761,20 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
       })
       .eq('id', jobId)
       .eq('status', 'running')
-      .eq('leased_by', this.owner)
-      .select('id')
-      .maybeSingle();
+      .eq('leased_by', this.owner);
+    // The token as well as the holder: a job reclaimed and then handed back to
+    // this same worker is a different run, and renewing the new run's lease
+    // from the old run's loop would hide exactly the overlap this prevents.
+    const guarded =
+      fence === undefined ? renewal : renewal.eq('lease_fence', fence);
+    const { data, error } = await guarded.select('id').maybeSingle();
     if (error) throw error;
+    // The heartbeat is where a long build finds out it was overtaken, so it is
+    // also where this run stops being allowed to write anything else.
+    if (!data && this.fenceFor(jobId) !== undefined) {
+      this.lostJobs.add(jobId);
+      this.forget(jobId);
+    }
     return Boolean(data);
   }
 
@@ -786,6 +910,22 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
   }
 
   async appendEvent(jobId: string, event: FullSiteBuildEvent): Promise<void> {
+    // The conversation is part of the job's state: an overtaken attempt
+    // narrating its own progress into a reclaimed job's timeline is how an
+    // operator ends up reading two builds as one.
+    //
+    // This one is fenced by the token this run holds rather than by a fresh
+    // read of the row, and deliberately: a build writes hundreds of these
+    // lines, and a select per line would double the ledger traffic of every
+    // build to fence a narration. The token is invalidated the instant
+    // anything authoritative says so — the heartbeat, or any refused write —
+    // and every write that changes state is fenced in the database itself.
+    if (this.lostJobs.has(jobId)) {
+      throw new LeaseLostError(
+        `Refusing to write to the timeline of job ${jobId}: this worker no ` +
+          'longer holds it.',
+      );
+    }
     const workspaceId = await this.workspaceFor(jobId);
     const { error } = await this.client
       .from('flowstarter_agent_job_events')
@@ -1034,6 +1174,11 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
     // atomic compare-and-set: a concurrent dispatch updates zero rows. The
     // lease is written in the same statement, so there is no window where a
     // row reads `running` with nobody named on it.
+    // The claim also mints this run's fencing token: one more than whatever
+    // the row carried, written in the same statement as the lease and guarded
+    // on the value that was read. Two workers claiming the same row cannot
+    // mint the same token, and the loser's writes are refused from here on.
+    const fence = nextFencingToken(row);
     const claimQuery = this.client
       .from('flowstarter_agent_jobs')
       .update({
@@ -1044,11 +1189,13 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
         error_code: null,
         error_detail: null,
         updated_at: now,
+        lease_fence: fence,
         ...this.leaseFields(rules.now),
       })
       .eq('id', jobId)
       .eq('status', row.status)
-      .eq('attempt_count', row.attempt_count);
+      .eq('attempt_count', row.attempt_count)
+      .eq('lease_fence', row.lease_fence ?? UNFENCED_TOKEN);
     // Recovering a dead lease guards on the dead holder too, so two workers
     // reconciling the same abandoned build cannot both take it.
     const guarded = row.leased_by
@@ -1061,6 +1208,7 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
     if (!claimed) return null;
     this.workspaceByJob.set(jobId, row.workspace_id);
     this.attemptsByJob.set(jobId, row.attempt_count + 1);
+    this.fenceByJob.set(jobId, fence);
 
     // Past this point the row reads `running`. FullSiteBuildWorker only starts
     // its own error handling once claim() returns, so anything that throws
@@ -1214,17 +1362,15 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
 
   async markAgentWorking(jobId: string, worktree: GitWorktree): Promise<void> {
     const now = new Date().toISOString();
-    const { data, error } = await this.client
-      .from('flowstarter_agent_jobs')
-      .update({
-        worktree_branch: worktree.branch,
-        worktree_path: worktree.path,
-        updated_at: now,
-      })
-      .eq('id', jobId)
+    const { data, error } = await this.fencedJobUpdate(jobId, {
+      worktree_branch: worktree.branch,
+      worktree_path: worktree.path,
+      updated_at: now,
+    })
       .select('workspace_id')
-      .single<{ workspace_id: string }>();
+      .maybeSingle<{ workspace_id: string }>();
     if (error) throw error;
+    if (!data) throw this.lost(jobId, 'record a worktree for');
 
     const { error: stateError } = await this.client
       .from('workspaces')
@@ -1262,27 +1408,29 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
     const now = new Date().toISOString();
     const existing = await this.currentPayload(jobId);
 
-    const { data, error } = await this.client
-      .from('flowstarter_agent_jobs')
-      .update({
-        status: 'succeeded',
-        pull_request_url: result.pullRequestUrl,
-        payload: {
-          ...existing,
-          commitSha: result.commitSha,
-          stagingUrl: result.stagingUrl,
-          pullRequestUrl: result.pullRequestUrl,
-        },
-        finished_at: now,
-        updated_at: now,
-        leased_by: null,
-        lease_expires_at: null,
-      })
-      .eq('id', jobId)
+    const { data, error } = await this.fencedJobUpdate(jobId, {
+      status: 'succeeded',
+      pull_request_url: result.pullRequestUrl,
+      payload: {
+        ...existing,
+        commitSha: result.commitSha,
+        stagingUrl: result.stagingUrl,
+        pullRequestUrl: result.pullRequestUrl,
+      },
+      finished_at: now,
+      updated_at: now,
+      leased_by: null,
+      lease_expires_at: null,
+    })
       .select('workspace_id')
-      .single<{ workspace_id: string }>();
+      .maybeSingle<{ workspace_id: string }>();
     if (error) throw error;
-    this.attemptsByJob.delete(jobId);
+    // The write this finding was about: it used to key on the job id alone, so
+    // an attempt that had already lost its lease could mark a reclaimed job
+    // succeeded and move the workspace into HUMAN_QA behind the run that is
+    // genuinely building it.
+    if (!data) throw this.lost(jobId, 'finish');
+    this.forget(jobId);
 
     const { error: stateError } = await this.client
       .from('workspaces')
@@ -1297,15 +1445,15 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
     worktree: GitWorktree,
   ): Promise<void> {
     const now = new Date().toISOString();
-    const { error } = await this.client
-      .from('flowstarter_agent_jobs')
-      .update({
-        worktree_branch: worktree.branch,
-        worktree_path: worktree.path,
-        updated_at: now,
-      })
-      .eq('id', jobId);
+    const { data, error } = await this.fencedJobUpdate(jobId, {
+      worktree_branch: worktree.branch,
+      worktree_path: worktree.path,
+      updated_at: now,
+    })
+      .select('id')
+      .maybeSingle();
     if (error) throw error;
+    if (!data) throw this.lost(jobId, 'record a worktree for');
     // No project_state update, deliberately. A client publishing an edit is
     // not a change in where the engagement stands, and moving a LIVE_SUBSCRIPTION
     // project into AGENTS_WORKING would tell the operator board a story that
@@ -1319,25 +1467,25 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
     const now = new Date().toISOString();
     const existing = await this.currentPayload(jobId);
 
-    const { error } = await this.client
-      .from('flowstarter_agent_jobs')
-      .update({
-        status: 'succeeded',
-        pull_request_url: result.pullRequestUrl,
-        payload: {
-          ...existing,
-          commitSha: result.commitSha,
-          stagingUrl: result.stagingUrl,
-          pullRequestUrl: result.pullRequestUrl,
-        },
-        finished_at: now,
-        updated_at: now,
-        leased_by: null,
-        lease_expires_at: null,
-      })
-      .eq('id', jobId);
+    const { data, error } = await this.fencedJobUpdate(jobId, {
+      status: 'succeeded',
+      pull_request_url: result.pullRequestUrl,
+      payload: {
+        ...existing,
+        commitSha: result.commitSha,
+        stagingUrl: result.stagingUrl,
+        pullRequestUrl: result.pullRequestUrl,
+      },
+      finished_at: now,
+      updated_at: now,
+      leased_by: null,
+      lease_expires_at: null,
+    })
+      .select('id')
+      .maybeSingle();
     if (error) throw error;
-    this.attemptsByJob.delete(jobId);
+    if (!data) throw this.lost(jobId, 'finish');
+    this.forget(jobId);
   }
 
   async markChangeRequestBuildStarted(
@@ -1345,15 +1493,15 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
     worktree: GitWorktree,
   ): Promise<void> {
     const now = new Date().toISOString();
-    const { error } = await this.client
-      .from('flowstarter_agent_jobs')
-      .update({
-        worktree_branch: worktree.branch,
-        worktree_path: worktree.path,
-        updated_at: now,
-      })
-      .eq('id', jobId);
+    const { data, error } = await this.fencedJobUpdate(jobId, {
+      worktree_branch: worktree.branch,
+      worktree_path: worktree.path,
+      updated_at: now,
+    })
+      .select('id')
+      .maybeSingle();
     if (error) throw error;
+    if (!data) throw this.lost(jobId, 'record a worktree for');
     // No project_state update, for the same reason a rebuild makes none: a
     // client who has paid for one more section has not gone back into the
     // build pipeline, and moving a LIVE_SUBSCRIPTION project into
@@ -1378,6 +1526,11 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
     jobId: string,
     input: { changeRequestId: string; files: TemplateScaffoldFile[] },
   ): Promise<{ version: number }> {
+    // A version is the client's own record of what their site says, and it is
+    // written to a different table than the job, so nothing about the insert
+    // itself could refuse an attempt that lost its lease. The token is checked
+    // here instead, before the number is taken.
+    await this.assertHoldsLease(jobId);
     const workspaceId = await this.workspaceFor(jobId);
     const manifest = { files: input.files };
 
@@ -1459,26 +1612,26 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
       .eq('version', result.version);
     if (publishError) throw publishError;
 
-    const { error } = await this.client
-      .from('flowstarter_agent_jobs')
-      .update({
-        status: 'succeeded',
-        pull_request_url: result.pullRequestUrl,
-        payload: {
-          ...existing,
-          commitSha: result.commitSha,
-          stagingUrl: result.stagingUrl,
-          pullRequestUrl: result.pullRequestUrl,
-          builtVersion: result.version,
-        },
-        finished_at: now,
-        updated_at: now,
-        leased_by: null,
-        lease_expires_at: null,
-      })
-      .eq('id', jobId);
+    const { data: finished, error } = await this.fencedJobUpdate(jobId, {
+      status: 'succeeded',
+      pull_request_url: result.pullRequestUrl,
+      payload: {
+        ...existing,
+        commitSha: result.commitSha,
+        stagingUrl: result.stagingUrl,
+        pullRequestUrl: result.pullRequestUrl,
+        builtVersion: result.version,
+      },
+      finished_at: now,
+      updated_at: now,
+      leased_by: null,
+      lease_expires_at: null,
+    })
+      .select('id')
+      .maybeSingle();
     if (error) throw error;
-    this.attemptsByJob.delete(jobId);
+    if (!finished) throw this.lost(jobId, 'finish');
+    this.forget(jobId);
 
     const { data: done, error: doneError } = await withTenant(
       this.client,
@@ -1527,22 +1680,25 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
   ): Promise<void> {
     const at = this.now();
     const now = new Date(at).toISOString();
-    const { data, error } = await this.client
-      .from('flowstarter_agent_jobs')
-      .update({
-        status: 'failed',
-        error_code: failure.code,
-        error_detail: failure.detail.slice(0, 2_000),
-        finished_at: now,
-        updated_at: now,
-        leased_by: null,
-        lease_expires_at: null,
-        run_after: nextRunAfter(at, this.attemptsSoFar(jobId), this.backoff),
-      })
-      .eq('id', jobId)
+    const { data, error } = await this.fencedJobUpdate(jobId, {
+      status: 'failed',
+      error_code: failure.code,
+      error_detail: failure.detail.slice(0, 2_000),
+      finished_at: now,
+      updated_at: now,
+      leased_by: null,
+      lease_expires_at: null,
+      run_after: nextRunAfter(at, this.attemptsSoFar(jobId), this.backoff),
+    })
       .select('workspace_id')
-      .single<{ workspace_id: string }>();
+      .maybeSingle<{ workspace_id: string }>();
     if (error) throw error;
+    // Failing a job is as much a write as finishing one. An attempt that lost
+    // its lease and then died would otherwise stamp `failed` and a backoff on
+    // the run that replaced it, which is how a paid build gets told to wait
+    // fifteen minutes for a failure that did not happen to it.
+    if (!data) throw this.lost(jobId, 'fail');
+    this.forget(jobId);
 
     // Roll the workspace back to DEPOSIT_PAID so a retry can claim it again.
     // A project that never reached AGENTS_WORKING is left untouched.

@@ -13,6 +13,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { scrubbedPreviewEnv } from './local-preview-env';
 
 export interface LocalFastEditResult {
   ok: boolean;
@@ -45,14 +46,19 @@ export async function fastEditLocal(
     return await new Promise<LocalFastEditResult>((resolveResult) => {
       const child = spawn(process.execPath, [opts.runnerPath], {
         cwd: localRoot,
-        env: {
-          ...process.env,
+        // Assembled, never inherited. This runner needs a model key, a couple
+        // of paths and a toolchain; it does not need the service-role key, the
+        // Clerk secret or every provider token this app happens to hold, and
+        // `...process.env` handed it all of them. The settings it does need are
+        // passed here by name, which is also the only way a reader can tell
+        // what a preview child is entitled to. See `local-preview-env.ts`.
+        env: scrubbedPreviewEnv(process.env, {
           FS_SITE_LABELS: join(localRoot, opts.contentRel),
           FS_INSTRUCTION_FILE: instrFile,
           FS_OPENROUTER_KEY: opts.openRouterKey,
           FS_MODEL: opts.model ?? 'moonshotai/kimi-k2.6',
           FS_CRITIC_MODEL: opts.criticModel ?? 'anthropic/claude-haiku-4.5',
-        },
+        }),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let stdout = '';

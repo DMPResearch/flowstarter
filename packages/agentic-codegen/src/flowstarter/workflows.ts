@@ -1,5 +1,5 @@
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join, relative, sep } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import {
   PiSdkFlowstarterAgents,
   PiSessionAttemptError,
@@ -112,10 +112,36 @@ import {
   CHANGE_REQUEST_REPAIR_DAMAGED_SITE,
   type ChangeRequestIntent,
 } from './change-request-build';
+import { BUILT_OUTPUT_DIR, resolveContainedOutputDir } from './site-export';
+
+/**
+ * What a trusted validation leaves behind for everything downstream to read.
+ *
+ * `outputDir` is the *exported* build output: a directory this worker created
+ * and owns, holding a bounded copy of what the build emitted (see
+ * `site-export.ts`). Every later reader — the content gates in this file and
+ * the publisher that packages the site — is pointed at it instead of at the
+ * worktree, because the worktree's `dist/` is a path generated code chose and
+ * can still be changing. A validator that compiles nothing (the local stub
+ * path) returns null, and the readers fall back to the site root exactly as
+ * they always did.
+ */
+export interface SiteValidationResult {
+  outputDir: string | null;
+}
 
 export interface SiteValidator {
   /** Trusted, operator-defined formatter/check/build commands run outside Pi. */
-  validate(workspaceRoot: string, phase: 'preview' | 'full'): Promise<void>;
+  validate(
+    workspaceRoot: string,
+    phase: 'preview' | 'full',
+  ): Promise<SiteValidationResult | void>;
+  /**
+   * Drops an export this validator handed out. Optional: a validator that
+   * exports nothing has nothing to release, and the caller only ever asks
+   * once the site has been published.
+   */
+  releaseOutput?(outputDir: string): Promise<void>;
 }
 
 export interface PreviewPublisher {
@@ -1601,6 +1627,17 @@ export interface FullSiteBuildJobStore {
     jobId: string,
     after: string | null,
   ): Promise<OperatorNote[]>;
+  /**
+   * Publish authorisation: proof, read from the ledger row rather than from
+   * this process's memory, that the job still carries the fencing token this
+   * attempt claimed with. Throws {@link LeaseLostError} when it does not.
+   *
+   * It is asked immediately before the irreversible step — the publish that
+   * puts a site in front of a client — because that is the one thing no later
+   * compare-and-set can undo. Optional so a store with no fencing (the test
+   * doubles, the local stub) still builds.
+   */
+  assertHoldsLease?(jobId: string): Promise<void>;
 }
 
 /** Longest a single event body may be; the table enforces the same cap. */
@@ -1997,6 +2034,29 @@ export class FullSiteBuildFailure extends Error {
   }
 }
 
+/** The ledger code a build stopped under because it no longer held its job. */
+export const BUILD_LEASE_LOST = 'BUILD_LEASE_LOST';
+
+/**
+ * Raised the moment this attempt stops being the attempt that owns the job.
+ *
+ * A lease says who is running a build; a fencing token says *which run*. When
+ * a slow worker misses its heartbeats for longer than the lease TTL, another
+ * worker may legitimately reclaim the job and start over — and the slow one is
+ * still going. Without a token it would finish, publish its stale output over
+ * the new run's, and mark the job succeeded from a build nobody is waiting
+ * for. Every write the store makes carries the token it claimed with, so the
+ * database refuses those writes; this is what that refusal is called on the
+ * way back out, and the workflow lets it end the attempt rather than treating
+ * it as a build failure that deserves a retry.
+ */
+export class LeaseLostError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LeaseLostError';
+  }
+}
+
 /**
  * Every text file under a directory, bounded.
  *
@@ -2063,15 +2123,30 @@ export async function collectSiteTextFiles(
  * compiles nothing. It is a weaker check — it catches a change that was
  * deleted outright, not one that was orphaned — and it is deliberately never
  * the path a paying build takes.
+ *
+ * `outputDir` may be an absolute path, and on every real build it is: the
+ * validator has already copied the compiled output into a directory this
+ * worker owns, and reading that copy is what keeps this gate from following a
+ * `dist` the build replaced with a link to somewhere else on the host. A
+ * relative name is resolved under the site root through the same containment
+ * rule (`resolveContainedOutputDir`), so the weaker fallback path obeys it
+ * too: a symlinked output is refused rather than read.
  */
 export async function collectBuiltSiteText(
   siteRoot: string,
-  outputDir = 'dist',
+  outputDir: string = BUILT_OUTPUT_DIR,
 ): Promise<Array<{ path: string; content: string }>> {
-  const built = await collectSiteTextFiles(join(siteRoot, outputDir));
+  const resolved = isAbsolute(outputDir)
+    ? outputDir
+    : await resolveContainedOutputDir(siteRoot, outputDir);
+  const built = resolved ? await collectSiteTextFiles(resolved) : [];
   if (built.length > 0) {
     return built.map((file) => ({
-      path: `${outputDir}/${file.path}`,
+      // The prefix is the name a built site is read under everywhere else in
+      // this file, not the location the bytes were read from: the gates below
+      // strip it to compare page names, and an exported copy in a temporary
+      // directory must look exactly like the `dist/` it is a copy of.
+      path: `${BUILT_OUTPUT_DIR}/${file.path}`,
       content: file.content,
     }));
   }
@@ -2121,6 +2196,15 @@ export interface PullRequestPublisher {
     worktreePath: string;
     commitSha: string;
     siteRoot?: string;
+    /**
+     * The exported build output: the bounded, host-owned copy the validator
+     * made of what the build emitted. When it is set it is the only thing a
+     * publisher may package, because it is the only version of the output that
+     * generated code has never been able to touch. Absent (the stub path,
+     * which compiles nothing) the publisher falls back to `siteRoot` under the
+     * same containment rule.
+     */
+    outputRoot?: string | null;
     calComUrl?: string | null;
     /**
      * Same reasoning as `calComUrl`: a built tree whose source injection did
@@ -2212,7 +2296,97 @@ export class FullSiteBuildWorker {
     return siteMarkupPolicy({ platformOrigins: origins });
   }
 
-  async run(jobId: string): Promise<void> {
+  /**
+   * Stops this attempt if the heartbeat has already told the host the lease is
+   * gone. Free to ask — it is a flag, not a query — so it is asked at every
+   * phase boundary, which is how a build that lost its job minutes ago stops
+   * paying for agent passes it will not be allowed to publish.
+   */
+  private assertStillHeld(jobId: string, signal?: AbortSignal): void {
+    if (!signal?.aborted) return;
+    throw new LeaseLostError(
+      `This worker no longer holds job ${jobId}: the lease expired and another ` +
+        'worker has taken it. This attempt stops here rather than finishing ' +
+        'work the job is no longer running.',
+    );
+  }
+
+  /**
+   * The gate in front of every publish: the cheap local answer first, then the
+   * authoritative one from the ledger row. A store with no fencing (the test
+   * doubles, the local stub) has nothing to say and the build proceeds, which
+   * is the behaviour those callers have always had.
+   */
+  private async authorizePublish(
+    jobId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    this.assertStillHeld(jobId, signal);
+    await this.store.assertHoldsLease?.(jobId);
+  }
+
+  /**
+   * A failure written to the ledger by an attempt that may no longer own the
+   * job. Losing the lease is not a build failure — the job is running
+   * somewhere else, and marking it failed from here would fail the *new*
+   * attempt — so the store's refusal is swallowed and the original error is
+   * what the caller rethrows.
+   */
+  private async recordFailure(
+    jobId: string,
+    failure: { code: string; detail: string },
+  ): Promise<void> {
+    try {
+      await this.store.markFailed(jobId, failure);
+    } catch (error) {
+      if (!(error instanceof LeaseLostError)) throw error;
+      console.warn(
+        `[full-site-build] not recording a failure for ${jobId}: this worker ` +
+          'no longer holds the job.',
+      );
+    }
+  }
+
+  /**
+   * The export a validation produced, with the one it replaces dropped. Every
+   * check makes a fresh copy of the build output, and keeping the previous one
+   * would leave a full site's worth of bytes per repair pass on the host.
+   */
+  private async exportOf(
+    validation: Promise<SiteValidationResult | void>,
+    previous: string | null,
+  ): Promise<string | null> {
+    const result = await validation;
+    const next = result?.outputDir ?? null;
+    if (previous && previous !== next) await this.releaseOutput(previous);
+    return next;
+  }
+
+  /** Best effort: a leftover export is worth a log line, never a failed build. */
+  private async releaseOutput(outputDir: string | null): Promise<void> {
+    if (!outputDir) return;
+    try {
+      await this.validator.releaseOutput?.(outputDir);
+    } catch (error) {
+      console.warn(
+        `[full-site-build] could not remove the exported build output ${outputDir}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+
+  /**
+   * `attempt.signal` is aborted by the host the moment its heartbeat learns
+   * this worker no longer holds the job (see `withHeartbeat` in the build
+   * worker). A build that has lost its lease is a build another worker is
+   * already re-running, so this one stops at its next boundary rather than
+   * carrying on to publish output nobody is waiting for.
+   */
+  async run(
+    jobId: string,
+    attempt: { signal?: AbortSignal } = {},
+  ): Promise<void> {
+    const signal = attempt.signal;
     const job = await this.store.claim(jobId);
     if (!job) return;
 
@@ -2250,7 +2424,11 @@ export class FullSiteBuildWorker {
     if (log) this.options.onJobLog?.(jobId, log);
     // A phase heading is a boundary: everything logged under the previous one
     // is written first, so the conversation reads in the order it happened.
+    // It is also where a build that has lost its lease stops: the phases are
+    // the seams of this workflow, and stopping on one leaves the conversation
+    // ending on a line that says what happened.
     const phase = async (body: string) => {
+      this.assertStillHeld(jobId, signal);
       await log?.flush();
       await say('phase', body);
     };
@@ -2263,7 +2441,7 @@ export class FullSiteBuildWorker {
     // over text the client themselves removed. The continuity guarantee for
     // that path is the absence of an agent, not an assertion about one.
     if (job.kind === 'SITE_REBUILD') {
-      await this.rebuild(job, say, log);
+      await this.rebuild(job, say, log, signal);
       return;
     }
     // A paid change request is the one path where agents touch a site that is
@@ -2272,7 +2450,7 @@ export class FullSiteBuildWorker {
     // the project is past DEPOSIT_PAID), so it gets its own leg rather than a
     // flag on one of theirs.
     if (job.kind === 'CHANGE_REQUEST_BUILD') {
-      await this.changeRequestBuild(job, say, log);
+      await this.changeRequestBuild(job, say, log, signal);
       return;
     }
     if (job.projectState !== ProjectState.DEPOSIT_PAID) {
@@ -2282,6 +2460,12 @@ export class FullSiteBuildWorker {
       });
       return;
     }
+
+    // The exported build output: the host-owned copy the validator makes of
+    // what the build emitted, and the only thing every gate and the publisher
+    // below are allowed to read. Null until the first successful check, and
+    // released in the `finally` whatever happens after that.
+    let builtOutput: string | null = null;
 
     // Notes are consumed in order, each at most once: the cursor is the
     // newest note the previous read returned.
@@ -2312,6 +2496,11 @@ export class FullSiteBuildWorker {
       const worktree = await this.worktrees.create(job.projectId);
       const siteRoot = join(worktree.path, 'generated-sites', job.projectId);
       await mkdir(siteRoot, { recursive: true, mode: 0o700 });
+      // Every gate below reads the build through this one function, so each of
+      // them reads the exported copy once there is one and nothing reads the
+      // worktree's own `dist/` behind the others' backs.
+      const builtSiteText = () =>
+        collectBuiltSiteText(siteRoot, builtOutput ?? undefined);
       await phase('Materializing the approved preview');
       // The same rule the preview was scaffolded under, re-applied here. The
       // preview is normally already pruned; this covers a preview taken
@@ -2483,7 +2672,10 @@ export class FullSiteBuildWorker {
       const check = async () => {
         await phase('Checking the build');
         try {
-          await this.validator.validate(siteRoot, 'full');
+          builtOutput = await this.exportOf(
+            this.validator.validate(siteRoot, 'full'),
+            builtOutput,
+          );
         } catch (error) {
           const detail =
             error instanceof Error ? error.message.slice(0, 2_500) : 'unknown';
@@ -2495,7 +2687,10 @@ export class FullSiteBuildWorker {
             ),
           );
           await phase('Checking the repaired build');
-          await this.validator.validate(siteRoot, 'full');
+          builtOutput = await this.exportOf(
+            this.validator.validate(siteRoot, 'full'),
+            builtOutput,
+          );
         }
       };
 
@@ -2531,7 +2726,7 @@ export class FullSiteBuildWorker {
       if (approvedEdits.some((edit) => edit.addedPhrases.length > 0)) {
         await phase("Checking the client's approved changes survived");
         let dropped = findDroppedApprovedEdits(
-          await collectBuiltSiteText(siteRoot),
+          await builtSiteText(),
           approvedEdits,
         );
         if (dropped.length > 0) {
@@ -2547,7 +2742,7 @@ export class FullSiteBuildWorker {
           );
           await check();
           dropped = findDroppedApprovedEdits(
-            await collectBuiltSiteText(siteRoot),
+            await builtSiteText(),
             approvedEdits,
           );
         }
@@ -2572,9 +2767,7 @@ export class FullSiteBuildWorker {
       // that promises a calendar nobody owns, which is what shipped before.
       await phase('Checking the site matches the brief');
       const builtPaths = async () =>
-        (await collectBuiltSiteText(siteRoot)).map((file) =>
-          file.path.replace(/^dist\//, ''),
-        );
+        (await builtSiteText()).map((file) => file.path.replace(/^dist\//, ''));
       let pageIssue = findPageBudgetIssue(await builtPaths(), pageSet);
       if (pageIssue) {
         await say('log', pageIssue);
@@ -2592,7 +2785,7 @@ export class FullSiteBuildWorker {
       await phase('Checking for placeholder copy');
       const placeholderOptions = { hasBookingLink: Boolean(job.calComUrl) };
       let placeholderIssue = findPlaceholderCopyIssue(
-        await collectBuiltSiteText(siteRoot),
+        await builtSiteText(),
         placeholderOptions,
       );
       if (placeholderIssue) {
@@ -2600,7 +2793,7 @@ export class FullSiteBuildWorker {
         await pass('Removing placeholder copy', withApproved(placeholderIssue));
         await check();
         placeholderIssue = findPlaceholderCopyIssue(
-          await collectBuiltSiteText(siteRoot),
+          await builtSiteText(),
           placeholderOptions,
         );
       }
@@ -2636,7 +2829,7 @@ export class FullSiteBuildWorker {
         await phase('Checking the work section against the brief');
         const inventedOptions = { projectsKnown };
         let inventedIssue = findInventedProjectIssue(
-          await collectBuiltSiteText(siteRoot),
+          await builtSiteText(),
           briefProjectNames,
           inventedOptions,
         );
@@ -2645,7 +2838,7 @@ export class FullSiteBuildWorker {
           await pass('Removing invented projects', withApproved(inventedIssue));
           await check();
           inventedIssue = findInventedProjectIssue(
-            await collectBuiltSiteText(siteRoot),
+            await builtSiteText(),
             briefProjectNames,
             inventedOptions,
           );
@@ -2664,7 +2857,7 @@ export class FullSiteBuildWorker {
       // invented name.
       await phase('Checking for placeholder images');
       let placeholderImages = findGatedPlaceholderImageFindings(
-        await collectBuiltSiteText(siteRoot),
+        await builtSiteText(),
       );
       if (placeholderImages.length > 0) {
         await say('log', describePlaceholderImageIssue(placeholderImages));
@@ -2674,7 +2867,7 @@ export class FullSiteBuildWorker {
         );
         await check();
         placeholderImages = findGatedPlaceholderImageFindings(
-          await collectBuiltSiteText(siteRoot),
+          await builtSiteText(),
         );
       }
       if (placeholderImages.length > 0) {
@@ -2694,7 +2887,7 @@ export class FullSiteBuildWorker {
       await phase('Checking what the site asks the browser to do');
       const markupPolicy = this.markupPolicyFor(job);
       let markupIssue = findMarkupPolicyIssue(
-        await collectBuiltSiteText(siteRoot),
+        await builtSiteText(),
         markupPolicy,
       );
       if (markupIssue) {
@@ -2702,7 +2895,7 @@ export class FullSiteBuildWorker {
         await pass('Removing unsafe markup', withApproved(markupIssue));
         await check();
         markupIssue = findMarkupPolicyIssue(
-          await collectBuiltSiteText(siteRoot),
+          await builtSiteText(),
           markupPolicy,
         );
       }
@@ -2716,12 +2909,17 @@ export class FullSiteBuildWorker {
         `build: initialize Flowstarter site ${job.projectId.toLowerCase()}`,
       );
       await phase('Publishing for review');
+      // The last point at which this attempt can still be stopped for free.
+      // Everything after it is visible to a client, so ownership is proven
+      // against the ledger row rather than assumed from this process.
+      await this.authorizePublish(jobId, signal);
       const published = await this.pullRequests.create({
         projectId: job.projectId,
         branch: worktree.branch,
         worktreePath: worktree.path,
         commitSha,
         siteRoot,
+        outputRoot: builtOutput,
         calComUrl: job.calComUrl ?? null,
         leadCaptureEndpoint: job.leadCaptureEndpoint ?? null,
       });
@@ -2732,11 +2930,13 @@ export class FullSiteBuildWorker {
         'log',
         `Build failed: ${error instanceof Error ? error.message : 'unknown'}`,
       );
-      await this.store.markFailed(jobId, {
+      await this.recordFailure(jobId, {
         code:
-          error instanceof FullSiteBuildFailure
-            ? error.code
-            : 'FULL_SITE_BUILD_FAILED',
+          error instanceof LeaseLostError
+            ? BUILD_LEASE_LOST
+            : error instanceof FullSiteBuildFailure
+              ? error.code
+              : 'FULL_SITE_BUILD_FAILED',
         detail:
           error instanceof Error
             ? error.message.slice(0, 2_000)
@@ -2746,6 +2946,7 @@ export class FullSiteBuildWorker {
     } finally {
       // Whatever the outcome, the last lines of work are on the record.
       await log?.flush();
+      await this.releaseOutput(builtOutput);
     }
   }
 
@@ -2777,9 +2978,12 @@ export class FullSiteBuildWorker {
       payload?: Record<string, unknown>,
     ) => Promise<void>,
     log: JobLogWriter | null,
+    signal?: AbortSignal,
   ): Promise<void> {
     const jobId = job.id;
+    let builtOutput: string | null = null;
     const phase = async (body: string) => {
+      this.assertStillHeld(jobId, signal);
       await log?.flush();
       await say('phase', body);
     };
@@ -2901,7 +3105,10 @@ export class FullSiteBuildWorker {
       const check = async () => {
         await phase('Checking the build');
         try {
-          await this.validator.validate(siteRoot, 'full');
+          builtOutput = await this.exportOf(
+            this.validator.validate(siteRoot, 'full'),
+            builtOutput,
+          );
         } catch (error) {
           const detail =
             error instanceof Error ? error.message.slice(0, 2_500) : 'unknown';
@@ -2912,7 +3119,10 @@ export class FullSiteBuildWorker {
               `files so it passes; the output was: ${detail}`,
           );
           await phase('Checking the repaired build');
-          await this.validator.validate(siteRoot, 'full');
+          builtOutput = await this.exportOf(
+            this.validator.validate(siteRoot, 'full'),
+            builtOutput,
+          );
         }
       };
 
@@ -2927,8 +3137,8 @@ export class FullSiteBuildWorker {
       await check();
 
       const builtPaths = async () =>
-        (await collectBuiltSiteText(siteRoot)).map((file) =>
-          file.path.replace(/^dist\//, ''),
+        (await collectBuiltSiteText(siteRoot, builtOutput ?? undefined)).map(
+          (file) => file.path.replace(/^dist\//, ''),
         );
 
       await phase('Checking the change stayed inside the brief');
@@ -2975,7 +3185,7 @@ export class FullSiteBuildWorker {
       await phase('Checking for placeholder copy');
       const placeholderOptions = { hasBookingLink: Boolean(job.calComUrl) };
       let placeholderIssue = findPlaceholderCopyIssue(
-        await collectBuiltSiteText(siteRoot),
+        await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
         placeholderOptions,
       );
       if (placeholderIssue) {
@@ -2983,7 +3193,7 @@ export class FullSiteBuildWorker {
         await pass('Removing placeholder copy', placeholderIssue);
         await check();
         placeholderIssue = findPlaceholderCopyIssue(
-          await collectBuiltSiteText(siteRoot),
+          await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
           placeholderOptions,
         );
       }
@@ -2998,7 +3208,7 @@ export class FullSiteBuildWorker {
       // first build, so it gets the same rule about honest gaps in content.
       await phase('Checking for placeholder images');
       let placeholderImages = findGatedPlaceholderImageFindings(
-        await collectBuiltSiteText(siteRoot),
+        await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
       );
       if (placeholderImages.length > 0) {
         await say('log', describePlaceholderImageIssue(placeholderImages));
@@ -3011,7 +3221,7 @@ export class FullSiteBuildWorker {
         );
         await check();
         placeholderImages = findGatedPlaceholderImageFindings(
-          await collectBuiltSiteText(siteRoot),
+          await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
         );
       }
       if (placeholderImages.length > 0) {
@@ -3027,7 +3237,7 @@ export class FullSiteBuildWorker {
       // must never be recorded as one that did.
       await phase('Checking the paid change is on the site');
       let missing = findUnappliedChangeRequest(
-        await collectBuiltSiteText(siteRoot),
+        await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
         intent,
       );
       if (missing === null && intent.assets.length === 0) {
@@ -3049,7 +3259,7 @@ export class FullSiteBuildWorker {
         );
         await check();
         missing = findUnappliedChangeRequest(
-          await collectBuiltSiteText(siteRoot),
+          await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
           intent,
         );
       }
@@ -3067,7 +3277,7 @@ export class FullSiteBuildWorker {
       await phase('Checking what the site asks the browser to do');
       const markupPolicy = this.markupPolicyFor(job);
       let markupIssue = findMarkupPolicyIssue(
-        await collectBuiltSiteText(siteRoot),
+        await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
         markupPolicy,
       );
       if (markupIssue) {
@@ -3075,7 +3285,7 @@ export class FullSiteBuildWorker {
         await pass('Removing unsafe markup', markupIssue);
         await check();
         markupIssue = findMarkupPolicyIssue(
-          await collectBuiltSiteText(siteRoot),
+          await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
           markupPolicy,
         );
       }
@@ -3112,12 +3322,16 @@ export class FullSiteBuildWorker {
         `build: apply paid change request to site ${job.projectId.toLowerCase()}`,
       );
       await phase('Publishing');
+      // A change request publishes over a site the client is already using, so
+      // the attempt proves it still owns the job before it touches it.
+      await this.authorizePublish(jobId, signal);
       const published = await this.pullRequests.create({
         projectId: job.projectId,
         branch: worktree.branch,
         worktreePath: worktree.path,
         commitSha,
         siteRoot,
+        outputRoot: builtOutput,
         calComUrl: job.calComUrl ?? null,
         leadCaptureEndpoint: job.leadCaptureEndpoint ?? null,
         changeRequestId: intent.changeRequestId,
@@ -3136,16 +3350,19 @@ export class FullSiteBuildWorker {
           ? error.message
           : 'Unknown change request build failure';
       await say('log', `Change request build failed: ${detail}`);
-      await this.store.markFailed(jobId, {
+      await this.recordFailure(jobId, {
         code:
-          error instanceof FullSiteBuildFailure
-            ? error.code
-            : 'CHANGE_REQUEST_BUILD_FAILED',
+          error instanceof LeaseLostError
+            ? BUILD_LEASE_LOST
+            : error instanceof FullSiteBuildFailure
+              ? error.code
+              : 'CHANGE_REQUEST_BUILD_FAILED',
         detail: detail.slice(0, 2_000),
       });
       throw error;
     } finally {
       await log?.flush();
+      await this.releaseOutput(builtOutput);
     }
   }
 
@@ -3168,9 +3385,12 @@ export class FullSiteBuildWorker {
       payload?: Record<string, unknown>,
     ) => Promise<void>,
     log: JobLogWriter | null,
+    signal?: AbortSignal,
   ): Promise<void> {
     const jobId = job.id;
+    let builtOutput: string | null = null;
     const phase = async (body: string) => {
+      this.assertStillHeld(jobId, signal);
       await log?.flush();
       await say('phase', body);
     };
@@ -3229,7 +3449,10 @@ export class FullSiteBuildWorker {
       // the live site alone rather than let an agent guess at a fix nobody
       // asked for.
       await phase('Checking the build');
-      await this.validator.validate(siteRoot, 'full');
+      builtOutput = await this.exportOf(
+        this.validator.validate(siteRoot, 'full'),
+        builtOutput,
+      );
 
       await phase('Committing the site');
       const commitSha = await this.worktrees.commit(
@@ -3237,12 +3460,16 @@ export class FullSiteBuildWorker {
         `build: publish client edit to site ${job.projectId.toLowerCase()}`,
       );
       await phase('Publishing');
+      // A rebuild replaces a live site, which is the most expensive thing a
+      // reclaimed job could have done to it by an attempt that lost its lease.
+      await this.authorizePublish(jobId, signal);
       const published = await this.pullRequests.create({
         projectId: job.projectId,
         branch: worktree.branch,
         worktreePath: worktree.path,
         commitSha,
         siteRoot,
+        outputRoot: builtOutput,
         calComUrl: job.calComUrl ?? null,
         leadCaptureEndpoint: job.leadCaptureEndpoint ?? null,
       });
@@ -3252,13 +3479,17 @@ export class FullSiteBuildWorker {
       const detail =
         error instanceof Error ? error.message : 'Unknown rebuild failure';
       await say('log', `Rebuild failed: ${detail}`);
-      await this.store.markFailed(jobId, {
-        code: 'SITE_REBUILD_FAILED',
+      await this.recordFailure(jobId, {
+        code:
+          error instanceof LeaseLostError
+            ? BUILD_LEASE_LOST
+            : 'SITE_REBUILD_FAILED',
         detail: detail.slice(0, 2_000),
       });
       throw error;
     } finally {
       await log?.flush();
+      await this.releaseOutput(builtOutput);
     }
   }
 }

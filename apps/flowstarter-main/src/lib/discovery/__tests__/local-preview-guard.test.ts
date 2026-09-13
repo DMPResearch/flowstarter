@@ -1,5 +1,10 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isLocalPreviewFrameAllowed } from '../local-preview-guard';
+import {
+  assertLocalPreviewEnvAllowed,
+  isLocalPreviewFrameAllowed,
+} from '../local-preview-guard';
 
 describe('isLocalPreviewFrameAllowed', () => {
   it('allows when the flag is on and the resolved env is development', () => {
@@ -85,5 +90,76 @@ describe('isLocalPreviewFrameAllowed', () => {
         NODE_ENV: 'development',
       })
     ).toBe(false);
+  });
+});
+
+/**
+ * The same rule as an assertion, which is what the publisher and the env
+ * module need.
+ *
+ * `publishLocalPreview` spawns `astro dev` over generated tenant source on the
+ * host running this app. Its only guard was the flag, so a staging deploy that
+ * inherited `FLOWSTARTER_LOCAL_PREVIEW=true` from a shared `.env` would run
+ * that source natively the first time the sandbox failed — beside the
+ * service-role key, the Clerk secret and every tenant's data.
+ */
+describe('assertLocalPreviewEnvAllowed', () => {
+  it('says nothing when the flag is not set at all', () => {
+    expect(() =>
+      assertLocalPreviewEnvAllowed({ NODE_ENV: 'production' })
+    ).not.toThrow();
+  });
+
+  it('allows a developer machine to opt in', () => {
+    expect(() =>
+      assertLocalPreviewEnvAllowed({
+        FLOWSTARTER_LOCAL_PREVIEW: 'true',
+        NODE_ENV: 'development',
+      })
+    ).not.toThrow();
+  });
+
+  it('refuses staging and production, naming the variable to remove', () => {
+    for (const env of [
+      { FLOWSTARTER_LOCAL_PREVIEW: 'true', FLOWSTARTER_ENV: 'staging' },
+      { FLOWSTARTER_LOCAL_PREVIEW: 'true', NODE_ENV: 'production' },
+    ]) {
+      expect(() =>
+        assertLocalPreviewEnvAllowed(env as NodeJS.ProcessEnv)
+      ).toThrow(/FLOWSTARTER_LOCAL_PREVIEW/);
+    }
+  });
+
+  it('leaves no native preview publisher for a sandbox failure to fall back to', () => {
+    // The regression the audit asked for, phrased against the code as it now
+    // stands: previews publish on the platform, so the `astro dev` fallback
+    // that used to run generated Astro source on this host — with
+    // `env: process.env` — is gone from the route entirely. A flag left set in
+    // staging has nothing left to switch on, and the rule above refuses the
+    // flag there anyway.
+    const source = readFileSync(
+      join(__dirname, '../../../app/api/discovery/preview/live/route.ts'),
+      'utf8'
+    );
+    expect(source).not.toContain('publishLocalPreview');
+    expect(source).not.toContain('env: process.env');
+  });
+
+  it('is the environment every native preview child is assembled under', () => {
+    // The one child process previews still spawn on this host. It is our own
+    // runner rather than tenant code, and it still has no business holding the
+    // service-role key, so it gets the same assembled environment.
+    const source = readFileSync(
+      join(__dirname, '../local-fast-edit.ts'),
+      'utf8'
+    );
+    expect(source).toContain('env: scrubbedPreviewEnv(process.env, {');
+    // The shape that handed it everything, gone from the spawn options.
+    expect(source).not.toMatch(/env:\s*\{\s*\.\.\.process\.env/);
+  });
+
+  it('is also the rule the env module enforces at startup', () => {
+    const source = readFileSync(join(__dirname, '../../../env.ts'), 'utf8');
+    expect(source).toContain('assertLocalPreviewEnvAllowed(process.env)');
   });
 });

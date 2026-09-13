@@ -421,3 +421,58 @@ describe('artifactTokenFromPath', () => {
     expect(artifactTokenFromPath('/health')).toBeNull();
   });
 });
+
+/**
+ * What gets packaged when the validator has already exported the output.
+ *
+ * On every real build it has, and the export is the point: it is the copy no
+ * generated code has a handle on. Re-resolving the worktree's own `dist/` here
+ * would reopen the window the export closed, because this runs minutes after
+ * the build and the worktree is still writable.
+ */
+describe('LocalSitePublisher and the exported build output', () => {
+  it('packages the export it was handed, not the worktree', async () => {
+    const exported = join(scratch, 'exported');
+    await mkdir(exported, { recursive: true });
+    await writeFile(join(exported, 'index.html'), '<h1>exported</h1>', 'utf8');
+
+    const calls: Call[] = [];
+    await publisher({ calls }).create({
+      projectId: PROJECT_ID,
+      branch: `client/flowstarter-${PROJECT_ID}`,
+      worktreePath: join(scratch, 'worktree'),
+      commitSha: 'a'.repeat(40),
+      siteRoot,
+      outputRoot: exported,
+    });
+
+    const out = await extractOnlyArtifact();
+    expect(await readFile(join(out, 'index.html'), 'utf8')).toContain(
+      'exported',
+    );
+    // The worktree's own dist/ is not what shipped.
+    expect(await readdir(out)).toEqual(['index.html']);
+  });
+
+  it('refuses a symlinked output root when there is no export to hand it', async () => {
+    // The stub path: nothing compiled, so the publisher resolves the site root
+    // itself — under the same containment rule as every other reader.
+    const neighbour = await mkdtemp(join(tmpdir(), 'fs-neighbour-'));
+    try {
+      await rm(join(siteRoot, 'dist'), { recursive: true, force: true });
+      const { symlink } = await import('node:fs/promises');
+      await symlink(neighbour, join(siteRoot, 'dist'), 'dir');
+      await expect(
+        publisher({ calls: [] }).create({
+          projectId: PROJECT_ID,
+          branch: `client/flowstarter-${PROJECT_ID}`,
+          worktreePath: join(scratch, 'worktree'),
+          commitSha: 'a'.repeat(40),
+          siteRoot,
+        }),
+      ).rejects.toThrow(/symbolic link/);
+    } finally {
+      await rm(neighbour, { recursive: true, force: true });
+    }
+  });
+});

@@ -66,16 +66,22 @@ export class LocalSitePublisher implements PullRequestPublisher {
     worktreePath: string;
     commitSha: string;
     siteRoot?: string;
+    outputRoot?: string | null;
     calComUrl?: string | null;
     leadCaptureEndpoint?: string | null;
     changeRequestId?: string | null;
     siteVersion?: number | null;
   }): Promise<{ pullRequestUrl: string; stagingUrl: string }> {
     const siteRoot = input.siteRoot ?? input.worktreePath;
-    const outputDir = await resolveSiteOutputDir(
-      siteRoot,
-      this.options.outputDir,
-    );
+    // The exported copy whenever there is one, which on every real build there
+    // is: it is the version of the output the validator proved contained and
+    // then copied somewhere no generated code can reach. Resolving the
+    // worktree's own `dist/` again here would re-open the window the export
+    // was made to close, because the worktree is still writable and this runs
+    // minutes after the build.
+    const outputDir =
+      input.outputRoot ??
+      (await resolveSiteOutputDir(siteRoot, this.options.outputDir));
     const collected = await collectSiteFiles(outputDir);
     const files = withIntegrations(collected, {
       calComUrl: input.calComUrl ?? null,

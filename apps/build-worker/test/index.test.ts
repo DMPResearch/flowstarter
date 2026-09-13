@@ -851,6 +851,9 @@ describe('build worker entry point (src/index.ts)', () => {
         FLOWSTARTER_SITES_GITHUB_TOKEN: 'ghp_token',
         FLOWSTARTER_BUILD_SKIP_VALIDATION: 'true',
         FLOWSTARTER_ENV: 'staging',
+        // The prepared image, so this host gets as far as the rule it is here
+        // to prove rather than failing on the sealed-build-step one first.
+        FLOWSTARTER_BUILD_VALIDATE_DOCKER_PNPM_BAKED: 'true',
       });
       const processExitSpy = vi
         .spyOn(process, 'exit')

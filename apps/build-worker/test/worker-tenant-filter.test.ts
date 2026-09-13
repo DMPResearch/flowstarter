@@ -168,6 +168,21 @@ const ALLOW_LIST: AllowListEntry[] = [
   {
     file: 'job-store.ts',
     table: 'flowstarter_agent_jobs',
+    match: `.update(values)
+      .eq('id', jobId)`,
+    reason:
+      "fencedJobUpdate(): every state-changing write, keyed by the job id the caller holds plus this run's lease holder and fencing token.",
+  },
+  {
+    file: 'job-store.ts',
+    table: 'flowstarter_agent_jobs',
+    match: `.select('leased_by, lease_fence, status')`,
+    reason:
+      "assertHoldsLease(): reads this job's current holder and token to authorise a publish; keyed by the job id this worker claimed.",
+  },
+  {
+    file: 'job-store.ts',
+    table: 'flowstarter_agent_jobs',
     match: `.maybeSingle<{ payload: unknown }>()`,
     reason:
       'currentPayload(): payload read keyed by the job id the caller already holds, shared by markHumanQa() and markRebuilt().',

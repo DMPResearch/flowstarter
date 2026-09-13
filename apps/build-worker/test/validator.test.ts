@@ -1,4 +1,14 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -44,8 +54,14 @@ describe('NoopSiteValidator', () => {
     const root = await mkdtemp(join(tmpdir(), 'flowstarter-noop-validator-'));
     temporaryDirectories.push(root);
     const validator = new NoopSiteValidator();
-    await expect(validator.validate(root, 'full')).resolves.toBeUndefined();
-    await expect(validator.validate(root, 'preview')).resolves.toBeUndefined();
+    // Null, not a path: nothing was compiled, so there is no exported output
+    // and every reader downstream falls back to the site root.
+    await expect(validator.validate(root, 'full')).resolves.toEqual({
+      outputDir: null,
+    });
+    await expect(validator.validate(root, 'preview')).resolves.toEqual({
+      outputDir: null,
+    });
   });
 });
 
@@ -56,7 +72,9 @@ describe('CommandSiteValidator', () => {
       commands: [BUILD_OK],
       timeoutMs: 30_000,
     });
-    await expect(validator.validate(root, 'full')).resolves.toBeUndefined();
+    await expect(validator.validate(root, 'full')).resolves.toMatchObject({
+      outputDir: expect.any(String),
+    });
   });
 
   it('fails the job when a build command exits non-zero', async () => {
@@ -158,7 +176,9 @@ describe('CommandSiteValidator', () => {
       timeoutMs: 30_000,
     });
 
-    await expect(validator.validate(root, 'full')).resolves.toBeUndefined();
+    await expect(validator.validate(root, 'full')).resolves.toMatchObject({
+      outputDir: expect.any(String),
+    });
   });
 
   it('fails a paid build whose output still carries the funnel preview teaser', async () => {
@@ -275,7 +295,9 @@ describe('CommandSiteValidator', () => {
       timeoutMs: 30_000,
     });
 
-    await expect(validator.validate(root, 'full')).resolves.toBeUndefined();
+    await expect(validator.validate(root, 'full')).resolves.toMatchObject({
+      outputDir: expect.any(String),
+    });
   });
 
   it('fails a paid build whose output runs a script nobody approved', async () => {
@@ -337,7 +359,11 @@ describe('CommandSiteValidator', () => {
       }),
     });
 
-    await expect(validator.validate(root, 'full')).resolves.toBeUndefined();
+    // The markup gate reads the exported copy, like every other output gate,
+    // so a pass hands back the directory the publisher will package.
+    await expect(validator.validate(root, 'full')).resolves.toMatchObject({
+      outputDir: expect.any(String),
+    });
   });
 
   it('kills a command that hangs past the build timeout', async () => {
@@ -405,7 +431,9 @@ describe('CommandSiteValidator', () => {
     });
 
     try {
-      await expect(validator.validate(root, 'full')).resolves.toBeUndefined();
+      await expect(validator.validate(root, 'full')).resolves.toMatchObject({
+        outputDir: expect.any(String),
+      });
     } finally {
       for (const key of Object.keys(secrets)) delete process.env[key];
     }
@@ -757,7 +785,9 @@ describe('CommandSiteValidator under Docker isolation', () => {
       onProgress: (message) => progress.push(message),
     });
 
-    await expect(validator.validate(root, 'full')).resolves.toBeUndefined();
+    await expect(validator.validate(root, 'full')).resolves.toMatchObject({
+      outputDir: expect.any(String),
+    });
 
     // The last command the fake saw is the build, wrapped by corepack.
     const args = await docker.runArgs();
@@ -1008,5 +1038,161 @@ describe('the isolated validator against an adversarial build', () => {
         }),
       ).toThrow(/not available in the Docker/);
     }
+  });
+});
+
+/**
+ * What the gates are pointed at.
+ *
+ * Until now they were pointed at `join(workspaceRoot, 'dist')`, checked with a
+ * `stat()` that follows links, on a directory produced by the build itself.
+ * The build runs in a container; the scanners run here, on the host, after it
+ * has exited. So a build that replaced its own output with a link to a path on
+ * this machine got the privileged worker to open that path — and then to
+ * package what it found and deploy it to a client.
+ */
+describe('the build output the validator hands on', () => {
+  const execFileAsync = promisify(execFile);
+
+  async function exportRoot(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), 'flowstarter-exports-'));
+    temporaryDirectories.push(root);
+    return root;
+  }
+
+  it('exports a copy of dist/ and reads the copy, not the worktree', async () => {
+    const root = await siteWorkspace();
+    const exports = await exportRoot();
+    const validator = new CommandSiteValidator({
+      commands: [
+        {
+          bin: 'node',
+          args: [
+            '-e',
+            'const fs=require("node:fs");fs.mkdirSync("dist",{recursive:true});fs.writeFileSync("dist/index.html","<h1>built</h1>")',
+          ],
+        },
+      ],
+      timeoutMs: 30_000,
+      output: { exportRoot: exports },
+    });
+
+    const result = await validator.validate(root, 'full');
+    const exported = (result as { outputDir: string }).outputDir;
+    expect(exported.startsWith(exports)).toBe(true);
+    expect(await readFile(join(exported, 'index.html'), 'utf8')).toBe(
+      '<h1>built</h1>',
+    );
+    // The worktree can keep changing; what the publisher will package cannot.
+    await writeFile(join(root, 'dist/index.html'), 'after the fact', 'utf8');
+    expect(await readFile(join(exported, 'index.html'), 'utf8')).toBe(
+      '<h1>built</h1>',
+    );
+
+    await validator.releaseOutput(exported);
+    expect(await readdir(exports)).toEqual([]);
+  });
+
+  it('fails the build when dist/ is a symlink out of the worktree', async () => {
+    const root = await siteWorkspace();
+    const elsewhere = await mkdtemp(join(tmpdir(), 'flowstarter-neighbour-'));
+    temporaryDirectories.push(elsewhere);
+    await writeFile(join(elsewhere, 'secret.txt'), 'another client', 'utf8');
+    const validator = new CommandSiteValidator({
+      commands: [
+        {
+          bin: 'node',
+          args: [
+            '-e',
+            `require("node:fs").symlinkSync(${JSON.stringify(elsewhere)},"dist","dir")`,
+          ],
+        },
+      ],
+      timeoutMs: 30_000,
+      output: { exportRoot: await exportRoot() },
+    });
+
+    // One run only: the build command that made the link cannot make it twice.
+    const refusal = await validator.validate(root, 'full').catch((e) => e);
+    expect(refusal).toBeInstanceOf(SiteValidationError);
+    expect(String(refusal)).toMatch(/symbolic link/);
+  });
+
+  it('fails the build when the output carries a special file', async () => {
+    const root = await siteWorkspace();
+    const validator = new CommandSiteValidator({
+      commands: [
+        {
+          bin: 'node',
+          args: [
+            '-e',
+            'const fs=require("node:fs");fs.mkdirSync("dist",{recursive:true});fs.writeFileSync("dist/index.html","ok")',
+          ],
+        },
+      ],
+      timeoutMs: 30_000,
+      output: { exportRoot: await exportRoot() },
+    });
+    await mkdir(join(root, 'dist'), { recursive: true });
+    await execFileAsync('mkfifo', [join(root, 'dist/pipe')]);
+
+    await expect(validator.validate(root, 'full')).rejects.toThrow(
+      /special file/,
+    );
+  });
+
+  it('fails a build bigger than the budget it was given', async () => {
+    const root = await siteWorkspace();
+    const validator = new CommandSiteValidator({
+      commands: [
+        {
+          bin: 'node',
+          args: [
+            '-e',
+            'const fs=require("node:fs");fs.mkdirSync("dist",{recursive:true});fs.writeFileSync("dist/a.html","a");fs.writeFileSync("dist/b.html","b")',
+          ],
+        },
+      ],
+      timeoutMs: 30_000,
+      output: { exportRoot: await exportRoot(), limits: { maxFiles: 1 } },
+    });
+
+    await expect(validator.validate(root, 'full')).rejects.toThrow(
+      /more than 1 files/,
+    );
+  });
+
+  it('refuses to release a directory that is not one of its own exports', async () => {
+    const elsewhere = await mkdtemp(join(tmpdir(), 'flowstarter-not-export-'));
+    temporaryDirectories.push(elsewhere);
+    const validator = new CommandSiteValidator({
+      commands: [BUILD_OK],
+      timeoutMs: 30_000,
+      output: { exportRoot: await exportRoot() },
+    });
+    // Otherwise "clean up after yourself" would be a delete primitive pointed
+    // at whatever a caller passed in.
+    await expect(validator.releaseOutput(elsewhere)).rejects.toBeInstanceOf(
+      SiteValidationError,
+    );
+    await expect(
+      readFile(join(elsewhere, 'x'), 'utf8').catch(() => 'still there'),
+    ).resolves.toBe('still there');
+  });
+});
+
+/** A symlinked output is refused by every reader, not only by the validator. */
+describe('resolveSiteOutputDir, for the paths that compile nothing', () => {
+  it('refuses a symlinked output root the packager would otherwise follow', async () => {
+    const root = await siteWorkspace();
+    const elsewhere = await mkdtemp(join(tmpdir(), 'flowstarter-neighbour-'));
+    temporaryDirectories.push(elsewhere);
+    await symlink(elsewhere, join(root, 'dist'), 'dir');
+    const { resolveSiteOutputDir, SiteOutputError } = await import(
+      '../src/site-output'
+    );
+    await expect(resolveSiteOutputDir(root, 'dist')).rejects.toBeInstanceOf(
+      SiteOutputError,
+    );
   });
 });

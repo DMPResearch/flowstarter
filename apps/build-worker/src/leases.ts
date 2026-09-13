@@ -67,7 +67,28 @@ export interface LeasedJobRow {
   started_at?: string | null;
   leased_by?: string | null;
   lease_expires_at?: string | null;
+  /**
+   * The fencing token: which *run* holds this job, as opposed to whether
+   * anybody does. Bumped by one on every claim and carried by every write that
+   * run makes, so an attempt that was overtaken updates nothing instead of
+   * overwriting the attempt that replaced it. A row written before the column
+   * existed reads as {@link UNFENCED_TOKEN}.
+   */
+  lease_fence?: number | null;
   payload?: unknown;
+}
+
+/** What a row that has never been claimed carries, and where counting starts. */
+export const UNFENCED_TOKEN = 0;
+
+/** The token a claim of this row writes: monotonic, one per claim, per row. */
+export function nextFencingToken(row: LeasedJobRow): number {
+  const current = row.lease_fence;
+  return (
+    (typeof current === 'number' && Number.isFinite(current)
+      ? Math.trunc(current)
+      : UNFENCED_TOKEN) + 1
+  );
 }
 
 export type ClaimRefusal =
