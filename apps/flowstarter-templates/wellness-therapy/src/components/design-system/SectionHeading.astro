@@ -1,4 +1,6 @@
 ---
+import { sanitizeRichText } from '../../lib/sanitize-html';
+
 interface Props {
   label?: string;
   title?: string;
@@ -25,7 +27,14 @@ const {
   titleColor,
 } = Astro.props;
 
-const resolvedTitle = titleLines?.join('<br />') ?? title ?? '';
+// `set:html` below is a raw-HTML sink and these strings come from
+// `src/content/*.md`, which an agent writes from an untrusted brief. The
+// loader in `src/lib/site-data.ts` already sanitises them; doing it again
+// here is deliberate, because this component can also be handed a literal
+// by a page the agent wrote itself.
+const resolvedTitle = sanitizeRichText(
+  titleLines?.join('<br />') ?? title ?? '',
+);
 const titleStyle = [maxWidth ? `max-width:${maxWidth};` : '', titleColor ? `color:${titleColor};` : '']
   .join(' ')
   .trim() || undefined;

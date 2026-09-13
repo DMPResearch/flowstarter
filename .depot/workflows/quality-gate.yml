@@ -21,6 +21,7 @@
 #      floors themselves live in coverage-floors.json and only ever rise:
 #      `node scripts/coverage-ratchet.mjs --update` raises them, nothing
 #      lowers them.
+#   3b. Deploy agent unit tests (bun) — the served site's security headers
 #   4. Tenant isolation — real local Supabase stack + verify-rls-local.mjs
 ##############################################################################
 
@@ -187,6 +188,35 @@ jobs:
             exit 1
           fi
           echo "Every suite passed its thresholds and every metric is at or above its floor."
+  # ── 3b. Deploy agent ──────────────────────────────────────────────────────
+  # The deploy agent runs on Bun and was not in any lane, so the rules that
+  # decide what a served client site may do — the Content-Security-Policy
+  # builder and the scan that decides which inline scripts are the platform's
+  # own — had no CI at all. They do now: a change that drops the policy, or a
+  # site-runtime Caddyfile that loses the placeholder the agent fills in,
+  # fails here.
+  deploy-agent-tests:
+    name: Deploy Agent Tests
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      # The agent's tests run under Bun, but its one workspace dependency
+      # (`@flowstarter/platform-config`) is linked by pnpm — without this the
+      # suite dies on `Cannot find module` before the first assertion.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Unit tests — deploy-agent
+        run: bun test
+        working-directory: apps/deploy-agent
   # ── 4. Tenant isolation ───────────────────────────────────────────────────
   # Proves tenant B cannot read tenant A's rows, by direct query (RLS, via a
   # real local Postgres + PostgREST) or via the API (requireWorkspaceAccess in

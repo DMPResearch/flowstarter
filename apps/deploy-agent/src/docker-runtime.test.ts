@@ -25,11 +25,20 @@ import {
   type Slot,
 } from './docker-runtime';
 import { DOCKERFILE_TEMPLATE_NAME, type SiteRuntimeTemplates } from './site-templates';
+import type { SiteSecurityInput } from './docker-runtime';
+
+/** What a real deploy's configuration half looks like. */
+const SECURITY: SiteSecurityInput = {
+  platformOrigin: 'https://flowstarter.dev',
+  frameAncestors: [],
+  styleOrigins: ['https://fonts.googleapis.com'],
+};
 
 const BLOCK = 512;
 
 const TEMPLATES: SiteRuntimeTemplates = {
-  caddyfile: ':8080 {\n\troot * /srv\n\tfile_server\n}\n',
+  caddyfile:
+    ':8080 {\n\troot * /srv\n\t# flowstarter:security-headers\n\tfile_server\n}\n',
   dockerfile: 'FROM caddy:2.11.4-alpine\nCOPY public/ /srv/\n',
   source: 'embedded',
 };
@@ -286,6 +295,7 @@ function request(overrides: Partial<Parameters<typeof deployDockerSite>[0]> = {}
     tarballPath: '',
     sha256: 'a'.repeat(64),
     templates: TEMPLATES,
+    security: SECURITY,
     ports: DEFAULT_TEST_PORTS,
     buildSnippet: (upstream: string) => `reverse_proxy ${upstream}`,
     ...overrides,
@@ -295,11 +305,16 @@ function request(overrides: Partial<Parameters<typeof deployDockerSite>[0]> = {}
 describe('buildDockerContext', () => {
   test('writes both templates into the context and never lets a tenant file shadow the Dockerfile', async () => {
     const tarballPath = await writeFixtureTarball();
-    const staging = await buildDockerContext(tarballPath, TEMPLATES);
+    const staging = await buildDockerContext(tarballPath, TEMPLATES, SECURITY);
     try {
-      expect(await readFile(join(staging.contextDir, 'Caddyfile'), 'utf8')).toBe(
-        TEMPLATES.caddyfile
+      // The Caddyfile is the template with its placeholder replaced by the
+      // policy this artifact earned, not the template verbatim.
+      const caddyfile = await readFile(join(staging.contextDir, 'Caddyfile'), 'utf8');
+      expect(caddyfile).toContain('root * /srv');
+      expect(caddyfile).toContain(
+        'header Content-Security-Policy "default-src \'self\';'
       );
+      expect(caddyfile).not.toContain('# flowstarter:security-headers');
       expect(await readFile(staging.dockerfilePath, 'utf8')).toBe(TEMPLATES.dockerfile);
       expect(staging.dockerfilePath).toBe(join(staging.contextDir, DOCKERFILE_TEMPLATE_NAME));
       // Tenant bytes land under public/, one level below the templates.

@@ -1,4 +1,6 @@
 ---
+import { sanitizeInlineSvg } from '../../lib/sanitize-html';
+
 interface IconLinkItem {
   href: string;
   ariaLabel: string;
@@ -16,7 +18,7 @@ const { items, className = '' } = Astro.props;
 <div class={`ds-icon-link-list ${className}`.trim()}>
   {items.map((item) => (
     <a href={item.href} aria-label={item.ariaLabel}>
-      <span set:html={item.icon}></span>
+      <span set:html={sanitizeInlineSvg(item.icon)}></span>
     </a>
   ))}
 </div>

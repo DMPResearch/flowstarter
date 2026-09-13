@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { buildCaddySnippet, buildPreviewCaddySnippet, ROBOTS_HEADER } from './caddy-snippet';
+import { buildSiteSecurityHeaders } from './site-csp';
 
 const EDITOR_UPSTREAM = 'http://editor:3773';
 
@@ -157,5 +158,70 @@ describe('buildPreviewCaddySnippet', () => {
     expect(snippet).toContain('reverse_proxy 127.0.0.1:61000');
     expect(snippet).toContain(`header X-Robots-Tag "${ROBOTS_HEADER}"`);
     expect(snippet).not.toContain('root *');
+  });
+});
+
+describe('security headers on a filesystem deploy', () => {
+  const headers = buildSiteSecurityHeaders({
+    platformOrigin: 'https://flowstarter.dev',
+    inlineScriptHashes: ['hash-one'],
+    frameOrigins: ['https://cal.com'],
+    frameAncestors: [],
+    styleOrigins: ['https://fonts.googleapis.com'],
+  });
+
+  test('puts the policy on the site route and not on the editor route', () => {
+    const snippet = buildCaddySnippet(
+      'acme',
+      { kind: 'static', rootDir: '/var/www/sites/acme' },
+      null,
+      [],
+      null,
+      EDITOR_UPSTREAM,
+      'acme.flowstarter.net',
+      headers
+    );
+    const editorBlock = snippet.slice(
+      snippet.indexOf('handle_path /editor/*'),
+      snippet.indexOf('# Site content')
+    );
+    const siteBlock = snippet.slice(snippet.indexOf('# Site content'));
+    expect(siteBlock).toContain('header Content-Security-Policy "default-src \'self\';');
+    expect(siteBlock).toContain("script-src 'self' 'sha256-hash-one'");
+    expect(siteBlock).toContain('header Referrer-Policy "strict-origin-when-cross-origin"');
+    expect(editorBlock).not.toContain('Content-Security-Policy');
+  });
+
+  test('a site deployed without headers is unchanged from before', () => {
+    const snippet = buildCaddySnippet(
+      'acme',
+      { kind: 'static', rootDir: '/var/www/sites/acme' },
+      null,
+      [],
+      null,
+      EDITOR_UPSTREAM,
+      'acme.flowstarter.net'
+    );
+    expect(snippet).not.toContain('Content-Security-Policy');
+  });
+
+  test('a preview keeps its robots header and gains the policy', () => {
+    const previewHeaders = buildSiteSecurityHeaders({
+      platformOrigin: 'https://flowstarter.dev',
+      inlineScriptHashes: [],
+      frameOrigins: [],
+      frameAncestors: ['https://flowstarter.dev'],
+      styleOrigins: [],
+    });
+    const snippet = buildPreviewCaddySnippet(
+      'acme',
+      { kind: 'static', rootDir: '/var/www/previews/acme' },
+      'acme-x1.preview.flowstarter.dev',
+      9080,
+      previewHeaders
+    );
+    expect(snippet).toContain(`header X-Robots-Tag "${ROBOTS_HEADER}"`);
+    expect(snippet).toContain('frame-ancestors https://flowstarter.dev');
+    expect(snippet).not.toContain('X-Frame-Options');
   });
 });

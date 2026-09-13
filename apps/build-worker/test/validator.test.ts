@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { siteMarkupPolicy } from '@flowstarter/agentic-codegen';
 import type { DockerValidationConfig } from '../src/config';
 import {
   CommandSiteValidator,
@@ -272,6 +273,68 @@ describe('CommandSiteValidator', () => {
         },
       ],
       timeoutMs: 30_000,
+    });
+
+    await expect(validator.validate(root, 'full')).resolves.toBeUndefined();
+  });
+
+  it('fails a paid build whose output runs a script nobody approved', async () => {
+    const root = await siteWorkspace();
+    const output: Array<{ command: string; lines: string[] }> = [];
+    const validator = new CommandSiteValidator({
+      commands: [
+        {
+          bin: 'node',
+          args: [
+            '-e',
+            'const fs=require("node:fs");fs.mkdirSync("dist",{recursive:true});' +
+              'fs.writeFileSync("dist/index.html",' +
+              '"<html><body><h1>Calm Path</h1>' +
+              '<script>fetch(\\"https://evil.example\\")</script>' +
+              '</body></html>","utf8")',
+          ],
+        },
+      ],
+      timeoutMs: 30_000,
+      markupPolicy: siteMarkupPolicy({
+        platformOrigins: ['https://flowstarter.dev'],
+      }),
+      onOutput: (command, lines) => output.push({ command, lines }),
+    });
+
+    await expect(validator.validate(root, 'full')).rejects.toThrow(
+      /GENERATED_HTML_UNSAFE/,
+    );
+    expect(
+      output.some(
+        (entry) =>
+          entry.command === 'generated-html-gate' &&
+          entry.lines.join(' ').includes('index.html'),
+      ),
+    ).toBe(true);
+  });
+
+  it('passes a build whose only script is the template bundle', async () => {
+    const root = await siteWorkspace();
+    const validator = new CommandSiteValidator({
+      commands: [
+        {
+          bin: 'node',
+          args: [
+            '-e',
+            'const fs=require("node:fs");fs.mkdirSync("dist/_astro",{recursive:true});' +
+              'fs.writeFileSync("dist/_astro/page.js","console.log(1)","utf8");' +
+              'fs.writeFileSync("dist/index.html",' +
+              '"<html><body><h1>Calm Path</h1>' +
+              '<script type=\\"module\\" src=\\"/_astro/page.js\\"></script>' +
+              '</body></html>","utf8")',
+          ],
+        },
+      ],
+      timeoutMs: 30_000,
+      markupPolicy: siteMarkupPolicy({
+        platformOrigins: ['https://flowstarter.dev'],
+      }),
     });
 
     await expect(validator.validate(root, 'full')).resolves.toBeUndefined();

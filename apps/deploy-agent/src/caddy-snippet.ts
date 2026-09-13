@@ -7,6 +7,8 @@
  * either way.
  */
 
+import { renderCaddyHeaderLines, type SiteHeader } from './site-csp';
+
 /** Kept in step with NOINDEX_HEADER_VALUE in lib/hosting/site-archive.ts. */
 export const ROBOTS_HEADER = 'noindex, nofollow, noarchive';
 
@@ -49,7 +51,14 @@ export function buildCaddySnippet(
    * not the client ever attaches a domain of their own; it comes before the
    * preview host because it is the name that is meant to outlive it.
    */
-  siteHost: string | null = null
+  siteHost: string | null = null,
+  /**
+   * The site's security headers, built by `site-csp.ts` from this artifact.
+   * They go on the site's own route and not on the editor's: the editor is a
+   * different application with a policy of its own, and a site policy handed
+   * to it would block it. Empty only for a caller with nothing to serve.
+   */
+  headers: readonly SiteHeader[] = []
 ): string {
   const seen = new Set<string>();
   const hosts = [primary, ...additional, siteHost, previewHost].filter(
@@ -84,6 +93,7 @@ export function buildCaddySnippet(
     ``,
     `  # Site content (static files, or the deployed container)`,
     `  handle {`,
+    ...renderCaddyHeaderLines(headers, '    '),
     ...serveLines(target, '    '),
     `  }`,
     `}`,
@@ -105,7 +115,11 @@ export function buildPreviewCaddySnippet(
   slug: string,
   target: ServeTarget,
   hostname: string | null,
-  sitePort: number
+  sitePort: number,
+  /** As above. A preview's policy differs in one directive: the funnel is
+   * allowed to frame it, because showing the preview in an iframe is what
+   * the funnel is for. */
+  headers: readonly SiteHeader[] = []
 ): string {
   const host = hostname && hostname.length > 0 ? hostname : null;
   if (!host) return '';
@@ -119,6 +133,7 @@ export function buildPreviewCaddySnippet(
     `  # half that survives a crawler which only reads headers.`,
     `  header X-Robots-Tag "${ROBOTS_HEADER}"`,
     ``,
+    ...renderCaddyHeaderLines(headers, '  '),
     ...serveLines(target, '  '),
     `}`,
     ``,

@@ -1222,6 +1222,9 @@ importers:
       onnxruntime-node:
         specifier: ^1.29.0
         version: 1.29.0
+      parse5:
+        specifier: ^7.3.0
+        version: 7.3.0
       typebox:
         specifier: 1.3.7
         version: 1.3.7

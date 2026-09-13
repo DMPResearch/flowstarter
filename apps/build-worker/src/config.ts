@@ -146,6 +146,14 @@ export interface WorkerConfig {
   /** Null in github mode. */
   local: LocalPublishConfig | null;
   stagingUrlTemplate: string;
+  /**
+   * The platform's own origins, for the `GENERATED_HTML_UNSAFE` gate: the
+   * only cross-origin destination a generated contact form may post to, and
+   * the only external script origin a generated page may name. Derived from
+   * `FLOWSTARTER_MAIN_URL` and the resolved platform domain, so the gate has
+   * no hostname written into it.
+   */
+  platformOrigins: string[];
   validateCommands: ValidatorCommand[];
   validateIsolation: ValidatorIsolationMode;
   /** Null unless `validateIsolation` is `docker`. */
@@ -544,6 +552,41 @@ function parseSkipValidation(env: NodeJS.ProcessEnv): boolean {
 }
 
 /**
+ * Where "the platform" is, as origins.
+ *
+ * A generated site is allowed to talk to exactly one place that is not
+ * itself: the Flowstarter API that its contact form files enquiries into.
+ * That address is configuration — the worker's own `FLOWSTARTER_MAIN_URL`
+ * where one is set, and the platform domain the environment resolves to
+ * otherwise (the same rule `resolvePlatformDomain` applies everywhere else) —
+ * so neither the gate nor the site's Content-Security-Policy carries a
+ * hostname of its own.
+ */
+export function resolvePlatformOrigins(env: NodeJS.ProcessEnv): string[] {
+  const origins: string[] = [];
+  const add = (value: string | undefined): void => {
+    const trimmed = value?.trim();
+    if (!trimmed) return;
+    try {
+      const { origin } = new URL(trimmed);
+      if (!origins.includes(origin)) origins.push(origin);
+    } catch {
+      // A value that is not a URL names no origin, and a build gate is not
+      // the place to discover that: the callers that need this URL for real
+      // (`parseHttpUrl`) already refuse it with a message.
+    }
+  };
+  add(env.FLOWSTARTER_MAIN_URL);
+  add(
+    `https://${resolvePlatformDomain({
+      flowstarterEnv: env.FLOWSTARTER_ENV,
+      nodeEnv: env.NODE_ENV,
+    })}`,
+  );
+  return origins;
+}
+
+/**
  * `FLOWSTARTER_MAIN_URL` is where this worker posts its deploy callback in
  * local publish mode. It used to default silently to `http://127.0.0.1:3000`
  * when unset, which killed two separate builds (the 2026-09-11 and
@@ -689,6 +732,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     throw new ConfigError('FLOWSTARTER_STAGING_URL_TEMPLATE must be https');
   }
 
+  const platformOrigins = resolvePlatformOrigins(env);
+
   const validateCommands = parseValidateCommands(
     env.FLOWSTARTER_BUILD_VALIDATE_COMMANDS,
   );
@@ -748,6 +793,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
           }
         : null,
     stagingUrlTemplate,
+    platformOrigins,
     validateCommands,
     validateIsolation,
     validateDocker:
