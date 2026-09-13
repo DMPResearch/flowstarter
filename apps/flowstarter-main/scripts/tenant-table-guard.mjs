@@ -22,7 +22,7 @@
  * ship with no isolation proof and CI would stay green - the empty
  * ALLOW_LIST read as "everything is proved" when it actually meant
  * "everything the inventory could see is proved". See
- * supabase/migrations/20260913100000_tenant_table_guard_widen_inventory.sql.
+ * supabase/migrations/20260913210000_tenant_table_guard_widen_inventory.sql.
  *
  * The two lists are imported from verify-rls-local.mjs rather than copied, so
  * adding a table to the proof is one line and the guard agrees automatically.

@@ -12,7 +12,7 @@
 // unaccounted or stale); the CI "Tenant Isolation" job proves the other
 // half — that public.tenant_key_tables() really does enumerate every table
 // with a tenant or personal-data key column — against a live local stack
-// (see supabase/migrations/20260913100000_tenant_table_guard_widen_inventory.sql
+// (see supabase/migrations/20260913210000_tenant_table_guard_widen_inventory.sql
 // and the security audit's M4 finding this fixes).
 //
 // Sets SUPABASE_JWT_SECRET before importing so the module's top-level
