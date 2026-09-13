@@ -11,6 +11,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { requireWorkspaceAccess } from '@/lib/api-auth';
 import { notifyClientBuildNeedsReview } from '@/lib/flowstarter/build-failure-notice';
+import { calProvisioningStatus } from '@/lib/flowstarter/cal-provisioning';
 import { editCreditPosition } from '@/lib/flowstarter/edit-credits';
 import { loadBriefSnapshot } from '@/lib/flowstarter/brief-data';
 import { loadSiteOverviewCounts } from '@/lib/flowstarter/site-overview-data';
@@ -58,7 +59,8 @@ export default async function ClientProjectPage({
     .select(
       `id, slug, name, client_business_name, project_state, deploy_status,
        final_value_minor, setup_fee, billing_currency, deposit_status,
-       final_status, final_invoice_url, tier_name, cal_com_url`
+       final_status, final_invoice_url, tier_name, cal_com_url,
+       cal_provisioned_at, cal_provisioning_error`
     )
     .eq('id', workspaceId)
     .maybeSingle();
@@ -188,6 +190,12 @@ export default async function ClientProjectPage({
       upcoming: counts.bookings.upcoming,
       nextAt: counts.bookings.nextAt,
       last30Days: counts.bookings.last30Days,
+      // The platform makes the client's calendar itself now, so the tile can
+      // tell "we have not made it yet" and "we tried and could not" apart
+      // instead of asking a client who was never meant to paste a link to go
+      // and paste one. The verdict comes from the same rule the booking page
+      // uses, so the two cannot disagree.
+      provisioning: calProvisioningStatus(workspace),
     },
     store: counts.store,
     editorHref: `/dashboard/projects/${workspaceId}/editor`,

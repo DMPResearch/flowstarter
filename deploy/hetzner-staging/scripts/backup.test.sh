@@ -79,6 +79,15 @@ STUB
 # exercised without a daemon. `docker exec CONTAINER pg_dump ...` writes
 # fake dump bytes to stdout; `docker exec -i CONTAINER pg_restore ...`
 # consumes stdin and records what it would have restored.
+#
+# `docker exec CONTAINER printenv KEY` answers from a per-container stub
+# variable (STUB_PRINTENV_<CONTAINER>_<KEY>, the container name upper-cased
+# with every non-alphanumeric character turned into an underscore), and exits
+# non-zero when there is none — which is exactly what a real container without
+# that variable set does, and is the case backup.sh's fallback to `postgres`
+# exists for. That is how one stub can be both the Supabase container (no
+# POSTGRES_USER, dumps as postgres/postgres) and the Cal container
+# (calcom/calcom).
 cat >"$ROOT/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "docker $*" >>"$STUB_LOG"
@@ -97,6 +106,14 @@ if [ "$1" = "exec" ]; then
     exit "${DOCKER_RESTORE_EXIT:-0}"
   else
     container="$1"
+    shift
+    if [ "$1" = "printenv" ]; then
+      slug="$(printf '%s' "$container" | sed 's/[^A-Za-z0-9]/_/g' | tr '[:lower:]' '[:upper:]')"
+      eval "value=\${STUB_PRINTENV_${slug}_${2}-}"
+      [ -z "$value" ] && exit 1
+      printf '%s\n' "$value"
+      exit 0
+    fi
     echo "FAKE-DUMP-CONTENT-for-${container}"
     exit 0
   fi
@@ -214,7 +231,20 @@ run_restore() {
 
 # ── Container discovery ──────────────────────────────────────────────────
 echo "backup.sh: container discovery"
-export DOCKER_PS_NAMES=$'supabase_db_flowstarter\nsupabase_kong_flowstarter\nsome_other_container'
+# The real host runs both: one Supabase CLI stack and the Cal.com stack. The
+# other three names are decoys that must not be dumped — in particular
+# `flowstarter-cal-web`, which shares a prefix with the Cal database container
+# and is caught only because the pattern anchors that alternation at both ends.
+export DOCKER_PS_NAMES=$'supabase_db_flowstarter\nsupabase_kong_flowstarter\nflowstarter-cal-db\nflowstarter-cal-web\nsome_other_container'
+# Cal's container names its own user and database `calcom`.
+export STUB_PRINTENV_FLOWSTARTER_CAL_DB_POSTGRES_USER=calcom
+export STUB_PRINTENV_FLOWSTARTER_CAL_DB_POSTGRES_DB=calcom
+# The Supabase CLI image really does set POSTGRES_USER=supabase_admin, and that
+# role needs a password over the socket. Believing it is what turned a working
+# dump into a zero-byte file on fs-sites-01; the stub says so on purpose, so
+# the exception list below is tested against the truth rather than against a
+# container that conveniently says nothing.
+export STUB_PRINTENV_SUPABASE_DB_FLOWSTARTER_POSTGRES_USER=supabase_admin
 export BACKUP_KEEP_DAILY=7
 export BACKUP_KEEP_WEEKLY=4
 export BACKUP_AGE_RECIPIENT="age1notarealkeyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
@@ -230,6 +260,43 @@ else
   no "the dump lands under today's dated directory"
 fi
 
+# ── The Cal database ─────────────────────────────────────────────────────
+# It holds every client's booking page and their bookings, exists nowhere else,
+# and its Postgres user and database are calcom/calcom rather than the
+# postgres/postgres every Supabase container uses. A dump that guessed the
+# wrong user would leave a zero-byte file nobody notices until a restore, so
+# both halves are asserted: that Cal is discovered at all, and that it is
+# dumped as the right user against the right database.
+echo "backup.sh: the Cal database"
+assert_contains "$log" "docker exec flowstarter-cal-db pg_dump" "the Cal database container is discovered and dumped"
+assert_contains "$log" "docker exec flowstarter-cal-db pg_dump -w -U calcom -Fc calcom" "the Cal dump runs as calcom against the calcom database"
+assert_not_contains "$log" "docker exec flowstarter-cal-web pg_dump" "the Cal WEB container is not mistaken for a database"
+assert_contains "$log" "docker exec flowstarter-cal-db printenv POSTGRES_USER" "the user is discovered from the container, not assumed"
+assert_contains "$log" "docker exec supabase_db_flowstarter pg_dump -w -U postgres" "a Supabase stack is still dumped as postgres, whatever its own POSTGRES_USER says"
+assert_not_contains "$log" "pg_dump -w -U supabase_admin" "the Supabase container own POSTGRES_USER is deliberately not believed"
+assert_contains "$log" "pg_dump -w " "every dump passes -w so a nightly run can never sit on a password prompt"
+assert_contains "$out" "Dumping flowstarter-cal-db (user: calcom, database: calcom)" "the log line names the user and database it used"
+if [ -f "$ROOT/backups/$(date -u +%Y-%m-%d)/db-flowstarter-cal-db.dump" ]; then
+  ok "the Cal dump lands under today's dated directory, named the same way as every other dump"
+else
+  no "the Cal dump lands under today's dated directory, named the same way as every other dump"
+fi
+
+echo "backup.sh: BACKUP_DB_CONTAINER_PATTERN is what decides"
+# Its own backup root and its own stub log, so this run cannot disturb the
+# dated directory and the log every assertion below is still reading.
+ALT_ROOT="$(mktemp -d)"
+ALT_LOG="$ROOT/stub-alt.log"
+: >"$ALT_LOG"
+BACKUP_ROOT="$ALT_ROOT" SITES_DIR="$ROOT/does-not-exist" FLOWSTARTER_ETC_DIR="$ROOT/does-not-exist" \
+  STUB_LOG="$ALT_LOG" DOCKER_PS_NAMES="$DOCKER_PS_NAMES" \
+  BACKUP_DB_CONTAINER_PATTERN='^flowstarter-cal-db$' \
+  bash "$BACKUP" >/dev/null 2>&1
+log2="$(cat "$ALT_LOG")"
+assert_contains "$log2" "docker exec flowstarter-cal-db pg_dump" "an overridden pattern still finds Cal"
+assert_not_contains "$log2" "docker exec supabase_db_flowstarter pg_dump" "an overridden pattern excludes everything it does not match"
+rm -rf "$ALT_ROOT"
+
 # ── Manifest ─────────────────────────────────────────────────────────────
 echo "backup.sh: manifest"
 today_dir="$ROOT/backups/$(date -u +%Y-%m-%d)"
@@ -241,6 +308,7 @@ else
 fi
 manifest_body="$(cat "$manifest" 2>/dev/null)"
 assert_contains "$manifest_body" "db-supabase_db_flowstarter.dump" "the manifest lists the database dump"
+assert_contains "$manifest_body" "db-flowstarter-cal-db.dump" "the manifest lists the Cal database dump"
 assert_contains "$manifest_body" "sites.tar.gz" "the manifest lists the sites tarball"
 assert_contains "$manifest_body" "etc-flowstarter.tar.gz.age" "the manifest lists the encrypted secrets tarball"
 # Recompute one entry's hash independently and compare, proving the manifest
@@ -469,7 +537,24 @@ else
 fi
 restore_log="$(cat "${STUB_LOG}.restore" 2>/dev/null || true)"
 assert_contains "$restore_log" "RESTORED supabase_db_flowstarter:" "pg_restore ran against the right container"
-assert_contains "$restore_log" "pg_restore -U postgres -d postgres --clean --if-exists" "pg_restore ran with the expected flags"
+assert_contains "$restore_log" "pg_restore -w -U postgres -d postgres --clean --if-exists" "pg_restore ran with the expected flags"
+
+# ── restore.sh: the Cal database, which is not a Supabase stack ──────────
+# A dump nobody can restore is not a backup. Cal's container is not called
+# `supabase_db_<anything>` and its role is not `postgres`, so both halves of
+# the resolution are asserted here rather than assumed to have stayed in step
+# with backup.sh.
+echo "restore.sh: restores the Cal database by container name"
+out="$(run_restore --date "$DATE_STR" --database flowstarter-cal-db)"
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  ok "restore.sh exits 0 restoring the Cal dump"
+else
+  no "restore.sh exits 0 restoring the Cal dump" "$out"
+fi
+restore_log="$(cat "${STUB_LOG}.restore" 2>/dev/null || true)"
+assert_contains "$restore_log" "RESTORED flowstarter-cal-db:" "an exact container name is accepted, not just a Supabase project id"
+assert_contains "$restore_log" "pg_restore -w -U calcom -d calcom" "the Cal restore runs as calcom against the calcom database"
 
 # ── restore.sh: site restore requires --force to overwrite ──────────────
 echo "restore.sh: refuses to overwrite an existing site directory without --force"

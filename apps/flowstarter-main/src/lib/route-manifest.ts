@@ -45,6 +45,17 @@ export const PUBLIC_ROUTES = [
   // capture token in the path plus an origin check against that workspace's
   // own hostnames, both inside the route. See docs/integrations/lead-capture.md.
   '/api/leads/capture/(.*)',
+  // Cal.com's webhook. Same shape of caller as the two above: a server, not a
+  // person, with no Clerk session to check. What stands in for one is the
+  // per-workspace HMAC in `X-Cal-Signature-256`, verified against the raw bytes
+  // inside the route before a single row is read.
+  //
+  // It has to be listed here or the delivery never reaches that check: the
+  // middleware answered every POST with 401 "Authentication required", which
+  // is indistinguishable, from Cal's side, from a subscriber URL that is
+  // simply wrong. Measured against a real Cal.com instance on 2026-09-13 —
+  // bookings were being made and none of them ever reached a dashboard.
+  '/api/integrations/cal/(.*)',
   '/unlock(.*)', // Preview unlock landing: reached from a generated site, viewer may be signed out
   '/welcome(.*)', // Guest deposit landing: Stripe returns here before the account exists
   '/contact(.*)',

@@ -1,0 +1,100 @@
+# Self-hosted Cal.com for the platform: the booking pages this product
+# provisions for its clients live here, one Cal user per workspace.
+#
+# Two containers, one compose project (`flowstarter-cal`), on their own bridge
+# network:
+#
+#   cal-db   Postgres, Cal's own database. NOT the Supabase stack: Cal owns its
+#            schema and runs `prisma migrate deploy` on every boot, and a
+#            product migration meeting that in the same database would be a bad
+#            afternoon. This is also the database the provisioner writes to —
+#            see docs/operations/cal.md for why that is the path we took.
+#   cal-web  the official image, pinned. Serves cal.flowstarter.dev, applies
+#            Cal's migrations at start, and is what clients log into.
+#
+# There is deliberately NO Cal API container here. `apps/api/v1` is under the
+# Cal.com Commercial License and refuses every request without an Enterprise
+# licence key when it runs in production; the whole decision, with the evidence,
+# is written up in docs/operations/cal.md.
+#
+# NOTHING HERE IS PUBLISHED TO THE INTERNET. Every port binds 127.0.0.1
+# explicitly, and the network additionally carries
+# `com.docker.network.bridge.host_binding_ipv4=127.0.0.1`, because
+# /etc/docker/daemon.json's `{"ip":"127.0.0.1"}` only covers the DEFAULT
+# bridge — a compose-created network ignores it and would otherwise publish on
+# 0.0.0.0. That is the same trap the Supabase CLI stack fell into on this box
+# (see artifacts/showcase/hetzner-2026-09-12/README.md, "A seventh thing").
+# Caddy on 443 is the only way in, and it only ever proxies cal-web.
+#
+# Memory. Both services are capped, per the capacity plan in the host runbook.
+# The caps are env-overridable rather than literals so a bigger box can raise
+# them without a code change.
+#
+# Install and drive with ../scripts/cal-stack.sh; it is the only thing that
+# should run `docker compose` against this file.
+
+name: flowstarter-cal
+
+services:
+  cal-db:
+    image: ${CAL_POSTGRES_IMAGE:-postgres:16-alpine}
+    container_name: flowstarter-cal-db
+    restart: unless-stopped
+    env_file:
+      - ${CAL_ENV_FILE:-/etc/flowstarter/cal.env}
+    environment:
+      POSTGRES_USER: ${CAL_POSTGRES_USER:-calcom}
+      POSTGRES_DB: ${CAL_POSTGRES_DB:-calcom}
+      # POSTGRES_PASSWORD comes from the env file, never from here.
+    volumes:
+      - cal-db-data:/var/lib/postgresql/data
+    # Published on loopback so the app slot (which runs with
+    # `network_mode: host`), backup.sh and an operator's psql can all reach it.
+    # The port is a variable because 5432 on this box may well be wanted by
+    # something else one day.
+    ports:
+      - '127.0.0.1:${CAL_DB_HOST_PORT:-5433}:5432'
+    mem_limit: ${CAL_DB_MEM_LIMIT:-512m}
+    healthcheck:
+      test:
+        ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  cal-web:
+    image: ${CAL_WEB_IMAGE:-calcom/cal.com:v6.2.0}
+    container_name: flowstarter-cal-web
+    restart: unless-stopped
+    depends_on:
+      cal-db:
+        condition: service_healthy
+    env_file:
+      - ${CAL_ENV_FILE:-/etc/flowstarter/cal.env}
+    ports:
+      - '127.0.0.1:${CAL_WEB_HOST_PORT:-3200}:3000'
+    mem_limit: ${CAL_WEB_MEM_LIMIT:-2g}
+    healthcheck:
+      # `/auth/login` rather than `/`: the root path redirects when signed out,
+      # and a 307 is not proof that the app rendered.
+      test: ['CMD-SHELL', 'wget -q --spider http://127.0.0.1:3000/auth/login']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # Cal runs `prisma migrate deploy` and seeds its app store before it
+      # listens. On a cold database that is minutes, not seconds.
+      start_period: 300s
+
+volumes:
+  cal-db-data:
+    name: ${CAL_DB_VOLUME:-flowstarter-cal-db-data}
+
+networks:
+  default:
+    name: flowstarter-cal
+    driver: bridge
+    driver_opts:
+      # See the header: the daemon-wide default publish address does not reach
+      # a compose-created network.
+      com.docker.network.bridge.host_binding_ipv4: 127.0.0.1

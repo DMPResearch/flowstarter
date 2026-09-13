@@ -208,6 +208,11 @@ function workspaceRow(overrides: Record<string, unknown> = {}) {
     final_invoice_url: null,
     tier_name: 'starter',
     cal_com_url: null,
+    // The calendar the platform makes for the client: never tried, by
+    // default, which is what a workspace claimed before this existed looks
+    // like and what a laptop with no Cal instance produces.
+    cal_provisioned_at: null,
+    cal_provisioning_error: null,
     ...overrides,
   };
 }
@@ -519,9 +524,30 @@ describe('the site overview', () => {
     expect(tile('enquiries')).toHaveAttribute('data-tone', 'attention');
   });
 
-  it('asks the client to connect a booking link when there is none', async () => {
+  // The platform makes the client's calendar itself now, so a workspace with
+  // no link is one we have not finished for them yet rather than a job they
+  // were never told about. The page reads that off the provisioning columns.
+  it('says the booking page is being made when nothing is set up yet', async () => {
     await renderPage(MINE);
-    expect(tile('bookings')).toHaveTextContent('Not set up');
+    expect(tile('bookings')).toHaveTextContent('Being set up');
+    expect(tile('bookings')).toHaveAttribute('data-tone', 'muted');
+    expect(tile('bookings')).toHaveAttribute(
+      'href',
+      `/dashboard/projects/${MINE}/booking`
+    );
+  });
+
+  // Never red, and never a dead end: the reason is the client's to read and
+  // the tile still points at the page with the retry on it.
+  it('shows the stored reason, and a way back, when provisioning failed', async () => {
+    state.workspace = workspaceRow({
+      cal_provisioning_error:
+        'The booking service could not be reached. We will try again.',
+    });
+    await renderPage(MINE);
+    expect(tile('bookings')).toHaveTextContent(
+      'The booking service could not be reached.'
+    );
     expect(tile('bookings')).toHaveAttribute('data-tone', 'attention');
     expect(tile('bookings')).toHaveAttribute(
       'href',
@@ -573,7 +599,7 @@ describe('the site overview', () => {
   it('treats a blank booking link as no booking link', async () => {
     state.workspace = workspaceRow({ cal_com_url: '   ' });
     await renderPage(MINE);
-    expect(tile('bookings')).toHaveTextContent('Not set up');
+    expect(tile('bookings')).toHaveTextContent('Being set up');
   });
 
   it('keeps the shop tile off a plan with nothing to sell', async () => {

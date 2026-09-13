@@ -8,7 +8,10 @@
  * build that stopped and has to be looked at, a booking arriving through the
  * client's own calendar, and a paid change reaching the site. Since the
  * in-depth brief moved to the dashboard there is one more: the build that
- * cannot start because we are waiting on the client.
+ * cannot start because we are waiting on the client. And since the platform
+ * started hosting its clients' calendars itself, one more again: the booking
+ * page it makes for them, which is the only moment that asks a client to sign
+ * in somewhere they have never been.
  *
  * House style, and the reason these live in one file: each is six lines of
  * prose and a button. Splitting them across seven modules would make the
@@ -581,6 +584,72 @@ export function changeRequestLiveEmail(input: {
           'Your dashboard is at ',
           { link: { href: input.dashboardUrl } },
           '.',
+        ],
+      },
+    ],
+  });
+}
+
+/**
+ * The client has a booking page of their own, on the calendar we host.
+ *
+ * Sent once per workspace by `lib/flowstarter/cal-provisioned-notice.ts`, on
+ * the run that actually created the page. It is the only prompt a client gets
+ * to set a password on an account they never asked for, which is why that, and
+ * not the booking link, is the one button: the link is already on their site
+ * and already working, and the password is the thing still undone.
+ *
+ * Deliberately says nothing about Cal.com by name, or usernames, or event
+ * types. From the client's side the fact is "the booking page on my site takes
+ * bookings now"; the account behind it matters to them only because it is
+ * where their times live.
+ */
+export function bookingPageReadyEmail(input: {
+  /** The public page visitors book on. Already live on the built site. */
+  bookingUrl: string;
+  /** Where the client sets the first password on the account we made them. */
+  passwordSetupUrl: string;
+  dashboardUrl: string;
+  clientName?: string | null;
+  businessName?: string | null;
+}): RenderedEmail {
+  return renderEmail({
+    subject: 'Your booking page is ready',
+    preheader: `People can book time with you on ${projectPhrase(
+      input.businessName
+    )} now.`,
+    blocks: [
+      { kind: 'heading', text: 'Your booking page is ready' },
+      greeting(input.clientName),
+      {
+        kind: 'paragraph',
+        content: `The booking page on ${projectPhrase(
+          input.businessName
+        )} is live. Anyone can pick a time with you on it now, and it takes bookings on weekdays until you say otherwise.`,
+      },
+      // Shown as an address rather than only linked, for the same reason as
+      // `siteLiveEmail`: this is the line the client forwards to someone else,
+      // and a link they can read and copy is more use than a button.
+      { kind: 'hero', href: input.bookingUrl },
+      {
+        kind: 'callout',
+        title: 'To change your times',
+        content:
+          'We made you an account on our booking system to hold your ' +
+          'calendar. Set a password on it and you can change the hours you ' +
+          'are free, see who has booked, and move or cancel anything.',
+      },
+      {
+        kind: 'button',
+        label: 'Set your password',
+        href: input.passwordSetupUrl,
+      },
+      {
+        kind: 'note',
+        content: [
+          'Your bookings also show on your dashboard at ',
+          { link: { href: input.dashboardUrl } },
+          ', so you can see what is coming up without signing in anywhere else.',
         ],
       },
     ],

@@ -80,6 +80,16 @@ Optional:
 | `FLOWSTARTER_BUILD_LEASE_HEARTBEAT_MS`                                | `30000` — at most half the TTL, or the service refuses to start                     |
 | `FLOWSTARTER_BUILD_RETRY_BACKOFF_MS`                                  | `30000` — the first retry's wait; doubles per attempt                               |
 | `FLOWSTARTER_BUILD_RETRY_BACKOFF_MAX_MS`                              | `900000` — the cap on that doubling                                                 |
+| `CAL_BASE_URL`                                                    | unset — the platform's own Cal.com, e.g. `https://cal.flowstarter.dev`              |
+
+`CAL_BASE_URL` is optional but load-bearing once the platform provisions
+booking pages itself (see `docs/operations/cal.md`). The host in it is what
+tells `normalizeCalTarget` that a `workspaces.cal_com_url` on the platform's
+own Cal.com is a real booking link. **Leave it unset and every self-hosted
+booking link is silently dropped from the build** — the host allow list falls
+back to `cal.com` only, `parseCalComUrl` returns null, the page set drops the
+booking page, and the client's site ships without the calendar they were
+emailed a link to. It must be set to the same value the app slot carries.
 
 The service refuses to start if any required value is missing or malformed.
 

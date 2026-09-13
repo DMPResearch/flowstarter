@@ -415,7 +415,11 @@ export default clerkMiddleware(async (auth, req) => {
       const isTeamApi = pathname.startsWith('/api/admin/');
       const isAiApi = pathname.startsWith('/api/ai/');
       const isAuthApi = pathname.startsWith('/api/auth/'); // Protected by Clerk auth
-      const isIntegrationsApi = pathname.startsWith('/api/integrations/'); // Protected by Clerk auth
+      // Cal.com's webhook is under here and is authenticated by the signature
+      // in its own route, not by Clerk (see PUBLIC_ROUTES). Skipping CSRF is
+      // right for both kinds: a same-origin test can only ever reject a server
+      // that sends no Origin header.
+      const isIntegrationsApi = pathname.startsWith('/api/integrations/');
       const isAnalyticsApi = pathname.startsWith('/api/analytics/'); // Protected by Clerk auth
       // Service-to-service callbacks (the build worker's deploy). A CSRF check
       // asks "did a browser on another site cause this?", and these callers are
