@@ -5,16 +5,16 @@ sites, but **isolated** from deploy-agent. Three kinds of slot share one
 compose file and one pair of scripts: `main` and `pr-N` for staging, and `prod`
 for production at `flowstarter.net`.
 
-| Path                          | Owner                                        |
-| ----------------------------- | -------------------------------------------- |
-| `/var/www/sites/*`            | Client static sites (deploy-agent)           |
-| `/opt/flowstarter/staging`    | Platform compose + scripts (all slots)       |
-| `/etc/caddy/platform/*.caddy` | Platform vhosts (`main`, `pr-*`, `prod`)     |
-| `/etc/flowstarter/staging.env`| Staging secrets, mode 600                    |
-| `/etc/flowstarter/prod.env`   | Production secrets, mode 600                 |
-| `/etc/flowstarter/tls/`       | Optional Cloudflare Origin CA cert for prod  |
-| `/etc/flowstarter/backup.env` | Backup config (retention, encryption, S3), mode 600 |
-| `/var/backups/flowstarter/`   | Nightly backups, see `docs/operations/backups.md`   |
+| Path                           | Owner                                               |
+| ------------------------------ | --------------------------------------------------- |
+| `/var/www/sites/*`             | Client static sites (deploy-agent)                  |
+| `/opt/flowstarter/staging`     | Platform compose + scripts (all slots)              |
+| `/etc/caddy/platform/*.caddy`  | Platform vhosts (`main`, `pr-*`, `prod`)            |
+| `/etc/flowstarter/staging.env` | Staging secrets, mode 600                           |
+| `/etc/flowstarter/prod.env`    | Production secrets, mode 600                        |
+| `/etc/flowstarter/tls/`        | Optional Cloudflare Origin CA cert for prod         |
+| `/etc/flowstarter/backup.env`  | Backup config (retention, encryption, S3), mode 600 |
+| `/var/backups/flowstarter/`    | Nightly backups, see `docs/operations/backups.md`   |
 
 The directory is still called `staging` so nothing that already references it
 breaks. It holds every slot.
@@ -94,7 +94,7 @@ picks one of two modes when it writes `/etc/caddy/platform/prod.caddy`:
 
 2. **`tls internal` (fallback).** With no Origin CA certificate on disk the
    snippet uses Caddy's own local CA. Cloudflare cannot chain that to a public
-   root, so Cloudflare SSL/TLS must then be **Full**, *not* Full (strict). The
+   root, so Cloudflare SSL/TLS must then be **Full**, _not_ Full (strict). The
    snippet carries that warning as a comment.
 
 Re-running `deploy-slot.sh prod` after dropping the certificate in place is
@@ -119,7 +119,23 @@ STRIPE_SECRET_KEY=<test-mode key until launch>
 STRIPE_WEBHOOK_SECRET=<test-mode webhook secret until launch>
 HANDOFF_SECRET=<HMAC key>
 RESEND_API_KEY=<transactional email key>
+AUTH_TRANSFER_APP_ORIGIN=https://flowstarter.net     # optional; see below
+AUTH_TRANSFER_EDITOR_ORIGIN=https://code.flowstarter.net
+AUTH_TRANSFER_LIBRARY_ORIGIN=https://library.flowstarter.net
 ```
+
+The three `AUTH_TRANSFER_*_ORIGIN` lines name the only origins a Clerk sign-in
+ticket may be sent to. They are optional here, because the policy already
+derives exactly those three values from `PLATFORM_DOMAIN`; write them out when a
+surface answers somewhere other than its default subdomain. They are **not**
+optional on the `main` staging slot, which answers on `staging.flowstarter.dev`
+rather than the bare domain — `NEXT_PUBLIC_SITE_URL` covers the app there, and
+the editor and library need their own line if the handoff is used.
+
+A `pr-N` slot gets none of them, and cannot: the policy refuses `pr-<n>.` and
+`*.preview.*` hosts outright, so no ticket is ever minted for an ephemeral slot.
+`http://` values are refused anywhere that is not a development process, which
+is every slot on this box. See `docs/security/auth-transfer-policy.md`.
 
 The `NEXT_PUBLIC_*` values also exist as Depot secrets (`PROD_NEXT_PUBLIC_*`),
 because those are inlined into the client bundle at **build** time while the

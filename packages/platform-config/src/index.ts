@@ -238,7 +238,9 @@ export function getSharedCookieDomain(hostname?: string): string | undefined {
 /**
  * Server-side variant: extracts cookie domain from a request URL string.
  */
-export function getSharedCookieDomainFromUrl(requestUrl: string): string | undefined {
+export function getSharedCookieDomainFromUrl(
+  requestUrl: string,
+): string | undefined {
   try {
     return getSharedCookieDomain(new URL(requestUrl).hostname);
   } catch {
@@ -337,7 +339,10 @@ export function isTrustedHost(
   const hn = hostname.trim().toLowerCase();
   if (hn === 'localhost' || hn === '127.0.0.1') return true;
 
-  if (typeof process !== 'undefined' && trustedDevRedirectHostnamesFromEnv().has(hn)) {
+  if (
+    typeof process !== 'undefined' &&
+    trustedDevRedirectHostnamesFromEnv().has(hn)
+  ) {
     return true;
   }
 
@@ -356,7 +361,8 @@ export function isSafeRedirectUrl(
 ): boolean {
   try {
     const parsed = new URL(url);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+      return false;
     if (collectDevRedirectOriginsFromEnv().includes(parsed.origin)) {
       return true;
     }
@@ -431,3 +437,30 @@ export function getAllowedRedirectOrigins(hostname?: string): string[] {
   const extra = collectDevRedirectOriginsFromEnv();
   return Array.from(new Set([...base, ...extra]));
 }
+
+// ---------------------------------------------------------------------------
+// Auth-transfer destinations (credentials — a separate, stricter rule)
+// ---------------------------------------------------------------------------
+
+/**
+ * `isSafeRedirectUrl` above answers "is this a page on our platform?", and for
+ * a generated client site at `{slug}.{platformDomain}` the honest answer is
+ * yes. That is fine for navigation and wrong for a Clerk sign-in ticket, which
+ * is a bearer credential. Anything minting one asks
+ * `decideAuthTransferDestination` instead.
+ */
+export {
+  AUTH_TRANSFER_APP_ORIGIN_ENV,
+  AUTH_TRANSFER_EDITOR_ORIGIN_ENV,
+  AUTH_TRANSFER_LIBRARY_ORIGIN_ENV,
+  authTransferAllowList,
+  decideAuthTransferDestination,
+  readAuthTransferEnvFromProcess,
+} from './auth-transfer-policy';
+export type {
+  AuthTransferDecision,
+  AuthTransferEnvInput,
+  AuthTransferOrigin,
+  AuthTransferRefusal,
+  AuthTransferSurface,
+} from './auth-transfer-policy';
