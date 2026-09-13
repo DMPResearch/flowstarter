@@ -248,8 +248,24 @@ export async function safeExtractTarball(
   const gz = await readFile(tarballPath);
   let tar: Buffer;
   try {
-    tar = gunzipSync(gz);
+    // Bound the *decompression* itself, not just the entries parsed out of
+    // it afterward. `gunzipSync(gz)` with no limit fully materializes
+    // whatever the compressed bytes expand to before this function gets a
+    // chance to reject an oversized result — a small, hash-verified archive
+    // can still be a decompression bomb that exhausts memory during this
+    // call, well before `entries.length` or a summed entry size is ever
+    // checked. `maxOutputLength` makes zlib itself stop and throw once the
+    // decompressed output would exceed the bound, so the bomb is caught
+    // while still small. The allowance adds one tar block per entry the
+    // *entry* limit permits, to cover ordinary header/padding overhead
+    // without loosening the byte bound content actually has to fit inside.
+    tar = gunzipSync(gz, {
+      maxOutputLength: maxTotalBytes + maxEntries * BLOCK,
+    });
   } catch (e) {
+    if (e instanceof RangeError) {
+      throw new TarSafetyError('archive exceeds the extraction size limit');
+    }
     throw new TarSafetyError(
       `not a valid gzip archive: ${e instanceof Error ? e.message : 'unknown'}`
     );

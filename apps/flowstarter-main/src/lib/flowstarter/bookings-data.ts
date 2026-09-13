@@ -26,12 +26,31 @@ import 'server-only';
  * webhook route) turns that into a 500 so Cal.com retries. Swallowing it as
  * `{ kind: 'skip', reason: 'replayed' }`, as this module used to, would tell
  * Cal.com "handled" for a delivery that was actually lost.
+ *
+ * THE WRITE IS A COMPARE-AND-SET, NOT A READ-THEN-WRITE. Reading the row,
+ * deciding an action from it, and writing unconditionally afterward leaves a
+ * gap: a concurrent delivery can write between this function's read and its
+ * write, and this function's write would then land on top of it with no idea
+ * that had happened. The update below is conditioned on the row's
+ * `event_marker` still being older than this delivery's — `bookingWriteAction`
+ * decided that much was true when it read the row, but only the database
+ * update itself, not that earlier read, can make it true atomically. A
+ * conditioned update that matches zero rows means a concurrent write already
+ * moved the marker; this function rereads and lets `bookingWriteAction`
+ * decide again from what is now actually stored, rather than assuming its
+ * own stale decision still applies. The same reread-and-reevaluate happens on
+ * an insert's unique-violation race, which used to be treated as an
+ * automatic replay even when the competing delivery represented a genuinely
+ * different transition (e.g. a create losing a race against a cancellation
+ * for the same brand-new uid) — that silently dropped the transition that
+ * lost the race instead of applying it.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, Json } from '@/lib/database.types';
 import type { BookingRow } from './bookings';
 import {
   bookingWriteAction,
+  type BookingSnapshot,
   type BookingStatus,
   type BookingWriteAction,
   type CalBookingEvent,
@@ -139,14 +158,25 @@ export interface RecordedBooking {
 }
 
 /**
+ * Bounds the read-decide-write retry loop in `recordCalBooking`. Each retry
+ * is a genuine concurrent write landing between this function's read and its
+ * own write — real, but rare enough that converging in a handful of rounds
+ * is the expected case, not the edge case. A delivery that cannot converge
+ * in this many rounds is treated as a failure so Cal.com retries the whole
+ * delivery, rather than looping indefinitely against a booking under
+ * sustained concurrent write pressure.
+ */
+const MAX_WRITE_ATTEMPTS = 5;
+
+/**
  * Apply one verified Cal.com delivery to the table.
  *
  * Throws on a genuine database failure (a failed read, a failed update, or an
  * insert failure that is not the expected duplicate-delivery race) so the
  * caller can turn that into a 500 and let Cal.com retry a delivery that was
  * never durably recorded. The one thing this function does swallow is the
- * unique-index race on a duplicate insert — that is not a failure, it is two
- * copies of a delivery this function already knows how to no-op.
+ * unique-index race on a duplicate insert being a genuine replay after
+ * rereading and reevaluating it — see the module doc comment above.
  */
 export async function recordCalBooking(
   supabase: SupabaseServiceClient,
@@ -158,79 +188,104 @@ export async function recordCalBooking(
   }
 ): Promise<RecordedBooking> {
   const { workspaceId, event } = input;
+  const incoming: BookingSnapshot = {
+    status: event.status,
+    startAt: event.startAt,
+    endAt: event.endAt,
+    eventMarker: event.eventMarker,
+  };
 
-  const { data: existing, error: readError } = await supabase
-    .from('workspace_bookings')
-    .select('id, status, start_at, end_at')
-    .eq('workspace_id', workspaceId)
-    .eq('provider', 'cal.com')
-    .eq('external_uid', event.uid)
-    .maybeSingle();
-  if (readError) {
-    throw new Error(
-      `[cal] could not read booking ${event.uid} for workspace ${workspaceId}: ${readError.message}`
-    );
-  }
+  for (let attempt = 0; attempt < MAX_WRITE_ATTEMPTS; attempt++) {
+    const { data: existing, error: readError } = await supabase
+      .from('workspace_bookings')
+      .select('id, status, start_at, end_at, event_marker')
+      .eq('workspace_id', workspaceId)
+      .eq('provider', 'cal.com')
+      .eq('external_uid', event.uid)
+      .maybeSingle();
+    if (readError) {
+      throw new Error(
+        `[cal] could not read booking ${event.uid} for workspace ${workspaceId}: ${readError.message}`
+      );
+    }
 
-  const action = bookingWriteAction(
-    existing
+    const existingSnapshot: BookingSnapshot | null = existing
       ? {
           status: existing.status as BookingStatus,
           startAt: existing.start_at,
           endAt: existing.end_at,
+          eventMarker: existing.event_marker,
         }
-      : null,
-    { status: event.status, startAt: event.startAt, endAt: event.endAt }
-  );
-  if (action.kind === 'skip') {
-    return { action, externalUid: event.uid };
-  }
+      : null;
 
-  const values = {
-    event_type_slug: event.eventTypeSlug,
-    title: event.title,
-    start_at: event.startAt,
-    end_at: event.endAt,
-    attendee_name: event.attendeeName,
-    attendee_email: event.attendeeEmail,
-    status: event.status,
-    payload: (input.payload ?? {}) as Json,
-    updated_at: new Date().toISOString(),
-  };
+    const action = bookingWriteAction(existingSnapshot, incoming);
+    if (action.kind === 'skip') {
+      return { action, externalUid: event.uid };
+    }
 
-  if (action.kind === 'update' && existing) {
-    const { error } = await supabase
-      .from('workspace_bookings')
-      .update(values)
-      .eq('id', existing.id)
-      .eq('workspace_id', workspaceId);
+    const values = {
+      event_type_slug: event.eventTypeSlug,
+      title: event.title,
+      start_at: event.startAt,
+      end_at: event.endAt,
+      attendee_name: event.attendeeName,
+      attendee_email: event.attendeeEmail,
+      status: event.status,
+      event_marker: event.eventMarker,
+      payload: (input.payload ?? {}) as Json,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (action.kind === 'update' && existing) {
+      // Compare-and-set: the predicate is what makes this atomic — the
+      // `bookingWriteAction` decision above only used a snapshot that may
+      // already be stale by the time this runs.
+      const { data: updated, error } = await supabase
+        .from('workspace_bookings')
+        .update(values)
+        .eq('id', existing.id)
+        .eq('workspace_id', workspaceId)
+        .lt('event_marker', event.eventMarker)
+        .select('id');
+      if (error) {
+        throw new Error(
+          `[cal] could not update booking ${event.uid} for workspace ${workspaceId}: ${error.message}`
+        );
+      }
+      if (updated && updated.length > 0) {
+        return { action, externalUid: event.uid };
+      }
+      // Lost the race: a concurrent delivery already moved `event_marker` to
+      // (or past) this one's between the read above and this update. Reread
+      // and let the loop recompute the right action against what is now
+      // actually stored, instead of assuming this delivery's decision still
+      // holds.
+      continue;
+    }
+
+    const { error } = await supabase.from('workspace_bookings').insert({
+      workspace_id: workspaceId,
+      provider: 'cal.com',
+      external_uid: event.uid,
+      ...values,
+    });
     if (error) {
+      if ((error as { code?: string }).code === UNIQUE_VIOLATION) {
+        // Two copies of the same delivery, or two different deliveries for
+        // the same brand-new uid, landed at once. Either way, the row that
+        // exists now might not be the one `bookingWriteAction` decided
+        // against above — reread and let it decide again, rather than
+        // labelling this a replay just because an insert lost a race.
+        continue;
+      }
       throw new Error(
-        `[cal] could not update booking ${event.uid} for workspace ${workspaceId}: ${error.message}`
+        `[cal] could not record booking ${event.uid} for workspace ${workspaceId}: ${error.message}`
       );
     }
     return { action, externalUid: event.uid };
   }
 
-  const { error } = await supabase.from('workspace_bookings').insert({
-    workspace_id: workspaceId,
-    provider: 'cal.com',
-    external_uid: event.uid,
-    ...values,
-  });
-  if (error) {
-    // Two copies of the same delivery, handled at once. The index did the job
-    // the read could not, and the second copy is a no-op, not a failure.
-    if ((error as { code?: string }).code === UNIQUE_VIOLATION) {
-      return {
-        action: { kind: 'skip', reason: 'replayed' },
-        externalUid: event.uid,
-      };
-    }
-    throw new Error(
-      `[cal] could not record booking ${event.uid} for workspace ${workspaceId}: ${error.message}`
-    );
-  }
-
-  return { action, externalUid: event.uid };
+  throw new Error(
+    `[cal] could not converge on a write for booking ${event.uid} in workspace ${workspaceId} after ${MAX_WRITE_ATTEMPTS} attempts`
+  );
 }

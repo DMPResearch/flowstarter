@@ -29,7 +29,11 @@ import 'server-only';
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '../database.types';
-import { deleteFunnelAssets } from '../flowstarter/funnel-assets';
+import {
+  deleteFunnelAssets,
+  reapExpiredFunnelUploadSessions,
+  type ReapUploadSessionsResult,
+} from '../flowstarter/funnel-assets';
 import {
   deleteFunnelPreviewArtifact,
   listExpiredFunnelPreviews,
@@ -65,6 +69,13 @@ export interface ReapResult {
   /** True when the previews agent is not configured (this was a dry run). */
   dryRun: boolean;
   previews: ReapedPreview[];
+  /**
+   * A second, independent sweep: uploads that reserved quota against a
+   * preview id but never became a `funnel_previews` row at all, so the sweep
+   * above — which only ever looks at that table — has no row to consider in
+   * the first place. See `reapExpiredFunnelUploadSessions`.
+   */
+  uploadSessions: ReapUploadSessionsResult;
 }
 
 export interface ReapOptions {
@@ -93,6 +104,13 @@ export async function reapExpiredPreviews(
     failed: 0,
     dryRun: !agent.configured,
     previews: [],
+    uploadSessions: {
+      considered: 0,
+      sessionsRemoved: 0,
+      picturesRemoved: 0,
+      failed: 0,
+      sessions: [],
+    },
   };
 
   for (const candidate of candidates) {
@@ -153,6 +171,23 @@ export async function reapExpiredPreviews(
       picturesRemoved,
       detail: removal.detail,
     });
+  }
+
+  // Independent of the sweep above on purpose: an upload that never became a
+  // preview has no row in `funnel_previews` for that sweep to ever consider.
+  // Best-effort, the same as everything else in this function — a failure
+  // here must not make an otherwise-successful preview sweep look failed.
+  try {
+    result.uploadSessions = await reapExpiredFunnelUploadSessions({
+      now,
+      limit: options.limit ?? 50,
+      ...(options.supabase ? { supabase: options.supabase } : {}),
+    });
+  } catch (error) {
+    console.warn(
+      '[preview-reaper] could not sweep expired upload sessions: ' +
+        (error instanceof Error ? error.message : 'unknown error')
+    );
   }
 
   return result;

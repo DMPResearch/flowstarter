@@ -15,7 +15,13 @@
  *   - A redelivered BOOKING_CREATED arriving after the BOOKING_CANCELLED for
  *     the same booking must not put a cancelled meeting back on the client's
  *     dashboard. Webhook order is not guaranteed; the table is what the client
- *     reads, so the later truth wins over the later delivery.
+ *     reads, so the later truth wins over the later delivery. "Later truth"
+ *     is decided by an event-order marker carried on every delivery (see
+ *     `CalBookingEvent.eventMarker`), not by comparing status and time alone
+ *     — two deliveries that both move the booking do not say which of them
+ *     happened first, and an older one replayed after a newer one must not
+ *     look like a second, later change just because its time differs from
+ *     what is currently stored.
  *
  * SIGNATURE. Cal.com signs the exact bytes of the request body with the
  * per-workspace secret, HMAC-SHA256, hex, in `X-Cal-Signature-256`. The route
@@ -118,6 +124,31 @@ export interface CalBookingEvent {
   endAt: string | null;
   attendeeName: string | null;
   attendeeEmail: string | null;
+  /**
+   * An ISO 8601 timestamp this delivery is ordered by, persisted on the row
+   * and compared on every write — see `bookingWriteAction` and
+   * `recordCalBooking`. Webhook delivery order is not guaranteed, so a
+   * status/time comparison alone cannot tell a genuinely later reschedule
+   * from a redelivered older one; this can. Preference order:
+   *
+   *   1. `payload.updatedAt` — Cal.com's own timestamp for when this exact
+   *      booking state last changed, when the body carries one. The most
+   *      precise signal there is for ordering two deliveries about the same
+   *      uid.
+   *   2. The envelope's top-level `createdAt` — when Cal.com fired this
+   *      specific delivery. Present on every real webhook, and changes on
+   *      every delivery even when the booking object's own timestamps do
+   *      not.
+   *   3. `payload.createdAt` — the booking's original creation time. Weakest
+   *      of Cal.com's own fields, because it is typically identical across
+   *      every delivery for one uid and so cannot order a reschedule after
+   *      a create.
+   *   4. `receivedAt`, supplied by the caller — the time this server
+   *      accepted the delivery. Used only when Cal.com's body carries none
+   *      of the above, so two such deliveries still order by arrival here
+   *      rather than being incomparable.
+   */
+  eventMarker: string;
 }
 
 export type CalPayloadRejection =
@@ -164,8 +195,17 @@ function isTrigger(value: unknown): value is CalTriggerEvent {
  * Everything else is kept verbatim in the row's `payload` column by the route,
  * so nothing is lost by this being narrow, and a field Cal.com renames later
  * degrades to null rather than throwing inside a webhook.
+ *
+ * `receivedAt` is only ever used as the last-resort ordering marker — see
+ * `CalBookingEvent.eventMarker` — for a delivery whose body carries none of
+ * Cal.com's own timestamps. It defaults to the current time so a caller in
+ * production need not remember to pass it, and a caller in a test can pass a
+ * fixed value to keep the result deterministic.
  */
-export function parseCalBookingEvent(rawBody: string): CalPayloadResult {
+export function parseCalBookingEvent(
+  rawBody: string,
+  receivedAt: string = new Date().toISOString()
+): CalPayloadResult {
   let body: unknown;
   try {
     body = JSON.parse(rawBody);
@@ -200,6 +240,13 @@ export function parseCalBookingEvent(rawBody: string): CalPayloadResult {
     attendees[0] && typeof attendees[0] === 'object' ? attendees[0] : {}
   ) as Record<string, unknown>;
 
+  // See the preference order documented on `CalBookingEvent.eventMarker`.
+  const eventMarker =
+    timestamp(payload.updatedAt) ??
+    timestamp(envelope.createdAt) ??
+    timestamp(payload.createdAt) ??
+    receivedAt;
+
   return {
     ok: true,
     event: {
@@ -214,6 +261,7 @@ export function parseCalBookingEvent(rawBody: string): CalPayloadResult {
       endAt: timestamp(payload.endTime),
       attendeeName: str(first.name),
       attendeeEmail: str(first.email),
+      eventMarker,
     },
   };
 }
@@ -234,15 +282,30 @@ export interface BookingSnapshot {
   status: BookingStatus;
   startAt: string | null;
   endAt: string | null;
+  /** See `CalBookingEvent.eventMarker`. */
+  eventMarker: string;
 }
 
 /**
  * What a delivery should do to the row already in the table.
  *
- * `existing` is the stored row's status and time for this workspace and uid,
- * or null when there is none.
+ * `existing` is the stored row's status, time and event marker for this
+ * workspace and uid, or null when there is none.
  *
  *   nothing stored                        insert, the only case that emails
+ *   incoming marker older than existing   an out-of-order delivery — Cal.com
+ *                                         does not guarantee delivery order,
+ *                                         and this row already reflects a
+ *                                         delivery Cal.com stamped later, so
+ *                                         nothing an older one says can still
+ *                                         be true. This is what makes a
+ *                                         replayed *older* reschedule
+ *                                         (different time, but from before
+ *                                         the reschedule already applied) a
+ *                                         no-op instead of an update: without
+ *                                         the marker, a changed start/end
+ *                                         time alone looks identical to a
+ *                                         genuine second reschedule.
  *   same status AND same start/end        replayed delivery, change nothing
  *   same status, different start/end      the booking moved again, update
  *                                         (two RESCHEDULED events for the
@@ -256,19 +319,32 @@ export interface BookingSnapshot {
  *                                         webhook, change nothing
  *   incoming "booked", existing is not    a CREATED delivery arriving after
  *                                         a RESCHEDULED or CANCELLED one for
- *                                         the same uid — Cal.com does not
- *                                         guarantee delivery order, and
- *                                         applying it would put a moved or
- *                                         cancelled meeting back on the
- *                                         client's dashboard as freshly
- *                                         booked
+ *                                         the same uid — applying it would
+ *                                         put a moved or cancelled meeting
+ *                                         back on the client's dashboard as
+ *                                         freshly booked
  *   anything else                         update, the booking moved
+ *
+ * The marker check runs first and is the primary defense; the content checks
+ * below it are what decided this before markers existed and stay as a
+ * second layer for a marker tie or a missing/unparseable timestamp on either
+ * side.
  */
 export function bookingWriteAction(
   existing: BookingSnapshot | null,
   incoming: BookingSnapshot
 ): BookingWriteAction {
   if (existing === null) return { kind: 'insert' };
+
+  const incomingAt = Date.parse(incoming.eventMarker);
+  const existingAt = Date.parse(existing.eventMarker);
+  if (
+    Number.isFinite(incomingAt) &&
+    Number.isFinite(existingAt) &&
+    incomingAt < existingAt
+  ) {
+    return { kind: 'skip', reason: 'superseded' };
+  }
 
   const sameStatus = existing.status === incoming.status;
   const sameWhen =

@@ -90,7 +90,13 @@ interface ClientScript {
 const script: ClientScript = {};
 
 const captured: {
-  updates: Array<{ table: string; values: Row; eq?: [string, string] }>;
+  updates: Array<{
+    table: string;
+    values: Row;
+    eq?: [string, string];
+    /** `match({...})`: the compare-and-set predicate on `workspaces`. */
+    match?: Record<string, unknown>;
+  }>;
   inserts: Array<{ table: string; values: Row }>;
   ledger: Array<{ mode: 'insert' | 'update'; values: Row }>;
 } = { updates: [], inserts: [], ledger: [] };
@@ -101,6 +107,7 @@ const DEFAULT_WORKSPACE: Row = {
   subscription_status: null,
   stripe_subscription_id: null,
   subscription_next_billing: null,
+  billing_version: 0,
 };
 
 function builderFor(table: string) {
@@ -159,6 +166,32 @@ function builderFor(table: string) {
           error:
             table === 'workspaces' ? script.workspaceUpdateError ?? null : null,
         });
+      }
+      return builder;
+    },
+    // `casUpdateWorkspaceMoneyState`'s compare-and-set: `.update(values)
+    // .match({ id, billing_version }).select('id')`. Modelled as its own
+    // branch (rather than reusing `.eq()`, which resolves as soon as it is
+    // called once) because the money-state write needs both the update to
+    // have actually matched a row *and* its own filter object recorded,
+    // without disturbing the single-`.eq()` shape every other update in
+    // this file still uses.
+    match(criteria: Record<string, unknown>) {
+      if (builder._mode === 'update') {
+        captured.updates[captured.updates.length - 1].match = criteria;
+        return {
+          select: () =>
+            Promise.resolve({
+              data:
+                table === 'workspaces' && script.workspaceUpdateError
+                  ? null
+                  : [{ id: criteria.id ?? WORKSPACE_ID }],
+              error:
+                table === 'workspaces'
+                  ? script.workspaceUpdateError ?? null
+                  : null,
+            }),
+        };
       }
       return builder;
     },
@@ -414,8 +447,9 @@ describe('POST /api/webhooks/stripe', () => {
           deposit_status: 'paid',
           deposit_paid_at: expect.any(String),
           outstanding_payment: false,
+          billing_version: 1,
         },
-        eq: ['id', WORKSPACE_ID],
+        match: { id: WORKSPACE_ID, billing_version: 0 },
       });
       expect(enqueueFullBuildFromDepositInvoice).toHaveBeenCalledTimes(1);
       expect(ledgerOutcome()).toBe('processed');
@@ -437,8 +471,9 @@ describe('POST /api/webhooks/stripe', () => {
           final_status: 'paid',
           final_paid_at: expect.any(String),
           outstanding_payment: false,
+          billing_version: 1,
         },
-        eq: ['id', WORKSPACE_ID],
+        match: { id: WORKSPACE_ID, billing_version: 0 },
       });
       expect(enqueueFullBuildFromDepositInvoice).not.toHaveBeenCalled();
     });
@@ -453,7 +488,10 @@ describe('POST /api/webhooks/stripe', () => {
       const { POST } = await import('../route');
       const res = await POST(post('{}'));
       expect(res.status).toBe(200);
-      expect(captured.updates.at(-1)?.eq).toEqual(['id', WORKSPACE_ID]);
+      expect(captured.updates.at(-1)?.match).toEqual({
+        id: WORKSPACE_ID,
+        billing_version: 0,
+      });
     });
 
     it('no-ops when metadata has no workspace id or invoice type', async () => {
@@ -514,8 +552,8 @@ describe('POST /api/webhooks/stripe', () => {
     expect(res.status).toBe(200);
     expect(captured.updates).toContainEqual({
       table: 'workspaces',
-      values: { outstanding_payment: true },
-      eq: ['id', WORKSPACE_ID],
+      values: { outstanding_payment: true, billing_version: 1 },
+      match: { id: WORKSPACE_ID, billing_version: 0 },
     });
   });
 
@@ -571,8 +609,12 @@ describe('POST /api/webhooks/stripe', () => {
       expect(res.status).toBe(200);
       expect(captured.updates).toContainEqual({
         table: 'workspaces',
-        values: { deposit_status: 'overdue', outstanding_payment: true },
-        eq: ['id', WORKSPACE_ID],
+        values: {
+          deposit_status: 'overdue',
+          outstanding_payment: true,
+          billing_version: 1,
+        },
+        match: { id: WORKSPACE_ID, billing_version: 0 },
       });
     });
 
@@ -588,8 +630,12 @@ describe('POST /api/webhooks/stripe', () => {
       expect(res.status).toBe(200);
       expect(captured.updates).toContainEqual({
         table: 'workspaces',
-        values: { final_status: 'overdue', outstanding_payment: true },
-        eq: ['id', WORKSPACE_ID],
+        values: {
+          final_status: 'overdue',
+          outstanding_payment: true,
+          billing_version: 1,
+        },
+        match: { id: WORKSPACE_ID, billing_version: 0 },
       });
     });
 
@@ -669,8 +715,9 @@ describe('POST /api/webhooks/stripe', () => {
             1_700_000_000 * 1000
           ).toISOString(),
           outstanding_payment: true,
+          billing_version: 1,
         },
-        eq: ['id', WORKSPACE_ID],
+        match: { id: WORKSPACE_ID, billing_version: 0 },
       });
     });
 
@@ -693,8 +740,9 @@ describe('POST /api/webhooks/stripe', () => {
           stripe_subscription_id: 'sub_2',
           subscription_next_billing: null,
           outstanding_payment: false,
+          billing_version: 1,
         },
-        eq: ['id', WORKSPACE_ID],
+        match: { id: WORKSPACE_ID, billing_version: 0 },
       });
     });
 

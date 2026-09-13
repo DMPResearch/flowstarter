@@ -43,8 +43,15 @@ process.env.DEPLOY_AGENT_SITE_DOMAIN_TEMPLATE = '{slug}.flowstarter.net';
 // bytes, comfortably under this.
 process.env.DEPLOY_AGENT_MAX_ARTIFACT_BYTES = '4096';
 process.env.DEPLOY_AGENT_ARTIFACT_FETCH_TIMEOUT_MS = '300';
+// Small on purpose: `global deploy concurrency` below saturates both the
+// concurrency limit and the queue on purpose, and every other test in this
+// file only ever runs one deploy at a time.
+const DEPLOY_CONCURRENCY_LIMIT = 2;
+const DEPLOY_QUEUE_LIMIT = 1;
+process.env.DEPLOY_AGENT_DEPLOY_CONCURRENCY = String(DEPLOY_CONCURRENCY_LIMIT);
+process.env.DEPLOY_AGENT_DEPLOY_QUEUE_LIMIT = String(DEPLOY_QUEUE_LIMIT);
 
-const { routeRequest, runReconcile } = await import('./index');
+const { routeRequest, runReconcile, deploySemaphore } = await import('./index');
 
 interface AgentJson {
   ok?: boolean;
@@ -320,6 +327,23 @@ const artifactOrigin = Bun.serve({
       await new Promise((resolve) => setTimeout(resolve, 1000));
       return new Response(GOOD_ARTIFACT);
     }
+    if (url.pathname === '/dribble.tar.gz') {
+      // Headers land immediately — only the *body* stalls. This is the
+      // shape `/slow.tar.gz` above cannot exercise: that origin delays
+      // before responding at all, which the fetch's own timeout always
+      // caught. This one proves the deadline survives past the point
+      // `fetchAndVerify` gets a response back and starts reading its body.
+      const half = Math.ceil(GOOD_ARTIFACT.length / 2);
+      const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          controller.enqueue(GOOD_ARTIFACT.subarray(0, half));
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          controller.enqueue(GOOD_ARTIFACT.subarray(half));
+          controller.close();
+        },
+      });
+      return new Response(stream);
+    }
     if (url.pathname === '/redirect-same-host') {
       return new Response(null, {
         status: 302,
@@ -415,6 +439,21 @@ describe('artifact fetching over a URL', () => {
     expect((await jsonOf(res)).error).toContain('timed out');
   });
 
+  test('times out a body that dribbles in slower than the deadline, even though headers arrived promptly', async () => {
+    const res = await routeRequest(
+      authed('/sites/too-slow-dribbling/deploy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          artifact_url: originUrl('/dribble.tar.gz'),
+          artifact_sha256: GOOD_SHA256,
+        }),
+      }),
+    );
+    expect(res.status).toBe(502);
+    expect((await jsonOf(res)).error).toContain('timed out');
+  });
+
   test('refuses a redirect to a different host', async () => {
     const res = await routeRequest(
       authed('/sites/redirected/deploy', {
@@ -470,6 +509,74 @@ describe('artifact fetching over a URL', () => {
     },
     30_000,
   );
+});
+
+describe('global deploy concurrency', () => {
+  test('refuses a deploy once every concurrency slot and queue slot is already taken', async () => {
+    // Acquire the exact semaphore the route handler acquires, rather than
+    // firing concurrent HTTP requests and hoping enough of them land inside
+    // the limit before the rest queue — that would make the test's outcome
+    // depend on how Bun happens to schedule unrelated promises.
+    const activeReleases: Array<() => void> = [];
+    for (let i = 0; i < DEPLOY_CONCURRENCY_LIMIT; i++) {
+      activeReleases.push(await deploySemaphore.acquire());
+    }
+    expect(deploySemaphore.activeCount).toBe(DEPLOY_CONCURRENCY_LIMIT);
+
+    // Fill the queue behind the exhausted limit — these never resolve until
+    // a slot frees up, so they are started but deliberately not awaited yet.
+    const queuedReleases = Array.from({ length: DEPLOY_QUEUE_LIMIT }, () =>
+      deploySemaphore.acquire(),
+    );
+    // Let the queued acquires actually register themselves as waiters
+    // before asserting the queue is full.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(deploySemaphore.queuedCount).toBe(DEPLOY_QUEUE_LIMIT);
+
+    try {
+      const res = await routeRequest(
+        authed('/sites/queue-is-full/deploy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            artifact_url: originUrl('/good.tar.gz'),
+            artifact_sha256: GOOD_SHA256,
+          }),
+        }),
+      );
+      expect(res.status).toBe(503);
+      expect((await jsonOf(res)).error).toContain('too many deploys');
+      // Refusing it must not have consumed a slot of its own.
+      expect(deploySemaphore.activeCount).toBe(DEPLOY_CONCURRENCY_LIMIT);
+      expect(deploySemaphore.queuedCount).toBe(DEPLOY_QUEUE_LIMIT);
+    } finally {
+      for (const release of activeReleases) release();
+      for (const acquire of queuedReleases) (await acquire)();
+    }
+
+    expect(deploySemaphore.activeCount).toBe(0);
+    expect(deploySemaphore.queuedCount).toBe(0);
+  });
+
+  test('a released slot lets a genuinely new deploy through once capacity frees up', async () => {
+    const release = await deploySemaphore.acquire();
+    try {
+      // Capacity is 2; one held slot still leaves room for a real deploy.
+      const res = await routeRequest(
+        authed('/sites/room-to-deploy/deploy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ artifact_sha256: 'a'.repeat(64) }),
+        }),
+      );
+      // No artifact_url/artifact_bytes: fails validation, but with a 400 —
+      // proof it was let in to run rather than refused for the queue being
+      // full (which would be 503).
+      expect(res.status).toBe(400);
+    } finally {
+      release();
+    }
+  });
 });
 
 describe('same-slug serialization', () => {

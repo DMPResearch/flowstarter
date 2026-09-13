@@ -133,6 +133,77 @@ describe('parseCalBookingEvent', () => {
     });
   });
 
+  describe('eventMarker', () => {
+    it('prefers payload.updatedAt over every other source', () => {
+      const result = parseCalBookingEvent(
+        body({
+          createdAt: '2026-09-11T08:00:00.000Z',
+          payload: {
+            createdAt: '2026-09-10T00:00:00.000Z',
+            updatedAt: '2026-09-12T00:00:00.000Z',
+          },
+        }),
+        '2026-09-01T00:00:00.000Z'
+      );
+      expect(result.ok && result.event.eventMarker).toBe(
+        '2026-09-12T00:00:00.000Z'
+      );
+    });
+
+    it('falls back to the envelope createdAt when there is no payload.updatedAt', () => {
+      const result = parseCalBookingEvent(
+        body({
+          createdAt: '2026-09-11T08:00:00.000Z',
+          payload: { createdAt: '2026-09-10T00:00:00.000Z' },
+        }),
+        '2026-09-01T00:00:00.000Z'
+      );
+      expect(result.ok && result.event.eventMarker).toBe(
+        '2026-09-11T08:00:00.000Z'
+      );
+    });
+
+    it('falls back to payload.createdAt when the envelope has none', () => {
+      const raw = body({ payload: { createdAt: '2026-09-10T00:00:00.000Z' } });
+      // Strip the envelope-level createdAt the fixture adds by default.
+      const withoutEnvelopeCreatedAt = JSON.stringify({
+        ...JSON.parse(raw),
+        createdAt: undefined,
+      });
+      const result = parseCalBookingEvent(
+        withoutEnvelopeCreatedAt,
+        '2026-09-01T00:00:00.000Z'
+      );
+      expect(result.ok && result.event.eventMarker).toBe(
+        '2026-09-10T00:00:00.000Z'
+      );
+    });
+
+    it('falls back to the caller-supplied receivedAt when the body carries no timestamp at all', () => {
+      const raw = JSON.stringify({
+        triggerEvent: 'BOOKING_CREATED',
+        payload: { uid: 'bk_abc123' },
+      });
+      const result = parseCalBookingEvent(raw, '2026-09-01T00:00:00.000Z');
+      expect(result.ok && result.event.eventMarker).toBe(
+        '2026-09-01T00:00:00.000Z'
+      );
+    });
+
+    it('defaults receivedAt to now when the caller supplies none', () => {
+      const raw = JSON.stringify({
+        triggerEvent: 'BOOKING_CREATED',
+        payload: { uid: 'bk_abc123' },
+      });
+      const before = Date.now();
+      const result = parseCalBookingEvent(raw);
+      const after = Date.now();
+      const marker = result.ok ? Date.parse(result.event.eventMarker) : NaN;
+      expect(marker).toBeGreaterThanOrEqual(before);
+      expect(marker).toBeLessThanOrEqual(after);
+    });
+  });
+
   it('maps each trigger to the status the table stores', () => {
     const cases: Array<[string, BookingStatus]> = [
       ['BOOKING_CREATED', 'booked'],
@@ -227,9 +298,11 @@ describe('bookingWriteAction', () => {
     startAt: '2026-09-16T14:00:00.000Z',
     endAt: '2026-09-16T14:30:00.000Z',
   };
+  const T0 = '2026-09-11T08:00:00.000Z';
+  const T1 = '2026-09-12T08:00:00.000Z';
 
-  function snap(status: BookingStatus, when = AT) {
-    return { status, ...when };
+  function snap(status: BookingStatus, when = AT, eventMarker = T0) {
+    return { status, ...when, eventMarker };
   }
 
   it('inserts when nothing is stored', () => {
@@ -261,6 +334,48 @@ describe('bookingWriteAction', () => {
     expect(
       bookingWriteAction(snap('rescheduled', AT), snap('rescheduled', AT))
     ).toEqual({ kind: 'skip', reason: 'replayed' });
+  });
+
+  // F11: without an ordering marker, an older reschedule replayed after a
+  // newer one looks exactly like a second, later reschedule — both just say
+  // "rescheduled" with a different time than what is stored. The marker is
+  // what tells them apart.
+  describe('the event-order marker', () => {
+    it('refuses an older reschedule replayed after a newer one, even though the time differs from what is stored', () => {
+      const newer = snap('rescheduled', LATER, T1);
+      const olderReplayed = snap('rescheduled', AT, T0);
+      expect(bookingWriteAction(newer, olderReplayed)).toEqual({
+        kind: 'skip',
+        reason: 'superseded',
+      });
+    });
+
+    it('still applies a genuinely later reschedule with a newer marker', () => {
+      const existing = snap('rescheduled', AT, T0);
+      const genuinelyLater = snap('rescheduled', LATER, T1);
+      expect(bookingWriteAction(existing, genuinelyLater)).toEqual({
+        kind: 'update',
+      });
+    });
+
+    it('refuses an older cancel-reversal: a create replayed after a marker-later cancel', () => {
+      const existing = snap('cancelled', AT, T1);
+      const olderCreate = snap('booked', AT, T0);
+      expect(bookingWriteAction(existing, olderCreate)).toEqual({
+        kind: 'skip',
+        reason: 'superseded',
+      });
+    });
+
+    it('falls back to content rules when a marker is missing or unparseable on either side', () => {
+      const existingNoMarker = { ...snap('rescheduled', AT), eventMarker: '' };
+      const incomingLaterTime = snap('rescheduled', LATER, T0);
+      // Neither marker is usable, so the content rule (different time under
+      // the same status) still decides, exactly as it did before markers.
+      expect(bookingWriteAction(existingNoMarker, incomingLaterTime)).toEqual({
+        kind: 'update',
+      });
+    });
   });
 
   // Webhook order is not guaranteed. The table is what the client reads, so a

@@ -82,6 +82,11 @@ const COLUMN_DEFAULTS: Record<string, () => Row> = {
     billing_currency: 'eur',
     deposit_percent: 20,
     balance_percent: 80,
+    // The Stripe webhook's money-state writes are a compare-and-set on this
+    // (`casUpdateWorkspaceMoneyState`); a row with no version at all would
+    // never satisfy the predicate's initial `billing_version = 0` and every
+    // write against it would spuriously look like a lost race.
+    billing_version: 0,
   }),
 };
 
@@ -296,7 +301,18 @@ export async function startFakePostgrest(): Promise<FakePostgrest> {
       rowsOf(table).find((row) =>
         Object.entries(match).every(([key, value]) => row[key] === value)
       ),
-    seed: (table, seedRows) => rowsOf(table).push(...seedRows),
+    // Applies the same column defaults a real `insert` would, so a test
+    // fixture that predates a new default-valued column (e.g.
+    // `workspaces.billing_version`) does not have to be taught about it by
+    // hand — exactly like a real migration's `default` clause backfilling a
+    // row nobody explicitly set the new column on.
+    seed: (table, seedRows) =>
+      rowsOf(table).push(
+        ...seedRows.map((row) => ({
+          ...(COLUMN_DEFAULTS[table]?.() ?? {}),
+          ...row,
+        }))
+      ),
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
 }
