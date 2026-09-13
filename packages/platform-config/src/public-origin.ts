@@ -105,8 +105,27 @@ function resolveEnvironmentKind(env: PublicOriginEnvInput): EnvironmentKind {
   return env.nodeEnv === 'production' ? 'production' : 'development';
 }
 
+const SLASH_CHAR_CODE = '/'.charCodeAt(0);
+
+/**
+ * Trims one or more trailing `/` off an already-trimmed string, with a plain
+ * index walk rather than a regex.
+ *
+ * `value` here is env-controlled input (`FLOWSTARTER_PUBLIC_APP_ORIGIN`,
+ * `NEXT_PUBLIC_SITE_URL`, ...), not attacker-controlled in the way a request
+ * body is, but CodeQL still flags a `/\/+$/`-shaped pattern as a polynomial
+ * regex over "library input" (js/polynomial-redos) wherever the string it
+ * runs against is not provably bounded. A bounded loop has no backtracking
+ * to be slow in the first place, so it settles the question rather than
+ * arguing that this particular input happens to be short.
+ */
 function stripTrailingSlash(value: string): string {
-  return value.trim().replace(/\/+$/, '');
+  const trimmed = value.trim();
+  let end = trimmed.length;
+  while (end > 0 && trimmed.charCodeAt(end - 1) === SLASH_CHAR_CODE) {
+    end -= 1;
+  }
+  return trimmed.slice(0, end);
 }
 
 /**

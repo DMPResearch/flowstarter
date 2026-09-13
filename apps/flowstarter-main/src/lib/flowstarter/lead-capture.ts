@@ -121,11 +121,29 @@ export function leadCaptureEndpoint(
   token: string
 ): string {
   const trimmed = platformOrigin.trim();
-  const withScheme = /^https?:\/\//i.test(trimmed)
-    ? trimmed
-    : `https://${trimmed}`;
-  const origin = withScheme.replace(/\/+$/, '');
+  const lower = trimmed.toLowerCase();
+  const hasScheme = lower.startsWith('http://') || lower.startsWith('https://');
+  const withScheme = hasScheme ? trimmed : `https://${trimmed}`;
+  const origin = stripTrailingSlashes(withScheme);
   return `${origin}/api/leads/capture/${token}`;
+}
+
+const SLASH_CHAR_CODE = '/'.charCodeAt(0);
+
+/**
+ * A plain index walk, not a `/\/+$/`-shaped regex: `platformOrigin` above is
+ * a parameter of an exported function, which CodeQL's polynomial-redos query
+ * (js/polynomial-redos) treats as library input regardless of how trusted the
+ * one caller in this codebase happens to be, and flagged the identically
+ * shaped pattern in `@flowstarter/platform-config`'s `stripTrailingSlash`.
+ * The loop settles the question instead of arguing the input is short.
+ */
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === SLASH_CHAR_CODE) {
+    end -= 1;
+  }
+  return value.slice(0, end);
 }
 
 // ─── Minting, on demand and on rotation ────────────────────────────────────
