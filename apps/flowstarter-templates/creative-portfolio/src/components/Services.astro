@@ -143,9 +143,3 @@ const services = servicesLabels.items.map((item, index) => ({
   }
 </style>
 
-<script>
-  /* Service cards now reveal via CSS on load — no scroll choreography. */
-  document
-    .querySelectorAll('[data-service-card]')
-    .forEach((card) => card.style.removeProperty('--service-reveal-progress'));
-</script>

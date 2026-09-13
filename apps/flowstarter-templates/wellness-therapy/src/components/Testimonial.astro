@@ -45,29 +45,6 @@ const columns = [col0, col1, col2];
   </div>
 </SectionBlock>
 
-<script>
-  import { useVisibilityClass } from '../scripts/hooks/useVisibilityClass.js';
-
-  useVisibilityClass({
-    selector: '[data-testimonial-reveal]',
-    threshold: 0.08,
-    rootMargin: '0px 0px -5% 0px',
-    once: true,
-    revealIfAlreadyVisible: true,
-  });
-  const revealAllQuotes = () =>
-    document
-      .querySelectorAll('[data-testimonial-reveal]')
-      .forEach((el) => el.classList.add('is-visible'));
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () =>
-      window.setTimeout(revealAllQuotes, 450)
-    );
-  } else {
-    window.setTimeout(revealAllQuotes, 450);
-  }
-</script>
-
 <style>
   .testimonial__heading {
     margin-bottom: 48px;

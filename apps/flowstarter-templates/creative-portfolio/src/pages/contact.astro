@@ -82,17 +82,3 @@ import { pageTitle } from '../lib/site-data';
   }
 </style>
 
-<script>
-  import { useCountryPicker } from '../scripts/hooks/useCountryPicker.js';
-  import { useFormSuccess } from '../scripts/hooks/useFormSuccess.js';
-
-  const picker = useCountryPicker('[data-country-picker]');
-  const contactForm = document.querySelector('[data-contact-form]');
-
-  useFormSuccess({
-    formSelector: '[data-contact-form]',
-    successSelector: '[data-contact-success]',
-    mailto: contactForm instanceof HTMLElement ? contactForm.dataset.contactEmail : undefined,
-    onSuccess: () => picker?.reset(),
-  });
-</script>

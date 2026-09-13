@@ -82,8 +82,74 @@ const HTML_FILE = /\.html?$/i;
 /** A page past this is not a page; reading it would be the slow step. */
 const MAX_HTML_BYTES = 4 * 1024 * 1024;
 
+/**
+ * Rewrites every single-quoted string literal in `source` to double-quoted,
+ * copying everything else through unchanged. Mirrors
+ * `canonicalizeQuotes` in the codegen package's `markup-policy.ts`; the
+ * deploy agent ships as a standalone binary and deliberately does not
+ * depend on that package.
+ *
+ * Deliberately not a JS parser: it only ever compares the platform's own
+ * trivial one-line bootstraps against whatever a bundler did to them, so it
+ * only needs to get string literals right, and only transforms the ones it
+ * can transform safely — no backslash escape inside the quotes and no
+ * embedded double quote. Anything else is copied through as-is.
+ */
+function canonicalizeQuotes(source: string): string {
+  let out = '';
+  let i = 0;
+  const n = source.length;
+  while (i < n) {
+    const quote = source[i]!;
+    if (quote !== "'" && quote !== '"' && quote !== '`') {
+      out += quote;
+      i += 1;
+      continue;
+    }
+    let j = i + 1;
+    let escaped = false;
+    while (j < n && source[j] !== quote) {
+      if (source[j] === '\\') {
+        escaped = true;
+        j += 1;
+      }
+      j += 1;
+    }
+    const closed = j < n; // source[j] === quote
+    const inner = source.slice(i + 1, j);
+    if (quote === "'" && closed && !escaped && !inner.includes('"')) {
+      out += `"${inner}"`;
+    } else {
+      out += source.slice(i, closed ? j + 1 : j);
+    }
+    i = closed ? j + 1 : j;
+  }
+  return out;
+}
+
+/**
+ * Drops a semicolon a minifier would drop as redundant under automatic
+ * semicolon insertion: one immediately before the end of the source, or
+ * immediately before a closing `}`. Mirrors `stripRedundantSemicolons` in
+ * the codegen package's `markup-policy.ts`.
+ */
+function stripRedundantSemicolons(source: string): string {
+  let out = source.split(';}').join('}');
+  out = out.split('; }').join(' }');
+  if (out.endsWith(';')) out = out.slice(0, -1);
+  return out.trim();
+}
+
+/**
+ * Canonical form of an inline script's source: whitespace collapsed, quote
+ * style and a trailing semicolon canonicalized, so a managed script's exact
+ * text still matches whether or not Astro's own build reformatted it
+ * (`'js'` to `"js"`, a redundant trailing `;` dropped). Mirrors
+ * `normalizeScript` in the codegen package's `markup-policy.ts`.
+ */
 function collapse(source: string): string {
-  return source.split(/\s+/u).join(' ').trim();
+  const collapsed = source.split(/\s+/u).join(' ').trim();
+  return stripRedundantSemicolons(canonicalizeQuotes(collapsed));
 }
 
 function sha256Base64(value: string): string {
