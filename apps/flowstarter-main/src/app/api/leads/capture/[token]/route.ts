@@ -45,6 +45,7 @@ import {
   type CaptureTenant,
 } from '@/lib/flowstarter/lead-capture';
 import { notifyClientOnce } from '@/lib/flowstarter/client-notifications';
+import { readJsonCapped } from '@/lib/net/ingress';
 import { consumeRateLimit } from '@/lib/rate-limit';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 
@@ -106,12 +107,16 @@ export async function POST(
     return refusal(403, 'This form can only be used on its own website.', null);
   }
 
-  let payload: unknown;
-  try {
-    payload = await request.json();
-  } catch {
+  // A contact form on somebody else's website, so the body is a stranger's
+  // twice over. Capped on the stream. Codex F07.
+  const read = await readJsonCapped(request);
+  if (read.status === 'too_large') {
+    return refusal(413, 'That message is too long to send.', origin);
+  }
+  if (read.status === 'invalid') {
     return refusal(400, 'Could not read that. Try again.', origin);
   }
+  const payload: unknown = read.value;
 
   const parsed = parseLeadCaptureBody(payload);
   if (!parsed.ok) return refusal(400, parsed.message, origin);

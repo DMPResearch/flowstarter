@@ -63,15 +63,35 @@ const WALLED: ProfileReading = {
   reason: 'login_required',
 };
 
+/**
+ * A stand-in for what a CDN actually sends back.
+ *
+ * Fuller than it used to be on purpose: the capture path now goes through
+ * `lib/net/safe-fetch.ts`, which reads the status line, the content type and
+ * the body as a stream rather than calling `arrayBuffer()` and measuring
+ * afterwards. A stub that omits those was fine against code that ignored them
+ * and would now be asserting against a response no server ever sends.
+ */
 function responding(
   body: Buffer,
-  init: { ok?: boolean; contentLength?: string } = {}
+  init: { ok?: boolean; contentLength?: string; contentType?: string } = {}
 ): Response {
+  const headers = new Headers({
+    // The CDN's claim about the bytes. Deliberately still a claim: one of the
+    // cases below sends an SVG under this content type.
+    'content-type': init.contentType ?? 'image/png',
+    ...(init.contentLength ? { 'content-length': init.contentLength } : {}),
+  });
   return {
     ok: init.ok ?? true,
-    headers: new Headers(
-      init.contentLength ? { 'content-length': init.contentLength } : {}
-    ),
+    status: init.ok ?? true ? 200 : 404,
+    headers,
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(body));
+        controller.close();
+      },
+    }),
     arrayBuffer: async () =>
       body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength),
   } as unknown as Response;

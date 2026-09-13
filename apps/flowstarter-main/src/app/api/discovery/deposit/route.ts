@@ -17,6 +17,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { z } from 'zod';
+import { readJsonCapped } from '@/lib/net/ingress';
 import {
   type Tier,
   bookingDepositAmount,
@@ -72,12 +73,20 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Too many attempts' }, { status: 429 });
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
+  // Capped as it streams rather than buffered and measured afterwards: an
+  // anonymous body arrives in whatever size the sender chooses, and a chunked
+  // one advertises no size at all. Codex F07.
+  const read = await readJsonCapped(request);
+  if (read.status === 'too_large') {
+    return NextResponse.json(
+      { error: 'That request is too large.' },
+      { status: 413 }
+    );
+  }
+  if (read.status === 'invalid') {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
+  const body: unknown = read.value;
 
   const parsed = DepositSchema.safeParse(body);
   if (!parsed.success) {

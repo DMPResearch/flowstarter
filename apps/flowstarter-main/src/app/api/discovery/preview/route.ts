@@ -22,6 +22,7 @@ import {
   type SiteCopyUsage,
 } from '@/lib/ai/site-copy';
 import { funnelBudgetState, recordGenerationCost } from '@/lib/ai/funnel-cost';
+import { readJsonCapped } from '@/lib/net/ingress';
 import { buildDemoSite } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/discovery.logic';
 
 /** Service client — demo_edit_counters/discovery_leads aren't in gen types. */
@@ -96,12 +97,20 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Too many attempts' }, { status: 429 });
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
+  // Capped as it streams rather than buffered and measured afterwards: an
+  // anonymous body arrives in whatever size the sender chooses, and a chunked
+  // one advertises no size at all. Codex F07.
+  const read = await readJsonCapped(request);
+  if (read.status === 'too_large') {
+    return NextResponse.json(
+      { error: 'That request is too large.' },
+      { status: 413 }
+    );
+  }
+  if (read.status === 'invalid') {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
+  const body: unknown = read.value;
 
   const parsed = PreviewSchema.safeParse(body);
   if (!parsed.success) {

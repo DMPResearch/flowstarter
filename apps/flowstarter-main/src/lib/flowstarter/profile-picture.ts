@@ -50,6 +50,9 @@ import 'server-only';
 import { probeImageSize } from '@flowstarter/agentic-codegen/src/flowstarter/preview-assets';
 import { assertSafeUploadedImage } from '@flowstarter/agentic-codegen/src/flowstarter/site-media';
 
+import { imagePixelBudget } from '@/lib/net/ingress';
+import { fetchPublicResource, type FetchLike } from '@/lib/net/safe-fetch';
+
 import { storeFunnelAsset, type FunnelAssetRow } from './funnel-assets';
 import { IMAGE_FETCH_TIMEOUT_MS } from './profile-image';
 import {
@@ -91,7 +94,7 @@ export type ProfilePictureOutcome =
 export async function captureProfilePicture(input: {
   previewId: string;
   readings: readonly ProfileReading[];
-  fetchImpl?: typeof fetch;
+  fetchImpl?: FetchLike;
   timeoutMs?: number;
 }): Promise<ProfilePictureOutcome> {
   const exposed = CAPTURE_ORDER.map((network) =>
@@ -110,32 +113,36 @@ export async function captureProfilePicture(input: {
     return { status: 'skipped', reason: 'unreadable' };
   }
 
-  const fetchImpl = input.fetchImpl ?? fetch;
-  const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort(),
-    input.timeoutMs ?? IMAGE_FETCH_TIMEOUT_MS
-  );
-  let bytes: Buffer;
-  try {
-    const response = await fetchImpl(exposed.imageUrl, {
-      signal: controller.signal,
-      redirect: 'follow',
-      headers: { accept: 'image/*' },
-    });
-    if (!response.ok) return { status: 'skipped', reason: 'unreadable' };
-    const declared = Number(response.headers.get('content-length') ?? '0');
-    if (declared > MAX_PICTURE_BYTES) {
-      return { status: 'skipped', reason: 'too_large' };
-    }
-    bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.byteLength > MAX_PICTURE_BYTES) {
-      return { status: 'skipped', reason: 'too_large' };
-    }
-  } catch {
+  // One adapter for every outbound request in the brand pipeline: https only,
+  // port 443 only, every resolved address checked, the connection pinned to
+  // the address that was checked, redirects followed by hand and re-validated
+  // at each hop, one deadline across headers and body, and the body abandoned
+  // the moment it passes the cap rather than buffered and measured afterwards.
+  // Codex F02, and the remote half of F07.
+  const outcome = await fetchPublicResource({
+    url: exposed.imageUrl,
+    headers: { accept: 'image/*' },
+    maxBytes: MAX_PICTURE_BYTES,
+    timeoutMs: input.timeoutMs ?? IMAGE_FETCH_TIMEOUT_MS,
+    fetchImpl: input.fetchImpl,
+    expect: 'image',
+  });
+  if (outcome.status === 'failed') {
+    return {
+      status: 'skipped',
+      reason: outcome.reason === 'too_large' ? 'too_large' : 'unreadable',
+    };
+  }
+  if (outcome.httpStatus < 200 || outcome.httpStatus >= 300) {
     return { status: 'skipped', reason: 'unreadable' };
-  } finally {
-    clearTimeout(timer);
+  }
+  const bytes = outcome.bytes;
+
+  // Before anything decodes it. A header declaring more pixels than we will
+  // ever place is a decompression bomb whatever its byte length says, and the
+  // storage step probes and stores those same dimensions afterwards.
+  if (imagePixelBudget(bytes).status === 'too_many_pixels') {
+    return { status: 'skipped', reason: 'too_large' };
   }
 
   // The same magic-byte check the client uploader uses. A social network's CDN

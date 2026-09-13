@@ -1,46 +1,64 @@
 import 'server-only';
 
 /**
- * The one place that performs a profile request, and the only thing in the
- * brand pipeline that touches the network.
+ * The one place that performs a profile request.
  *
- * It decides nothing. Every judgement about what came back lives in
- * `profile-signals.ts`, which is pure; this module performs the GET, enforces
- * the budget, and hands the status and the body over to be read. That split is
- * what lets the exposed, blocked and timeout cases be tested without a network
- * and without a fixture server.
+ * It decides nothing and it no longer transports anything either. Every
+ * judgement about what came back lives in `profile-signals.ts`, which is pure;
+ * every rule about where a request may go lives in `lib/net/safe-fetch.ts`,
+ * which is shared with the picture and image paths and with the portrait
+ * pipeline. What is left here is the translation between the two: a link in,
+ * a `ProfileReading` out, with the adapter's four failure reasons mapped onto
+ * the vocabulary the wizard already prints to the visitor.
  *
- * The budget is deliberately small. A visitor is sitting in front of the
+ * THE BUDGET is deliberately small. A visitor is sitting in front of the
  * wizard waiting for a preview, and a social network that is slow to answer an
  * anonymous request is a network that is about to refuse it anyway. Four
  * seconds and 1.5 MB, once, no retry: if it does not land in that, the palette
  * comes from the tone chips and the visitor is told which network went quiet.
  *
- * Safety, because this turns a visitor-supplied string into an outbound
- * request from our server:
- *
- *   - the host is checked against the allow list in `profile-signals.ts`
- *     before the request and again after every redirect,
- *   - https only, no credentials in the authority, no private or loopback
- *     address at any hop,
- *   - redirects are followed by hand, at most three, so a redirect to
- *     169.254.169.254 cannot be laundered through a public first hop,
- *   - the body is read in chunks and abandoned the moment it passes the cap,
- *     so a hostile endpoint cannot stream us out of memory.
+ * SAFETY, because this turns a visitor-supplied string into an outbound
+ * request from our server, is now one import rather than three copies of a
+ * hostname regex. `fetchPublicResource` is https only, port 443 only, refuses
+ * credentials in the authority, resolves the name and checks EVERY address it
+ * answers with, pins the connection to the address it checked so a rebinding
+ * cannot swap it, follows redirects by hand and re-validates each hop in full,
+ * holds one deadline across headers and body, and abandons the body the moment
+ * it passes the cap. That is Codex F02 and the size half of F07, in the module
+ * whose job it is.
  */
+import {
+  fetchPublicResource,
+  type FetchLike,
+  type PublicFetchFailure,
+} from '@/lib/net/safe-fetch';
+
 import {
   MAX_PROFILE_BYTES,
   PROFILE_FETCH_TIMEOUT_MS,
   type ProfileLink,
   type ProfileReading,
-  isPublicHttpUrl,
+  type ProfileUnavailableReason,
   readProfileHtml,
   summariseProfileSignals,
   type ProfileSignals,
 } from './profile-signals';
 
-/** At most this many hops before we call it a redirect loop. */
-export const MAX_REDIRECTS = 3;
+/**
+ * Re-exported so the modules that grew up importing the request from here keep
+ * working, and so a caller who needs raw bytes under the same discipline has
+ * one obvious place to get them. The implementation is
+ * `lib/net/safe-fetch.ts`; there is no second copy.
+ */
+export {
+  fetchPublicResource,
+  isFetchableUrl,
+  type FetchLike,
+  type PublicFetchFailure,
+  type PublicFetchOutcome,
+} from '@/lib/net/safe-fetch';
+
+export { DEFAULT_MAX_REDIRECTS as MAX_REDIRECTS } from '@/lib/net/net-config';
 
 /**
  * A browser-ish Accept header. Not a disguise: we send our own user agent and
@@ -53,37 +71,17 @@ const REQUEST_HEADERS: Record<string, string> = {
   'user-agent': 'FlowstarterBrandReader/1.0 (+https://flowstarter.net)',
 };
 
-export type FetchLike = (
-  input: string,
-  init: {
-    headers: Record<string, string>;
-    redirect: 'manual';
-    signal: AbortSignal;
-  }
-) => Promise<Response>;
-
-/** Reads at most `MAX_PROFILE_BYTES`, then stops pulling from the stream. */
-async function readCapped(response: Response): Promise<string | 'too_large'> {
-  const body = response.body;
-  if (!body) return await response.text();
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      total += value.byteLength;
-      if (total > MAX_PROFILE_BYTES) return 'too_large';
-      chunks.push(value);
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined);
-  }
-  return new TextDecoder('utf-8', { fatal: false }).decode(
-    Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)))
-  );
+/**
+ * The adapter's four reasons, in the wizard's own words. A straight mapping
+ * rather than a clever one: each of these ends as a sentence a visitor reads
+ * about one of their own links, so the two vocabularies are kept the same
+ * length on purpose.
+ */
+function reasonFor(failure: PublicFetchFailure): ProfileUnavailableReason {
+  if (failure === 'timeout') return 'timeout';
+  if (failure === 'too_large') return 'too_large';
+  if (failure === 'network_error') return 'network_error';
+  return 'blocked';
 }
 
 /**
@@ -94,75 +92,32 @@ export async function fetchProfileReading(
   link: ProfileLink,
   options: { fetchImpl?: FetchLike; timeoutMs?: number } = {}
 ): Promise<ProfileReading> {
-  const fetchImpl = (options.fetchImpl ?? fetch) as FetchLike;
-  const timeoutMs = options.timeoutMs ?? PROFILE_FETCH_TIMEOUT_MS;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const outcome = await fetchPublicResource({
+    url: link.url,
+    headers: REQUEST_HEADERS,
+    maxBytes: MAX_PROFILE_BYTES,
+    timeoutMs: options.timeoutMs ?? PROFILE_FETCH_TIMEOUT_MS,
+    fetchImpl: options.fetchImpl,
+  });
 
-  try {
-    let url = link.url;
-    for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-      if (!isPublicHttpUrl(url)) {
-        return {
-          status: 'unavailable',
-          network: link.network,
-          url: link.url,
-          reason: 'blocked',
-        };
-      }
-      const response = await fetchImpl(url, {
-        headers: REQUEST_HEADERS,
-        redirect: 'manual',
-        signal: controller.signal,
-      });
-
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers.get('location');
-        if (!location) break;
-        try {
-          url = new URL(location, url).toString();
-        } catch {
-          break;
-        }
-        continue;
-      }
-
-      const html = await readCapped(response);
-      if (html === 'too_large') {
-        return {
-          status: 'unavailable',
-          network: link.network,
-          url: link.url,
-          reason: 'too_large',
-        };
-      }
-      return readProfileHtml({
-        network: link.network,
-        url: link.url,
-        status: response.status,
-        html,
-      });
-    }
-    // Out of hops, or a redirect with nowhere to go.
+  if (outcome.status !== 'ok') {
     return {
       status: 'unavailable',
       network: link.network,
       url: link.url,
-      reason: 'blocked',
+      reason: reasonFor(outcome.reason),
     };
-  } catch (error) {
-    const aborted =
-      controller.signal.aborted ||
-      (error instanceof Error && error.name === 'AbortError');
-    return {
-      status: 'unavailable',
-      network: link.network,
-      url: link.url,
-      reason: aborted ? 'timeout' : 'network_error',
-    };
-  } finally {
-    clearTimeout(timer);
   }
+
+  return readProfileHtml({
+    network: link.network,
+    url: link.url,
+    status: outcome.httpStatus,
+    // `fatal: false` on purpose: a page that is half mis-encoded still has its
+    // meta tags, and a replacement character in a bio is a better outcome for
+    // the visitor than no reading at all.
+    html: new TextDecoder('utf-8', { fatal: false }).decode(outcome.bytes),
+  });
 }
 
 /**

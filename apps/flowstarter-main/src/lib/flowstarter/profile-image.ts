@@ -28,6 +28,10 @@ import 'server-only';
  * size is a pure function of its input, so the same file always produces the
  * same swatches.
  */
+import { imageDecodeGate, imagePixelBudget } from '@/lib/net/ingress';
+import { ingressConfig } from '@/lib/net/net-config';
+import { fetchPublicResource, type FetchLike } from '@/lib/net/safe-fetch';
+
 import type { Bitmap } from './brand-palette';
 import { isPublicHttpUrl } from './profile-signals';
 
@@ -55,32 +59,56 @@ export const IMAGE_FETCH_TIMEOUT_MS = 4_000;
 export async function decodeBitmap(
   bytes: Buffer | Uint8Array
 ): Promise<Bitmap | null> {
-  try {
-    // Imported lazily so a route that never derives a palette does not pay for
-    // loading a native module, and so this file can be imported in a test
-    // environment where the binary is not available.
-    const sharp = (await import('sharp')).default;
-    const pipeline = sharp(Buffer.from(bytes), {
-      // A malicious GIF or WebP can declare hundreds of frames; we want the
-      // first one and nothing else.
-      animated: false,
-      failOn: 'error',
-    });
-    const { data, info } = await pipeline
-      .resize(DECODE_EDGE, DECODE_EDGE, {
-        fit: 'inside',
-        withoutEnlargement: true,
-        kernel: 'nearest',
-      })
-      .ensureAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
+  const buffer = Buffer.from(bytes);
+  const limits = ingressConfig();
 
-    if (info.channels !== 4 || info.width <= 0 || info.height <= 0) return null;
-    return { width: info.width, height: info.height, data };
-  } catch {
+  // Before the decoder, not after it. A PNG whose IHDR declares 40000x40000 is
+  // a few kilobytes on the wire and about six gigabytes of RGBA in memory, so
+  // every byte-length cap upstream passes it and the process dies here. The
+  // header carries the dimensions; reading them costs nothing. Codex F07.
+  if (
+    imagePixelBudget(buffer, limits.maxImagePixels).status === 'too_many_pixels'
+  ) {
     return null;
   }
+
+  // One gate for the whole process. A decode is the most expensive thing an
+  // anonymous request can ask this server to do and the resource it spends is
+  // memory, which is the one that takes the process down rather than the
+  // request.
+  return await imageDecodeGate(limits).run(async () => {
+    try {
+      // Imported lazily so a route that never derives a palette does not pay
+      // for loading a native module, and so this file can be imported in a
+      // test environment where the binary is not available.
+      const sharp = (await import('sharp')).default;
+      const pipeline = sharp(buffer, {
+        // A malicious GIF or WebP can declare hundreds of frames; we want the
+        // first one and nothing else.
+        animated: false,
+        failOn: 'error',
+        // The backstop for the formats whose dimensions the header probe
+        // cannot read — WebP, chiefly. sharp refuses rather than allocates.
+        limitInputPixels: limits.maxImagePixels,
+      });
+      const { data, info } = await pipeline
+        .resize(DECODE_EDGE, DECODE_EDGE, {
+          fit: 'inside',
+          withoutEnlargement: true,
+          kernel: 'nearest',
+        })
+        .ensureAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+
+      if (info.channels !== 4 || info.width <= 0 || info.height <= 0) {
+        return null;
+      }
+      return { width: info.width, height: info.height, data };
+    } catch {
+      return null;
+    }
+  });
 }
 
 /**
@@ -95,38 +123,26 @@ export async function decodeBitmap(
 export async function fetchImageBitmap(
   url: string,
   options: {
-    fetchImpl?: typeof fetch;
+    fetchImpl?: FetchLike;
     timeoutMs?: number;
     maxBytes?: number;
   } = {}
 ): Promise<Bitmap | null> {
   if (!isPublicHttpUrl(url)) return null;
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const maxBytes = options.maxBytes ?? MAX_IMAGE_BYTES;
-  const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort(),
-    options.timeoutMs ?? IMAGE_FETCH_TIMEOUT_MS
-  );
-  try {
-    const response = await fetchImpl(url, {
-      signal: controller.signal,
-      redirect: 'follow',
-      headers: { accept: 'image/*' },
-    });
-    if (!response.ok) return null;
-    // Trust the header when it is there, and check the real length anyway: a
-    // content-length is a claim, not a measurement.
-    const declared = Number(response.headers.get('content-length') ?? '0');
-    if (declared > maxBytes) return null;
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.byteLength > maxBytes) return null;
-    return await decodeBitmap(buffer);
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
+  const outcome = await fetchPublicResource({
+    url,
+    headers: { accept: 'image/*' },
+    maxBytes: options.maxBytes ?? MAX_IMAGE_BYTES,
+    timeoutMs: options.timeoutMs ?? IMAGE_FETCH_TIMEOUT_MS,
+    fetchImpl: options.fetchImpl,
+    // A public page may point at anything at all. We asked for a picture, so a
+    // response that says it is a 400 MB log file is refused before its body is
+    // read rather than after.
+    expect: 'image',
+  });
+  if (outcome.status !== 'ok') return null;
+  if (outcome.httpStatus < 200 || outcome.httpStatus >= 300) return null;
+  return await decodeBitmap(outcome.bytes);
 }
 
 /**

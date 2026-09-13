@@ -19,6 +19,7 @@ import { z } from 'zod';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import { resolveOperatorNotifyEmail, sendEmail } from '@/lib/email';
 import { contactRateLimiter } from '@/lib/rate-limit';
+import { readJsonCapped } from '@/lib/net/ingress';
 
 const ContactSchema = z.object({
   name: z
@@ -119,12 +120,20 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
+  // Read through a capped stream rather than `request.json()`, which buffers
+  // whatever arrives before anything measures it. Anonymous route, prose-sized
+  // body, so the ceiling is the configured JSON cap. Codex F07.
+  const read = await readJsonCapped(request);
+  if (read.status === 'too_large') {
+    return NextResponse.json(
+      { error: 'That message is too large.' },
+      { status: 413 }
+    );
+  }
+  if (read.status === 'invalid') {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
+  const body: unknown = read.value;
 
   const result = ContactSchema.safeParse(body);
   if (!result.success) {

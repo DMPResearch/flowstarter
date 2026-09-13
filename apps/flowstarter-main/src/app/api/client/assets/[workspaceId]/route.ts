@@ -16,6 +16,7 @@ import 'server-only';
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { requireWorkspaceAccess } from '@/lib/api-auth';
+import { readFormDataCapped } from '@/lib/net/ingress';
 import {
   AssetUploadError,
   MAX_FILES_PER_REQUEST,
@@ -72,11 +73,13 @@ export async function POST(
     );
   }
 
-  // A declared length over the whole-request cap is refused before the body is
-  // buffered at all, so a 100MB POST costs us a header parse rather than
-  // 100MB of memory.
-  const declaredLength = Number(request.headers.get('content-length') ?? '0');
-  if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BYTES) {
+  // The whole-request cap, enforced on the stream rather than on the sender's
+  // claim about it. A declared length over the cap is still refused first,
+  // because an honest client saying "this is too big" costs nothing to
+  // believe — but a chunked body carries no length at all, and `?? '0'` read
+  // that as no bytes and then buffered whatever arrived. Codex F07.
+  const body = await readFormDataCapped(request, MAX_REQUEST_BYTES);
+  if (body.status === 'too_large') {
     return NextResponse.json(
       {
         error: 'That upload is too large. Please send fewer or smaller files.',
@@ -84,16 +87,13 @@ export async function POST(
       { status: 413 }
     );
   }
-
-  let form: FormData;
-  try {
-    form = await request.formData();
-  } catch {
+  if (body.status === 'invalid') {
     return NextResponse.json(
       { error: 'That upload could not be read' },
       { status: 400 }
     );
   }
+  const form = body.form;
 
   // `files` is the documented field; `file` is accepted so a plain single-input
   // form works without JavaScript rewriting the field name.

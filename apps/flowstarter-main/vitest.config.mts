@@ -99,6 +99,12 @@ export default defineConfig({
         statements: 47,
 
         'lib/flowstarter/**': MONEY_AND_DATA,
+        // The outbound-fetch adapter and the ingress readers. Not money and
+        // not tenant data, and held to the same bar anyway: this is the code
+        // that decides whether a visitor's string becomes a request from our
+        // server to our own network, and an untested branch in it is the
+        // shape Codex F02 and F07 already took once.
+        'lib/net/**': MONEY_AND_DATA,
         'lib/billing/**': MONEY_AND_DATA,
         'lib/hosting/**': MONEY_AND_DATA,
         'lib/webhook-verification.ts': MONEY_AND_DATA,
