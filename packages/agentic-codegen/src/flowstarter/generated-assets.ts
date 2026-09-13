@@ -62,21 +62,32 @@ const DEFAULT_IMAGE_MODEL = 'google/gemini-2.5-flash-image';
 // --------------------------------------------------------------------------
 
 /**
+ * The slot vocabulary below is exported rather than private.
+ *
+ * `portrait-slot.ts` decides where a client's own photograph may sit, which is
+ * the same question asked from the other side: the slots this file refuses to
+ * paint a person into are exactly the slots a real person belongs in. Two
+ * copies of these patterns would be two definitions of what a testimonial
+ * section is called, and they would drift the first time a template invents a
+ * new name for one.
+ */
+
+/**
  * Keys that address a person rather than a place or a thing. We do not
  * fabricate people: a generated face on an "our founder" slot is a lie about
  * who the client is, and no amount of prompt hedging makes it not one.
  */
-const PERSON_KEY = /^(avatar|authorImage)$/i;
+export const PERSON_KEY = /^(avatar|authorImage)$/i;
 
 /** Sections that are about people, whatever the key on the line is called. */
-const PERSON_SECTION =
+export const PERSON_SECTION =
   /testimonial|review|author|team|staff|people|founder|member|client/i;
 
 /** A wordmark slot is typography, not photography. */
 const LOGO_KEY = /^logo$/i;
 
 /** Roles, by the section or key the template filed the slot under. */
-const HERO_SECTION = /hero|banner|masthead|cover|jumbotron|splash/i;
+export const HERO_SECTION = /hero|banner|masthead|cover|jumbotron|splash/i;
 const SERVICE_SECTION =
   /service|offer|feature|package|pricing|capabilit|process|project|work|portfolio|caseStud|journal|gallery/i;
 const ABOUT_SECTION = /about|story|studio|space|mood|value|approach|why/i;
@@ -86,7 +97,8 @@ const ABOUT_SECTION = /about|story|studio|space|mood|value|approach|why/i;
  * When the client gave us real media, generating competing artwork for these
  * would only invite the coding agent to pick the fake one.
  */
-const CLIENT_MEDIA_SECTION = /about|story|portrait|profile|founder|bio|team/i;
+export const CLIENT_MEDIA_SECTION =
+  /about|story|portrait|profile|founder|bio|team/i;
 
 export interface PlannedAssetSlot {
   slot: SiteImageSlot;

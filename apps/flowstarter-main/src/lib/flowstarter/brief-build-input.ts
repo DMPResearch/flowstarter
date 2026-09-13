@@ -326,11 +326,19 @@ async function carriedIntakeFields(
  * are bridged here rather than by widening the loader everything else uses. An
  * unconfirmed portrait therefore simply does not resolve, which is the correct
  * answer for a build.
+ *
+ * The provenance is carried rather than assumed. This used to hardcode
+ * `source: 'upload'`, which was true of every asset when it was written and
+ * stopped being true the moment a portrait could be sourced from a client's
+ * own LinkedIn or Instagram. A build that believes a downloaded photograph was
+ * uploaded is a build that cannot answer the only question a rights complaint
+ * asks.
  */
 function usableAsClientAssets(assets: readonly UsableAsset[]) {
   return assets.map((asset) => ({
     id: asset.id,
-    source: 'upload',
+    source: asset.source,
+    sourceUrl: asset.sourceUrl,
     kind: asset.kind,
     mime: asset.mime,
     width: asset.width,

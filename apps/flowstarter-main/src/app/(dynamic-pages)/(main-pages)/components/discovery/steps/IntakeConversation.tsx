@@ -81,6 +81,7 @@ import {
   chatGroupPositions,
   type BubblePosition,
 } from './ConciergePanes';
+import { ConnectPortrait } from './ConnectPortrait';
 import { RecommendationStep } from './RecommendationStep';
 import { SubscriptionStep } from './SubscriptionStep';
 import { useAutosizeTextarea } from '../useAutosizeTextarea';
@@ -602,23 +603,39 @@ function Replies({
   if (question.kind === 'panel') {
     // `canProceed` is still the gate — the conversation renders the decision,
     // it does not get to decide it has been made.
+    //
+    // Checked for `connectPortrait` too, and it needs no special case: that
+    // panel sits on step 4, and step 4's clause is the one link, which the
+    // visitor answered on the question immediately before this one. So the
+    // confirm button is already enabled when the panel appears, which is the
+    // right answer for an optional question. Connecting and moving on are
+    // both one tap, and neither is blocked by the other.
     const ready = canProceed(question.step as Step, data);
     return (
       <div className="space-y-4 rounded-xl border border-[var(--fs-rule)] bg-white/60 p-3.5 dark:bg-white/[0.02]">
         {question.id === 'selectedTier' ? (
           <RecommendationStep data={data} update={update} t={t} />
+        ) : question.id === 'connectPortrait' ? (
+          <ConnectPortrait data={data} update={update} t={t} />
         ) : (
           <SubscriptionStep data={data} update={update} t={t} />
         )}
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={() => onSubmit(question.value(data) || 'confirmed')}
-          disabled={!ready}
-          aria-disabled={!ready}
-        >
-          {t('landing.discovery.chat.confirm')}
-        </Button>
+        {/* The two commercial panels are required, so this branch never had a
+            skip. The connect offer is optional and must be as easy to decline
+            as to accept, so the skip the rest of the script already computes
+            is rendered here rather than reinvented. */}
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => onSubmit(question.value(data) || 'confirmed')}
+            disabled={!ready}
+            aria-disabled={!ready}
+          >
+            {t('landing.discovery.chat.confirm')}
+          </Button>
+          {skip}
+        </div>
       </div>
     );
   }

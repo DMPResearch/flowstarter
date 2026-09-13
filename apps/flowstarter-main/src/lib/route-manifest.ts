@@ -56,6 +56,12 @@ export const PUBLIC_ROUTES = [
   // simply wrong. Measured against a real Cal.com instance on 2026-09-13 —
   // bookings were being made and none of them ever reached a dashboard.
   '/api/integrations/cal/(.*)',
+  // The portrait connect flows. Public because the visitor has no session yet
+  // (the whole point is a preview built before anybody is anybody) and because
+  // the callback arrives as a provider's redirect, which carries no cookie of
+  // ours at all. What stands in for a session is the signed state: see
+  // `app/api/connect/connect-flow.ts`.
+  '/api/connect(.*)',
   '/unlock(.*)', // Preview unlock landing: reached from a generated site, viewer may be signed out
   '/welcome(.*)', // Guest deposit landing: Stripe returns here before the account exists
   '/contact(.*)',

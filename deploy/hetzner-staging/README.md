@@ -133,6 +133,10 @@ AUTH_TRANSFER_LIBRARY_ORIGIN=https://library.flowstarter.net
 # previews agent's own shared secret (not the one at 8443).
 FLOWSTARTER_PREVIEW_DEPLOY_AGENT_URL=http://127.0.0.1:8444
 FLOWSTARTER_PREVIEW_DEPLOY_AGENT_SECRET=<previews deploy-agent's shared secret>
+LINKEDIN_CLIENT_ID=                 # portrait from social, see the note below
+LINKEDIN_CLIENT_SECRET=
+INSTAGRAM_APP_ID=
+INSTAGRAM_APP_SECRET=
 ```
 
 The three `AUTH_TRANSFER_*_ORIGIN` lines name the only origins a Clerk sign-in
@@ -147,6 +151,14 @@ A `pr-N` slot gets none of them, and cannot: the policy refuses `pr-<n>.` and
 `*.preview.*` hosts outright, so no ticket is ever minted for an ephemeral slot.
 `http://` values are refused anywhere that is not a development process, which
 is every slot on this box. See `docs/security/auth-transfer-policy.md`.
+
+The four portrait lines may be left empty: unset, the LinkedIn and Instagram
+connect buttons render disabled, saying "this connection is not switched on
+yet", and nothing else in the funnel changes. See
+`docs/portrait-sources.md` for the two developer apps that produce those
+credentials, for the redirect URLs, which must match byte for byte, and for
+`FLOWSTARTER_PORTRAIT_REDIRECT_BASE`, which is worth pinning here so a slot
+sends the URL the provider has on file rather than its own hostname.
 
 The `NEXT_PUBLIC_*` values also exist as Depot secrets (`PROD_NEXT_PUBLIC_*`),
 because those are inlined into the client bundle at **build** time while the
