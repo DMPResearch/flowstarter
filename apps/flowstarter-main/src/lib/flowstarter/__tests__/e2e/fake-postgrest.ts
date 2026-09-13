@@ -70,6 +70,12 @@ const COLUMN_DEFAULTS: Record<string, () => Row> = {
     error_detail: null,
     started_at: null,
     finished_at: null,
+    leased_by: null,
+    lease_expires_at: null,
+    // `20260913130000_agent_job_fencing_token.sql`: not null, default zero.
+    // The claim compares against the value it read, so a row without one is a
+    // row no worker can take -- which looks exactly like a stuck build.
+    lease_fence: 0,
   }),
   flowstarter_project_artifacts: () => ({
     intake_payload: {},

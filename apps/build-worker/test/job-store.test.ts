@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { ProjectState } from '@flowstarter/agentic-codegen';
+import { LeaseLostError, ProjectState } from '@flowstarter/agentic-codegen';
 import {
   buildJobFromRows,
   changeRequestFor,
@@ -1302,7 +1302,10 @@ describe('SupabaseFullSiteBuildJobStore', () => {
   describe('markRebuildStarted', () => {
     it('records the worktree without touching the workspace state', async () => {
       const { client, calls } = makeScriptedClient({
-        flowstarter_agent_jobs: [{ error: null }],
+        // The update reads its own row back: a write that changes nothing is
+        // how a worker that lost its lease finds out, so every one of them
+        // asks for the row it changed.
+        flowstarter_agent_jobs: [{ data: { id: 'job-1' }, error: null }],
       });
       const store = new SupabaseFullSiteBuildJobStore(client, {
         maxAttempts: 3,
@@ -1347,7 +1350,7 @@ describe('SupabaseFullSiteBuildJobStore', () => {
       const { client, calls } = makeScriptedClient({
         flowstarter_agent_jobs: [
           { data: { payload: { trigger: 'client_publish' } } },
-          { error: null },
+          { data: { id: 'job-1' }, error: null },
         ],
       });
       const store = new SupabaseFullSiteBuildJobStore(client, {
@@ -1483,7 +1486,7 @@ describe('SupabaseFullSiteBuildJobStore', () => {
 
     it('records the worktree and moves no project state', async () => {
       const { client, calls } = makeScriptedClient({
-        flowstarter_agent_jobs: [{ error: null }],
+        flowstarter_agent_jobs: [{ data: { id: 'job-1' }, error: null }],
       });
       const store = new SupabaseFullSiteBuildJobStore(client, {
         maxAttempts: 3,
@@ -1652,7 +1655,7 @@ describe('SupabaseFullSiteBuildJobStore', () => {
         flowstarter_agent_jobs: [
           { data: { workspace_id: WORKSPACE_ID } },
           { data: { payload: { trigger: 'operator_build' } } },
-          { error: null },
+          { data: { id: 'job-1' }, error: null },
         ],
         site_versions: [{ error: null }, { error: null }],
         flowstarter_change_requests: [{ data: [{ id: CHANGE_ID }] }],
@@ -1710,7 +1713,7 @@ describe('SupabaseFullSiteBuildJobStore', () => {
         flowstarter_agent_jobs: [
           { data: { workspace_id: WORKSPACE_ID } },
           { data: { payload: {} } },
-          { error: null },
+          { data: { id: 'job-1' }, error: null },
         ],
         site_versions: [{ error: null }, { error: null }],
         flowstarter_change_requests: [{ data: [] }],
@@ -2538,5 +2541,235 @@ describe('SupabaseFullSiteBuildJobStore leases', () => {
       // Second attempt: two base intervals.
       expect(failure?.values).toMatchObject({ run_after: iso(60_000) });
     });
+  });
+});
+
+/**
+ * The fencing token: which *run* holds the job, as opposed to whether anybody
+ * does.
+ *
+ * The failure this closes is a slow worker that misses its heartbeats, is
+ * legitimately overtaken, and then finishes anyway — publishing stale output
+ * and marking a reclaimed job succeeded over the top of the attempt that is
+ * genuinely building it. Every one of those writes was keyed on the job id and
+ * nothing else.
+ */
+describe('lease fencing', () => {
+  const WORKER_OWNER = 'build-1:42:beef';
+  const claimScript = (row: JobLedgerRow, claimed: unknown) => ({
+    workspace_briefs: [readyBrief()],
+    flowstarter_agent_jobs: [{ data: row }, { data: claimed }],
+    workspaces: [
+      {
+        data: {
+          id: WORKSPACE_ID,
+          project_state: ProjectState.DEPOSIT_PAID,
+          cal_com_url: null,
+        },
+      },
+    ],
+    flowstarter_project_artifacts: [{ data: artifacts() }],
+  });
+
+  it('mints one token per claim, guarded on the one the row carried', async () => {
+    const row = ledgerRow({ lease_fence: 7 });
+    const { client, calls } = makeScriptedClient(
+      claimScript(row, { id: row.id }),
+    );
+    const store = new SupabaseFullSiteBuildJobStore(client, {
+      maxAttempts: 3,
+      owner: WORKER_OWNER,
+    });
+
+    await store.claim(row.id);
+
+    const cas = calls.filter(
+      (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+    )[0];
+    expect(cas?.values).toMatchObject({ lease_fence: 8 });
+    // Compare-and-set on the token as well: two workers claiming the same row
+    // cannot mint the same one.
+    expect(cas?.eqCalls).toContainEqual(['lease_fence', 7]);
+  });
+
+  it('starts counting from zero on a row that has never been claimed', async () => {
+    const row = ledgerRow();
+    const { client, calls } = makeScriptedClient(
+      claimScript(row, { id: row.id }),
+    );
+    const store = new SupabaseFullSiteBuildJobStore(client, {
+      maxAttempts: 3,
+      owner: WORKER_OWNER,
+    });
+
+    await store.claim(row.id);
+
+    const cas = calls.filter(
+      (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+    )[0];
+    expect(cas?.values).toMatchObject({ lease_fence: 1 });
+    expect(cas?.eqCalls).toContainEqual(['lease_fence', 0]);
+  });
+
+  it('carries the token on every write, so a reclaimed job refuses them', async () => {
+    const row = ledgerRow();
+    // The claim succeeds; every write after it comes back having changed
+    // nothing, which is what the database says to a run that was overtaken.
+    const { client, calls } = makeScriptedClient({
+      ...claimScript(row, { id: row.id }),
+      flowstarter_agent_jobs: [
+        { data: row },
+        { data: { id: row.id } },
+        { data: null, error: null },
+      ],
+    });
+    const store = new SupabaseFullSiteBuildJobStore(client, {
+      maxAttempts: 3,
+      owner: WORKER_OWNER,
+    });
+    await store.claim(row.id);
+
+    await expect(
+      store.markHumanQa(row.id, {
+        commitSha: 'abc123',
+        pullRequestUrl: 'https://example.test/pr/1',
+        stagingUrl: 'https://example.test',
+      }),
+    ).rejects.toBeInstanceOf(LeaseLostError);
+
+    const finish = calls
+      .filter((c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update')
+      .at(-1);
+    expect(finish?.eqCalls).toContainEqual(['leased_by', WORKER_OWNER]);
+    expect(finish?.eqCalls).toContainEqual(['lease_fence', 1]);
+  });
+
+  it('refuses to fail a job that was taken from it', async () => {
+    const row = ledgerRow();
+    const { client } = makeScriptedClient({
+      ...claimScript(row, { id: row.id }),
+      flowstarter_agent_jobs: [
+        { data: row },
+        { data: { id: row.id } },
+        { data: null, error: null },
+      ],
+    });
+    const store = new SupabaseFullSiteBuildJobStore(client, {
+      maxAttempts: 3,
+      owner: WORKER_OWNER,
+    });
+    await store.claim(row.id);
+
+    // Otherwise a dying attempt stamps `failed` and a backoff on the run that
+    // replaced it, and a paid build waits out a failure that never happened.
+    await expect(
+      store.markFailed(row.id, { code: 'X', detail: 'y' }),
+    ).rejects.toBeInstanceOf(LeaseLostError);
+  });
+
+  it('refuses to authorise a publish once the row carries another token', async () => {
+    const row = ledgerRow();
+    const { client } = makeScriptedClient({
+      ...claimScript(row, { id: row.id }),
+      flowstarter_agent_jobs: [
+        { data: row },
+        { data: { id: row.id } },
+        // The row as it stands now: reclaimed, on its second run.
+        {
+          data: {
+            leased_by: 'build-2:7:cafe',
+            lease_fence: 2,
+            status: 'running',
+          },
+        },
+      ],
+    });
+    const store = new SupabaseFullSiteBuildJobStore(client, {
+      maxAttempts: 3,
+      owner: WORKER_OWNER,
+    });
+    await store.claim(row.id);
+
+    await expect(store.assertHoldsLease(row.id)).rejects.toBeInstanceOf(
+      LeaseLostError,
+    );
+  });
+
+  it('authorises a publish while the row still carries this run', async () => {
+    const row = ledgerRow();
+    const { client } = makeScriptedClient({
+      ...claimScript(row, { id: row.id }),
+      flowstarter_agent_jobs: [
+        { data: row },
+        { data: { id: row.id } },
+        {
+          data: {
+            leased_by: WORKER_OWNER,
+            lease_fence: 1,
+            status: 'running',
+          },
+        },
+      ],
+    });
+    const store = new SupabaseFullSiteBuildJobStore(client, {
+      maxAttempts: 3,
+      owner: WORKER_OWNER,
+    });
+    await store.claim(row.id);
+
+    await expect(store.assertHoldsLease(row.id)).resolves.toBeUndefined();
+  });
+
+  it('stops writing to the timeline of a job it has lost', async () => {
+    const row = ledgerRow();
+    const { client } = makeScriptedClient({
+      ...claimScript(row, { id: row.id }),
+      flowstarter_agent_jobs: [
+        { data: row },
+        { data: { id: row.id } },
+        { data: null, error: null },
+      ],
+    });
+    const store = new SupabaseFullSiteBuildJobStore(client, {
+      maxAttempts: 3,
+      owner: WORKER_OWNER,
+    });
+    await store.claim(row.id);
+    await expect(
+      store.markFailed(row.id, { code: 'X', detail: 'y' }),
+    ).rejects.toBeInstanceOf(LeaseLostError);
+
+    // Two builds narrating into one timeline is how an operator ends up
+    // reading them as one build.
+    await expect(
+      store.appendEvent(row.id, { kind: 'log', body: 'still going' }),
+    ).rejects.toBeInstanceOf(LeaseLostError);
+  });
+
+  it('lets a heartbeat that comes back empty end this run', async () => {
+    const row = ledgerRow();
+    const { client, calls } = makeScriptedClient({
+      ...claimScript(row, { id: row.id }),
+      flowstarter_agent_jobs: [
+        { data: row },
+        { data: { id: row.id } },
+        { data: null, error: null },
+      ],
+    });
+    const store = new SupabaseFullSiteBuildJobStore(client, {
+      maxAttempts: 3,
+      owner: WORKER_OWNER,
+    });
+    await store.claim(row.id);
+
+    expect(await store.heartbeat(row.id)).toBe(false);
+    const renewal = calls
+      .filter((c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update')
+      .at(-1);
+    expect(renewal?.eqCalls).toContainEqual(['lease_fence', 1]);
+    // And nothing this run writes afterwards reaches the job.
+    await expect(
+      store.appendEvent(row.id, { kind: 'log', body: 'still going' }),
+    ).rejects.toBeInstanceOf(LeaseLostError);
   });
 });

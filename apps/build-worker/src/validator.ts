@@ -21,16 +21,26 @@
 
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { stat } from 'node:fs/promises';
+import { rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
-import type { MarkupPolicy, SiteValidator } from '@flowstarter/agentic-codegen';
+import type {
+  MarkupPolicy,
+  OutputExportLimits,
+  SiteValidationResult,
+  SiteValidator,
+} from '@flowstarter/agentic-codegen';
 import {
   describeAssetProblems,
   describeCalPreviewIssue,
   describeMarkupPolicyViolations,
   describePlaceholderImageRepair,
   describePreviewTeaserIssue,
+  exportBuiltSite,
+  isContained,
+  resolveContainedOutputDir,
+  SiteOutputContainmentError,
 } from '@flowstarter/agentic-codegen';
 import {
   DOCKER_CONTAINER_PROGRAMS,
@@ -58,7 +68,11 @@ export class NoopSiteValidator implements SiteValidator {
   async validate(
     _workspaceRoot: string,
     _phase: 'preview' | 'full',
-  ): Promise<void> {}
+  ): Promise<SiteValidationResult> {
+    // Nothing was compiled, so there is nothing to export and the readers
+    // downstream fall back to the site root under the same containment rule.
+    return { outputDir: null };
+  }
 }
 
 /**
@@ -315,6 +329,16 @@ export interface CommandSiteValidatorOptions {
   timeoutMs: number;
   /** Build output that must exist once the commands have run. */
   outputDir?: string;
+  /**
+   * Where the build's output is copied to before anything reads it, and what
+   * that copy may cost. Comes from the worker's configuration; a caller with
+   * nothing to say gets the shared defaults and a directory under the system
+   * temporary directory.
+   */
+  output?: {
+    exportRoot: string;
+    limits?: Partial<OutputExportLimits>;
+  };
   /** Defaults to native, the historical behaviour. */
   isolation?: ValidatorIsolation;
   /**
@@ -381,16 +405,19 @@ interface SpawnPlan {
 export class CommandSiteValidator implements SiteValidator {
   private readonly outputDir: string;
   private readonly isolation: ValidatorIsolation;
+  private readonly exportRoot: string;
 
   constructor(private readonly options: CommandSiteValidatorOptions) {
     this.outputDir = options.outputDir ?? 'dist';
     this.isolation = options.isolation ?? { mode: 'native' };
+    this.exportRoot =
+      options.output?.exportRoot ?? join(tmpdir(), 'flowstarter-build-output');
   }
 
   async validate(
     workspaceRoot: string,
     phase: 'preview' | 'full',
-  ): Promise<void> {
+  ): Promise<SiteValidationResult> {
     if (phase !== 'full') {
       throw new SiteValidationError(
         `CommandSiteValidator only runs the full-build phase, received ${phase}`,
@@ -459,83 +486,174 @@ export class CommandSiteValidator implements SiteValidator {
       }
     }
 
-    const output = join(workspaceRoot, this.outputDir);
-    if (!(await isDirectory(output))) {
+    // Which directory the build actually produced, and whether it is still the
+    // build's own. `stat()` used to answer the first question and silently
+    // answer the second one wrong: it follows links, so a build that replaced
+    // `dist` with a link to somewhere on the host got everything below — the
+    // scanners, the packager, the publisher — to read that somewhere instead.
+    // The rule is shared with every other reader of a build (see
+    // `site-export.ts` in `@flowstarter/agentic-codegen`) rather than restated
+    // here.
+    const output = await this.resolveOutput(workspaceRoot);
+
+    // From here on nothing reads the worktree. The build's output is copied
+    // once, into a directory this worker made and owns, taking only regular
+    // files and real directories and refusing to exceed its configured
+    // budgets. The container is gone by now and the worktree is still writable
+    // by whatever the build left running; the copy is not.
+    const exported = await this.exportOutput(output);
+
+    try {
+      // The build succeeding says nothing about whether its images are images.
+      // Base64 that lost its `encoding` flag lands on disk as an ASCII file
+      // named `.png`, and every step after this one — pack, deploy, serve — is
+      // happy to carry it. This is the last place the bytes are still on disk
+      // and the job can still be failed.
+      const problems = await findNonBinaryAssetsInDir(exported.path);
+      if (problems.length > 0) {
+        const message = describeAssetProblems(problems);
+        this.options.onOutput?.('asset-binary-gate', [message]);
+        throw new SiteValidationError(message);
+      }
+
+      // This validator only ever runs the `full` phase, which is a paid build or
+      // a client rebuild. The funnel preview teaser blurs the lower half of
+      // every page and offers to sell the client a site they have already paid
+      // for; it shipped once, on all ten pages of a delivered portfolio.
+      const teaser = await findPreviewTeaserInDir(exported.path);
+      if (teaser.length > 0) {
+        const message = describePreviewTeaserIssue(teaser);
+        this.options.onOutput?.('preview-teaser-gate', [message]);
+        throw new SiteValidationError(message);
+      }
+
+      // Same shape, same reason: the funnel preview's blurred calendar demo is
+      // a teaser, not a promise, and it shipped on a delivered portfolio's
+      // contact page because nothing removed it once the workspace turned out
+      // to have no booking link to back a real one.
+      const calPreview = await findCalPreviewInDir(exported.path);
+      if (calPreview.length > 0) {
+        const message = describeCalPreviewIssue(calPreview);
+        this.options.onOutput?.('cal-preview-gate', [message]);
+        throw new SiteValidationError(message);
+      }
+
+      // The gate of record for placeholder images: the agent-side repair pass
+      // in `workflows.ts` can only see the site's text and so can miss a
+      // renamed copy or a fallback the agent never touched. This reads the
+      // actual bytes in `dist/`, so a portrait or work-thumb placeholder is
+      // caught by hash even if nothing referencing it survived as a string.
+      const placeholderImages = await findPlaceholderImagesInDir(exported.path);
+      if (placeholderImages.length > 0) {
+        // The repair brief, not the bare verdict: this message is read back to
+        // an agent as "the output was ...", and a change-request agent is only
+        // allowed to delete a file under `public/` that this names by path.
+        const message = describePlaceholderImageRepair(placeholderImages);
+        this.options.onOutput?.('placeholder-image-gate', [message]);
+        throw new SiteValidationError(message);
+      }
+
+      // The last gate, and the only one that asks what the output *does*
+      // rather than what it says. Everything above this line would pass a site
+      // whose copy is honest and whose images are real and which also runs an
+      // inline script a stranger's brief talked the model into writing. This
+      // reads the exported copy as a browser would parse it: no script but the
+      // template's own bundle and the platform's managed blocks, no event
+      // handlers, no `javascript:`, no frame, no `<base>`, no meta refresh, no
+      // form pointing anywhere but the client's own enquiry endpoint, no
+      // service worker.
+      if (this.options.markupPolicy) {
+        const unsafe = await findMarkupViolationsInDir(
+          exported.path,
+          this.options.markupPolicy,
+        );
+        if (unsafe.length > 0) {
+          const message = describeMarkupPolicyViolations(unsafe);
+          // One line per element, so the job timeline names the file and the
+          // tag rather than making an operator open the build.
+          this.options.onOutput?.('generated-html-gate', message.split('\n'));
+          throw new SiteValidationError(message);
+        }
+      }
+    } catch (error) {
+      // A refused build has no reader left, so its copy goes with it rather
+      // than sitting on the host until somebody notices.
+      await this.releaseOutput(exported.path);
+      throw error;
+    }
+
+    this.options.onProgress?.(
+      `exported ${exported.files} files (${exported.bytes} bytes) of build ` +
+        'output for packaging',
+    );
+    return { outputDir: exported.path };
+  }
+
+  /**
+   * The build's output directory, proven to be the build's own.
+   *
+   * Containment failures are reported as validation failures because that is
+   * what they are from the job's point of view: the build produced something
+   * this worker will not carry, and the operator reading the board needs the
+   * sentence, not a stack trace.
+   */
+  private async resolveOutput(workspaceRoot: string): Promise<string> {
+    let output: string | null;
+    try {
+      output = await resolveContainedOutputDir(workspaceRoot, this.outputDir);
+    } catch (error) {
+      if (error instanceof SiteOutputContainmentError) {
+        this.options.onOutput?.('output-containment-gate', [error.message]);
+        throw new SiteValidationError(error.message);
+      }
+      throw error;
+    }
+    if (!output) {
       throw new SiteValidationError(
         `Build produced no ${this.outputDir}/ output directory`,
       );
     }
+    return output;
+  }
 
-    // The build succeeding says nothing about whether its images are images.
-    // Base64 that lost its `encoding` flag lands on disk as an ASCII file
-    // named `.png`, and every step after this one — pack, deploy, serve — is
-    // happy to carry it. This is the last place the bytes are still on disk
-    // and the job can still be failed.
-    const problems = await findNonBinaryAssetsInDir(output);
-    if (problems.length > 0) {
-      const message = describeAssetProblems(problems);
-      this.options.onOutput?.('asset-binary-gate', [message]);
-      throw new SiteValidationError(message);
-    }
-
-    // This validator only ever runs the `full` phase, which is a paid build or
-    // a client rebuild. The funnel preview teaser blurs the lower half of
-    // every page and offers to sell the client a site they have already paid
-    // for; it shipped once, on all ten pages of a delivered portfolio.
-    const teaser = await findPreviewTeaserInDir(output);
-    if (teaser.length > 0) {
-      const message = describePreviewTeaserIssue(teaser);
-      this.options.onOutput?.('preview-teaser-gate', [message]);
-      throw new SiteValidationError(message);
-    }
-
-    // Same shape, same reason: the funnel preview's blurred calendar demo is
-    // a teaser, not a promise, and it shipped on a delivered portfolio's
-    // contact page because nothing removed it once the workspace turned out
-    // to have no booking link to back a real one.
-    const calPreview = await findCalPreviewInDir(output);
-    if (calPreview.length > 0) {
-      const message = describeCalPreviewIssue(calPreview);
-      this.options.onOutput?.('cal-preview-gate', [message]);
-      throw new SiteValidationError(message);
-    }
-
-    // The gate of record for placeholder images: the agent-side repair pass
-    // in `workflows.ts` can only see the site's text and so can miss a
-    // renamed copy or a fallback the agent never touched. This reads the
-    // actual bytes in `dist/`, so a portrait or work-thumb placeholder is
-    // caught by hash even if nothing referencing it survived as a string.
-    const placeholderImages = await findPlaceholderImagesInDir(output);
-    if (placeholderImages.length > 0) {
-      // The repair brief, not the bare verdict: this message is read back to
-      // an agent as "the output was ...", and a change-request agent is only
-      // allowed to delete a file under `public/` that this names by path.
-      const message = describePlaceholderImageRepair(placeholderImages);
-      this.options.onOutput?.('placeholder-image-gate', [message]);
-      throw new SiteValidationError(message);
-    }
-
-    // The last gate, and the only one that asks what the output *does* rather
-    // than what it says. Everything above this line would pass a site whose
-    // copy is honest and whose images are real and which also runs an inline
-    // script a stranger's brief talked the model into writing. This one reads
-    // `dist/` as a browser would parse it: no script but the template's own
-    // bundle and the platform's managed blocks, no event handlers, no
-    // `javascript:`, no frame, no `<base>`, no meta refresh, no form pointing
-    // anywhere but the client's own enquiry endpoint, no service worker.
-    if (this.options.markupPolicy) {
-      const unsafe = await findMarkupViolationsInDir(
-        output,
-        this.options.markupPolicy,
-      );
-      if (unsafe.length > 0) {
-        const message = describeMarkupPolicyViolations(unsafe);
-        // One line per element, so the job timeline names the file and the
-        // tag rather than making an operator open the build.
-        this.options.onOutput?.('generated-html-gate', message.split('\n'));
-        throw new SiteValidationError(message);
+  /** The bounded copy, with the same reporting rule as the resolution above. */
+  private async exportOutput(
+    output: string,
+  ): Promise<{ path: string; files: number; bytes: number }> {
+    try {
+      return await exportBuiltSite({
+        sourceDir: output,
+        destinationParent: this.exportRoot,
+        ...(this.options.output?.limits
+          ? { limits: this.options.output.limits }
+          : {}),
+      });
+    } catch (error) {
+      if (error instanceof SiteOutputContainmentError) {
+        this.options.onOutput?.('output-containment-gate', [error.message]);
+        throw new SiteValidationError(error.message);
       }
+      throw error;
     }
+  }
+
+  /**
+   * Drops an export once nothing will read it again.
+   *
+   * Refuses a path that is not inside this validator's own export root, so a
+   * caller handing back something it made up cannot turn this into a delete
+   * primitive pointed at the host.
+   */
+  async releaseOutput(outputDir: string): Promise<void> {
+    if (
+      !isContained(this.exportRoot, outputDir) ||
+      outputDir === this.exportRoot
+    ) {
+      throw new SiteValidationError(
+        `Refusing to remove ${outputDir}: it is not an exported build output`,
+      );
+    }
+    await rm(outputDir, { recursive: true, force: true });
   }
 
   private planFor(command: ValidatorCommand, workspaceRoot: string): SpawnPlan {

@@ -7,12 +7,19 @@
  * this process.
  */
 
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { resolvePlatformDomain } from '@flowstarter/platform-config';
+import {
+  DEFAULT_OUTPUT_EXPORT_LIMITS,
+  type OutputExportLimits,
+} from '@flowstarter/agentic-codegen';
 import {
   ISOLATION_ENV_KEY,
   LEGACY_ISOLATION_ENV_KEY,
   resolveContainerUser,
   resolveIsolationMode,
+  resolveValidationFencing,
   type ValidatorIsolationMode,
 } from './isolation';
 
@@ -154,6 +161,18 @@ export interface WorkerConfig {
    * no hostname written into it.
    */
   platformOrigins: string[];
+  /**
+   * How the build's output leaves the worktree. The validator copies it into a
+   * fresh directory under `exportRoot` — a path this worker owns and generated
+   * code has never been able to write to — and everything downstream reads the
+   * copy. `limits` is the budget that copy is allowed to cost; a build that
+   * exceeds it is refused rather than truncated, because half a site is not a
+   * site.
+   */
+  validateOutput: {
+    exportRoot: string;
+    limits: OutputExportLimits;
+  };
   validateCommands: ValidatorCommand[];
   validateIsolation: ValidatorIsolationMode;
   /** Null unless `validateIsolation` is `docker`. */
@@ -208,14 +227,77 @@ const THINKING_LEVELS = new Set([
 ]);
 
 /**
+ * The two flags that keep the install step from executing anything the site
+ * brought with it, and the reason there are two rather than one.
+ *
+ * `--ignore-scripts` stops a dependency's `postinstall`. It does not stop a
+ * `.pnpmfile.cjs` sitting in the workspace, because a pnpmfile is not a
+ * lifecycle script: pnpm loads it as ordinary Node code during resolution,
+ * inside the one step that is allowed outbound network. `--ignore-pnpmfile` is
+ * the flag that stops that, and it was missing. The coding agent can no longer
+ * write a pnpmfile either (see `isPackageManagerConfigPath` in
+ * `@flowstarter/agentic-codegen`), but a boundary that depends on two
+ * independent rules agreeing is the only kind worth having here.
+ *
+ * Verified against pnpm 10: both are real long options, and `--ignore-pnpmfile`
+ * demonstrably suppresses a pnpmfile that otherwise runs. `--config.<key>=`
+ * forms are *not* used — pnpm accepts them without complaint and does not
+ * apply them, which would leave an audit reading a flag that does nothing.
+ */
+export const REQUIRED_PNPM_INSTALL_FLAGS = [
+  '--ignore-scripts',
+  '--ignore-pnpmfile',
+] as const;
+
+/**
  * A template site is installed and built with trusted, operator-defined
- * commands run outside Pi. `--ignore-scripts` keeps template dependencies from
- * executing lifecycle hooks on the build host.
+ * commands run outside Pi.
+ *
+ * Beyond the two fencing flags above, the default install says two more things.
+ * `--ignore-workspace` keeps a `pnpm-workspace.yaml` anywhere above the
+ * worktree from quietly deciding what "the project" is — a generated site is
+ * always a single standalone package. `--prefer-frozen-lockfile` takes the
+ * headless path, skipping resolution entirely, whenever the workspace already
+ * has a lockfile that satisfies its manifest.
+ *
+ * It is deliberately `--prefer-frozen-lockfile` and not `--frozen-lockfile`.
+ * Both exist in pnpm 10, but the hard form fails with `ERR_PNPM_NO_LOCKFILE`
+ * when there is no lockfile at all, and a Flowstarter site workspace normally
+ * has none: the template scaffold reader and the preview manifest both strip
+ * lockfiles on the way in, on purpose. The hard flag would therefore fail every
+ * paid build rather than fence one. The reproducibility it was meant to buy is
+ * already bought elsewhere — the manifest an install resolves from is immutable
+ * to the agent.
  */
 const DEFAULT_VALIDATE_COMMANDS: ValidatorCommand[] = [
-  { bin: 'pnpm', args: ['install', '--ignore-scripts', '--prefer-offline'] },
+  {
+    bin: 'pnpm',
+    args: [
+      'install',
+      ...REQUIRED_PNPM_INSTALL_FLAGS,
+      '--ignore-workspace',
+      '--prefer-frozen-lockfile',
+      '--prefer-offline',
+    ],
+  },
   { bin: 'pnpm', args: ['run', 'build'] },
 ];
+
+/**
+ * pnpm subcommands that resolve dependencies, and therefore both load a
+ * `.pnpmfile.cjs` and run lifecycle scripts. Read from `args[0]` only, so
+ * `pnpm run install-fonts` is a build script and not an install — the same
+ * reading `commandNeedsRegistry` in `isolation.ts` does.
+ */
+const PNPM_RESOLVING_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  'install',
+  'i',
+  'add',
+  'update',
+  'up',
+  'import',
+  'fetch',
+]);
 
 /**
  * execFile never goes through a shell, but a name containing a separator would
@@ -288,8 +370,92 @@ function parseValidateCommands(raw: string | undefined): ValidatorCommand[] {
         `Validate command "${bin}" is not a bare executable name`,
       );
     }
-    return { bin: bin as string, args };
+    const command = { bin: bin as string, args };
+    assertInstallIsFenced(command);
+    return command;
   });
+}
+
+/**
+ * An operator may replace the validate commands; they may not replace the
+ * fence.
+ *
+ * `FLOWSTARTER_BUILD_VALIDATE_COMMANDS` is JSON on a host, and the shape of it
+ * that gets pasted around is the short one — `["pnpm","install"]`. That reads
+ * like a smaller version of the default and is in fact a different thing
+ * entirely: it runs every dependency's `postinstall` and every hook in a
+ * `.pnpmfile.cjs` that happens to be in the workspace, with network. So the
+ * flags in {@link REQUIRED_PNPM_INSTALL_FLAGS} are a property of the
+ * configuration rather than a default the operator's JSON replaces, and a host
+ * that sets an install without them refuses to boot and is told which flag it
+ * is missing.
+ */
+function assertInstallIsFenced(command: ValidatorCommand): void {
+  if (command.bin !== 'pnpm') return;
+  const subcommand = command.args[0];
+  if (
+    typeof subcommand !== 'string' ||
+    !PNPM_RESOLVING_SUBCOMMANDS.has(subcommand)
+  ) {
+    return;
+  }
+  const missing = REQUIRED_PNPM_INSTALL_FLAGS.filter(
+    (flag) => !command.args.includes(flag),
+  );
+  if (missing.length === 0) return;
+  throw new ConfigError(
+    `FLOWSTARTER_BUILD_VALIDATE_COMMANDS runs "pnpm ${subcommand}" without ` +
+      `${missing.join(' and ')}. That step installs code a coding agent ` +
+      'wrote, and it is the one step with network: without ' +
+      "--ignore-scripts a dependency's postinstall runs, and without " +
+      '--ignore-pnpmfile a .pnpmfile.cjs in the workspace runs as plain Node ' +
+      `code. Add ${missing.join(' and ')} to that command.`,
+  );
+}
+
+/**
+ * Where a finished build is copied to, and what that copy may cost.
+ *
+ * The export directory is this worker's, not the build's: the whole point is
+ * that the bytes the scanners and the publisher read live somewhere no
+ * generated code has ever had a handle on. It defaults under the system
+ * temporary directory because that is writable on every host this runs on, and
+ * it is configurable because a host with a small `/tmp` needs to be able to
+ * say so.
+ *
+ * The budgets default to the ones the packager has always enforced, so this
+ * step refuses the same oversized build one stage earlier — before its bytes
+ * have been copied anywhere.
+ */
+function parseOutputExport(env: NodeJS.ProcessEnv): {
+  exportRoot: string;
+  limits: OutputExportLimits;
+} {
+  return {
+    exportRoot:
+      env.FLOWSTARTER_BUILD_OUTPUT_EXPORT_ROOT?.trim() ||
+      join(tmpdir(), 'flowstarter-build-output'),
+    limits: {
+      maxFiles: optionalNumber(
+        env,
+        'FLOWSTARTER_BUILD_OUTPUT_MAX_FILES',
+        DEFAULT_OUTPUT_EXPORT_LIMITS.maxFiles,
+        { min: 1, max: 1_000_000 },
+      ),
+      maxBytes: optionalNumber(
+        env,
+        'FLOWSTARTER_BUILD_OUTPUT_MAX_BYTES',
+        DEFAULT_OUTPUT_EXPORT_LIMITS.maxBytes,
+        { min: 1_024, max: 8 * 1024 * 1024 * 1024 },
+      ),
+      maxDepth: optionalNumber(
+        env,
+        'FLOWSTARTER_BUILD_OUTPUT_MAX_DEPTH',
+        DEFAULT_OUTPUT_EXPORT_LIMITS.maxDepth,
+        { min: 1, max: 256 },
+      ),
+    },
+  };
 }
 
 /**
@@ -738,6 +904,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     env.FLOWSTARTER_BUILD_VALIDATE_COMMANDS,
   );
   const validateIsolation = parseValidatorIsolation(env);
+  const validateDocker =
+    validateIsolation === 'docker'
+      ? parseDockerValidation(env, validateCommands)
+      : null;
+  // Docker alone is half the containment; `isolation.ts` owns the other half.
+  const fencing = resolveValidationFencing({
+    flowstarterEnv: resolveWorkerFlowstarterEnv(env),
+    docker: validateDocker,
+  });
+  if (!fencing.ok) throw new ConfigError(fencing.error);
   const skipValidation = parseSkipValidation(env);
 
   return {
@@ -794,12 +970,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
         : null,
     stagingUrlTemplate,
     platformOrigins,
+    validateOutput: parseOutputExport(env),
     validateCommands,
     validateIsolation,
-    validateDocker:
-      validateIsolation === 'docker'
-        ? parseDockerValidation(env, validateCommands)
-        : null,
+    validateDocker,
     skipValidation,
     buildTimeoutMs: optionalNumber(
       env,

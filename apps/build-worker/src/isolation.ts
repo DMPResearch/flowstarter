@@ -99,6 +99,87 @@ export function resolveIsolationMode(input: {
   return { ok: true, mode: asked, source: 'explicit' };
 }
 
+/** The build step's egress where a client's real build runs: there is none. */
+export const SEALED_BUILD_NETWORK = 'none';
+
+/** The prepared image the sealed build step needs, and how to get it. */
+export const VALIDATION_RUNTIME_DOCKERFILE =
+  'apps/build-worker/docker/validation-runtime.Dockerfile';
+
+export type ValidationFencingResolution =
+  | { ok: true }
+  | { ok: false; error: string };
+
+/**
+ * Whether the resolved container configuration is actually fenced, which is a
+ * rule of the environment in exactly the way the isolation mode above is.
+ *
+ * Choosing `docker` is only half the containment. The other half is what the
+ * container can reach, and the defaults left that open: with no prepared
+ * image, the build step inherited the *install* step's network, which is
+ * `bridge` — plain outbound. So a staging or production build of generated
+ * code ran `pnpm run build`, executing the site's own Astro config and its
+ * integrations, with a route to the internet and to whatever else lives on the
+ * Docker bridge. Isolation from the host filesystem with a live socket out is
+ * not isolation; it is a nicer-looking exfiltration path.
+ *
+ * The two halves have to be asserted together because they are one setting
+ * wearing two names. `--network=none` is only reachable when pnpm is already
+ * prepared inside the image: corepack otherwise downloads it on first use,
+ * into a corepack home that lives on the container's tmpfs and dies with it,
+ * so every command would need a registry. That is why the shipped
+ * `validation-runtime.Dockerfile` bakes the pinned pnpm in, and why demanding
+ * a sealed build step means demanding that image.
+ *
+ * Development and test are untouched. There is no client's money in a laptop
+ * build, the stock `node:22-bookworm-slim` needs the network to fetch pnpm at
+ * all, and requiring a locally built image there would mean nobody could run
+ * the worker without first running a docker build.
+ */
+export function resolveValidationFencing(input: {
+  flowstarterEnv: string;
+  docker: { pnpmBaked: boolean; buildNetwork: string } | null;
+}): ValidationFencingResolution {
+  if (!ISOLATION_REQUIRED_ENVS.has(input.flowstarterEnv)) return { ok: true };
+
+  const where = `the resolved environment is staging or production (got "${input.flowstarterEnv}")`;
+  if (input.docker === null) {
+    return {
+      ok: false,
+      error:
+        `Validation has no Docker configuration even though ${where}. Set ` +
+        `${ISOLATION_ENV_KEY}=docker.`,
+    };
+  }
+  if (!input.docker.pnpmBaked) {
+    return {
+      ok: false,
+      error:
+        `FLOWSTARTER_BUILD_VALIDATE_DOCKER_PNPM_BAKED must be "true" when ${where}. ` +
+        'Without a prepared image the build step has to reach a registry for ' +
+        'pnpm itself, so it cannot run with no network, and a generated ' +
+        "site's build gets outbound egress. Build " +
+        `${VALIDATION_RUNTIME_DOCKERFILE}, point ` +
+        'FLOWSTARTER_BUILD_VALIDATE_DOCKER_IMAGE at the result and set ' +
+        'FLOWSTARTER_BUILD_VALIDATE_DOCKER_PNPM_BAKED=true.',
+    };
+  }
+  if (input.docker.buildNetwork !== SEALED_BUILD_NETWORK) {
+    return {
+      ok: false,
+      error:
+        'FLOWSTARTER_BUILD_VALIDATE_DOCKER_BUILD_NETWORK must be ' +
+        `"${SEALED_BUILD_NETWORK}" when ${where}, not ` +
+        `"${input.docker.buildNetwork}". Everything after the install step is ` +
+        "generated code executing — the site's own Astro config, its " +
+        'integrations, its build scripts — and none of it has any business ' +
+        'calling out. Unset the variable to take the default, which is ' +
+        `already "${SEALED_BUILD_NETWORK}" on a prepared image.`,
+    };
+  }
+  return { ok: true };
+}
+
 /**
  * The first argument of a validation command, which is the only place a
  * package manager names its subcommand.

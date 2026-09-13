@@ -879,6 +879,7 @@ export type Database = {
           idempotency_key: string | null
           kind: string
           lease_expires_at: string | null
+          lease_fence: number
           leased_by: string | null
           max_attempts: number
           payload: Json
@@ -903,6 +904,7 @@ export type Database = {
           idempotency_key?: string | null
           kind: string
           lease_expires_at?: string | null
+          lease_fence?: number
           leased_by?: string | null
           max_attempts?: number
           payload?: Json
@@ -927,6 +929,7 @@ export type Database = {
           idempotency_key?: string | null
           kind?: string
           lease_expires_at?: string | null
+          lease_fence?: number
           leased_by?: string | null
           max_attempts?: number
           payload?: Json

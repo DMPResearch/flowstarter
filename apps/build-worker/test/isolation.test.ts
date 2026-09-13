@@ -17,6 +17,8 @@ import {
   ISOLATION_ENV_KEY,
   resolveContainerUser,
   resolveIsolationMode,
+  resolveValidationFencing,
+  SEALED_BUILD_NETWORK,
 } from '../src/isolation';
 
 describe('resolveIsolationMode', () => {
@@ -199,5 +201,69 @@ describe('resolveContainerUser', () => {
       ok: true,
       user: '1000:1000',
     });
+  });
+});
+
+/**
+ * The other half of the same rule. Choosing `docker` says where generated code
+ * runs; this says what it can reach once it is running, and the defaults said
+ * "the internet": with no prepared image the build step inherited the install
+ * step's `bridge` network, so `pnpm run build` — the site's own Astro config,
+ * its integrations, its build scripts — executed with egress.
+ */
+describe('resolveValidationFencing', () => {
+  const sealed = { pnpmBaked: true, buildNetwork: SEALED_BUILD_NETWORK };
+
+  it('accepts a staging or production worker on the prepared image with no build egress', () => {
+    for (const flowstarterEnv of ['staging', 'production']) {
+      expect(
+        resolveValidationFencing({ flowstarterEnv, docker: sealed }),
+      ).toEqual({ ok: true });
+    }
+  });
+
+  it('refuses a stock image there, naming the Dockerfile that fixes it', () => {
+    const refusal = resolveValidationFencing({
+      flowstarterEnv: 'production',
+      docker: { pnpmBaked: false, buildNetwork: 'bridge' },
+    });
+    expect(refusal.ok).toBe(false);
+    expect(refusal.ok === false && refusal.error).toContain(
+      'validation-runtime.Dockerfile',
+    );
+  });
+
+  it('refuses a build step with any egress at all', () => {
+    for (const buildNetwork of ['bridge', 'registry-proxy']) {
+      const refusal = resolveValidationFencing({
+        flowstarterEnv: 'staging',
+        docker: { pnpmBaked: true, buildNetwork },
+      });
+      expect(refusal.ok).toBe(false);
+      expect(refusal.ok === false && refusal.error).toContain(
+        'FLOWSTARTER_BUILD_VALIDATE_DOCKER_BUILD_NETWORK',
+      );
+    }
+  });
+
+  it('refuses a staging or production worker with no container at all', () => {
+    expect(
+      resolveValidationFencing({ flowstarterEnv: 'production', docker: null })
+        .ok,
+    ).toBe(false);
+  });
+
+  it('leaves a laptop alone, where there is no client money in the build', () => {
+    for (const flowstarterEnv of ['development', 'test']) {
+      expect(
+        resolveValidationFencing({
+          flowstarterEnv,
+          docker: { pnpmBaked: false, buildNetwork: 'bridge' },
+        }),
+      ).toEqual({ ok: true });
+      expect(
+        resolveValidationFencing({ flowstarterEnv, docker: null }),
+      ).toEqual({ ok: true });
+    }
   });
 });

@@ -129,6 +129,12 @@ const validator = config.skipValidation
       isolation: config.validateDocker
         ? { mode: 'docker', docker: config.validateDocker }
         : { mode: 'native' },
+      // Where the build's output is copied to before anything reads it, and
+      // what that copy may cost. See `validateOutput` in `config.ts`.
+      output: {
+        exportRoot: config.validateOutput.exportRoot,
+        limits: config.validateOutput.limits,
+      },
       onProgress: report,
       // What the compiled site may ask a visitor's browser for. The origins
       // come from config; the markers, the bundle path and the font host are
@@ -197,23 +203,33 @@ const queue = new BuildQueue({
         // The lease is renewed for as long as this build is genuinely
         // running. It is what tells a restarted worker, minutes from now,
         // that this job is alive rather than abandoned.
+        //
+        // Losing it now cancels the build rather than only being logged. The
+        // job is already being run again by whoever took it, so every minute
+        // this attempt keeps going is a minute of model spend on output that
+        // is not allowed to be published — and the publish itself is the thing
+        // the ledger cannot take back once it has happened.
+        const lostLease = new AbortController();
         await withHeartbeat(
           {
             store,
             jobId,
             intervalMs: config.lease.heartbeatMs,
-            onLost: (lost) =>
+            onLost: (lost) => {
+              lostLease.abort();
               console.warn(
                 `[build-worker] lost the lease on job ${lost}; another worker ` +
-                  'has taken it. This build will be refused when it tries to finish.',
-              ),
+                  'has taken it. This build is cancelled at its next step and ' +
+                  'nothing it produced will be published.',
+              );
+            },
             onError: (beat, error) =>
               console.warn(
                 `[build-worker] heartbeat failed for job ${beat}:`,
                 error instanceof Error ? error.message : error,
               ),
           },
-          () => worker.run(jobId),
+          () => worker.run(jobId, { signal: lostLease.signal }),
         );
         report(`job ${jobId} finished`);
       } catch (error) {

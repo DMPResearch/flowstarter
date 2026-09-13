@@ -35,3 +35,41 @@ export function isLocalPreviewFrameAllowed(
   if (env.FLOWSTARTER_LOCAL_PREVIEW === 'true') return true;
   return resolvePreviewPublisher(env).publisher === 'local-static';
 }
+
+/**
+ * Throws when `FLOWSTARTER_LOCAL_PREVIEW=true` is set outside `development`.
+ *
+ * This is the same rule as `isLocalPreviewFrameAllowed` above, phrased as an
+ * assertion instead of a boolean so it can be called from two places that
+ * each need a different reaction to a bad value:
+ *  - `src/env.ts` calls this during `createEnv`'s startup validation, so a
+ *    staging or production deploy that inherits this flag from a shared
+ *    `.env` file (or a copy-pasted local override) refuses to boot instead
+ *    of quietly becoming willing to spawn `astro dev` on the app host.
+ *  - `publishLocalPreview` in
+ *    `app/api/discovery/preview/live/route.ts` calls this immediately
+ *    before it spawns anything, so a sandbox failure can never fall through
+ *    to native execution outside development even if the process somehow
+ *    started with the flag set (for example a test harness that stubs
+ *    `process.env` after startup).
+ *
+ * Kept here, next to `isLocalPreviewFrameAllowed`, so the two conditions are
+ * defined once instead of being re-derived at each call site.
+ */
+export function assertLocalPreviewEnvAllowed(
+  env: NodeJS.ProcessEnv = process.env
+): void {
+  if (env.FLOWSTARTER_LOCAL_PREVIEW !== 'true') return;
+
+  const resolved: FlowstarterEnv = resolveFlowstarterEnv(env);
+  if (resolved === 'development') return;
+
+  throw new Error(
+    `FLOWSTARTER_LOCAL_PREVIEW=true is set, but the resolved Flowstarter environment is "${resolved}", not "development". ` +
+      'This flag spawns `astro dev` over generated tenant source directly on the process running this app, ' +
+      'and that child process would inherit every credential this app holds. That is only acceptable on a ' +
+      'developer machine, never on staging or production. Fix this by removing FLOWSTARTER_LOCAL_PREVIEW from ' +
+      "this environment's configuration, or, if this really is a local development machine, set " +
+      'FLOWSTARTER_ENV=development (or leave both FLOWSTARTER_ENV and NODE_ENV unset, which also resolves to development).'
+  );
+}

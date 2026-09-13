@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { ConfigError, loadConfig } from '../src/config';
 
+/**
+ * What a staging or production host has to set as well, now that a sealed
+ * build step is a rule of those environments rather than an option: the
+ * prepared validation image. Spread into any environment whose point is
+ * something other than isolation, so those tests keep testing what they are
+ * named after rather than re-testing this rule.
+ */
+const PREPARED_IMAGE = {
+  FLOWSTARTER_BUILD_VALIDATE_DOCKER_PNPM_BAKED: 'true',
+};
+
 function validEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     FLOWSTARTER_BUILD_WORKER_SECRET: 's'.repeat(48),
@@ -62,7 +73,8 @@ describe('worker configuration', () => {
         .stagingUrlTemplate,
     ).toBe('https://{projectId}.staging.flowstarter.dev');
     expect(
-      loadConfig(validEnv({ FLOWSTARTER_ENV: 'staging' })).stagingUrlTemplate,
+      loadConfig(validEnv({ FLOWSTARTER_ENV: 'staging', ...PREPARED_IMAGE }))
+        .stagingUrlTemplate,
     ).toBe('https://{projectId}.staging.flowstarter.dev');
     expect(
       loadConfig(validEnv({ FLOWSTARTER_ENV: 'test' })).stagingUrlTemplate,
@@ -71,14 +83,15 @@ describe('worker configuration', () => {
 
   it('defaults the staging URL template to flowstarter.net in production', () => {
     expect(
-      loadConfig(validEnv({ FLOWSTARTER_ENV: 'production' }))
+      loadConfig(validEnv({ FLOWSTARTER_ENV: 'production', ...PREPARED_IMAGE }))
         .stagingUrlTemplate,
     ).toBe('https://{projectId}.staging.flowstarter.net');
   });
 
   it('falls back to NODE_ENV for the staging URL template when FLOWSTARTER_ENV is unset', () => {
     expect(
-      loadConfig(validEnv({ NODE_ENV: 'production' })).stagingUrlTemplate,
+      loadConfig(validEnv({ NODE_ENV: 'production', ...PREPARED_IMAGE }))
+        .stagingUrlTemplate,
     ).toBe('https://{projectId}.staging.flowstarter.net');
   });
 
@@ -87,6 +100,7 @@ describe('worker configuration', () => {
       loadConfig(
         validEnv({
           FLOWSTARTER_ENV: 'production',
+          ...PREPARED_IMAGE,
           FLOWSTARTER_STAGING_URL_TEMPLATE:
             'https://{projectId}.staging.example.com',
         }),
@@ -393,10 +407,12 @@ describe('skipValidation: the only switch allowed to swap in the noop validator'
 
   it('never throws for staging/production when the flag itself is not set', () => {
     expect(() =>
-      loadConfig(validEnv({ FLOWSTARTER_ENV: 'production' })),
+      loadConfig(
+        validEnv({ FLOWSTARTER_ENV: 'production', ...PREPARED_IMAGE }),
+      ),
     ).not.toThrow();
     expect(() =>
-      loadConfig(validEnv({ FLOWSTARTER_ENV: 'staging' })),
+      loadConfig(validEnv({ FLOWSTARTER_ENV: 'staging', ...PREPARED_IMAGE })),
     ).not.toThrow();
   });
 });
@@ -493,12 +509,23 @@ describe('isolation and leases at boot', () => {
     ).toThrow(/validation-runtime.Dockerfile/);
   });
 
-  it('gives the build step egress only when the image cannot supply pnpm', () => {
-    // Stock image: the note, made into behaviour. Egress, because every
-    // command needs corepack to reach a registry.
+  it('gives the build step egress only where a build is allowed to have it', () => {
+    // A laptop on the stock image: every command needs corepack to reach a
+    // registry, so the build step inherits the install's egress. There is no
+    // client's money in this build and no daemon guaranteed on the host.
     expect(
-      loadConfig(envFor({ FLOWSTARTER_ENV: 'staging' })).validateDocker,
+      loadConfig(
+        envFor({
+          FLOWSTARTER_ENV: 'development',
+          FLOWSTARTER_BUILD_ISOLATION: 'docker',
+        }),
+      ).validateDocker,
     ).toMatchObject({ network: 'bridge', buildNetwork: 'bridge' });
+    // The same configuration on staging is refused outright: that inherited
+    // egress is a generated site's build with a route to the internet.
+    expect(() => loadConfig(envFor({ FLOWSTARTER_ENV: 'staging' }))).toThrow(
+      /FLOWSTARTER_BUILD_VALIDATE_DOCKER_PNPM_BAKED must be "true"/,
+    );
     // Shipped image: no network for anything but the install.
     expect(
       loadConfig(
@@ -568,5 +595,151 @@ describe('isolation and leases at boot', () => {
         }),
       ),
     ).toThrow(ConfigError);
+  });
+});
+
+/**
+ * The install step, which is the one step in a build that is allowed to reach
+ * a registry — and therefore the one step where a file the agent wrote can
+ * decide what runs and where it talks to.
+ */
+describe('the trusted install invocation', () => {
+  it('disables lifecycle scripts and pnpm hooks, which are two different controls', () => {
+    const [install] = loadConfig(validEnv()).validateCommands;
+    expect(install).toEqual({
+      bin: 'pnpm',
+      args: [
+        'install',
+        '--ignore-scripts',
+        '--ignore-pnpmfile',
+        '--ignore-workspace',
+        '--prefer-frozen-lockfile',
+        '--prefer-offline',
+      ],
+    });
+  });
+
+  it('refuses an operator install that drops either of them', () => {
+    for (const args of [
+      ['install'],
+      ['install', '--ignore-scripts'],
+      ['install', '--ignore-pnpmfile'],
+      ['add', 'astro'],
+    ]) {
+      expect(() =>
+        loadConfig(
+          validEnv({
+            FLOWSTARTER_BUILD_VALIDATE_COMMANDS: JSON.stringify([
+              ['pnpm', ...args],
+              ['pnpm', 'run', 'build'],
+            ]),
+          }),
+        ),
+      ).toThrow(ConfigError);
+    }
+  });
+
+  it('leaves a command that resolves nothing alone', () => {
+    // `pnpm run install-fonts` is a build script with "install" in its name,
+    // not an install: it resolves no dependencies and loads no pnpmfile.
+    const config = loadConfig(
+      validEnv({
+        FLOWSTARTER_BUILD_VALIDATE_COMMANDS: JSON.stringify([
+          ['pnpm', 'run', 'install-fonts'],
+        ]),
+      }),
+    );
+    expect(config.validateCommands).toEqual([
+      { bin: 'pnpm', args: ['run', 'install-fonts'] },
+    ]);
+  });
+});
+
+/**
+ * The audit's own instruction: test the resolved production configuration as a
+ * whole rather than flag by flag. A host is safe or unsafe as one object, and
+ * three green assertions about individual flags have never stopped a fourth
+ * setting from undoing them.
+ */
+describe('the resolved production configuration', () => {
+  const productionEnv = validEnv({
+    FLOWSTARTER_ENV: 'production',
+    FLOWSTARTER_BUILD_VALIDATE_DOCKER_IMAGE: `ghcr.io/flowstarter/validation-runtime@sha256:${'b'.repeat(64)}`,
+    FLOWSTARTER_BUILD_VALIDATE_DOCKER_PNPM_BAKED: 'true',
+    FLOWSTARTER_BUILD_VALIDATE_DOCKER_NETWORK: 'registry-proxy',
+  });
+
+  it('runs generated code in the prepared image, with no network on the build', () => {
+    const config = loadConfig(productionEnv);
+    expect({
+      isolation: config.validateIsolation,
+      commands: config.validateCommands,
+      docker: config.validateDocker,
+    }).toEqual({
+      isolation: 'docker',
+      commands: [
+        {
+          bin: 'pnpm',
+          args: [
+            'install',
+            '--ignore-scripts',
+            '--ignore-pnpmfile',
+            '--ignore-workspace',
+            '--prefer-frozen-lockfile',
+            '--prefer-offline',
+          ],
+        },
+        { bin: 'pnpm', args: ['run', 'build'] },
+      ],
+      docker: {
+        bin: 'docker',
+        image: `ghcr.io/flowstarter/validation-runtime@sha256:${'b'.repeat(64)}`,
+        // The install reaches a registry proxy; everything after it — which is
+        // all of the generated code — reaches nothing.
+        network: 'registry-proxy',
+        buildNetwork: 'none',
+        pnpmBaked: true,
+        memory: '4g',
+        tmpfsSize: '2g',
+        pidsLimit: 1_024,
+        pnpmVersion: '10.29.2',
+        user: `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
+      },
+    });
+  });
+
+  it('exports the build output into a directory the worker owns, with budgets', () => {
+    const config = loadConfig(productionEnv);
+    expect(config.validateOutput.limits).toEqual({
+      maxFiles: 5_000,
+      maxBytes: 64 * 1024 * 1024,
+      maxDepth: 32,
+    });
+    expect(config.validateOutput.exportRoot).toMatch(
+      /flowstarter-build-output$/,
+    );
+    // And an operator with a small /tmp can say where it goes.
+    expect(
+      loadConfig({
+        ...productionEnv,
+        FLOWSTARTER_BUILD_OUTPUT_EXPORT_ROOT: '/srv/flowstarter/exports',
+        FLOWSTARTER_BUILD_OUTPUT_MAX_FILES: '10',
+      }).validateOutput,
+    ).toEqual({
+      exportRoot: '/srv/flowstarter/exports',
+      limits: { maxFiles: 10, maxBytes: 64 * 1024 * 1024, maxDepth: 32 },
+    });
+  });
+
+  it('refuses to boot at all when any half of that is missing', () => {
+    const withoutImage = { ...productionEnv };
+    delete withoutImage.FLOWSTARTER_BUILD_VALIDATE_DOCKER_PNPM_BAKED;
+    expect(() => loadConfig(withoutImage)).toThrow(ConfigError);
+    expect(() =>
+      loadConfig({
+        ...productionEnv,
+        FLOWSTARTER_BUILD_VALIDATE_DOCKER_BUILD_NETWORK: 'bridge',
+      }),
+    ).toThrow(/must be "none"/);
   });
 });

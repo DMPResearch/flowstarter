@@ -1,6 +1,8 @@
 import { createEnv } from '@t3-oss/env-nextjs';
 import { z } from 'zod';
 
+import { assertLocalPreviewEnvAllowed } from '@/lib/discovery/local-preview-guard';
+
 export const env = createEnv({
   /*
    * ─── Server-side Environment Variables ───────────────────────────────
@@ -104,6 +106,14 @@ export const env = createEnv({
     // Explicit override to let development or staging point at a hosted
     // Supabase project. Unset (or anything other than '1') keeps the guard on.
     FLOWSTARTER_ALLOW_REMOTE_SUPABASE: z.enum(['1', '0']).optional(),
+    /**
+     * Runs generated preview sites with `astro dev` on this host instead of in
+     * the sandbox. It is a developer convenience and it is refused outside
+     * development by the rule below, because the child process it spawns
+     * executes source an agent wrote, on the machine holding this app's
+     * credentials. See `assertLocalPreviewEnvAllowed`.
+     */
+    FLOWSTARTER_LOCAL_PREVIEW: z.string().optional(),
   },
 
   /*
@@ -191,6 +201,7 @@ export const env = createEnv({
     FLOWSTARTER_ENV: process.env.FLOWSTARTER_ENV,
     FLOWSTARTER_ALLOW_REMOTE_SUPABASE:
       process.env.FLOWSTARTER_ALLOW_REMOTE_SUPABASE,
+    FLOWSTARTER_LOCAL_PREVIEW: process.env.FLOWSTARTER_LOCAL_PREVIEW,
 
     // Client
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -225,3 +236,23 @@ export const env = createEnv({
    */
   skipValidation: !!process.env.SKIP_ENV_VALIDATION,
 });
+
+/**
+ * The one environment rule that is about what this process is allowed to *do*
+ * rather than about what a value looks like, so it is asserted here, at import,
+ * rather than inside a schema entry.
+ *
+ * `FLOWSTARTER_LOCAL_PREVIEW=true` makes the preview publisher fall back to
+ * running a generated Astro site natively on this host. That is a developer's
+ * convenience and nothing else: outside development this process is the one
+ * holding the service-role key, the Clerk secret and every tenant's data, and
+ * a flag that survives a copy-pasted `.env` into staging would quietly turn a
+ * sandbox outage into arbitrary tenant code running beside it. A deploy that
+ * carries the flag refuses to boot and says which variable to remove.
+ *
+ * It runs under the same `SKIP_ENV_VALIDATION` escape hatch as the schema
+ * above, so a Docker image build with no environment at all still builds.
+ */
+if (!process.env.SKIP_ENV_VALIDATION) {
+  assertLocalPreviewEnvAllowed(process.env);
+}

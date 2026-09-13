@@ -1441,6 +1441,83 @@ function assertContained(root: string, candidate: string): void {
   }
 }
 
+/**
+ * Directories a package manager owns outright. `.pnpm` is the virtual store
+ * every dependency is actually resolved from and `.yarn` holds Yarn's plugins
+ * and its bundled releases, which are plain JavaScript that Yarn executes.
+ * Neither is site content under any reading.
+ */
+const PACKAGE_MANAGER_DIRECTORIES: ReadonlySet<string> = new Set([
+  '.pnpm',
+  '.yarn',
+]);
+
+/**
+ * Files a package manager reads before it installs anything: manifests,
+ * workspace definitions, registry configuration and lockfiles, for every
+ * package manager a generated site might plausibly be handed to.
+ */
+const PACKAGE_MANAGER_FILES: ReadonlySet<string> = new Set([
+  'package.json',
+  'pnpm-workspace.yaml',
+  'pnpm-workspace.yml',
+  '.npmrc',
+  '.yarnrc',
+  '.yarnrc.yml',
+  '.yarnrc.yaml',
+  '.bunfig.toml',
+  'bunfig.toml',
+  'package-lock.json',
+  'npm-shrinkwrap.json',
+  'pnpm-lock.yaml',
+  'yarn.lock',
+  'bun.lockb',
+  'bun.lock',
+]);
+
+/**
+ * `.pnpmfile.cjs` and every extension pnpm will load it under. Matched as a
+ * prefix rather than listed one by one, because the thing that matters is the
+ * stem: pnpm resolves the module, and the module system decides the suffix.
+ */
+const PNPMFILE_STEM = '.pnpmfile';
+
+/**
+ * True for any path that is part of the package manager's own configuration.
+ *
+ * The rule this replaced denied `package.json` and anything with "lock" in its
+ * name and stopped there, which left the agent free to create three files that
+ * `pnpm install` reads before a single line of the site is compiled. The worst
+ * of them is `.pnpmfile.cjs`: pnpm loads it as ordinary Node code during
+ * resolution, and `--ignore-scripts` does nothing about it, because a pnpmfile
+ * is not a lifecycle script. `.npmrc` decides which registry the install
+ * fetches from and can carry an auth token. `pnpm-workspace.yaml` decides what
+ * "the project" even is. The install step is also the one step that is allowed
+ * outbound network, so a file the agent wrote that decides what that step runs
+ * and where it talks to is the whole of the escape.
+ *
+ * The boundary is therefore the package manager's entire configuration
+ * surface, and it is checked on every path segment rather than only on the
+ * root: pnpm reads an `.npmrc` out of each package directory it installs, so a
+ * nested one is not a weaker version of a root one. The comparison is
+ * case-insensitive because macOS and Windows will happily hand `pnpm` the file
+ * an agent wrote as `.NPMRC`.
+ */
+export function isPackageManagerConfigPath(path: string): boolean {
+  const segments = path
+    .replace(/\\/g, '/')
+    .toLowerCase()
+    .split('/')
+    .filter(Boolean);
+  return segments.some(
+    (segment) =>
+      PACKAGE_MANAGER_DIRECTORIES.has(segment) ||
+      PACKAGE_MANAGER_FILES.has(segment) ||
+      segment === PNPMFILE_STEM ||
+      segment.startsWith(`${PNPMFILE_STEM}.`),
+  );
+}
+
 function assertMutableAgentPath(path: string, mode: FileMode): void {
   const normalized = path.toLowerCase();
   const segments = normalized.split('/');
@@ -1450,7 +1527,9 @@ function assertMutableAgentPath(path: string, mode: FileMode): void {
     segments.includes('node_modules') ||
     segments.includes('dist') ||
     segments.includes('.astro') ||
-    basename === 'package.json' ||
+    isPackageManagerConfigPath(normalized) ||
+    // Lockfiles this rule has not been taught the name of yet. Kept on the
+    // basename alone, so a page about a locksmith stays editable.
     basename.includes('lock') ||
     basename.startsWith('.env') ||
     basename.includes('secret') ||
