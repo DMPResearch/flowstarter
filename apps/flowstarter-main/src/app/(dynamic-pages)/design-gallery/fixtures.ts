@@ -492,6 +492,9 @@ export const briefGallery = {
     portraitAssetId: '33333333-3333-4333-8333-333333333333',
     readyAt: null,
     overrideAt: null,
+    // Null on purpose: the gallery is the shape a client sees before they
+    // have touched the control, which is the one the derived value fills.
+    pageCount: null,
   },
   assets: [
     {

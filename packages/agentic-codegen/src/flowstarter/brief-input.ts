@@ -35,6 +35,7 @@
  * either the client's own words or a path this product minted.
  */
 
+import { resolvePageCountAnswer } from './page-set';
 import type {
   BriefAsset,
   BriefPhoto,
@@ -358,8 +359,24 @@ export function mergeBriefIntoIntake(
     ...intake,
     business: {
       ...intake.business,
-      ...(brief.pageCount && !intake.business.pageCount
-        ? { pageCount: brief.pageCount }
+      // Rule 8 of the page set: the brief's answer wins.
+      //
+      // This used to read `brief.pageCount && !intake.business.pageCount` -
+      // the brief could only fill a gap. Since the four-question intake moved
+      // the page-count question behind the deposit, `quick-defaults.ts`
+      // writes `'unsure'` on every quick intake, so there was never a gap and
+      // the brief's answer was never applied: a four-page portfolio brief
+      // bought the six pages `'unsure'` buys and invented two.
+      //
+      // `resolvePageCountAnswer` is the rule, not an `if` here, so the merge
+      // and `derivePageSet` cannot disagree about whose answer it is.
+      ...(brief.pageCount
+        ? {
+            pageCount: resolvePageCountAnswer({
+              briefPageCount: brief.pageCount,
+              intakePageCount: intake.business.pageCount ?? null,
+            }),
+          }
         : {}),
     },
     ...(brief.offer ? { offer: brief.offer } : {}),

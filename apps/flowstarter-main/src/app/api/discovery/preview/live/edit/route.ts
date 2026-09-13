@@ -4,7 +4,7 @@
  *   wizard polls GET. Server-enforced cap.
  * GET  ?demoId=…  — poll the current edit's status/phase.
  *
- * Reuses the demo's already-running Daytona sandbox (agent + astro dev are
+ * Reuses the demo's workspace (the copy the static build ran in, or a
  * live); HMR reflects the change in the embedded preview. Node host only.
  */
 import { NextRequest, NextResponse } from 'next/server';
@@ -169,8 +169,8 @@ export async function POST(req: NextRequest) {
             env: { DAYTONA_API_KEY: process.env.DAYTONA_API_KEY },
           });
         } else {
-          // Local preview: same runner, run against the on-disk workspace the
-          // local `astro dev` serves — HMR shows the change the same way.
+          // No sandbox: the same runner, run against the workspace copy the
+          // static build was made from.
           const { fastEditLocal } = await import(
             '@/lib/discovery/local-fast-edit'
           );
@@ -202,6 +202,24 @@ export async function POST(req: NextRequest) {
         // build starts from" are the same bytes. Best effort by construction —
         // a failure here must not tell the visitor their applied edit failed.
         await captureFreeEditIntoManifest(demoId, job.localRoot, instruction);
+        // The edit is on disk. A static preview does not reload itself, so
+        // the publisher that built it rebuilds it and puts the result back
+        // where the visitor is looking — a redeploy to the previews host, or
+        // new bytes in the local static server. Best effort and awaited: a
+        // republish that fails must not report the applied edit as failed,
+        // but the visitor should not be told "Applied" while still looking at
+        // the previous build either, so it finishes first.
+        const republish = getJob(demoId)?.republish;
+        if (republish) {
+          updateJob(demoId, { editPhase: 'Rebuilding your preview' });
+          await republish().catch((error: unknown) =>
+            console.warn(
+              `[Flowstarter] preview ${demoId} applied an edit but could not ` +
+                'be republished: ' +
+                (error instanceof Error ? error.message : 'unknown error')
+            )
+          );
+        }
         const cur = getJob(demoId);
         updateJob(demoId, {
           editStatus: 'done',

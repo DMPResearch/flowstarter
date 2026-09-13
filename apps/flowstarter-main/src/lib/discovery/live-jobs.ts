@@ -20,10 +20,13 @@ export interface LiveJob {
   demoId: string;
   status: 'building' | 'ready' | 'failed';
   /**
-   * Upstream URL for the live site: Daytona sandbox or local `astro dev`
-   * (http://127.0.0.1:<port>). Clients never see loopback URLs over HTTPS —
-   * GET/stream rewrite those through `/api/discovery/preview/live/frame/<id>/`
-   * so the wizard iframe is same-origin.
+   * Upstream URL for the live site: the previews host
+   * (`https://p-<hex>.preview.<platform domain>`), the local static server a
+   * developer machine runs in-process, or a Daytona sandbox when an operator
+   * asked for that publisher by name. Clients never see loopback URLs over
+   * HTTPS — GET/stream rewrite those through
+   * `/api/discovery/preview/live/frame/<id>/` so the wizard iframe is
+   * same-origin.
    */
   previewUrl?: string;
   /**
@@ -44,9 +47,10 @@ export interface LiveJob {
   hostedPreviewExpiresAt?: string;
   sandboxId?: string;
   /**
-   * FLOWSTARTER_LOCAL_PREVIEW mode: absolute path of the on-disk workspace the
-   * local `astro dev` serves. The edit loop targets this when there is no
-   * sandbox.
+   * Absolute path of the workspace copy the static build ran in. The edit
+   * loop targets this when there is no sandbox behind the preview, and the
+   * job's teardown removes it. Absent on the Daytona publisher, which edits
+   * inside its sandbox.
    */
   localRoot?: string;
   /** Absolute path to the site's single content file (for edits). */
@@ -76,6 +80,16 @@ export interface LiveJob {
   editError?: string;
   createdAt: number;
   teardown?: () => Promise<void>;
+  /**
+   * Rebuilds the workspace copy and puts the result back where the visitor is
+   * looking — a redeploy to the previews host, or new bytes in the local
+   * static server. Set by the publisher that knows how; called by the
+   * free-edit route once an edit has landed on disk.
+   *
+   * Absent for the Daytona publisher: its sandbox serves the workspace
+   * directly, so an edit is visible the moment it is written.
+   */
+  republish?: () => Promise<void>;
   /**
    * The address the intake asked for with "Where should I send your preview
    * once it's ready?". Collected by the wizard since forever and, until the
@@ -150,7 +164,7 @@ export async function reapStaleJobs(ttlMs = 45 * 60_000): Promise<void> {
 }
 
 // `reapStaleJobs` used to only exist for callers to invoke; nothing did, so
-// every local `astro dev` child (and every Daytona sandbox) a demo ever
+// every preview server (and every Daytona sandbox) a demo ever
 // opened stayed up until the process restarted — ~12 zombies were found
 // squatting ports on 2026-08-31. One interval per process, anchored on
 // globalThis for the same reason the job Map is: `next dev` bundles this

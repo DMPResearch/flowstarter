@@ -15,11 +15,6 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
-import { cp, mkdir, rm, symlink } from 'node:fs/promises';
-import { createServer } from 'node:net';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import { deriveBusinessName } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/quick-defaults';
 import { funnelBudgetState, recordGenerationCost } from '@/lib/ai/funnel-cost';
@@ -38,14 +33,12 @@ import {
   resolveTenantCalComUrl,
 } from '@/lib/flowstarter/cal-com';
 import { injectLeadCapturePreviewIntoScaffoldFiles } from '@/lib/flowstarter/lead-capture-scaffold';
-import { publishFunnelPreview } from '@/lib/hosting/preview-publisher';
-import { buildSandboxStaticFiles } from '@/lib/hosting/sandbox-static-build';
+import { createFunnelPreviewPublisher } from '@/lib/discovery/funnel-preview-publisher';
+import { resolvePreviewPublisher } from '@/lib/discovery/preview-publisher-rule';
 import type {
   BusinessIntakePayload,
-  PreviewPublisher,
   ScrapeCorpus,
   SiteValidator,
-  TemplateScaffoldFile,
 } from '@flowstarter/agentic-codegen';
 
 export const runtime = 'nodejs';
@@ -325,137 +318,6 @@ function buildPiEvidence(
 }
 
 /**
- * Where the vetted template sources (and their pre-installed node_modules)
- * live on disk. Shared between the local `astro dev` fallback below and the
- * dist build: both need the same dependency tree, and only one should decide
- * where to find it.
- */
-function templateRootDir(): string {
-  return (
-    process.env.FLOWSTARTER_TEMPLATE_ROOT?.trim() ||
-    resolve(process.cwd(), '../flowstarter-templates')
-  );
-}
-
-/** Export only a successful sandbox build. Local app credentials never enter tenant code. */
-async function buildPreviewDist(
-  sandboxId: string,
-  files: readonly TemplateScaffoldFile[]
-): Promise<TemplateScaffoldFile[] | undefined> {
-  try {
-    return (await buildSandboxStaticFiles(sandboxId, files)).map((file) => ({
-      ...file,
-      type: 'file' as const,
-    }));
-  } catch {
-    console.warn(
-      '[Flowstarter] sandbox static compilation failed; preview was not published'
-    );
-    return undefined;
-  }
-}
-
-async function reserveLocalPort(): Promise<number> {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer();
-    server.once('error', reject);
-    server.listen(0, '0.0.0.0', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : 0;
-      server.close((error) =>
-        error || port === 0
-          ? reject(error ?? new Error('No local preview port'))
-          : resolvePort(port)
-      );
-    });
-  });
-}
-
-async function publishLocalPreview(input: {
-  projectId: string;
-  templateSlug: string;
-  workspaceRoot: string;
-}): Promise<{
-  previewUrl: string;
-  artifactUrl: string;
-  localRoot: string;
-  teardown: () => Promise<void>;
-}> {
-  if (process.env.FLOWSTARTER_LOCAL_PREVIEW !== 'true') {
-    throw new Error('Local preview publishing is disabled');
-  }
-  const dependencies = resolve(
-    templateRootDir(),
-    input.templateSlug,
-    'node_modules'
-  );
-  const localParent = join(tmpdir(), 'flowstarter-local-previews');
-  const localRoot = join(localParent, input.projectId);
-  await mkdir(localParent, { recursive: true });
-  await rm(localRoot, { recursive: true, force: true });
-  await cp(input.workspaceRoot, localRoot, { recursive: true });
-  await symlink(dependencies, join(localRoot, 'node_modules'), 'dir');
-
-  const port = await reserveLocalPort();
-  const astroCli = resolve(dependencies, '.bin', 'astro');
-  const child = spawn(
-    astroCli,
-    ['dev', '--host', '0.0.0.0', '--port', String(port)],
-    {
-      cwd: localRoot,
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: false,
-    }
-  );
-  let launchOutput = '';
-  const captureLaunchOutput = (chunk: Buffer) => {
-    launchOutput = `${launchOutput}${chunk.toString('utf8')}`.slice(-4_000);
-  };
-  child.stdout?.on('data', captureLaunchOutput);
-  child.stderr?.on('data', captureLaunchOutput);
-  const teardown = async () => {
-    if (!child.killed) child.kill('SIGTERM');
-    await rm(localRoot, { recursive: true, force: true });
-  };
-
-  let ready = false;
-  for (let attempt = 0; attempt < 240; attempt++) {
-    if (child.exitCode !== null) break;
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}`, {
-        signal: AbortSignal.timeout(1_000),
-      });
-      if (response.ok) {
-        ready = true;
-        break;
-      }
-    } catch {
-      // Astro is still starting.
-    }
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
-  }
-  if (!ready) {
-    await teardown();
-    const diagnostic = launchOutput.trim().replace(/\s+/g, ' ').slice(-1_000);
-    throw new Error(
-      `Local preview server did not become ready${
-        diagnostic ? `: ${diagnostic}` : ''
-      }`
-    );
-  }
-
-  const host =
-    process.env.FLOWSTARTER_LOCAL_PREVIEW_HOST?.trim() || '127.0.0.1';
-  return {
-    previewUrl: `http://${host}:${port}`,
-    artifactUrl: `local://${localRoot}`,
-    localRoot,
-    teardown,
-  };
-}
-
-/**
  * One line per finished job, machine-readable, so reliability is a grep over
  * the server log rather than a memory: status, where it failed, how long it
  * took, what it cost in tokens. The job store forgets after 45 minutes; this
@@ -639,14 +501,24 @@ export async function POST(req: NextRequest) {
         PiSdkFlowstarterAgents,
         PreviewGenerationPipeline,
       } = await import('@flowstarter/agentic-codegen');
-      const { previewInSandbox } = await import('@flowstarter/daytona-utils');
-
       const piApiKey =
         process.env.PI_API_KEY?.trim() ||
         process.env.OPENROUTER_API_KEY?.trim();
       const mcpUrl = process.env.FLOWSTARTER_MCP_URL?.trim();
       const mcpToken = process.env.FLOWSTARTER_MCP_INTERNAL_TOKEN?.trim();
-      if (!piApiKey || !mcpUrl || !mcpToken || !process.env.DAYTONA_API_KEY) {
+      // The publish step's own configuration is a rule, not a fixed env var:
+      // the platform publisher needs the previews deploy-agent, Daytona needs
+      // a key, and a developer machine with neither still gets a real,
+      // compiled preview served locally. `missingGenerationPrerequisites`
+      // above has already refused the request when this list is non-empty, so
+      // reaching here with one is a race, not the normal path.
+      const publisherDecision = resolvePreviewPublisher();
+      if (
+        !piApiKey ||
+        !mcpUrl ||
+        !mcpToken ||
+        publisherDecision.missing.length > 0
+      ) {
         updateJob(demoId, {
           status: 'failed',
           error: 'Pi preview infrastructure is not configured',
@@ -755,66 +627,44 @@ export async function POST(req: NextRequest) {
         },
       };
 
-      // Set inside publisher.publish, once the workspace that produced
-      // `result.files` has a Daytona sandbox or local `astro dev` server up.
-      // publisher.publish's workspaceRoot is removed the instant pipeline.run()
-      // returns (PreviewGenerationPipeline's finally), so this is the only
-      // window in which the compiled dist/ output can be produced at all —
-      // it cannot be deferred to after `runPipeline()` resolves below.
-      let compiledPreviewFiles: TemplateScaffoldFile[] | undefined;
-
-      const publisher: PreviewPublisher = {
-        publish: async (input) => {
-          const files = await readPreviewWorkspaceFiles(input.workspaceRoot);
-          const preview = await previewInSandbox(input.workspaceRoot, {
-            projectId: input.projectId,
-            env: { DAYTONA_API_KEY: process.env.DAYTONA_API_KEY },
-            onProgress: () =>
-              updateJob(demoId, { phase: 'Publishing your live preview' }),
-          });
-          if (!preview.success || !preview.previewUrl || !preview.sandboxId) {
-            await preview.teardown().catch(() => {});
-            if (process.env.FLOWSTARTER_LOCAL_PREVIEW === 'true') {
-              try {
-                const local = await publishLocalPreview({
-                  projectId: input.projectId,
-                  templateSlug: input.template.slug,
-                  workspaceRoot: input.workspaceRoot,
-                });
-                // Recorded here (not off the orchestrator result, which only
-                // keeps the sandbox fields) so the edit loop can target the
-                // local workspace when there is no sandbox behind the preview.
-                updateJob(demoId, { localRoot: local.localRoot });
-                // A local dev preview is never permission to compile tenant code on the app host.
-                compiledPreviewFiles = undefined;
-                return { ...local, files };
-              } catch (localError) {
-                throw new Error(
-                  `${
-                    preview.error ?? 'Preview sandbox unavailable'
-                  }; local fallback: ${
-                    localError instanceof Error
-                      ? localError.message
-                      : 'unknown error'
-                  }`
-                );
-              }
+      // Where this preview is published, and how it is put back together
+      // after a free edit. The rule above already decided which publisher
+      // this process uses; everything site-specific (the build, the deploy,
+      // the local server) lives behind that one seam.
+      //
+      // `publish` runs inside `pipeline.run()` on purpose: the pipeline
+      // removes its workspace the instant `run()` returns, so the static
+      // build that the previews host needs can only be produced there.
+      const previewPublisher = createFunnelPreviewPublisher({
+        previewId: demoId,
+        decision: publisherDecision,
+        hooks: {
+          onPhase: (phase) => updateJob(demoId, { phase }),
+          // Recorded so the free-edit loop has a tree to edit when there is
+          // no sandbox behind the preview, and so the job's teardown has
+          // something to remove.
+          onWorkspace: (localRoot) => updateJob(demoId, { localRoot }),
+          onHosted: (hosted) => {
+            updateJob(demoId, {
+              hostedPreviewStatus: hosted.status,
+              ...(hosted.status === 'live' && hosted.url
+                ? {
+                    hostedPreviewUrl: hosted.url,
+                    hostedPreviewExpiresAt: hosted.expiresAt,
+                  }
+                : {}),
+            });
+            if (hosted.status !== 'live') {
+              console.warn(
+                `[Flowstarter] preview ${demoId} was not hosted: ${
+                  hosted.detail ?? 'unknown reason'
+                }`
+              );
             }
-            throw new Error(preview.error ?? 'Preview sandbox unavailable');
-          }
-          compiledPreviewFiles = await buildPreviewDist(
-            preview.sandboxId,
-            files
-          );
-          return {
-            previewUrl: preview.previewUrl,
-            artifactUrl: `daytona://${preview.sandboxId}`,
-            files,
-            sandboxId: preview.sandboxId,
-            teardown: preview.teardown,
-          };
+          },
         },
-      };
+      });
+      const publisher = previewPublisher.publisher;
 
       // The funnel gets the same pipeline the scenarios do. Without these the
       // visitor's preview is a plainer site than the one this project has
@@ -918,16 +768,24 @@ export async function POST(req: NextRequest) {
         return;
       }
 
-      // Wire the teardown in the instant the sandbox/local `astro dev` child
-      // is confirmed live, not after the awaited bookkeeping below. Before
-      // this fix, a throw from `rememberClaimablePreview` (or anything else
-      // between here and the final `updateJob`) orphaned an already-running
-      // process with no handle anywhere in the job store to close it —
-      // the catch block only ever set `status: 'failed'`.
+      // Wire the teardown in the instant the preview is confirmed live, not
+      // after the awaited bookkeeping below. Before this fix, a throw from
+      // `rememberClaimablePreview` (or anything else between here and the
+      // final `updateJob`) left a sandbox — or a workspace copy — with no
+      // handle anywhere in the job store to close it; the catch block only
+      // ever set `status: 'failed'`.
+      //
+      // `republish` goes on the job for the same reason: after a free edit
+      // lands on the workspace copy, something has to put the rebuilt site
+      // back where the visitor is looking. Nothing else in the process knows
+      // how, and the edit route must not have to.
       updateJob(demoId, {
         previewUrl: result.previewUrl,
         sandboxId: result.sandboxId,
         teardown: result.teardown,
+        ...(previewPublisher.republish
+          ? { republish: previewPublisher.republish }
+          : {}),
       });
 
       // The manifest, brand config and template exist only in this process:
@@ -947,56 +805,6 @@ export async function POST(req: NextRequest) {
           : {}),
         ...(result.previewUrl ? { previewUrl: result.previewUrl } : {}),
       });
-
-      // The same moment, the durable half: package the site (noindex injected
-      // into every HTML file) and push it to the PREVIEWS deploy-agent, which
-      // is a different agent on a different port with a different secret and
-      // its own Caddy — a malformed generated preview can break previews and
-      // nothing a customer paid for. Never blocks the wizard: the sandbox URL
-      // above is what the iframe shows, and the hosted one is reported
-      // alongside it once (if) it comes up.
-      //
-      // `files` (source) is what makes the preview claimable; the previews
-      // Caddy is static and can only serve `builtFiles`, the compiled dist/
-      // output from buildPreviewDist. When the build failed or never ran,
-      // `builtFiles` is undefined and publishFunnelPreview falls back to
-      // `files` — which has no root index.html, so it refuses to deploy a
-      // source-only archive rather than pushing raw Astro source to Caddy.
-      void publishFunnelPreview({
-        previewId: demoId,
-        files: filesWithCal as Array<{ path: string; content: string }>,
-        builtFiles: compiledPreviewFiles as
-          | Array<{ path: string; content: string; encoding?: 'base64' }>
-          | undefined,
-        templateSlug: result.template?.slug ?? null,
-        brandConfig: result.brandConfig,
-      })
-        .then((published) => {
-          updateJob(demoId, {
-            hostedPreviewStatus: published.status,
-            ...(published.status === 'live'
-              ? {
-                  hostedPreviewUrl: published.url,
-                  hostedPreviewExpiresAt: published.expiresAt,
-                }
-              : {}),
-          });
-          if (published.status !== 'live') {
-            console.warn(
-              `[Flowstarter] preview ${demoId} was not hosted: ${
-                published.detail ?? 'unknown reason'
-              }`
-            );
-          }
-        })
-        .catch((error) => {
-          updateJob(demoId, { hostedPreviewStatus: 'failed' });
-          console.warn(
-            `[Flowstarter] preview ${demoId} could not be published to the ` +
-              'previews host: ' +
-              (error instanceof Error ? error.message : 'unknown error')
-          );
-        });
 
       updateJob(demoId, {
         status: 'ready',

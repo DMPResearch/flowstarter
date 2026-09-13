@@ -28,6 +28,7 @@ import { SiteOverview } from '@/components/flowstarter/SiteOverview';
 import { siteOverviewTiles } from '@/components/flowstarter/site-overview';
 import { BriefForm } from '@/components/flowstarter/BriefForm';
 import { evaluateBriefReadiness } from '@/lib/flowstarter/brief-readiness';
+import { derivedBriefPageCount } from '@/lib/flowstarter/brief-data';
 import { AdminDashboardGallery, AdminPipelineGallery } from './AdminSection';
 import { briefGallery, starterOverview, ecommerceOverview } from './fixtures';
 
@@ -152,6 +153,7 @@ export default function DesignGalleryPage() {
             <BriefForm
               workspaceId={briefGallery.workspaceId}
               initialBrief={briefGallery.brief}
+              derivedPageCount={derivedBriefPageCount(briefGallery.brief)}
               initialReadiness={evaluateBriefReadiness({
                 offer: briefGallery.brief.offer,
                 projects: briefGallery.brief.projects,

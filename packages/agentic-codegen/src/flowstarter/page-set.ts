@@ -42,6 +42,23 @@
  *    business can put on a page. A brief that was never asked the question -
  *    every brief taken before the dashboard existed - behaves exactly as it
  *    did before, which is why the count is optional and `null` is not zero.
+ * 7. **The page set is DERIVED from the brief, and the derived count is the
+ *    default.** A personal portfolio or a one-person service business buys
+ *    home, about, contact and one of work-or-services: work when there are
+ *    real projects to show, services when the offer describes distinct
+ *    services. A blog is bought only when the brief asks for one, and a
+ *    services page only when the offer actually lists more than one service.
+ *    This is rule 1's input when nobody answered rule 1's question - which,
+ *    since the four-question intake moved that question behind the deposit,
+ *    is every quick brief there is. The default `'unsure'` bought six pages,
+ *    so a four-page portfolio brief was handed a services page and a blog and
+ *    told to find subject matter for them.
+ * 8. **An explicit answer wins, and the brief's answer beats the intake's.**
+ *    The brief is later, it is written by the client after they have seen the
+ *    preview, and it is the only place the question is now asked. A client who
+ *    wants a wider site says so on the brief and gets it; the quick intake's
+ *    default never overrides them, which is the precedence the old
+ *    `brief.pageCount && !intake.business.pageCount` had backwards.
  */
 
 import type { TemplateScaffoldFile } from './types';
@@ -128,6 +145,16 @@ export interface PageSetInput {
    * is the answer that removes the work page.
    */
   projectCount?: number | null;
+  /**
+   * The brief's own page-count answer. Rule 8: it wins over `pageCount`,
+   * which since the four-question intake is only ever the `'unsure'` default
+   * `quick-defaults.ts` writes for a question nobody was asked.
+   */
+  briefPageCount?: string | null;
+  /** What the client sells, verbatim. Rule 7 reads it for a services page. */
+  offer?: string | null;
+  /** The intake's description. Rule 7 reads it for a blog. */
+  description?: string | null;
 }
 
 export interface PageSet {
@@ -142,6 +169,10 @@ export interface PageSet {
   allowed: readonly string[];
   /** Library pages this brief does not buy. */
   dropped: readonly string[];
+  /** The answer the budget came from, after rule 8 decided whose it was. */
+  answer: PageCountAnswer;
+  /** The pages rule 7 derived, before the budget widened or cut them. */
+  derived: readonly string[];
 }
 
 /** The answer, normalized; anything unrecognised is "unsure". */
@@ -160,6 +191,150 @@ export function pageBudget(answer: string | null | undefined): number {
 /** Rule 3: which order the optional pages are kept in. */
 export function siteKindFor(businessType: string | null | undefined): SiteKind {
   return PORTFOLIO_SIGNALS.test(businessType ?? '') ? 'portfolio' : 'services';
+}
+
+/**
+ * Rule 7: does this offer describe more than one distinct service?
+ *
+ * The test is LIST STRUCTURE, not word count. Prose about what somebody does
+ * is not a services page - "I build websites with AI agents, supervised by
+ * people" is one sentence with a comma in it, and splitting on commas would
+ * read it as two services and buy a page to invent them on. A client who
+ * actually sells several things writes them as a list: separate lines,
+ * bullets, numbers or semicolons. That is the signal, and it is the only one.
+ *
+ * Each entry also has to look like the name of an offering rather than a
+ * paragraph that happened to contain a newline, so an entry counts only when
+ * it is twelve words or fewer.
+ */
+export function offerDescribesDistinctServices(
+  offer: string | null | undefined,
+): boolean {
+  const text = (offer ?? '').trim();
+  if (!text) return false;
+  const entries = text
+    .split(/[\n;•]|(?:^|\s)[-*+]\s|(?:^|\s)\d+[.)]\s/)
+    .map((entry) => entry.replace(/^[\s\-*+•]+/, '').trim())
+    .filter((entry) => entry.length > 0 && entry.split(/\s+/).length <= 12);
+  return entries.length >= 2;
+}
+
+/**
+ * Rule 7: did the brief ask for a blog?
+ *
+ * A blog is the page a small business builds and then never writes, so it is
+ * never bought on a hunch. It is bought when the client asked for one in as
+ * many words, anywhere they were asked to describe the site.
+ */
+export function briefAsksForBlog(
+  ...text: Array<string | null | undefined>
+): boolean {
+  return /\b(blogs?|blogging|journal|newsletter|articles?|essays?|insights? (?:page|section)|news (?:page|section))\b/i.test(
+    text.filter(Boolean).join(' '),
+  );
+}
+
+/** What a derived page set is made of, before the budget has an opinion. */
+export interface DerivedPagesInput {
+  /** Industry chip and/or free-text niche, in either order. */
+  businessType?: string | null;
+  /** What the client sells, verbatim from the brief's offer question. */
+  offer?: string | null;
+  /** The intake's own description; read only by the blog rule. */
+  description?: string | null;
+  /**
+   * How many real projects the brief lists. `null` means the brief was never
+   * asked - a quick intake, before the deposit - and the site kind decides
+   * instead; `0` is an answer, and it is the answer that removes the work
+   * page.
+   */
+  projectCount?: number | null;
+}
+
+/**
+ * Rule 7, applied: the pages this brief actually earns, in priority order.
+ *
+ * Home, about and contact are the spine of every small site. The fourth page
+ * is the one that carries the evidence - work when there is real work,
+ * services when the offer is a list of services. Both, when the brief has
+ * both. Blog only when it was asked for.
+ */
+export function deriveBriefPages(input: DerivedPagesInput): string[] {
+  const kind = siteKindFor(input.businessType);
+  const asked = input.projectCount !== null && input.projectCount !== undefined;
+  const hasProjects = asked && (input.projectCount as number) > 0;
+
+  const earned = new Set<string>(['home', 'contact', 'about']);
+  // Never asked: fall back on the site kind, which is exactly how every brief
+  // taken before the question existed behaved.
+  if (hasProjects || (!asked && kind === 'portfolio')) earned.add('work');
+  if (
+    offerDescribesDistinctServices(input.offer) ||
+    (!asked && kind === 'services')
+  ) {
+    earned.add('services');
+  }
+  if (briefAsksForBlog(input.offer, input.description)) earned.add('blog');
+
+  // Rule 6 still sets the order: a services brief with real projects puts
+  // `work` ahead of `about`, and deriving the set must not quietly undo that.
+  return projectAwarePriority(kind, input.projectCount).filter((page) =>
+    earned.has(page),
+  );
+}
+
+/**
+ * Rule 7's count: the narrowest of the wizard's own answers that still buys
+ * every derived page.
+ *
+ * Reported as an answer rather than a bare number so the brief form can
+ * pre-select it, the budget arithmetic stays in one place, and a client
+ * widening it is choosing between the same options they were ever offered.
+ */
+export function pageCountAnswerFor(pageCount: number): PageCountAnswer {
+  const answers: PageCountAnswer[] = ['lt-5', '5-7', '8-15', '15+'];
+  return answers.find((answer) => pageCount <= PAGE_BUDGETS[answer]) ?? '15+';
+}
+
+/**
+ * Rule 8: whose page count wins.
+ *
+ * In order:
+ *
+ *  1. The BRIEF's own answer. It is asked last, after the client has seen a
+ *     preview, and it is the only place the question is still asked.
+ *  2. The INTAKE's answer, when somebody actually gave one. A visitor who
+ *     picked "8 - 15" in the wizard asked for a bigger site than their brief
+ *     earns, and is not overruled by a derivation.
+ *  3. The count DERIVED from the brief (rule 7). This is what beats the quick
+ *     default, and it is the whole fix: `quick-defaults.ts` writes `'unsure'`
+ *     on every quick intake for a question nobody was asked, `'unsure'` buys
+ *     six pages, and a four-page portfolio brief was therefore handed two
+ *     pages to invent.
+ *  4. `'unsure'`, the library's own default shape.
+ *
+ * `'unsure'` is never treated as an answer at steps 1 or 2 precisely because
+ * it is the value written when there was no answer.
+ */
+export function resolvePageCountAnswer(input: {
+  briefPageCount?: string | null;
+  derivedPageCount?: string | null;
+  intakePageCount?: string | null;
+}): PageCountAnswer {
+  const answered = (
+    value: string | null | undefined,
+  ): PageCountAnswer | null => {
+    const normalized = (value ?? '').trim().toLowerCase();
+    return normalized in PAGE_BUDGETS && normalized !== 'unsure'
+      ? (normalized as PageCountAnswer)
+      : null;
+  };
+  return (
+    answered(input.briefPageCount) ??
+    answered(input.intakePageCount) ??
+    answered(input.derivedPageCount) ??
+    'unsure'
+  );
 }
 
 /**
@@ -200,17 +375,43 @@ export function worksSectionAllowed(pageSet: PageSet): boolean {
 /** The whole rule, applied. */
 export function derivePageSet(input: PageSetInput): PageSet {
   const kind = siteKindFor(input.businessType);
-  const budget = pageBudget(input.pageCount);
   const priority = projectAwarePriority(kind, input.projectCount);
 
-  const content = priority.slice(0, Math.max(2, budget));
+  // Rule 7: what the brief itself earns.
+  const derived = deriveBriefPages({
+    businessType: input.businessType ?? null,
+    offer: input.offer ?? null,
+    description: input.description ?? null,
+    projectCount: input.projectCount ?? null,
+  });
+
+  // Rule 8: whose count sets the budget.
+  const answer = resolvePageCountAnswer({
+    briefPageCount: input.briefPageCount ?? null,
+    derivedPageCount: pageCountAnswerFor(derived.length),
+    intakePageCount: input.pageCount ?? null,
+  });
+  const budget = PAGE_BUDGETS[answer];
+
+  // The derived set is the site. A budget wider than it is a client asking
+  // for more pages than their brief earned, and they get them back in
+  // priority order rather than being told no; a narrower one cuts from the
+  // bottom of the same order, with home and contact never at risk (rule 2).
+  const widened = [
+    ...derived,
+    ...priority.filter((page) => !derived.includes(page)),
+  ];
+  const content = widened.slice(
+    0,
+    Math.max(2, Math.min(budget, widened.length)),
+  );
   const booking = input.hasBookingLink;
   const allowed = booking ? [...content, BOOKING_PAGE] : [...content];
   const dropped = [...CONTENT_PAGES, BOOKING_PAGE].filter(
     (page) => !allowed.includes(page),
   );
 
-  return { kind, budget, content, booking, allowed, dropped };
+  return { kind, budget, content, booking, allowed, dropped, answer, derived };
 }
 
 /** Scaffold path for a page slug. `home` is the index, the rest are named. */

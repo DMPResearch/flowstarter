@@ -280,6 +280,11 @@ export class PreviewGenerationPipeline {
       // Rule 6 needs to tell "no projects" from "never asked", so a brief
       // without the question stays null rather than counting as zero.
       projectCount: input.intake.projects?.length ?? null,
+      // Rule 7 reads what the client actually sells and what they said the
+      // site is for. Without them a preview buys the default six pages and
+      // fills two of them with subject matter nobody asked for.
+      offer: input.intake.offer ?? null,
+      description: input.intake.business.description ?? null,
     });
     const scaffold = prunedScaffold(
       await this.library.scaffold(template.slug),
@@ -2226,6 +2231,8 @@ export class FullSiteBuildWorker {
         businessType: `${job.intake.business.niche} ${job.intake.business.description ?? ''}`,
         hasBookingLink: Boolean(job.calComUrl),
         projectCount: job.intake.projects?.length ?? null,
+        offer: job.intake.offer ?? null,
+        description: job.intake.business.description ?? null,
       });
       // The approved preview is the preview *after* the teaser was injected.
       // A paid build seeded from it inherits the blur and the "Unlock the

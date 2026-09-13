@@ -246,7 +246,16 @@ export async function saveFunnelPreview(
           template_version: input.templateVersion ?? null,
           brand_config: (input.brandConfig ?? {}) as Json,
           manifest: safeManifest as Json,
-          artifact_path: input.artifactPath ?? null,
+          // Omitted, not nulled, when the caller has nothing to say about it.
+          // An upsert only writes the columns it is given, so a caller that
+          // is refreshing the manifest (`rememberClaimablePreview`) no longer
+          // erases the artifact the publisher had already stored — which it
+          // did the moment the publish step started running before the
+          // manifest write rather than after it. `null` still clears it, for
+          // a caller that means it.
+          ...(input.artifactPath === undefined
+            ? {}
+            : { artifact_path: input.artifactPath }),
           expires_at: expiresAt.toISOString(),
         },
         { onConflict: 'preview_id' }

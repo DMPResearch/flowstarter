@@ -190,15 +190,54 @@ describe('mergeBriefIntoIntake', () => {
     expect(mergeBriefIntoIntake(original, null).projects).toBeUndefined();
   });
 
-  it('never overwrites an intake that already carries its own tone or page count', () => {
+  it('never overwrites a tone the intake already carries', () => {
     const withTone: BusinessIntakePayload = {
       ...intake(),
-      business: { ...intake().business, pageCount: 'lt-5' },
       tone: { adjectives: ['bold', 'dry', 'short'], voice: 'Its own.' },
     };
     const merged = mergeBriefIntoIntake(withTone, parseBriefInput(payload()));
-    expect(merged.business.pageCount).toBe('lt-5');
     expect(merged.tone?.voice).toBe('Its own.');
+  });
+
+  // Rule 8 of the page set. This assertion used to run the other way round -
+  // the intake's answer won and the brief could only fill a gap - and that is
+  // the defect: since the four-question intake moved the page-count question
+  // behind the deposit, `quick-defaults.ts` writes `'unsure'` on every quick
+  // intake, so there was never a gap and the brief's answer was never applied.
+  it("takes the brief's page count over the intake's", () => {
+    const withIntakeAnswer: BusinessIntakePayload = {
+      ...intake(),
+      business: { ...intake().business, pageCount: 'lt-5' },
+    };
+    const merged = mergeBriefIntoIntake(
+      withIntakeAnswer,
+      parseBriefInput(payload()),
+    );
+    expect(merged.business.pageCount).toBe('5-7');
+  });
+
+  it("keeps the intake's answer when the brief has none", () => {
+    const withIntakeAnswer: BusinessIntakePayload = {
+      ...intake(),
+      business: { ...intake().business, pageCount: 'lt-5' },
+    };
+    const merged = mergeBriefIntoIntake(
+      withIntakeAnswer,
+      parseBriefInput(payload({ pageCount: undefined })),
+    );
+    expect(merged.business.pageCount).toBe('lt-5');
+  });
+
+  it("ignores an intake default of 'unsure' in favour of the brief", () => {
+    const quickDefault: BusinessIntakePayload = {
+      ...intake(),
+      business: { ...intake().business, pageCount: 'unsure' },
+    };
+    const merged = mergeBriefIntoIntake(
+      quickDefault,
+      parseBriefInput(payload()),
+    );
+    expect(merged.business.pageCount).toBe('5-7');
   });
 });
 

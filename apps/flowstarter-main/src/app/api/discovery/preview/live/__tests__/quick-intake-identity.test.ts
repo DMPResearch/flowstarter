@@ -150,6 +150,12 @@ function quickIntakeDraftRequest(): NextRequest {
 
 describe('POST /api/discovery/preview/live — quick-intake draft', () => {
   beforeEach(async () => {
+    // The publish step is a rule now (`preview-publisher-rule.ts`), and its
+    // default is Flowstarter's own platform. These suites stub the Daytona
+    // sandbox, so they name that publisher explicitly - which is also the only
+    // way it is ever chosen.
+    vi.stubEnv('FLOWSTARTER_PREVIEW_PUBLISHER', 'daytona');
+    vi.stubEnv('DAYTONA_API_KEY', 'daytona-test');
     vi.stubEnv('OPENROUTER_API_KEY', 'test-key');
     vi.stubEnv('FLOWSTARTER_MCP_URL', 'http://127.0.0.1:3001/mcp');
     vi.stubEnv('FLOWSTARTER_MCP_INTERNAL_TOKEN', 'test-token');

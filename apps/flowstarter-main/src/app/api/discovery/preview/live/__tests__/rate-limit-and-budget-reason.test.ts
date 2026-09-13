@@ -75,6 +75,12 @@ function liveRequest(body: Record<string, unknown> = {}): NextRequest {
 
 describe('POST /api/discovery/preview/live — per-IP rate limit', () => {
   beforeEach(() => {
+    // The publish step is a rule now (`preview-publisher-rule.ts`), and its
+    // default is Flowstarter's own platform. These suites stub the Daytona
+    // sandbox, so they name that publisher explicitly - which is also the only
+    // way it is ever chosen.
+    vi.stubEnv('FLOWSTARTER_PREVIEW_PUBLISHER', 'daytona');
+    vi.stubEnv('DAYTONA_API_KEY', 'daytona-test');
     vi.resetModules();
     funnelBudgetState.mockClear();
     funnelBudgetState.mockResolvedValue({ state: 'ok' as const });

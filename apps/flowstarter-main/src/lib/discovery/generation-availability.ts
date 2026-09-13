@@ -4,8 +4,8 @@
  * `POST /api/discovery/preview/live` used to learn this the hard way: it
  * created the job, told the visitor a build was "building", and only then
  * checked, inside the detached worker, whether Pi, the MCP template library
- * and Daytona were configured. In production none of them are (no
- * `DAYTONA_API_KEY`, no `FLOWSTARTER_MCP_URL`, no
+ * and the publish step were configured. In production none of them are (no
+ * previews deploy-agent, no `FLOWSTARTER_MCP_URL`, no
  * `FLOWSTARTER_MCP_INTERNAL_TOKEN`), so every job failed a few hundred
  * milliseconds after it started, and the visitor watched "Getting your build
  * started" turn into "The build stopped", a real-looking failure for a
@@ -14,6 +14,8 @@
  * This check runs before the job exists, so the route can tell the truth
  * up front instead of narrating a doomed attempt.
  */
+import { missingPreviewPublisherConfig } from './preview-publisher-rule';
+
 export interface GenerationPrerequisite {
   /** The name reported in logs and tests; not a secret value. */
   readonly name: string;
@@ -56,10 +58,16 @@ export function generationPrerequisites(
       name: 'FLOWSTARTER_MCP_INTERNAL_TOKEN',
       present: Boolean(trimmed(env.FLOWSTARTER_MCP_INTERNAL_TOKEN)),
     },
-    {
-      name: 'DAYTONA_API_KEY',
-      present: Boolean(trimmed(env.DAYTONA_API_KEY)),
-    },
+    // The publish step's requirement is whatever the publisher this process
+    // resolved to needs — the previews deploy-agent for the platform
+    // publisher, `DAYTONA_API_KEY` only when an operator asked for Daytona by
+    // name, and nothing at all on a developer machine, which serves its own
+    // build. It used to be a flat `DAYTONA_API_KEY`, which is how a revoked
+    // third-party key came to fail 100% of previews at the last phase.
+    ...missingPreviewPublisherConfig(env).map((name) => ({
+      name,
+      present: false,
+    })),
   ];
 }
 

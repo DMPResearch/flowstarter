@@ -28,6 +28,12 @@ import {
 } from '@/lib/flowstarter/brief-readiness';
 import { withTenant } from '@/lib/tenancy';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
+import {
+  deriveBriefPages,
+  pageCountAnswerFor,
+  resolvePageCountAnswer,
+  type PageCountAnswer,
+} from '@flowstarter/agentic-codegen/src/flowstarter/page-set';
 
 export interface BriefProjectView {
   name: string;
@@ -52,6 +58,13 @@ export interface BriefView {
   readyAt: string | null;
   /** An operator's "build it anyway". Read here, never written here. */
   overrideAt: string | null;
+  /**
+   * The client's own page-count answer, asked on the brief. Null means they
+   * have not touched the control: the form then pre-selects and describes
+   * whatever `derivedBriefPageCount` works out from the rest of the brief,
+   * and `effectiveBriefPageCount` falls back the same way for the build.
+   */
+  pageCount: string | null;
 }
 
 /** A first visit has no row, and that is not an error. */
@@ -64,6 +77,7 @@ export const EMPTY_BRIEF: BriefView = {
   portraitAssetId: null,
   readyAt: null,
   overrideAt: null,
+  pageCount: null,
 };
 
 export interface BriefRow {
@@ -74,10 +88,11 @@ export interface BriefRow {
   photo_asset_ids: string[] | null;
   ready_at: string | null;
   override_at: string | null;
+  page_count: string | null;
 }
 
 export const BRIEF_ROW_COLUMNS =
-  'offer, projects, no_projects, design_reference_asset_ids, photo_asset_ids, ready_at, override_at';
+  'offer, projects, no_projects, design_reference_asset_ids, photo_asset_ids, ready_at, override_at, page_count';
 
 /**
  * `projects` is a jsonb column, so what comes back is whatever was put in.
@@ -148,7 +163,47 @@ export function briefViewFromRow(
     portraitAssetId: portraitFrom(photoAssetIds, assets),
     readyAt: row.ready_at,
     overrideAt: row.override_at,
+    pageCount: row.page_count,
   };
+}
+
+/**
+ * Rule 7 (`deriveBriefPages`), read off a brief rather than an intake.
+ *
+ * `deriveBriefPages` takes `businessType` and `description` too, but a brief
+ * needs neither: those two only ever fire the site-kind fallbacks for a
+ * client who was never asked whether they have real projects, and a brief
+ * always asks that question (`noProjects` is an explicit answer, not an
+ * absent one). With `projectCount` always set, `deriveBriefPages` never
+ * reaches the `!asked` branches, so the site kind cannot change the count --
+ * only membership can, exactly what a client filling in the brief actually
+ * controls.
+ */
+export function derivedBriefPageCount(brief: BriefView): PageCountAnswer {
+  return pageCountAnswerFor(
+    deriveBriefPages({
+      offer: brief.offer,
+      projectCount: brief.noProjects
+        ? 0
+        : brief.projects.filter((project) => project.name.trim()).length,
+    }).length
+  );
+}
+
+/**
+ * Whose page-count answer a build actually uses, once the brief, an intake
+ * carried forward and the derivation are all in the room. Rule 8: the
+ * brief's own answer wins, then the intake's, then the derivation.
+ */
+export function effectiveBriefPageCount(
+  brief: BriefView,
+  intakePageCount?: string | null
+): PageCountAnswer {
+  return resolvePageCountAnswer({
+    briefPageCount: brief.pageCount,
+    derivedPageCount: derivedBriefPageCount(brief),
+    intakePageCount,
+  });
 }
 
 /** The pure rule, fed from a stored brief and the workspace's files. */

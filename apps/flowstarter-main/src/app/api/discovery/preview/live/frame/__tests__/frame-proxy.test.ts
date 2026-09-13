@@ -56,8 +56,17 @@ describe('GET /api/discovery/preview/live/frame/[demoId]', () => {
     expect(res.status).toBe(404);
   });
 
-  it('404s regardless of job state when FLOWSTARTER_LOCAL_PREVIEW is not set', async () => {
+  it('404s regardless of job state when there is no local preview to frame', async () => {
     vi.stubEnv('FLOWSTARTER_LOCAL_PREVIEW', '');
+    // A previews host is configured, so the publisher rule chose `platform`
+    // and nothing in this process is serving a local preview. Without a host
+    // the rule chooses `local-static` and the proxy is the only thing that
+    // can frame it, which is the case the guard's own test covers.
+    vi.stubEnv(
+      'FLOWSTARTER_PREVIEW_DEPLOY_AGENT_URL',
+      'https://previews.example'
+    );
+    vi.stubEnv('FLOWSTARTER_PREVIEW_DEPLOY_AGENT_SECRET', 'shhh');
     getJob.mockReturnValue({
       demoId: 'e691fc76-1489-404f-9ff5-73cd4910d9c5',
       status: 'ready',

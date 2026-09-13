@@ -136,6 +136,15 @@ const BodySchema = z.object({
    * portrait alone, `null` clears it.
    */
   portraitAssetId: z.string().uuid().nullable().optional(),
+  /**
+   * The client's own page-count answer. Optional and nullable for the same
+   * reason `portraitAssetId` is: a caller that predates the control sends
+   * neither, and clearing the selection is a real state, not an omission.
+   */
+  pageCount: z
+    .enum(['lt-5', '5-7', '8-15', '15+', 'unsure'])
+    .nullable()
+    .optional(),
 });
 
 export async function PUT(
@@ -286,6 +295,7 @@ export async function PUT(
         no_projects: body.noProjects,
         design_reference_asset_ids: body.designReferenceAssetIds,
         photo_asset_ids: body.photoAssetIds,
+        page_count: body.pageCount ?? null,
         ready_at: readyAt,
         updated_at: now,
       },
@@ -333,6 +343,7 @@ export async function PUT(
         portraitAssetId: portraitFrom(body.photoAssetIds, refreshed),
         readyAt,
         overrideAt: current?.override_at ?? null,
+        pageCount: body.pageCount ?? null,
       },
       readiness,
       assets: refreshed,

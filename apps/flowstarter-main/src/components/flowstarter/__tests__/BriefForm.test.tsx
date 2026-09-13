@@ -38,6 +38,9 @@ function brief(overrides: Partial<BriefView> = {}): BriefView {
     portraitAssetId: null,
     readyAt: null,
     overrideAt: null,
+    // Null until the client touches the page-count control; the derived value
+    // is what they are shown until then.
+    pageCount: null,
     ...overrides,
   };
 }
@@ -82,7 +85,13 @@ function readinessFor(view: BriefView, assets: BriefAssetView[]) {
 function mount(
   view: BriefView = brief(),
   assets: BriefAssetView[] = [],
-  readiness: BriefReadiness = readinessFor(view, assets)
+  readiness: BriefReadiness = readinessFor(view, assets),
+  /**
+   * What the server's `derivedBriefPageCount` worked out from this brief. The
+   * form never derives it itself: the rule lives in the codegen package and
+   * the client bundle has no business carrying it.
+   */
+  derivedPageCount = 'lt-5'
 ) {
   return render(
     <BriefForm
@@ -90,8 +99,17 @@ function mount(
       initialBrief={view}
       initialReadiness={readiness}
       initialAssets={assets}
+      derivedPageCount={derivedPageCount}
     />
   );
+}
+
+/** The option the page-count group is showing as chosen. */
+function selectedPageCount(): string | undefined {
+  return screen
+    .getAllByTestId('brief-page-count-option')
+    .find((option) => option.dataset.selected === 'true')
+    ?.querySelector('input')?.value;
 }
 
 /** The body of the last PUT the form sent. */
@@ -387,6 +405,61 @@ describe('BriefForm', () => {
     await waitFor(() =>
       expect(screen.getByTestId('brief-save')).not.toBeDisabled()
     );
+  });
+
+  /**
+   * The page budget. Before this control existed, a brief could not say how
+   * big the site should be at all: the quick intake stopped asking, the
+   * default `'unsure'` bought six content pages, and a four-page brief was
+   * handed two pages of invented subject matter. The client can now answer,
+   * and until they do they are shown what their own brief adds up to.
+   */
+  it('pre-selects what the brief adds up to, and says that is what it is', () => {
+    mount(brief(), [], undefined, 'lt-5');
+    expect(selectedPageCount()).toBe('lt-5');
+    expect(screen.getByTestId('brief-page-count-derived')).toBeInTheDocument();
+  });
+
+  it('shows the client\u2019s own answer instead, once they have one', () => {
+    mount(brief({ pageCount: '8-15' }), [], undefined, 'lt-5');
+    expect(selectedPageCount()).toBe('8-15');
+    expect(
+      screen.queryByTestId('brief-page-count-derived')
+    ).not.toBeInTheDocument();
+  });
+
+  it('lets the client widen it, and sends what they picked', async () => {
+    const user = userEvent.setup();
+    mount(brief(), [], undefined, 'lt-5');
+
+    const options = screen.getAllByTestId('brief-page-count-option');
+    const wider = options.find(
+      (option) => option.querySelector('input')?.value === '5-7'
+    );
+    await user.click(wider as HTMLElement);
+    expect(selectedPageCount()).toBe('5-7');
+
+    await user.click(screen.getByTestId('brief-save'));
+    await waitFor(() => expect(lastPutBody().pageCount).toBe('5-7'));
+  });
+
+  it('sends null while the client has not chosen, so the rule keeps deriving', async () => {
+    const user = userEvent.setup();
+    mount(brief(), [], undefined, 'lt-5');
+    await user.click(screen.getByTestId('brief-save'));
+    await waitFor(() => expect(lastPutBody().pageCount).toBeNull());
+  });
+
+  it('takes the server\u2019s answer back after a save, like every other field', async () => {
+    const user = userEvent.setup();
+    respondWith({
+      brief: { ...brief({ pageCount: '15+' }) },
+      readiness: readinessFor(brief(), []),
+      assets: [],
+    });
+    mount(brief(), [], undefined, 'lt-5');
+    await user.click(screen.getByTestId('brief-save'));
+    await waitFor(() => expect(selectedPageCount()).toBe('15+'));
   });
 
   it('gives every section an uploader rather than rolling its own', () => {

@@ -1,3 +1,4 @@
+import { previewZone } from '@/lib/hosting/site-hostnames';
 import { createSecureHeaders } from 'next-secure-headers';
 import { NextResponse } from 'next/server';
 
@@ -109,10 +110,17 @@ const ALLOWED_FRAME_DOMAINS = [
   // OpenStreetMap embed used by the Dorin portfolio template contact map
   'https://www.openstreetmap.org',
   // Concierge discovery funnel (step 7): the live preview embeds the
-  // generated site while it runs in its Daytona sandbox. PreviewStep.tsx
-  // frames https://<port>-<sandboxId>.daytonaproxy01.net — without this
-  // the browser blocks the frame under our own CSP and the wizard
-  // preview stays permanently blank.
+  // generated site. Since previews moved onto Flowstarter's own platform
+  // that is `https://<slug>.preview.<platform domain>`, derived from the
+  // same `previewZone()` rule the publisher mints the hostname with rather
+  // than written out twice — a literal here would be wrong in exactly one
+  // environment and blank the wizard's iframe there.
+  `https://*.${previewZone()}`,
+  // The Daytona publisher is still selectable by name
+  // (FLOWSTARTER_PREVIEW_PUBLISHER=daytona), and it frames
+  // https://<port>-<sandboxId>.daytonaproxy01.net — without this the browser
+  // blocks the frame under our own CSP and the preview stays permanently
+  // blank.
   'https://*.daytonaproxy01.net',
 ];
 
