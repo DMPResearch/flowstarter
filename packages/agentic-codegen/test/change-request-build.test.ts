@@ -211,8 +211,28 @@ describe('changeRequestFeedback', () => {
   it('forbids inventing things and forbids adding images', () => {
     const prompt = changeRequestFeedback(intent());
     expect(prompt).toContain('Invent nothing');
-    expect(prompt).toContain('Add no image file');
+    expect(prompt).toContain('Never add or replace a file under public/');
     expect(prompt).toContain('Do the request and nothing else');
+  });
+
+  it('lets the agent obey the placeholder gate instead of only breaking it', () => {
+    // Job 2716f978: the agent made the requested change correctly and the
+    // build still failed, because the gate of record hashes `dist/` and the
+    // only way to clear a template placeholder is to delete the file — which
+    // rules 1 and 3 flatly forbade. A gate an agent is forbidden to obey is
+    // not a gate, it is a trap.
+    const prompt = changeRequestFeedback(intent());
+    expect(prompt).toContain(
+      'You may delete a file under public/ that the placeholder-image gate ' +
+        'names by path',
+    );
+    expect(prompt).toContain('and only such a file');
+    // The exception is written into rule 1 too, which is the rule that says
+    // to leave every other file exactly as it is.
+    expect(prompt).toContain('The one exception is rule 3');
+    // And it says what to leave behind, so the agent does not invent a
+    // replacement picture on its way out.
+    expect(prompt).toContain('the typographic project tile');
   });
 
   it('refuses to describe an uncaptioned picture', () => {

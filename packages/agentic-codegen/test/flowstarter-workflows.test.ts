@@ -11,6 +11,9 @@ import { join } from 'node:path';
 import { deepTempDir } from './helpers';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  describePlaceholderImageIssue,
+  findPlaceholderImageByHash,
+  readSiteWorkspaceFiles,
   FullSiteBuildWorker,
   operatorNotesFeedback,
   blankStringLiterals,
@@ -35,6 +38,7 @@ import {
   mergeBriefIntoIntake,
   type BriefInput,
 } from '../src/flowstarter/brief-input';
+import { legacySeedFiles } from './lib/legacy-seed';
 
 const temporaryDirectories: string[] = [];
 
@@ -3021,15 +3025,27 @@ describe('CHANGE_REQUEST_BUILD: the paid change that used to ship nothing', () =
     label: string;
     passes: Array<(root: string) => Promise<void>>;
     intent?: Record<string, unknown>;
+    /** The published manifest this build is seeded from. */
+    seed?: Array<{
+      path: string;
+      content: string;
+      type: 'file';
+      encoding?: 'base64';
+    }>;
+    /** Stands in for the worker's own gate over the materialised tree. */
+    validate?: (siteRoot: string) => Promise<void>;
   }): Promise<{
     calls: string[];
     logs: string[];
     prompts: string[];
+    savedFiles: Array<{ path: string; content: string }>;
     error: Error | null;
   }> {
     const calls: string[] = [];
     const logs: string[] = [];
     const prompts: string[] = [];
+    // The manifest the build actually saved as the site's next version.
+    const savedFiles: Array<{ path: string; content: string }> = [];
     const worktreeRoot = await deepTempDir(`flowstarter-${input.label}`);
     temporaryDirectories.push(worktreeRoot);
     const projectId = validIntake().projectId;
@@ -3042,7 +3058,7 @@ describe('CHANGE_REQUEST_BUILD: the paid change that used to ship nothing', () =
         projectState: ProjectState.LIVE_SUBSCRIPTION,
         intake: validIntake(),
         brandConfig: validBrandConfig(),
-        approvedPreviewFiles: fiveRouteSeed(),
+        approvedPreviewFiles: input.seed ?? fiveRouteSeed(),
         requiredIntegrations: [],
         changeRequest: changeIntent(input.intent ?? {}),
       }),
@@ -3053,8 +3069,9 @@ describe('CHANGE_REQUEST_BUILD: the paid change that used to ship nothing', () =
       markChangeRequestBuildStarted: async () => {
         calls.push('store:change-started');
       },
-      saveChangeRequestVersion: async () => {
+      saveChangeRequestVersion: async (_jobId, input) => {
         calls.push('store:version-saved');
+        savedFiles.push(...input.files);
         return { version: 5 };
       },
       markChangeRequestBuilt: async () => {
@@ -3102,7 +3119,9 @@ describe('CHANGE_REQUEST_BUILD: the paid change that used to ship nothing', () =
         store,
         worktrees,
         agents,
-        { validate: async () => undefined } as SiteValidator,
+        {
+          validate: async (siteRoot: string) => input.validate?.(siteRoot),
+        } as SiteValidator,
         {
           create: async () => {
             calls.push('publisher:deploy');
@@ -3113,7 +3132,7 @@ describe('CHANGE_REQUEST_BUILD: the paid change that used to ship nothing', () =
     } catch (thrown) {
       error = thrown as Error;
     }
-    return { calls, logs, prompts, error };
+    return { calls, logs, prompts, savedFiles, error };
   }
 
   it('ships the gallery request that failed four times on attempt 1', async () => {
@@ -3265,6 +3284,123 @@ describe('CHANGE_REQUEST_BUILD: the paid change that used to ship nothing', () =
     expect(repairBrief).toContain('Do not touch robots.txt');
     expect(repairBrief).not.toContain(
       'Remove the pages the request did not ask for',
+    );
+  });
+
+  // ─── The seed of a site published before the placeholder gate ────────────
+
+  /**
+   * Job `2716f978-b2ed-474b-b485-f0d5584fbda7`, workspace `c009105e`, seed
+   * version 4, 2026-09-12.
+   *
+   * The client paid for a change request. The agent did it correctly, and the
+   * job failed at "Checking the build" before a single request-specific rule
+   * ran, on nine template pictures the pages had never pointed at: the site
+   * was published before #110, so its manifest still carries the whole
+   * `public/images/` library, and Astro copies `public/` into `dist/`
+   * verbatim for the gate of record to hash.
+   *
+   * The agent could not have fixed it either. Rules 1 and 3 of its own prompt
+   * tell it to leave the rest of the site exactly as it is.
+   */
+  it('ships the paid removal request that the placeholder gate used to kill', async () => {
+    /**
+     * The gate of record, in the shape this package can express it: no gated
+     * placeholder bytes anywhere the build would deploy. The worker's own
+     * `findPlaceholderImagesInDir` reads the compiled `dist/`; this reads the
+     * materialised worktree, which is where those bytes come from.
+     */
+    const gate = async (siteRoot: string): Promise<void> => {
+      const files = await readSiteWorkspaceFiles(siteRoot);
+      const shipped = files
+        .map((file) =>
+          findPlaceholderImageByHash(
+            file.path,
+            Buffer.from(
+              file.content,
+              file.encoding === 'base64' ? 'base64' : 'utf8',
+            ),
+          ),
+        )
+        .filter((finding) => finding !== undefined);
+      if (shipped.length > 0) {
+        throw new Error(describePlaceholderImageIssue(shipped));
+      }
+    };
+
+    const { calls, logs, prompts, savedFiles, error } = await runChangeBuild({
+      label: 'cr-legacy-seed',
+      seed: await legacySeedFiles(),
+      intent: {
+        request:
+          'Please take the Riverside Clinic case study off the site — that ' +
+          'project never went ahead.',
+        assets: [],
+      },
+      validate: gate,
+      passes: [
+        async (root) => {
+          // The change the agent actually made, and nothing else: Riverside
+          // out of the content file and out of the collection.
+          const labels = join(root, 'src/content/site-labels.md');
+          const source = await readFile(labels, 'utf8');
+          await writeFile(
+            labels,
+            source.replace(
+              /    - title: "Riverside Clinic"[\s\S]*?href: "\/case-studies\/riverside-clinic"\n/,
+              '',
+            ),
+            'utf8',
+          );
+          await rm(join(root, 'src/content/case-studies/riverside-clinic.md'));
+          await writeDist(root, SEED_ROUTES);
+        },
+      ],
+    });
+
+    expect(error).toBeNull();
+    expect(calls).toEqual([
+      'store:change-started',
+      'agent:pass-1',
+      'store:version-saved',
+      'publisher:deploy',
+      'store:change-done',
+    ]);
+    // One pass. No repair, and above all no PLACEHOLDER_IMAGE_SHIPPED.
+    expect(calls.filter((call) => call.startsWith('agent:pass-'))).toHaveLength(
+      1,
+    );
+    expect(calls.some((call) => call.startsWith('store:failed:'))).toBe(false);
+
+    // The board says what disappeared out of the client's site, in words an
+    // operator can read without opening the manifest.
+    expect(logs).toContain(
+      'Removed 7 template placeholder images the site never referenced; ' +
+        'replaced the template project cover with the typographic tile.',
+    );
+
+    // And the agent was told, in its own prompt, what it may and may not do
+    // under public/ — the rule that used to make the gate unobeyable.
+    expect(prompts[0]).toContain('Never add or replace a file under public/');
+    expect(prompts[0]).toContain(
+      'You may delete a file under public/ that the placeholder-image gate ' +
+        'names by path',
+    );
+
+    // The version saved for the client is the change they paid for, and the
+    // template's leftovers are not in it. Their own picture still is.
+    const labels = savedFiles.find(
+      (file) => file.path === 'src/content/site-labels.md',
+    );
+    expect(labels?.content).not.toContain('Riverside Clinic');
+    expect(labels?.content).toContain('Sable Coffee Roasters');
+    expect(
+      savedFiles
+        .map((file) => file.path)
+        .filter((path) => path.startsWith('public/images/')),
+    ).toEqual(['public/images/studio-portrait.svg']);
+    expect(savedFiles.map((file) => file.path)).toContain(
+      'public/flowstarter-media/cr-b104b1e0.jpg',
     );
   });
 });

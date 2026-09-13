@@ -307,6 +307,15 @@ export function RequestCard({
                         onChange={() => toggleAsset(asset.id)}
                         className="mt-0.5"
                       />
+                      {asset.thumbnailUrl && (
+                        // eslint-disable-next-line @next/next/no-img-element -- a short-lived signed URL from a private bucket
+                        <img
+                          src={asset.thumbnailUrl}
+                          alt=""
+                          loading="lazy"
+                          className="h-10 w-10 shrink-0 rounded object-cover"
+                        />
+                      )}
                       <span>{asset.label}</span>
                     </label>
                   ))}
