@@ -264,24 +264,3 @@ const pageTitle = `Notes — ${(siteLabels as any).siteMeta?.title ?? ''}`;
   }
 </style>
 
-<script>
-  import { useVisibilityClass } from '../scripts/hooks/useVisibilityClass.js';
-  useVisibilityClass({
-    selector: '[data-blog-reveal]',
-    threshold: 0.08,
-    rootMargin: '0px 0px -5% 0px',
-    once: true,
-    revealIfAlreadyVisible: true,
-  });
-  const revealAllPosts = () =>
-    document
-      .querySelectorAll('[data-blog-reveal]')
-      .forEach((el) => el.classList.add('is-visible'));
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () =>
-      window.setTimeout(revealAllPosts, 450)
-    );
-  } else {
-    window.setTimeout(revealAllPosts, 450);
-  }
-</script>

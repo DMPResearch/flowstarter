@@ -1,0 +1,284 @@
+// One module per template, loaded once from the layout on every
+// page. Each block below used to be its own hoisted <script> in the
+// component or page that needed it; a brace scope keeps one block's
+// locals (`clamp`, `reduceMotion`, ...) from colliding with another's
+// now that they share a module. Every block already guards on the
+// selector it targets being present, so running all of them on every
+// page is the same behaviour as before, not a broader one.
+
+import { useVisibilityClass } from './hooks/useVisibilityClass.js';
+import { useCountryPicker } from './hooks/useCountryPicker.js';
+import { useFormSuccess } from './hooks/useFormSuccess.js';
+
+// src/components/About.astro
+{
+  const aboutStage = document.querySelector('[data-about-stage]');
+  const aboutCircles = aboutStage
+    ? Array.from(aboutStage.querySelectorAll('[data-venn-circle]'))
+    : [];
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+
+  const setCircleState = (circle, value) => {
+    const y = (1 - value) * -64;
+    const scale = 0.94 + value * 0.06;
+    circle.style.setProperty('--circle-opacity', value.toFixed(3));
+    circle.style.setProperty('--circle-y', `${y.toFixed(2)}px`);
+    circle.style.setProperty('--circle-scale-x', scale.toFixed(3));
+    circle.style.setProperty('--circle-scale-y', scale.toFixed(3));
+  };
+
+  const revealAll = () =>
+    aboutCircles.forEach((circle) => setCircleState(circle, 1));
+
+  if (aboutStage && aboutCircles.length > 0) {
+    // Start hidden, then settle in with a calm stagger when in view.
+    aboutCircles.forEach((circle) => setCircleState(circle, 0));
+
+    if (reduceMotion.matches) {
+      revealAll();
+    } else {
+      const observer = new IntersectionObserver(
+        ([entry]) => {
+          if (!entry.isIntersecting) return;
+          aboutCircles.forEach((circle, index) => {
+            window.setTimeout(
+              () => setCircleState(circle, 1),
+              160 + index * 240,
+            );
+          });
+          observer.disconnect();
+        },
+        { threshold: 0.3 },
+      );
+      observer.observe(aboutStage);
+    }
+  }
+}
+
+// src/components/CaseStudies.astro
+{
+  useVisibilityClass({
+    selector: '[data-case-reveal]',
+    threshold: 0.08,
+    rootMargin: '0px 0px -5% 0px',
+    once: true,
+    revealIfAlreadyVisible: true,
+  });
+  const revealAllCases = () =>
+    document
+      .querySelectorAll('[data-case-reveal]')
+      .forEach((el) => el.classList.add('is-visible'));
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () =>
+      window.setTimeout(revealAllCases, 450),
+    );
+  } else {
+    window.setTimeout(revealAllCases, 450);
+  }
+}
+
+// src/components/Header.astro
+{
+  const menuBtn = /** @type {HTMLButtonElement | null} */ (
+    document.querySelector('.header__menu-btn')
+  );
+  const mobileNav = document.getElementById('mobile-nav');
+  const header = document.querySelector('.header');
+
+  menuBtn?.addEventListener('click', () => {
+    const isOpen = menuBtn.classList.toggle('is-open');
+    mobileNav?.classList.toggle('is-open', isOpen);
+    menuBtn.setAttribute(
+      'aria-label',
+      isOpen ? 'Close navigation menu' : 'Open navigation menu',
+    );
+    mobileNav?.setAttribute('aria-hidden', String(!isOpen));
+    document.body.style.overflow = isOpen ? 'hidden' : '';
+  });
+
+  mobileNav?.querySelectorAll('.mobile-nav__link').forEach((link) => {
+    link.addEventListener('click', () => {
+      menuBtn?.classList.remove('is-open');
+      mobileNav.classList.remove('is-open');
+      mobileNav.setAttribute('aria-hidden', 'true');
+      document.body.style.overflow = '';
+    });
+  });
+}
+
+// src/components/Stats.astro
+{
+  const statsSection = document.querySelector('[data-stats-section]');
+  const statNumbers = Array.from(
+    document.querySelectorAll('[data-stat-number]'),
+  );
+  const prefersReducedMotion = window.matchMedia(
+    '(prefers-reduced-motion: reduce)',
+  );
+
+  const parseStatTarget = (value) => {
+    const numeric = Number.parseFloat(value.replace(/[^0-9.]/g, ''));
+    const suffix = value.replace(/[0-9.]/g, '');
+    const decimals = value.includes('.')
+      ? (value.split('.')[1]?.replace(/[^0-9]/g, '').length ?? 0)
+      : 0;
+
+    return {
+      numeric: Number.isFinite(numeric) ? numeric : 0,
+      suffix,
+      decimals,
+    };
+  };
+
+  const formatStatValue = (value, decimals, suffix) => {
+    const rounded =
+      decimals > 0 ? value.toFixed(decimals) : Math.round(value).toString();
+    return `${rounded}${suffix}`;
+  };
+
+  const animateStat = (element, index) => {
+    const targetValue = element.dataset.target ?? element.textContent ?? '0';
+    const { numeric, suffix, decimals } = parseStatTarget(targetValue);
+    const duration = 1000 + index * 90;
+    const start = performance.now();
+
+    element.classList.add('is-visible');
+
+    const tick = (now) => {
+      const progress = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const currentValue = numeric * eased;
+      element.textContent = formatStatValue(currentValue, decimals, suffix);
+
+      if (progress < 1) {
+        window.requestAnimationFrame(tick);
+      } else {
+        element.textContent = targetValue;
+      }
+    };
+
+    window.requestAnimationFrame(tick);
+  };
+
+  if (statsSection && statNumbers.length > 0) {
+    if (prefersReducedMotion.matches) {
+      statNumbers.forEach((element) => {
+        element.classList.add('is-visible');
+        element.textContent =
+          element.dataset.target ?? element.textContent ?? '';
+      });
+    } else {
+      const observer = new IntersectionObserver(
+        ([entry]) => {
+          if (!entry.isIntersecting) return;
+
+          statNumbers.forEach((element, index) => animateStat(element, index));
+          observer.disconnect();
+        },
+        {
+          threshold: 0.35,
+        },
+      );
+
+      observer.observe(statsSection);
+    }
+  }
+}
+
+// src/components/Testimonial.astro
+{
+  useVisibilityClass({
+    selector: '[data-testimonial-reveal]',
+    threshold: 0.08,
+    rootMargin: '0px 0px -5% 0px',
+    once: true,
+    revealIfAlreadyVisible: true,
+  });
+  const revealAllQuotes = () =>
+    document
+      .querySelectorAll('[data-testimonial-reveal]')
+      .forEach((el) => el.classList.add('is-visible'));
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () =>
+      window.setTimeout(revealAllQuotes, 450),
+    );
+  } else {
+    window.setTimeout(revealAllQuotes, 450);
+  }
+}
+
+// src/pages/about.astro
+{
+  useVisibilityClass({
+    selector: '[data-zigzag-section]',
+    className: 'is-visible',
+    threshold: 0.12,
+    rootMargin: '0px 0px -6% 0px',
+    once: true,
+    revealIfAlreadyVisible: true,
+  });
+  useVisibilityClass({
+    selector: '[data-about-reveal]',
+    threshold: 0.12,
+    rootMargin: '0px 0px -6% 0px',
+    once: true,
+    revealIfAlreadyVisible: true,
+  });
+
+  // Safety net: content must never stay hidden. Anything still un-revealed
+  // shortly after the DOM is ready (no scroll, prerender, fast capture)
+  // settles in gracefully so there are never blank bands.
+  const forceReveal = () => {
+    document
+      .querySelectorAll('[data-zigzag-section], [data-about-reveal]')
+      .forEach((el) => el.classList.add('is-visible'));
+  };
+  if (
+    document.readyState === 'complete' ||
+    document.readyState === 'interactive'
+  ) {
+    window.setTimeout(forceReveal, 450);
+  } else {
+    document.addEventListener('DOMContentLoaded', () =>
+      window.setTimeout(forceReveal, 450),
+    );
+  }
+}
+
+// src/pages/blog.astro
+{
+  useVisibilityClass({
+    selector: '[data-blog-reveal]',
+    threshold: 0.08,
+    rootMargin: '0px 0px -5% 0px',
+    once: true,
+    revealIfAlreadyVisible: true,
+  });
+  const revealAllPosts = () =>
+    document
+      .querySelectorAll('[data-blog-reveal]')
+      .forEach((el) => el.classList.add('is-visible'));
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () =>
+      window.setTimeout(revealAllPosts, 450),
+    );
+  } else {
+    window.setTimeout(revealAllPosts, 450);
+  }
+}
+
+// src/pages/contact.astro
+{
+  const picker = useCountryPicker('[data-country-picker]');
+  const contactForm = document.querySelector('[data-contact-form]');
+
+  useFormSuccess({
+    formSelector: '[data-contact-form]',
+    successSelector: '[data-contact-success]',
+    mailto:
+      contactForm instanceof HTMLElement
+        ? contactForm.dataset.contactEmail
+        : undefined,
+    onSuccess: () => picker?.reset(),
+  });
+}

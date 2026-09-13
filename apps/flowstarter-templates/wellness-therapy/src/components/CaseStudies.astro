@@ -256,7 +256,6 @@ const rightProjects = caseStudies.projects.filter((_, index) => index % 2 === 1)
     border-bottom: 1px solid var(--surface-panel-border);
   }
 
-
   .case-studies__list-image {
     display: block;
     overflow: hidden;
@@ -359,24 +358,3 @@ const rightProjects = caseStudies.projects.filter((_, index) => index % 2 === 1)
   }
 </style>
 
-<script>
-  import { useVisibilityClass } from '../scripts/hooks/useVisibilityClass.js';
-  useVisibilityClass({
-    selector: '[data-case-reveal]',
-    threshold: 0.08,
-    rootMargin: '0px 0px -5% 0px',
-    once: true,
-    revealIfAlreadyVisible: true,
-  });
-  const revealAllCases = () =>
-    document
-      .querySelectorAll('[data-case-reveal]')
-      .forEach((el) => el.classList.add('is-visible'));
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () =>
-      window.setTimeout(revealAllCases, 450)
-    );
-  } else {
-    window.setTimeout(revealAllCases, 450);
-  }
-</script>

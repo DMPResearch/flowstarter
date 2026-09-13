@@ -86,13 +86,3 @@ const { about } = siteLabels;
   }
 </style>
 
-<script>
-  import { useVisibilityClass } from '../scripts/hooks/useVisibilityClass.js';
-
-  useVisibilityClass({
-    selector: '[data-about-reveal]',
-    threshold: 0.2,
-    rootMargin: '0px 0px -10% 0px',
-    once: true,
-  });
-</script>

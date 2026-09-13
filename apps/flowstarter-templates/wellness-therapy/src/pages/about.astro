@@ -136,38 +136,3 @@ const pageTitle = `About — ${(siteLabels as any).siteMeta?.title ?? ''}`;
   }
 </style>
 
-<script>
-  import { useVisibilityClass } from '../scripts/hooks/useVisibilityClass.js';
-
-  useVisibilityClass({
-    selector: '[data-zigzag-section]',
-    className: 'is-visible',
-    threshold: 0.12,
-    rootMargin: '0px 0px -6% 0px',
-    once: true,
-    revealIfAlreadyVisible: true,
-  });
-  useVisibilityClass({
-    selector: '[data-about-reveal]',
-    threshold: 0.12,
-    rootMargin: '0px 0px -6% 0px',
-    once: true,
-    revealIfAlreadyVisible: true,
-  });
-
-  // Safety net: content must never stay hidden. Anything still un-revealed
-  // shortly after the DOM is ready (no scroll, prerender, fast capture)
-  // settles in gracefully so there are never blank bands.
-  const forceReveal = () => {
-    document
-      .querySelectorAll('[data-zigzag-section], [data-about-reveal]')
-      .forEach((el) => el.classList.add('is-visible'));
-  };
-  if (document.readyState === 'complete' || document.readyState === 'interactive') {
-    window.setTimeout(forceReveal, 450);
-  } else {
-    document.addEventListener('DOMContentLoaded', () =>
-      window.setTimeout(forceReveal, 450)
-    );
-  }
-</script>

@@ -101,8 +101,11 @@ export const LEAD_CAPTURE_PATH_PREFIX = '/api/leads/capture/';
  * One entry: the layout bootstrap that marks the document as JavaScript-
  * capable before first paint, which has to stay inline (`is:inline`) or the
  * no-JS styling flashes. A marker attribute would not do here — a marker is
- * something the agent can also write — so this one is matched on content,
- * with whitespace collapsed so a formatter cannot break the gate.
+ * something the agent can also write — so this one is matched on content, by
+ * `normalizeScript` below: whitespace collapsed so a formatter cannot break
+ * the gate, and quote style and a trailing semicolon canonicalized so the
+ * text written here still matches once Astro's own build has had a chance to
+ * reformat it (single quotes to double, a redundant semicolon dropped).
  *
  * `test/markup-policy.test.ts` reads the templates' own layouts and fails if
  * one carries an inline script that is not on this list, so the list cannot
@@ -275,9 +278,88 @@ function lineOf(node: HtmlNode): number | null {
   return typeof line === 'number' ? line : null;
 }
 
-/** Whitespace-collapsed, for comparing an inline script against the list. */
+/**
+ * Rewrites every single-quoted string literal in `source` to double-quoted,
+ * copying everything else through unchanged.
+ *
+ * `normalizeScript` runs this over both sides of a comparison: the platform's
+ * own managed source *and* whatever inline script the parsed page actually
+ * carries, which a stranger's brief ultimately wrote. That is safe rather
+ * than a way to widen what the gate accepts, because the comparison after
+ * normalizing is still exact equality — a page's script matches only when it
+ * was already the platform's script, cosmetically reformatted, and normalizing
+ * an unrelated script cannot make it collide with one it merely resembles. So
+ * this is deliberately not a JS parser: it only has to get string literals
+ * right, and it only transforms the literals it can transform *safely* — no
+ * backslash escape inside the quotes (an escape can mean something different
+ * once the quote character around it changes) and no embedded double quote
+ * (which would need escaping the other way, changing the string's own text).
+ * A double-quoted or backtick-delimited string, or a single-quoted one that
+ * fails either check, is copied through as-is rather than guessed at.
+ */
+function canonicalizeQuotes(source: string): string {
+  let out = '';
+  let i = 0;
+  const n = source.length;
+  while (i < n) {
+    const quote = source[i]!;
+    if (quote !== "'" && quote !== '"' && quote !== '`') {
+      out += quote;
+      i += 1;
+      continue;
+    }
+    let j = i + 1;
+    let escaped = false;
+    while (j < n && source[j] !== quote) {
+      if (source[j] === '\\') {
+        escaped = true;
+        j += 1;
+      }
+      j += 1;
+    }
+    const closed = j < n; // source[j] === quote
+    const inner = source.slice(i + 1, j);
+    if (quote === "'" && closed && !escaped && !inner.includes('"')) {
+      out += `"${inner}"`;
+    } else {
+      out += source.slice(i, closed ? j + 1 : j);
+    }
+    i = closed ? j + 1 : j;
+  }
+  return out;
+}
+
+/**
+ * Drops a semicolon a minifier would drop as redundant under automatic
+ * semicolon insertion: one immediately before the end of the source, or
+ * immediately before a closing `}`. Interior semicolons that separate two
+ * statements are left alone. As with `canonicalizeQuotes` above, this runs on
+ * both sides of `normalizeScript`'s comparison and stays safe for the same
+ * reason: it only drops a semicolon ASI already makes optional, so it never
+ * turns two scripts that behave differently into text that compares equal.
+ */
+function stripRedundantSemicolons(source: string): string {
+  let out = source.split(';}').join('}');
+  out = out.split('; }').join(' }');
+  if (out.endsWith(';')) out = out.slice(0, -1);
+  return out.trim();
+}
+
+/**
+ * Canonical form of an inline script's source, for comparing a managed
+ * script's own text against whatever the build produced.
+ *
+ * A hand-written `is:inline` block and the same text as Astro's minifier
+ * would leave it can differ in three ways that change nothing about what the
+ * browser runs: whitespace a formatter reflows, `'js'` vs `"js"`, and a
+ * trailing semicolon a minifier treats as optional. Comparing on this form
+ * (rather than the raw text) is what keeps the `MANAGED_INLINE_SCRIPT_SOURCES`
+ * table matching the compiled page regardless of which of those a given
+ * build happened to produce.
+ */
 function normalizeScript(source: string): string {
-  return source.split(/\s+/).join(' ').trim();
+  const collapsed = source.split(/\s+/).join(' ').trim();
+  return stripRedundantSemicolons(canonicalizeQuotes(collapsed));
 }
 
 /**

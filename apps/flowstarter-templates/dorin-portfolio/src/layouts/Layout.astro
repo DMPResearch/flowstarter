@@ -23,6 +23,9 @@ const { title = siteMeta.title } = Astro.props;
     <script is:inline>
       document.documentElement.classList.add('js');
     </script>
+    <script>
+      import '../scripts/site.js';
+    </script>
     <title>{title}</title>
   </head>
   <body>

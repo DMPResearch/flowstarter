@@ -249,7 +249,6 @@ const rightProjects = caseStudies.projects.filter((_, index) => index % 2 === 1)
     border-bottom: 1px solid var(--surface-panel-border);
   }
 
-
   .case-studies__list-image {
     display: block;
     overflow: hidden;
@@ -335,13 +334,3 @@ const rightProjects = caseStudies.projects.filter((_, index) => index % 2 === 1)
   }
 </style>
 
-<script>
-  import { useVisibilityClass } from '../scripts/hooks/useVisibilityClass.js';
-  useVisibilityClass({
-    selector: '[data-case-reveal]',
-    threshold: 0.05,
-    rootMargin: '0px',
-    once: true,
-    revealIfAlreadyVisible: false,
-  });
-</script>

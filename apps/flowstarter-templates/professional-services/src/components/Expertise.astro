@@ -63,39 +63,3 @@ const { expertise } = siteLabels;
   }
 </style>
 
-<script>
-  const expertiseList = document.querySelector('[data-expertise-list]');
-
-  if (expertiseList) {
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-    let introPlayed = false;
-
-    const clearIntroState = () => {
-      expertiseList.classList.remove('is-intro-state');
-    };
-
-    if (reduceMotion.matches) {
-      clearIntroState();
-    } else {
-      const observer = new IntersectionObserver(
-        ([entry]) => {
-          if (!entry.isIntersecting || introPlayed) return;
-
-          introPlayed = true;
-          expertiseList.classList.add('is-intro-state');
-
-          window.setTimeout(() => {
-            clearIntroState();
-          }, 1400);
-
-          observer.disconnect();
-        },
-        {
-          threshold: 0.35,
-        }
-      );
-
-      observer.observe(expertiseList);
-    }
-  }
-</script>

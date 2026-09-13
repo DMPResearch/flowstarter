@@ -239,12 +239,3 @@ const { articles } = (siteLabels as any).blogPage;
   }
 </style>
 
-<script>
-  import { useVisibilityClass } from '../scripts/hooks/useVisibilityClass.js';
-  useVisibilityClass({
-    selector: '[data-blog-reveal]',
-    threshold: 0.08,
-    once: true,
-    revealIfAlreadyVisible: false,
-  });
-</script>

@@ -27,6 +27,21 @@ describe('scanHtmlCapabilities', () => {
     expect(found.inlineScripts).toEqual([BOOTSTRAP]);
   });
 
+  test('finds the bootstrap however a bundler reformatted it, and hashes the bytes actually shipped', async () => {
+    // Astro's own build is free to emit this with double quotes and no
+    // trailing semicolon. A build that reformats it must not lose its CSP
+    // hash — that would leave a script the gate already allowed unable to
+    // run in the browser. What gets hashed must be exactly this text, not
+    // the canonical source: the CSP has to match the bytes the browser
+    // fetches.
+    const reformatted = BOOTSTRAP.replace(/'/g, '"').replace(/;$/, '');
+    expect(reformatted).not.toBe(BOOTSTRAP);
+    const found = await scanHtmlCapabilities(
+      `<html><head><script>${reformatted}</script></head><body></body></html>`,
+    );
+    expect(found.inlineScripts).toEqual([reformatted]);
+  });
+
   test('finds the lead-capture script by the block it lives in', async () => {
     const found = await scanHtmlCapabilities(
       `<html><body>${LEAD_CAPTURE_BLOCK}</body></html>`,

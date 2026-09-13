@@ -1,16 +1,32 @@
-import { readdir, readFile, stat } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import {
+  cp,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { describe, expect, test } from 'vitest';
 import {
   describeMarkupPolicyViolations,
   findMarkupPolicyIssue,
   findMarkupPolicyViolations,
+  findServiceWorkerRegistration,
   GENERATED_HTML_UNSAFE,
   MANAGED_INLINE_SCRIPT_SOURCES,
   siteMarkupPolicy,
+  type MarkupViolation,
   type MarkupViolationRule,
 } from '../src/flowstarter/markup-policy';
+
+const run = promisify(execFile);
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const templatesRoot = join(repoRoot, 'apps/flowstarter-templates');
@@ -160,6 +176,29 @@ describe('findMarkupPolicyViolations — what a real build ships', () => {
     }
   });
 
+  test('passes the layout bootstrap the way a bundler would leave it: double quotes, no trailing semicolon', () => {
+    for (const source of MANAGED_INLINE_SCRIPT_SOURCES) {
+      const minified = source.replace(/'/g, '"').replace(/;$/, '');
+      expect(minified).not.toBe(source); // the fixture actually differs
+      expect(rulesFor(`<script>${minified}</script>`)).toEqual([]);
+      // Both differences on the same text, run together.
+      expect(rulesFor(`<script>\n  ${minified}\n</script>`)).toEqual([]);
+    }
+  });
+
+  test('does not fold a string containing a double quote into a false match', () => {
+    // A script that merely resembles the bootstrap must still be refused —
+    // canonicalising quotes must never widen what the gate accepts.
+    expect(
+      rulesFor('<script>document.write(\'<a href="x">\')</script>'),
+    ).toContain('script-inline');
+    expect(
+      rulesFor(
+        "<script>document.documentElement.classList.add('not-js');</script>",
+      ),
+    ).toContain('script-inline');
+  });
+
   test('passes the injected lead-capture block by its marker', () => {
     const block =
       '<div class="flowstarter-lead-capture" data-flowstarter-lead-capture="true">' +
@@ -283,4 +322,112 @@ describe('the templates this policy describes', () => {
     }
     expect(checked).toBeGreaterThan(0);
   });
+
+  /**
+   * Every other assertion in this file is made over a string a test wrote.
+   * That is worth having and it is not enough: the failure this test exists
+   * for happened against a real `astro build`, not a fixture — a hand-written
+   * script the gate's own allow-list should have recognised, refused because
+   * the build had reformatted it, and a component script the gate should
+   * never have seen inline at all, emitted inline anyway. So this copies
+   * every real template, runs the real `astro build`, and runs the gate over
+   * the real `dist/` it produces — the same two-step
+   * `findMarkupPolicyViolations` / `findServiceWorkerRegistration` split
+   * `output-markup.ts` uses in the build worker.
+   *
+   * Skipped, loudly, for a template with no installed `astro` binary — a
+   * developer who has not run `pnpm install` should get a skip with a
+   * reason, not a failure about a missing binary.
+   */
+  test('a real build of every template passes the gate over its own dist/', async () => {
+    const dirs = await templateDirs();
+    const buildable = dirs.filter((dir) =>
+      existsSync(join(dir, 'node_modules/.bin/astro')),
+    );
+    if (buildable.length === 0) {
+      console.warn(
+        'no template has an installed astro binary; skipping the real-build ' +
+          'gate check (run `pnpm install` first)',
+      );
+      return;
+    }
+
+    const workspaces: string[] = [];
+    try {
+      for (const dir of buildable) {
+        const name = dir.slice(templatesRoot.length + 1);
+        const workspace = await mkdtemp(
+          join(tmpdir(), `markup-policy-build-${name}-`),
+        );
+        workspaces.push(workspace);
+        await cp(dir, workspace, {
+          recursive: true,
+          filter: (source) =>
+            !source.includes(`${dir}${sep}node_modules`) &&
+            !source.includes(`${dir}${sep}dist`) &&
+            !source.includes(`${dir}${sep}.astro`),
+        });
+        // Astro resolves dependencies from the project root, so the copy
+        // borrows the template's own installed tree rather than running an
+        // install here.
+        await symlink(
+          join(dir, 'node_modules'),
+          join(workspace, 'node_modules'),
+          'dir',
+        );
+
+        await run(join(dir, 'node_modules/.bin/astro'), ['build'], {
+          cwd: workspace,
+        });
+
+        const distDir = join(workspace, 'dist');
+        const outputFiles: Array<{ path: string; content: string }> = [];
+        const walk = async (current: string): Promise<void> => {
+          const entries = await readdir(current, { withFileTypes: true });
+          for (const entry of entries) {
+            const absolute = join(current, entry.name);
+            if (entry.isDirectory()) {
+              await walk(absolute);
+              continue;
+            }
+            if (!/\.(html?|[mc]?js)$/i.test(entry.name)) continue;
+            outputFiles.push({
+              path: relative(distDir, absolute).split(sep).join('/'),
+              content: await readFile(absolute, 'utf8'),
+            });
+          }
+        };
+        await walk(distDir);
+        expect(
+          outputFiles.length,
+          `${name}: astro build produced no HTML or JS under dist/`,
+        ).toBeGreaterThan(0);
+
+        const violations: MarkupViolation[] = [];
+        for (const file of outputFiles) {
+          if (/\.html?$/i.test(file.path)) {
+            violations.push(
+              ...findMarkupPolicyViolations(file.path, file.content, POLICY),
+            );
+          } else {
+            violations.push(
+              ...findServiceWorkerRegistration(file.path, file.content),
+            );
+          }
+        }
+
+        const message =
+          violations.length > 0
+            ? `${name}: ${describeMarkupPolicyViolations(violations)}`
+            : name;
+        expect(violations, message).toEqual([]);
+      }
+    } finally {
+      await Promise.all(
+        workspaces.map((workspace) =>
+          rm(workspace, { recursive: true, force: true }),
+        ),
+      );
+    }
+  }, 300_000);
 });

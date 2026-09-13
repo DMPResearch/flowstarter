@@ -72,29 +72,6 @@ const {
   </div>
 </header>
 
-<script>
-  const menuBtn = document.querySelector('.header__menu-btn') as HTMLButtonElement;
-  const mobileNav = document.getElementById('mobile-nav');
-  const header = document.querySelector('.header');
-
-  menuBtn?.addEventListener('click', () => {
-    const isOpen = menuBtn.classList.toggle('is-open');
-    mobileNav?.classList.toggle('is-open', isOpen);
-    menuBtn.setAttribute('aria-label', isOpen ? 'Close navigation menu' : 'Open navigation menu');
-    mobileNav?.setAttribute('aria-hidden', String(!isOpen));
-    document.body.style.overflow = isOpen ? 'hidden' : '';
-  });
-
-  mobileNav?.querySelectorAll('.mobile-nav__link').forEach(link => {
-    link.addEventListener('click', () => {
-      menuBtn?.classList.remove('is-open');
-      mobileNav.classList.remove('is-open');
-      mobileNav.setAttribute('aria-hidden', 'true');
-      document.body.style.overflow = '';
-    });
-  });
-</script>
-
 <style>
   .header {
     position: fixed;
