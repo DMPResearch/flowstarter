@@ -15,6 +15,7 @@ import {
   findPlaceholderImageByHash,
   readSiteWorkspaceFiles,
   FullSiteBuildWorker,
+  LeaseLostError,
   operatorNotesFeedback,
   blankStringLiterals,
   collapseDeclarationValues,
@@ -2738,8 +2739,13 @@ describe('CHANGE_REQUEST_BUILD: the paid change that used to ship nothing', () =
       'store:change-started',
       'agent:change-pass',
       'validator:full',
-      'store:version-saved',
+      // Commit before save. The other order stranded version 5 of workspace
+      // c009105e: a finished, gate-clean build in `site_versions` with
+      // `published_at` null, because the commit step after it refused the
+      // message. The commit is a local worktree nobody has seen; the version
+      // is the row a client is told about, so it is taken last.
       'git:commit',
+      'store:version-saved',
       'publisher:deploy',
       'store:change-done',
     ]);
@@ -2930,8 +2936,238 @@ describe('CHANGE_REQUEST_BUILD: the paid change that used to ship nothing', () =
       ).run('job-cr-noversion'),
     ).rejects.toThrow(/cannot save a site version/);
 
-    expect(calls).toEqual(['store:failed:CHANGE_REQUEST_NOT_APPLIED']);
+    expect(calls).toEqual([
+      'git:commit',
+      'store:failed:CHANGE_REQUEST_NOT_APPLIED',
+    ]);
     expect(calls).not.toContain('publisher:deploy');
+    // The commit that did happen is a branch in a worktree the next attempt
+    // discards. Nothing the client can see moved.
+    expect(calls).not.toContain('store:version-saved');
+  });
+
+  // ─── A failed run leaves no unpublished version behind ───────────────────
+
+  /**
+   * Version 5 of workspace c009105e, as a test.
+   *
+   * On 2026-09-13 a change-request build passed every gate, saved 94 files as
+   * version 5, and then died on the commit step. The version is still there:
+   * `published_at` null, the request still `paid`, and nothing in the product
+   * that will ever publish it. The commit now happens first, so that exact
+   * sequence cannot recur — and anything that throws after the save rolls the
+   * version back, so no failed attempt can leave one either.
+   */
+  function rollbackHarness(input: {
+    discard?: (version: number) => boolean | Promise<boolean>;
+    publish?: () => never | Promise<never>;
+    /** #136's publish authorisation, for the overtaken-attempt case. */
+    authorize?: () => never | Promise<never>;
+    worktreeRoot: string;
+  }) {
+    const calls: string[] = [];
+    const logs: string[] = [];
+    const projectId = validIntake().projectId;
+
+    const store: FullSiteBuildJobStore = {
+      claim: async (jobId) => ({
+        id: jobId,
+        projectId,
+        kind: 'CHANGE_REQUEST_BUILD',
+        projectState: ProjectState.LIVE_SUBSCRIPTION,
+        intake: validIntake(),
+        brandConfig: validBrandConfig(),
+        approvedPreviewFiles: [
+          { path: 'src/content/site.md', content: 'seed', type: 'file' },
+        ],
+        requiredIntegrations: [],
+        changeRequest: changeIntent({
+          assets: [],
+          request: 'Please take the Riverside case study off the site',
+        }),
+      }),
+      markAgentWorking: async () => undefined,
+      markRebuildStarted: async () => undefined,
+      markRebuilt: async () => undefined,
+      markHumanQa: async () => undefined,
+      saveChangeRequestVersion: async () => {
+        calls.push('store:version-saved');
+        return { version: 5 };
+      },
+      discardChangeRequestVersion: async (_jobId, discarded) => {
+        calls.push(`store:version-discarded:${discarded.version}`);
+        return input.discard ? await input.discard(discarded.version) : true;
+      },
+      markChangeRequestBuilt: async () => {
+        calls.push('store:change-done');
+      },
+      markFailed: async (_jobId, error) => {
+        calls.push(`store:failed:${error.code}`);
+      },
+      assertHoldsLease: async () => {
+        calls.push('store:authorize-publish');
+        if (input.authorize) return input.authorize();
+      },
+      appendEvent: async (_jobId, event) => {
+        if (event.kind === 'log') logs.push(event.body);
+      },
+    };
+
+    const worktrees = {
+      discard: async () => undefined,
+      create: async () => ({ branch: 'b', path: input.worktreeRoot }),
+      commit: async () => {
+        calls.push('git:commit');
+        return 'cha09e5';
+      },
+    } as unknown as SafeGitWorktreeManager;
+
+    const agents = {
+      buildFullSite: async (agentInput: { workspaceRoot: string }) => {
+        const source = join(agentInput.workspaceRoot, 'src/content/site.md');
+        await writeFile(source, 'the change, made', 'utf8');
+        return { summary: 'done', changedPaths: [source] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    const publisher = {
+      create: async () => {
+        calls.push('publisher:deploy');
+        if (input.publish) return input.publish();
+        return { pullRequestUrl: 'x', stagingUrl: 'y' };
+      },
+    } as PullRequestPublisher;
+
+    const worker = new FullSiteBuildWorker(
+      store,
+      worktrees,
+      agents,
+      { validate: async () => undefined } as SiteValidator,
+      publisher,
+    );
+    return { worker, calls, logs };
+  }
+
+  it('takes back the version it saved when the publish fails', async () => {
+    const worktreeRoot = await deepTempDir('flowstarter-change-rollback');
+    temporaryDirectories.push(worktreeRoot);
+    const { worker, calls, logs } = rollbackHarness({
+      worktreeRoot,
+      publish: async () => {
+        throw new Error('the deploy host refused the artifact');
+      },
+    });
+
+    await expect(worker.run('job-cr-rollback')).rejects.toThrow(
+      /the deploy host refused the artifact/,
+    );
+
+    expect(calls).toEqual([
+      'git:commit',
+      'store:version-saved',
+      'store:authorize-publish',
+      'publisher:deploy',
+      'store:version-discarded:5',
+      'store:failed:CHANGE_REQUEST_BUILD_FAILED',
+    ]);
+    expect(calls).not.toContain('store:change-done');
+    expect(logs).toContain(
+      'Rolled back version 5: this run did not publish it, so the site is ' +
+        'left exactly as the client last saw it.',
+    );
+  });
+
+  it('leaves a version that is no longer this build’s to remove', async () => {
+    const worktreeRoot = await deepTempDir('flowstarter-change-rollback-no');
+    temporaryDirectories.push(worktreeRoot);
+    const { worker, calls, logs } = rollbackHarness({
+      worktreeRoot,
+      // Somebody published it in the meantime, so the store refuses. Deleting
+      // a version an operator is looking at is the worse failure.
+      discard: () => false,
+      publish: async () => {
+        throw new Error('the deploy host refused the artifact');
+      },
+    });
+
+    await expect(worker.run('job-cr-rollback-no')).rejects.toThrow(
+      /the deploy host refused the artifact/,
+    );
+    expect(calls).toContain('store:version-discarded:5');
+    expect(logs.join(' ')).toContain('was left in place');
+  });
+
+  it('never lets a failed rollback hide the failure that caused it', async () => {
+    const worktreeRoot = await deepTempDir('flowstarter-change-rollback-err');
+    temporaryDirectories.push(worktreeRoot);
+    const { worker, calls, logs } = rollbackHarness({
+      worktreeRoot,
+      discard: () => {
+        throw new Error('site_versions is unreachable');
+      },
+      publish: async () => {
+        throw new Error('the deploy host refused the artifact');
+      },
+    });
+
+    // The original cause, not the cleanup's.
+    await expect(worker.run('job-cr-rollback-err')).rejects.toThrow(
+      /the deploy host refused the artifact/,
+    );
+    expect(calls).toContain('store:failed:CHANGE_REQUEST_BUILD_FAILED');
+    expect(logs.join(' ')).toContain('could not be rolled back');
+    expect(logs.join(' ')).toContain('site_versions is unreachable');
+  });
+
+  it('takes the version back when the attempt was overtaken', async () => {
+    // #136's fence and this rollback meet here. An attempt that lost its lease
+    // is refused at `authorizePublish`, which is exactly the attempt most
+    // likely to have left a version behind -- and the run that overtook it
+    // takes the next free number, so the rollback can only ever reach the row
+    // its own save wrote.
+    const worktreeRoot = await deepTempDir('flowstarter-change-overtaken');
+    temporaryDirectories.push(worktreeRoot);
+    const { worker, calls } = rollbackHarness({
+      worktreeRoot,
+      authorize: () => {
+        throw new LeaseLostError('this worker no longer holds the job');
+      },
+    });
+
+    await expect(worker.run('job-cr-overtaken')).rejects.toBeInstanceOf(
+      LeaseLostError,
+    );
+
+    expect(calls).toEqual([
+      'git:commit',
+      'store:version-saved',
+      'store:authorize-publish',
+      'store:version-discarded:5',
+      // Losing the lease is not a build failure, and the code says so: the
+      // retry rule reads BUILD_LEASE_LOST as transient.
+      'store:failed:BUILD_LEASE_LOST',
+    ]);
+    expect(calls).not.toContain('publisher:deploy');
+    expect(calls).not.toContain('store:change-done');
+  });
+
+  it('leaves the version alone once the run has published it', async () => {
+    const worktreeRoot = await deepTempDir('flowstarter-change-published');
+    temporaryDirectories.push(worktreeRoot);
+    const { worker, calls } = rollbackHarness({ worktreeRoot });
+
+    await worker.run('job-cr-published');
+
+    expect(calls).toEqual([
+      'git:commit',
+      'store:version-saved',
+      'store:authorize-publish',
+      'publisher:deploy',
+      'store:change-done',
+    ]);
+    expect(
+      calls.some((call) => call.startsWith('store:version-discarded')),
+    ).toBe(false);
   });
 
   // ─── The page budget, on a manifest the size of a real one ───────────────
@@ -3377,6 +3613,7 @@ describe('CHANGE_REQUEST_BUILD: the paid change that used to ship nothing', () =
     // operator can read without opening the manifest.
     expect(logs).toContain(
       'Removed 7 template placeholder images the site never referenced; ' +
+        'replaced the template portrait with the no-photo layout; ' +
         'replaced the template project cover with the typographic tile.',
     );
 
@@ -3395,11 +3632,14 @@ describe('CHANGE_REQUEST_BUILD: the paid change that used to ship nothing', () =
     );
     expect(labels?.content).not.toContain('Riverside Clinic');
     expect(labels?.content).toContain('Sable Coffee Roasters');
+    // Nothing under `public/images/` survives: the seven the site never
+    // pointed at, the case-study cover, and -- since 2026-09-14 -- the home
+    // story portrait the catalogue used to call decoration.
     expect(
       savedFiles
         .map((file) => file.path)
         .filter((path) => path.startsWith('public/images/')),
-    ).toEqual(['public/images/studio-portrait.svg']);
+    ).toEqual([]);
     expect(savedFiles.map((file) => file.path)).toContain(
       'public/flowstarter-media/cr-b104b1e0.jpg',
     );

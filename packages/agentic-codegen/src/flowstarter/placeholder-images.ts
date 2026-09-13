@@ -4,11 +4,12 @@
  *
  * Placeholder *copy* has a gate (`placeholder-copy.ts`); placeholder *images*
  * did not, and a client paid for a site that shipped the creative-portfolio
- * family's design-review guide graphic (`about-me-photo.svg` — a circle on a
- * grid with an orange frame, drawn to mark where a photo goes, never meant to
- * render on a real page) as their own About-page photo, plus the template's
- * stock UI screenshots (a bakery app, a budget planner, a news site — none of
- * them the client's) standing in for an invented case study.
+ * family's design-review guide graphic (`about-me-photo.svg` — a cream panel
+ * with two concentric circles, a solid caption block and four black corner
+ * squares, drawn to mark where a photo goes, never meant to render on a real
+ * page) as their own About-page photo, plus the template's stock UI
+ * screenshots (a bakery app, a budget planner, a news site — none of them the
+ * client's) standing in for an invented case study.
  *
  * Three things are deliberate, matching `placeholder-copy.ts`:
  *
@@ -85,7 +86,15 @@ export const PLACEHOLDER_IMAGE_MANIFEST: readonly PlaceholderImageAsset[] = [
     path: 'public/images/about-me-photo.svg',
     role: 'portrait',
     sha256: 'a4ab24e230a6db237fe5bafd46920257291957b30793a8539b574294c36d4110',
-    why: 'A design-review guide graphic — a circle on a grid with an orange frame, marking where a photo goes. It shipped as the About-page photo on a paid site.',
+    why: 'A design-review guide graphic — a cream panel with two concentric circles, a caption block and four black corner squares, marking where a photo goes. It shipped as the About-page photo on a paid site.',
+  },
+  {
+    id: 'creative-portfolio-studio-portrait',
+    template: 'creative-portfolio',
+    path: 'public/images/studio-portrait.svg',
+    role: 'portrait',
+    sha256: '219b2ac30ca26f8366b29ef9ba5b52814fc6635377498650eb04fff506a68dce',
+    why: 'The template’s stand-in for the About and home story picture — a dark ground with grid rules, one thin circle and an orange frame. It was catalogued as decoration until 2026-09-14 and so survived the seed cleaner on a paid change request, which is how a client saw "the generic template one" on the story section of the site he had paid for.',
   },
   {
     id: 'dorin-portfolio-about-me-photo',
@@ -93,7 +102,7 @@ export const PLACEHOLDER_IMAGE_MANIFEST: readonly PlaceholderImageAsset[] = [
     path: 'public/images/about-me-photo.svg',
     role: 'portrait',
     sha256: 'a4ab24e230a6db237fe5bafd46920257291957b30793a8539b574294c36d4110',
-    why: 'The same guide graphic as creative-portfolio, byte for byte; dorin-portfolio forked the template before this was fixed.',
+    why: 'The same cream guide graphic as creative-portfolio, byte for byte; dorin-portfolio forked the template before this was fixed.',
   },
 
   // --- work-thumb: case-study art for a project the client never did ---
@@ -211,14 +220,6 @@ export const PLACEHOLDER_IMAGE_MANIFEST: readonly PlaceholderImageAsset[] = [
   },
 
   // --- decoration: abstract shapes, allowed on a paid build ---
-  {
-    id: 'creative-portfolio-studio-portrait',
-    template: 'creative-portfolio',
-    path: 'public/images/studio-portrait.svg',
-    role: 'decoration',
-    sha256: '219b2ac30ca26f8366b29ef9ba5b52814fc6635377498650eb04fff506a68dce',
-    why: 'A label-free abstract composition, catalogued as fallback section art. No client, no product, nothing to misrepresent.',
-  },
   {
     id: 'creative-portfolio-studio-desk',
     template: 'creative-portfolio',

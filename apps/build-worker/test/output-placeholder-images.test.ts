@@ -220,9 +220,10 @@ describe('a seed published before the placeholder gate existed', () => {
     const findings = await findPlaceholderImagesInDir(
       await buildLike(await legacySeedFiles()),
     );
-    // Eight gated files, caught twice over — by their catalogued name and by
+    // Nine gated files, caught twice over — by their catalogued name and by
     // their bytes — which is why no amount of editing the pages ever cleared
-    // it.
+    // it. `studio-portrait.svg` joined them on 2026-09-14: it was catalogued
+    // `decoration`, so it shipped on the home story section of a paid site.
     expect(
       new Set(findings.map((finding) => finding.path.split('/').pop())),
     ).toEqual(
@@ -234,6 +235,7 @@ describe('a seed published before the placeholder gate existed', () => {
         'hotBlocks.png',
         'masonry.png',
         'somalia.png',
+        'studio-portrait.svg',
         'sweet-box.webp',
       ]),
     );
@@ -246,15 +248,18 @@ describe('a seed published before the placeholder gate existed', () => {
     ).resolves.toEqual([]);
   });
 
-  it('still ships the client’s own picture and the allowed decoration', async () => {
+  it('still ships the client’s own picture, and no longer the template portrait', async () => {
     const sanitised = sanitiseSeedPlaceholders(await legacySeedFiles());
     const dist = await buildLike(sanitised.files);
     await expect(
       stat(join(dist, 'flowstarter-media', 'cr-b104b1e0.jpg')),
     ).resolves.toBeTruthy();
+    // The picture the client called "the generic template one". It survived
+    // three paid change requests as catalogued decoration; it is a portrait
+    // placeholder now, and the home story section renders without it.
     await expect(
       stat(join(dist, 'images', 'studio-portrait.svg')),
-    ).resolves.toBeTruthy();
+    ).rejects.toThrow();
   });
 
   it('names the exact files a repair pass may delete', async () => {
@@ -266,8 +271,10 @@ describe('a seed published before the placeholder gate existed', () => {
     // invitation to guess at a paid site.
     expect(brief).toContain('  - public/images/about-me-photo.svg');
     expect(brief).toContain('  - public/images/boutique.png');
+    expect(brief).toContain('  - public/images/studio-portrait.svg');
     expect(brief).toContain('Delete exactly these and no other file');
-    // The one the gate allows is never on the list.
-    expect(brief).not.toContain('studio-portrait.svg');
+    // The ones the gate allows are never on the list.
+    expect(brief).not.toContain('studio-desk.svg');
+    expect(brief).not.toContain('hero.png');
   });
 });

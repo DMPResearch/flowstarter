@@ -54,13 +54,17 @@ describe('sanitiseSeedPlaceholders: the seed of a site published before #110', (
   it('takes the template library out of version 4 of the real workspace', async () => {
     const seed = await legacySeedFiles();
 
-    // The bug, stated as a test first: this manifest carries eight gated
+    // The bug, stated as a test first: this manifest carries nine gated
     // placeholder files, and Astro copies every one of them into `dist/`.
-    expect(gatedFiles(seed)).toHaveLength(8);
+    expect(gatedFiles(seed)).toHaveLength(9);
 
     const result = sanitiseSeedPlaceholders(seed);
 
-    // Every one of the eight is gone, referenced or not.
+    // Every one of the nine is gone, referenced or not. `studio-portrait.svg`
+    // joined the list on 2026-09-14: it was catalogued `decoration` and so
+    // survived this rule on the third change-request run, which is how the
+    // client's home story section kept the picture he called "the generic
+    // template one".
     expect(gatedFiles(result.files)).toEqual([]);
     expect(result.removed.map((entry) => entry.path).sort()).toEqual([
       'public/images/about-me-photo.svg',
@@ -70,20 +74,30 @@ describe('sanitiseSeedPlaceholders: the seed of a site published before #110', (
       'public/images/hotBlocks.png',
       'public/images/masonry.png',
       'public/images/somalia.png',
+      'public/images/studio-portrait.svg',
       'public/images/sweet-box.webp',
     ]);
-    // Seven of them nothing ever pointed at; one was a live case-study cover.
-    expect(result.removed.filter((entry) => entry.wasReferenced)).toHaveLength(
-      1,
-    );
-    expect(result.removed.find((entry) => entry.wasReferenced)?.path).toBe(
+    // Seven of them nothing ever pointed at; one was a live case-study cover
+    // and one the home story portrait.
+    expect(
+      result.removed
+        .filter((entry) => entry.wasReferenced)
+        .map((entry) => entry.path)
+        .sort(),
+    ).toEqual([
       'public/images/boutique.png',
-    );
+      'public/images/studio-portrait.svg',
+    ]);
   });
 
   it('leaves the site with nothing for the gate to find', async () => {
     const seed = await legacySeedFiles();
-    expect(gatedReferences(seed)).toEqual(['src/content/site-labels.md']);
+    // Two references, both in the one content file: the case-study cover and
+    // the home story portrait.
+    expect(gatedReferences(seed)).toEqual([
+      'src/content/site-labels.md',
+      'src/content/site-labels.md',
+    ]);
 
     const result = sanitiseSeedPlaceholders(seed);
     expect(gatedReferences(result.files)).toEqual([]);
@@ -113,29 +127,44 @@ describe('sanitiseSeedPlaceholders: the seed of a site published before #110', (
         slot: 'project-cover',
         section: 'caseStudies',
       },
+      {
+        file: 'src/content/site-labels.md',
+        reference: '/images/studio-portrait.svg',
+        slot: 'portrait',
+        section: 'homeStory',
+      },
     ]);
   });
 
-  it('leaves a decoration the site does render exactly where it is', async () => {
-    // `studio-portrait.svg` is catalogued `decoration` — a label-free abstract
-    // composition that claims nothing about the client — so #110 lets it
-    // ship and this rule has no business removing it.
+  it('takes the template portrait off the home story section', async () => {
+    // `studio-portrait.svg` was catalogued `decoration` until 2026-09-14, so
+    // #110 let it ship and this rule left it alone — and the client's home
+    // story section kept the template's own stand-in through three paid
+    // change requests. It is a `portrait` now: it goes, and the section
+    // renders the no-photo layout the empty value triggers.
     const result = sanitiseSeedPlaceholders(await legacySeedFiles());
     expect(
       result.files.some(
         (file) => file.path === 'public/images/studio-portrait.svg',
       ),
-    ).toBe(true);
+    ).toBe(false);
     const labels = result.files.find(
       (file) => file.path === 'src/content/site-labels.md',
     );
-    expect(labels?.content).toContain('/images/studio-portrait.svg');
+    expect(labels?.content).not.toContain('/images/studio-portrait.svg');
+    expect(labels?.content).toContain('imageSrc: ""');
+    // The words around it are the client's and are not this rule's to touch.
+    expect(labels?.content).toContain('title: "In the studio"');
+    expect(labels?.content).toContain(
+      'imageAlt: "In the studio, at the desk where the work happens"',
+    );
   });
 
   it('says what it did on the timeline, in plain words', async () => {
     const result = sanitiseSeedPlaceholders(await legacySeedFiles());
     expect(result.summary).toBe(
       'Removed 7 template placeholder images the site never referenced; ' +
+        'replaced the template portrait with the no-photo layout; ' +
         'replaced the template project cover with the typographic tile.',
     );
   });

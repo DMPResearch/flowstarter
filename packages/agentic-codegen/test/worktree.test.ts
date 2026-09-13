@@ -2,7 +2,12 @@
  * `SafeGitWorktreeManager` is the git worktree policy AGENTS.md points at:
  * "Commit messages the worker creates must match the policy in
  * `packages/agentic-codegen/src/flowstarter/worktree.ts`, which accepts
- * exactly two shapes and rejects everything else." These tests exercise the
+ * exactly the shapes in `BUILD_COMMIT_SUBJECTS` and rejects everything else."
+ * It used to accept two, while three kinds of build emitted one — and the
+ * third, `CHANGE_REQUEST_BUILD`, died on every paid change request that got as
+ * far as committing. The table and the emitter are now the same table, and
+ * `the commit table` block below is what keeps them that way. These tests
+ * exercise the
  * real class against real temporary git repositories (no mocking of git
  * itself, matching how `flowstarter-workflows.test.ts` already proves
  * `discard`), plus the guard rails around it: absolute-path and git
@@ -22,7 +27,13 @@ import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { deepTempDir } from './helpers';
 import { afterEach, describe, expect, it } from 'vitest';
-import { SafeGitWorktreeManager } from '../src/flowstarter/worktree';
+import {
+  BUILD_COMMIT_SUBJECTS,
+  buildCommitMessage,
+  isFlowstarterBuildCommitMessage,
+  SafeGitWorktreeManager,
+  type FlowstarterBuildKind,
+} from '../src/flowstarter/worktree';
 
 const temporaryDirectories: string[] = [];
 
@@ -256,6 +267,72 @@ describe('SafeGitWorktreeManager.discard', () => {
   });
 });
 
+describe('the commit table', () => {
+  const PROJECT_ID = 'c009105e-f8ec-42bf-bdcf-cf92bb500f45';
+
+  it('emits a message the policy accepts, for every kind there is', () => {
+    // The defect, as a loop: whatever kinds the table holds, each one's
+    // emitted message passes the policy. A fourth kind added to the table is
+    // covered by this the moment it exists, and a fourth kind added anywhere
+    // else is a type error at `buildCommitMessage`.
+    const kinds = Object.keys(BUILD_COMMIT_SUBJECTS) as FlowstarterBuildKind[];
+    expect(kinds).toContain('CHANGE_REQUEST_BUILD');
+    for (const kind of kinds) {
+      const message = buildCommitMessage(kind, PROJECT_ID);
+      expect(isFlowstarterBuildCommitMessage(message)).toBe(true);
+      expect(message.endsWith(` ${PROJECT_ID}`)).toBe(true);
+    }
+    // Every kind writes a subject of its own, so history says which build
+    // produced which commit.
+    expect(new Set(Object.values(BUILD_COMMIT_SUBJECTS)).size).toBe(
+      kinds.length,
+    );
+  });
+
+  it('emits the exact message a paid change request writes', () => {
+    // `build: apply paid change request to site <uuid>` is what job
+    // b52b241f-686b-4871-bc64-21cf61fb5f79 wrote and what the policy refused.
+    expect(buildCommitMessage('CHANGE_REQUEST_BUILD', PROJECT_ID)).toBe(
+      `build: apply paid change request to site ${PROJECT_ID}`,
+    );
+    expect(buildCommitMessage('FULL_SITE_BUILD', PROJECT_ID)).toBe(
+      `build: initialize Flowstarter site ${PROJECT_ID}`,
+    );
+    expect(buildCommitMessage('SITE_REBUILD', PROJECT_ID)).toBe(
+      `build: publish client edit to site ${PROJECT_ID}`,
+    );
+  });
+
+  it('normalises the project id the way the policy reads it', () => {
+    expect(buildCommitMessage('SITE_REBUILD', PROJECT_ID.toUpperCase())).toBe(
+      `build: publish client edit to site ${PROJECT_ID}`,
+    );
+    expect(() => buildCommitMessage('FULL_SITE_BUILD', 'not-a-uuid')).toThrow(
+      /canonical UUID/,
+    );
+  });
+
+  it('refuses a kind that has no shape in the table', () => {
+    expect(() =>
+      buildCommitMessage('SITE_TEARDOWN' as FlowstarterBuildKind, PROJECT_ID),
+    ).toThrow(/No Flowstarter commit shape is defined/);
+  });
+
+  it('refuses a foreign message', () => {
+    for (const message of [
+      '',
+      'chore: something else',
+      `build: apply paid change request ${PROJECT_ID}`,
+      `build: apply paid change request to site ${PROJECT_ID} please`,
+      `build: apply paid change request to site ${PROJECT_ID}\n\nBody.`,
+      'build: apply paid change request to site',
+      `feat: apply paid change request to site ${PROJECT_ID}`,
+    ]) {
+      expect(isFlowstarterBuildCommitMessage(message)).toBe(false);
+    }
+  });
+});
+
 describe('SafeGitWorktreeManager.commit', () => {
   const worktreeShape = {
     branch: 'client/flowstarter-anything',
@@ -312,6 +389,34 @@ describe('SafeGitWorktreeManager.commit', () => {
         encoding: 'utf8',
       }).trim(),
     ).toBe(`build: publish client edit to site ${projectId}`);
+  });
+
+  it('accepts the CHANGE_REQUEST_BUILD paid-change shape', async () => {
+    // The shape that died at "Committing the site" on 2026-09-13, after every
+    // gate had passed and the version had been saved.
+    const repositoryRoot = await initRepo();
+    const worktreesRoot = await worktreesDir();
+    const manager = new SafeGitWorktreeManager({
+      repositoryRoot,
+      worktreesRoot,
+      baseRef: 'main',
+    });
+    const projectId = 'c009105e-f8ec-42bf-bdcf-cf92bb500f45';
+    const worktree = await manager.create(projectId);
+    await writeFile(join(worktree.path, 'change.txt'), 'paid change', 'utf8');
+
+    const sha = await manager.commit(
+      worktree,
+      buildCommitMessage('CHANGE_REQUEST_BUILD', projectId),
+    );
+
+    expect(sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(
+      execFileSync('git', ['log', '-1', '--format=%s'], {
+        cwd: worktree.path,
+        encoding: 'utf8',
+      }).trim(),
+    ).toBe(`build: apply paid change request to site ${projectId}`);
   });
 
   it('rejects a message with the wrong prefix', async () => {
