@@ -28,6 +28,7 @@ import {
   FullSiteBuildWorker,
   PiSdkFlowstarterAgents,
   SafeGitWorktreeManager,
+  siteMarkupPolicy,
   type PullRequestPublisher,
 } from '@flowstarter/agentic-codegen';
 import { ArtifactStore, artifactTokenFromPath } from './artifacts';
@@ -129,6 +130,12 @@ const validator = config.skipValidation
         ? { mode: 'docker', docker: config.validateDocker }
         : { mode: 'native' },
       onProgress: report,
+      // What the compiled site may ask a visitor's browser for. The origins
+      // come from config; the markers, the bundle path and the font host are
+      // properties of the templates and live in the policy module.
+      markupPolicy: siteMarkupPolicy({
+        platformOrigins: config.platformOrigins,
+      }),
       onOutput: (command, lines) => {
         report(`Output of ${command}:`);
         for (const line of lines) report(`  ${line}`);
@@ -172,7 +179,12 @@ const worker = new FullSiteBuildWorker(
   pullRequests,
   // The worker owns the sink; this process owns its registration, so the
   // lifecycle lines it writes after `run()` returns still reach the record.
-  { onJobLog: (jobId, log) => attachMachineLog(jobId, log) },
+  {
+    onJobLog: (jobId, log) => attachMachineLog(jobId, log),
+    // The agent-side half of the `GENERATED_HTML_UNSAFE` gate measures the
+    // build against the same origins the validator does.
+    platformOrigins: config.platformOrigins,
+  },
 );
 
 const queue = new BuildQueue({

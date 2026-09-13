@@ -83,6 +83,12 @@ import {
   sanitiseSeedPlaceholders,
   type SanitisedSeed,
 } from './seed-placeholders';
+import {
+  findMarkupPolicyIssue,
+  siteMarkupPolicy,
+  GENERATED_HTML_UNSAFE,
+  type MarkupPolicy,
+} from './markup-policy';
 import { applyIntegrationsToWorkspace } from '../integrations';
 import {
   isClientEditablePath,
@@ -2144,6 +2150,14 @@ export interface FullSiteBuildWorkerOptions {
    * outcome; the host owns unregistering it.
    */
   onJobLog?: (jobId: string, log: JobLogWriter) => void;
+  /**
+   * The platform's own origins, for the `GENERATED_HTML_UNSAFE` gate — the
+   * one address a generated contact form may post to. The host passes what
+   * its config resolved; a job that carries a lead-capture endpoint adds that
+   * endpoint's origin, so a worker configured for one environment still
+   * measures a site against the endpoint it was actually given.
+   */
+  platformOrigins?: readonly string[];
 }
 
 /**
@@ -2174,6 +2188,29 @@ export class FullSiteBuildWorker {
     private readonly pullRequests: PullRequestPublisher,
     private readonly options: FullSiteBuildWorkerOptions = {},
   ) {}
+
+  /**
+   * What this job's compiled site may ask a visitor's browser to do.
+   *
+   * The origins are configuration plus the job's own capture endpoint; the
+   * markers, the bundle path and the font host belong to the templates and
+   * live in `markup-policy.ts`. Nothing about a hostname is written here.
+   */
+  private markupPolicyFor(job: {
+    leadCaptureEndpoint?: string | null;
+  }): MarkupPolicy {
+    const origins = [...(this.options.platformOrigins ?? [])];
+    const endpoint = job.leadCaptureEndpoint?.trim();
+    if (endpoint) {
+      try {
+        origins.push(new URL(endpoint).origin);
+      } catch {
+        // An endpoint that is not a URL was already refused upstream by
+        // `normalizeLeadCaptureEndpoint`; it simply names no origin here.
+      }
+    }
+    return siteMarkupPolicy({ platformOrigins: origins });
+  }
 
   async run(jobId: string): Promise<void> {
     const job = await this.store.claim(jobId);
@@ -2647,6 +2684,32 @@ export class FullSiteBuildWorker {
         );
       }
 
+      // The same shape again, over what the page *does* rather than what it
+      // says. The brief and every change request are text a stranger wrote,
+      // and a model that was talked into writing a script tag produces a site
+      // that passes every check above this line. The agent gets one pass to
+      // take the markup back out; the gate of record is
+      // `CommandSiteValidator`, which reads `dist/` after `check()` runs it
+      // again and fails the build if anything is left.
+      await phase('Checking what the site asks the browser to do');
+      const markupPolicy = this.markupPolicyFor(job);
+      let markupIssue = findMarkupPolicyIssue(
+        await collectBuiltSiteText(siteRoot),
+        markupPolicy,
+      );
+      if (markupIssue) {
+        await say('log', markupIssue);
+        await pass('Removing unsafe markup', withApproved(markupIssue));
+        await check();
+        markupIssue = findMarkupPolicyIssue(
+          await collectBuiltSiteText(siteRoot),
+          markupPolicy,
+        );
+      }
+      if (markupIssue) {
+        throw new FullSiteBuildFailure(GENERATED_HTML_UNSAFE, markupIssue);
+      }
+
       await phase('Committing the site');
       const commitSha = await this.worktrees.commit(
         worktree,
@@ -2995,6 +3058,29 @@ export class FullSiteBuildWorker {
           CHANGE_REQUEST_NOT_APPLIED,
           describeUnappliedChangeRequest(intent, missing),
         );
+      }
+
+      // A change request is the other door into this site, and it is the one
+      // a client's own words come through. Same gate, same repair-then-recheck
+      // shape as the full build: whatever the request asked for, the site may
+      // not come back with a script, a frame or a form pointing somewhere new.
+      await phase('Checking what the site asks the browser to do');
+      const markupPolicy = this.markupPolicyFor(job);
+      let markupIssue = findMarkupPolicyIssue(
+        await collectBuiltSiteText(siteRoot),
+        markupPolicy,
+      );
+      if (markupIssue) {
+        await say('log', markupIssue);
+        await pass('Removing unsafe markup', markupIssue);
+        await check();
+        markupIssue = findMarkupPolicyIssue(
+          await collectBuiltSiteText(siteRoot),
+          markupPolicy,
+        );
+      }
+      if (markupIssue) {
+        throw new FullSiteBuildFailure(GENERATED_HTML_UNSAFE, markupIssue);
       }
 
       // The manifest is saved before anything is published, so the version the

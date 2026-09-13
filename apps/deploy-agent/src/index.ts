@@ -24,6 +24,9 @@ import { spawn } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { resolvePlatformDomain } from '@flowstarter/platform-config';
 import { safeExtractTarball } from './tar-safety';
+import { scanSiteCapabilities, FONT_ORIGINS } from './site-capabilities';
+import { buildSiteSecurityHeaders, type SiteHeader } from './site-csp';
+import type { SiteSecurityInput } from './docker-runtime';
 import {
   buildCaddySnippet,
   buildPreviewCaddySnippet,
@@ -398,6 +401,37 @@ async function shellOk(cmd: string): Promise<{ ok: boolean; stderr: string }> {
  */
 const EDITOR_UPSTREAM =
   process.env.DEPLOY_AGENT_EDITOR_UPSTREAM ?? 'http://editor:3773';
+
+/**
+ * Where the platform's API is, for the served site's Content-Security-Policy:
+ * the one cross-origin address a client site may talk to, because the managed
+ * lead-capture script posts every enquiry there. Defaults the same env-driven
+ * way every other hostname here does.
+ */
+const PLATFORM_ORIGIN =
+  process.env.DEPLOY_AGENT_PLATFORM_ORIGIN?.trim() ||
+  `https://${resolvePlatformDomain()}`;
+
+/**
+ * Who may frame a served site.
+ *
+ * A paid site: nobody. A preview: the funnel that shows it, and only the
+ * funnel — the discovery flow renders the preview in an iframe, so a previews
+ * agent that denied every ancestor would serve a blank box. The origin is the
+ * platform's own, from the same configuration.
+ */
+function frameAncestorsFor(mode: 'sites' | 'previews'): string[] {
+  return mode === 'previews' ? [PLATFORM_ORIGIN] : [];
+}
+
+/** The configuration half of a site's security headers. */
+function siteSecurityInput(): SiteSecurityInput {
+  return {
+    platformOrigin: PLATFORM_ORIGIN,
+    frameAncestors: frameAncestorsFor(MODE),
+    styleOrigins: [...FONT_ORIGINS],
+  };
+}
 
 function siteServeTarget(rootDir: string): ServeTarget {
   return { kind: 'static', rootDir };
@@ -792,9 +826,22 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
   // rather than trusted.
   const previewHostname =
     body.primary_domain ?? `${slug}.${PREVIEW_HOST_SUFFIX}`;
-  const buildSnippet = (target: ServeTarget): string =>
+  // In docker mode the container serves the site and emits its own headers
+  // (see `buildDockerContext`); the snippet in front of it only proxies, so
+  // the headers ride on the snippet solely in filesystem mode, where this
+  // Caddy is the one answering the request.
+  const buildSnippet = (
+    target: ServeTarget,
+    headers: SiteHeader[] = [],
+  ): string =>
     MODE === 'previews'
-      ? buildPreviewCaddySnippet(slug, target, previewHostname, SITE_PORT)
+      ? buildPreviewCaddySnippet(
+          slug,
+          target,
+          previewHostname,
+          SITE_PORT,
+          headers,
+        )
       : buildCaddySnippet(
           slug,
           target,
@@ -803,6 +850,7 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
           previewHost,
           EDITOR_UPSTREAM,
           siteHost,
+          headers,
         );
 
   if (SITE_RUNTIME === 'docker') {
@@ -845,6 +893,7 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
           sha256: fetched.actualSha256,
           templates,
           ports,
+          security: siteSecurityInput(),
           buildSnippet: (upstream) => buildSnippet(dockerServeTarget(upstream)),
         },
         {
@@ -888,7 +937,19 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
   }
 
   try {
-    await writeCaddySnippet(slug, buildSnippet(siteServeTarget(siteDir)));
+    // Filesystem mode: this Caddy answers for the site, so its snippet is
+    // where the policy has to be. The hashes come from the files that were
+    // just extracted — the artifact this deploy will actually serve.
+    const capabilities = await scanSiteCapabilities(siteDir);
+    const headers = buildSiteSecurityHeaders({
+      ...siteSecurityInput(),
+      inlineScriptHashes: capabilities.inlineScriptHashes,
+      frameOrigins: capabilities.frameOrigins,
+    });
+    await writeCaddySnippet(
+      slug,
+      buildSnippet(siteServeTarget(siteDir), headers),
+    );
   } catch (e) {
     return jsonResponse(
       {

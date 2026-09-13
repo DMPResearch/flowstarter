@@ -10,11 +10,16 @@
 	root * /srv
 	encode zstd gzip
 	header {
-		X-Content-Type-Options nosniff
-		Referrer-Policy strict-origin-when-cross-origin
-		X-Frame-Options DENY
 		-Server
 	}
+	# The site's security headers — Content-Security-Policy, nosniff, referrer
+	# and permissions policy — are written in here by the deploy agent
+	# (`site-csp.ts`), because the policy depends on what this particular
+	# artifact contains: the hash of each managed inline script, and the
+	# origins its pages frame. The agent refuses to build a site image from a
+	# Caddyfile that has lost this line, so a template edit cannot quietly
+	# ship a site with no policy.
+	# flowstarter:security-headers
 	@assets path *.js *.mjs *.css *.woff *.woff2 *.png *.jpg *.jpeg *.gif *.svg *.webp *.avif *.ico
 	header @assets Cache-Control "public, max-age=31536000, immutable"
 	@pages not path *.js *.mjs *.css *.woff *.woff2 *.png *.jpg *.jpeg *.gif *.svg *.webp *.avif *.ico

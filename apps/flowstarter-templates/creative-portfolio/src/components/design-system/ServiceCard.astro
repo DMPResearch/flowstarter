@@ -1,4 +1,6 @@
 ---
+import { sanitizeInlineSvg } from '../../lib/sanitize-html';
+
 interface Props {
   icon: string;
   title: string;
@@ -14,7 +16,7 @@ const { icon, title, description, className = '' } = Astro.props;
   data-service-card
   style="--service-reveal-progress: 0; --service-hover-y: 0px;"
 >
-  <div class="ds-service-card__icon" set:html={icon} />
+  <div class="ds-service-card__icon" set:html={sanitizeInlineSvg(icon)} />
   <h4 class="ds-service-card__title">{title}</h4>
   <p class="ds-service-card__desc">{description}</p>
 </div>

@@ -99,6 +99,8 @@ export * from './flowstarter/site-manifest';
 export * from './flowstarter/change-request-build';
 export * from './flowstarter/teaser-rule';
 export * from './flowstarter/cal-preview-rule';
+export * from './flowstarter/markup-policy';
+export * from './flowstarter/site-html-sanitizer';
 export * from './flowstarter/placeholder-copy';
 export * from './flowstarter/placeholder-images';
 export * from './flowstarter/seed-placeholders';

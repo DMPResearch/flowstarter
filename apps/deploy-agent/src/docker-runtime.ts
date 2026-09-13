@@ -29,6 +29,12 @@ import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { safeExtractTarball } from './tar-safety';
 import { DOCKERFILE_TEMPLATE_NAME, type SiteRuntimeTemplates } from './site-templates';
+import { scanSiteCapabilities } from './site-capabilities';
+import {
+  applySiteSecurityHeaders,
+  buildSiteSecurityHeaders,
+  type SiteCspInput,
+} from './site-csp';
 import type { PortState, SitePortPair } from './site-ports';
 
 export type SiteMode = 'sites' | 'previews';
@@ -270,6 +276,15 @@ async function resolvePublishedPort(
   return Number.isFinite(port) && port > 0 ? port : null;
 }
 
+/**
+ * The parts of the site's security headers that come from configuration
+ * rather than from the artifact — see `site-csp.ts`.
+ */
+export type SiteSecurityInput = Omit<
+  SiteCspInput,
+  'inlineScriptHashes' | 'frameOrigins'
+>;
+
 export interface BuildStagingResult {
   contextDir: string;
   /** Real filesystem path to hand `docker build -f`. */
@@ -294,13 +309,28 @@ export interface BuildStagingResult {
  */
 export async function buildDockerContext(
   tarballPath: string,
-  templates: SiteRuntimeTemplates
+  templates: SiteRuntimeTemplates,
+  security: SiteSecurityInput
 ): Promise<BuildStagingResult> {
   const contextDir = await mkdtemp(join(tmpdir(), 'flowstarter-docker-build-'));
   const cleanup = () => rm(contextDir, { recursive: true, force: true }).catch(() => undefined);
   try {
-    await safeExtractTarball(tarballPath, join(contextDir, 'public'));
-    await writeFile(join(contextDir, 'Caddyfile'), templates.caddyfile);
+    const publicDir = join(contextDir, 'public');
+    await safeExtractTarball(tarballPath, publicDir);
+    // The policy is built from the artifact that is about to be served: the
+    // hash of each managed inline script in it, and the origins its pages
+    // frame. Anything else this site's HTML tries to run has no hash, so the
+    // browser refuses it even if every gate upstream let it through.
+    const capabilities = await scanSiteCapabilities(publicDir);
+    const headers = buildSiteSecurityHeaders({
+      ...security,
+      inlineScriptHashes: capabilities.inlineScriptHashes,
+      frameOrigins: capabilities.frameOrigins,
+    });
+    await writeFile(
+      join(contextDir, 'Caddyfile'),
+      applySiteSecurityHeaders(templates.caddyfile, headers)
+    );
     const dockerfilePath = resolve(join(contextDir, DOCKERFILE_TEMPLATE_NAME));
     await writeFile(dockerfilePath, templates.dockerfile);
     return { contextDir, dockerfilePath, cleanup };
@@ -331,6 +361,12 @@ export interface DockerDeployRequest {
   buildSnippet: (upstream: string) => string;
   /** Dockerfile and Caddyfile to build the site image from. */
   templates: SiteRuntimeTemplates;
+  /**
+   * The configuration half of the served site's security headers: where the
+   * platform API is, which webfont origins the templates use, and who may
+   * frame this site. The content half is read from the artifact itself.
+   */
+  security: SiteSecurityInput;
   /**
    * The stable host ports for this slug's two blue/green slots, from the
    * ports state file (`site-ports.ts`). Whichever slot this deploy targets
@@ -377,7 +413,7 @@ export async function deployDockerSite(
 
   let staging: BuildStagingResult;
   try {
-    staging = await buildDockerContext(tarballPath, req.templates);
+    staging = await buildDockerContext(tarballPath, req.templates, req.security);
   } catch (e) {
     return { ok: false, error: `build context failed: ${e instanceof Error ? e.message : 'unknown'}` };
   }

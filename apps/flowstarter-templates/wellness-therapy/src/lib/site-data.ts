@@ -1,4 +1,5 @@
 import { frontmatter as rawSiteLabels } from '../content/site-labels.md';
+import { sanitizeRichText, sanitizeUrl } from './sanitize-html';
 
 type AnyRecord = Record<string, any>;
 
@@ -42,11 +43,33 @@ export interface JourneyItem {
 
 const siteLabels = rawSiteLabels as AnyRecord;
 
+/**
+ * The rule at the content boundary: nothing leaves this module as markup that
+ * was not on the allow-list in `sanitize-html.ts`.
+ *
+ * `src/content/site-labels.md` is written by an agent reading a brief or a
+ * change request — text a stranger supplied — and the design system renders
+ * several of these strings with `set:html` (SectionHeading's title lines, the
+ * icon slots). So every string is sanitised here, at the one place the
+ * frontmatter is read, rather than at each of the sinks: a component added
+ * next month gets the same guarantee without anyone remembering to ask for
+ * it. Formatting a client legitimately uses (<strong>, <em>, <br />, a link)
+ * survives; a script, an event handler, a frame or a `javascript:` URL does
+ * not.
+ */
 const asString = (value: unknown, fallback = ''): string =>
-  typeof value === 'string' ? value : fallback;
+  typeof value === 'string' ? sanitizeRichText(value) : fallback;
+
+/** A link target, restricted to https, mailto, tel and same-site paths. */
+const asHref = (value: unknown, fallback = '#'): string =>
+  typeof value === 'string' ? sanitizeUrl(value, fallback) : fallback;
 
 const asStringArray = (value: unknown): string[] =>
-  Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  Array.isArray(value)
+    ? value
+        .filter((item): item is string => typeof item === 'string')
+        .map((item) => sanitizeRichText(item))
+    : [];
 
 const asTitleLines = (value: unknown): TitleLine[] =>
   Array.isArray(value)
@@ -62,7 +85,7 @@ const asLinks = (value: unknown): LinkItem[] =>
   Array.isArray(value)
     ? value.map((item) => ({
         label: asString((item as AnyRecord)?.label),
-        href: asString((item as AnyRecord)?.href, '#'),
+        href: asHref((item as AnyRecord)?.href),
       }))
     : [];
 
@@ -73,7 +96,7 @@ const asArticles = (value: unknown): ArticleItem[] =>
         imageAlt: asString((item as AnyRecord)?.imageAlt),
         title: asString((item as AnyRecord)?.title),
         excerpt: asString((item as AnyRecord)?.excerpt),
-        href: asString((item as AnyRecord)?.href, '#'),
+        href: asHref((item as AnyRecord)?.href),
       }))
     : [];
 

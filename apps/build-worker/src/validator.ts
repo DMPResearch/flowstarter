@@ -24,10 +24,11 @@ import { randomBytes } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
-import type { SiteValidator } from '@flowstarter/agentic-codegen';
+import type { MarkupPolicy, SiteValidator } from '@flowstarter/agentic-codegen';
 import {
   describeAssetProblems,
   describeCalPreviewIssue,
+  describeMarkupPolicyViolations,
   describePlaceholderImageRepair,
   describePreviewTeaserIssue,
 } from '@flowstarter/agentic-codegen';
@@ -38,6 +39,7 @@ import {
 } from './config';
 import { commandNeedsRegistry, containerNetworkFor } from './isolation';
 import { findCalPreviewInDir } from './output-cal-preview';
+import { findMarkupViolationsInDir } from './output-markup';
 import { findNonBinaryAssetsInDir } from './output-assets';
 import { findPlaceholderImagesInDir } from './output-placeholder-images';
 import { findPreviewTeaserInDir } from './output-teaser';
@@ -315,6 +317,13 @@ export interface CommandSiteValidatorOptions {
   outputDir?: string;
   /** Defaults to native, the historical behaviour. */
   isolation?: ValidatorIsolation;
+  /**
+   * What the compiled site may ask a visitor's browser to do. Omitted only
+   * by callers with no site to serve (the dry stub path); every real build
+   * passes the policy its config produced, so the origins a generated page
+   * may talk to are configuration rather than a literal in this file.
+   */
+  markupPolicy?: MarkupPolicy;
   onProgress?: (message: string) => void;
   /**
    * The last {@link VALIDATOR_OUTPUT_LINES} lines a command printed, once it
@@ -504,6 +513,28 @@ export class CommandSiteValidator implements SiteValidator {
       const message = describePlaceholderImageRepair(placeholderImages);
       this.options.onOutput?.('placeholder-image-gate', [message]);
       throw new SiteValidationError(message);
+    }
+
+    // The last gate, and the only one that asks what the output *does* rather
+    // than what it says. Everything above this line would pass a site whose
+    // copy is honest and whose images are real and which also runs an inline
+    // script a stranger's brief talked the model into writing. This one reads
+    // `dist/` as a browser would parse it: no script but the template's own
+    // bundle and the platform's managed blocks, no event handlers, no
+    // `javascript:`, no frame, no `<base>`, no meta refresh, no form pointing
+    // anywhere but the client's own enquiry endpoint, no service worker.
+    if (this.options.markupPolicy) {
+      const unsafe = await findMarkupViolationsInDir(
+        output,
+        this.options.markupPolicy,
+      );
+      if (unsafe.length > 0) {
+        const message = describeMarkupPolicyViolations(unsafe);
+        // One line per element, so the job timeline names the file and the
+        // tag rather than making an operator open the build.
+        this.options.onOutput?.('generated-html-gate', message.split('\n'));
+        throw new SiteValidationError(message);
+      }
     }
   }
 
