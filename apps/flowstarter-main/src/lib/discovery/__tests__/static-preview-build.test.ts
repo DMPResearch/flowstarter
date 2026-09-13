@@ -7,8 +7,18 @@
  * exit code — and the assertions about the environment are the ones that
  * matter most, because this is the code path that runs generated code on the
  * app host.
+ *
+ * The stub lives under a `FLOWSTARTER_TEMPLATE_ROOT` of its own, not inside
+ * the workspace passed in as `workspaceRoot` — deliberately, because
+ * `buildStaticPreview` never installs into the workspace it's handed, it
+ * symlinks `node_modules` in from the configured template root exactly like
+ * production does. A stub placed directly inside the workspace would let a
+ * regression where the build re-derives the CLI's path from the workspace
+ * copy (rather than the template root) pass anyway — see 'invokes the CLI
+ * at its own real path' below for the test that exists precisely because
+ * that regression already shipped once.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -21,8 +31,32 @@ import {
 } from '../static-preview-build';
 
 const scratch: string[] = [];
+const TEMPLATE_SLUG = 'nowhere';
+let templateRoot = '';
+let previousTemplateRootEnv: string | undefined;
+
+beforeEach(async () => {
+  const shallow = await mkdtemp(join(tmpdir(), 'fs-template-root-'));
+  scratch.push(shallow);
+  // Nested a fixed two levels deeper than a bare mkdtemp dir, so this is
+  // never, even by coincidence, the same depth from `/` as
+  // `join(tmpdir(), PREVIEW_BUILD_PARENT, projectId)` — the workspace
+  // copy's own depth. The regression this file guards against (see
+  // 'invokes the CLI at its own real path' below) is specifically a
+  // depth-dependent one; a template root that happened to match the
+  // workspace copy's depth would let it pass by accident.
+  templateRoot = join(shallow, 'nested', 'deeper');
+  await mkdir(templateRoot, { recursive: true });
+  previousTemplateRootEnv = process.env.FLOWSTARTER_TEMPLATE_ROOT;
+  process.env.FLOWSTARTER_TEMPLATE_ROOT = templateRoot;
+});
 
 afterEach(async () => {
+  if (previousTemplateRootEnv === undefined) {
+    delete process.env.FLOWSTARTER_TEMPLATE_ROOT;
+  } else {
+    process.env.FLOWSTARTER_TEMPLATE_ROOT = previousTemplateRootEnv;
+  }
   while (scratch.length) {
     await rm(scratch.pop() as string, { recursive: true, force: true });
   }
@@ -35,17 +69,28 @@ async function temp(prefix: string): Promise<string> {
 }
 
 /**
- * A workspace whose `node_modules/.bin/astro` is a shell script. `astro build`
- * writes `dist/`; anything else fails, which is how the fixed-command promise
- * is checked rather than asserted in a comment.
+ * Writes `astro` as a shell script at TEMPLATE_SLUG's own `node_modules/.bin`
+ * under this test's `FLOWSTARTER_TEMPLATE_ROOT` — never inside a workspace
+ * copy, which is the whole point (see the file header).
  */
-async function workspaceWithStubAstro(script: string): Promise<string> {
-  const root = await temp('fs-build-ws-');
-  await mkdir(join(root, 'node_modules', '.bin'), { recursive: true });
-  await writeFile(join(root, 'package.json'), '{"name":"site"}');
-  const bin = join(root, 'node_modules', '.bin', 'astro');
+async function stubAstro(script: string): Promise<void> {
+  const binDir = join(templateRoot, TEMPLATE_SLUG, 'node_modules', '.bin');
+  await mkdir(binDir, { recursive: true });
+  const bin = join(binDir, 'astro');
   await writeFile(bin, script, 'utf8');
   await chmod(bin, 0o755);
+}
+
+/**
+ * A plain workspace (no `node_modules` of its own — `buildStaticPreview`
+ * symlinks that in from the stub above) whose `astro build` writes `dist/`;
+ * anything else fails, which is how the fixed-command promise is checked
+ * rather than asserted in a comment.
+ */
+async function workspaceWithStubAstro(script: string): Promise<string> {
+  await stubAstro(script);
+  const root = await temp('fs-build-ws-');
+  await writeFile(join(root, 'package.json'), '{"name":"site"}');
   return root;
 }
 
@@ -205,6 +250,49 @@ describe('buildStaticPreview', () => {
     expect(
       second.files.find((file) => file.path === 'index.html')?.content
     ).toContain('Edited');
+  });
+
+  it('invokes the CLI at its own real path, not through the workspace copy’s node_modules symlink', async () => {
+    // A stand-in for pnpm's own generated CLI shim, not a hand-written test
+    // double: real `.bin/astro` is a shell script that finds `dirname "$0"`
+    // and hands `node` a path built from a fixed number of literal `..`
+    // segments — computed once, at install time, from how deep the package
+    // sits under wherever `pnpm install` ran. Node resolves that argument
+    // with `path.resolve`, plain string arithmetic that never touches the
+    // filesystem, before it opens anything. So climbing from the path this
+    // script was actually invoked at (`$0`) only lands on the real sibling
+    // file when that invocation path sits at the SAME depth the shim was
+    // built for. Invoked directly at its own path under `templateRoot`, the
+    // climb is correct; invoked the old way — `join(cwd, 'node_modules',
+    // '.bin', 'astro')`, through the symlink `buildStaticPreview` plants in
+    // the workspace copy — `$0` is the copy's own (differently nested) path
+    // and the climb lands on a file that was never real anywhere. This is
+    // the exact shape of the bug shipped in #132 and reproduced with
+    // `docker build --target templates` on 2026-09-13.
+    const shim = `#!/bin/sh
+basedir=$(dirname "$0")
+exec node "$basedir/../../sibling.cjs"
+`;
+    await stubAstro(shim);
+    await writeFile(
+      join(templateRoot, TEMPLATE_SLUG, 'sibling.cjs'),
+      `const fs = require('fs');
+fs.mkdirSync('dist', { recursive: true });
+fs.writeFileSync('dist/index.html', '<!doctype html><h1>Built</h1>');
+`,
+      'utf8'
+    );
+    const source = await temp('fs-build-ws-');
+    await writeFile(join(source, 'package.json'), '{"name":"site"}');
+
+    const build = await buildStaticPreview({
+      projectId: 'e1d1c7a1-0000-4000-8000-000000000009',
+      templateSlug: TEMPLATE_SLUG,
+      workspaceRoot: source,
+      timeoutMs: 20_000,
+    });
+    scratch.push(build.workspaceRoot);
+    expect(build.files.some((file) => file.path === 'index.html')).toBe(true);
   });
 
   it('removes the copy when the caller cleans up, twice over', async () => {

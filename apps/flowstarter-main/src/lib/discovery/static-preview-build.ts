@@ -129,10 +129,31 @@ function buildEnv(): NodeJS.ProcessEnv {
   };
 }
 
-function runAstroBuild(cwd: string, timeoutMs: number): Promise<void> {
+/**
+ * `astroBin` is the CLI's own real path, not `join(cwd, 'node_modules',
+ * '.bin', 'astro')` through the `node_modules` symlink `buildStaticPreview`
+ * plants in the copy: pnpm writes that shim as a real file with its climb
+ * back to the content-addressed store baked in as literal `..` segments,
+ * sized to the package's depth under wherever `pnpm install` ran, and
+ * Node resolves a main-module argument like that with `path.resolve` —
+ * plain string arithmetic, never a filesystem lookup — before it ever opens
+ * a file. A workspace copy almost never sits at the same depth from `/` as
+ * the installed template, so climbing from the copy's `.bin` directory
+ * lands on a path that was never real anywhere, and the build fails with a
+ * MODULE_NOT_FOUND that has nothing to do with the generated site. Invoking
+ * the shim at its own real location — same as
+ * apps/flowstarter-main/src/app/api/discovery/preview/live/route.ts's
+ * `publishLocalPreview` already does for `astro dev` — sidesteps the climb
+ * entirely; `cwd` alone is what points the build at the copy.
+ */
+function runAstroBuild(
+  cwd: string,
+  astroBin: string,
+  timeoutMs: number
+): Promise<void> {
   return new Promise((resolveBuild, rejectBuild) => {
     const child = execFile(
-      join(cwd, 'node_modules', '.bin', 'astro'),
+      astroBin,
       ['build'],
       {
         cwd,
@@ -286,7 +307,14 @@ export async function buildStaticPreview(
 
     const distRoot = join(workspaceRoot, 'dist');
     await rm(distRoot, { recursive: true, force: true });
-    await runAstroBuild(workspaceRoot, timeoutMs);
+    const astroBin = resolve(
+      templateRootDir(),
+      input.templateSlug,
+      'node_modules',
+      '.bin',
+      'astro'
+    );
+    await runAstroBuild(workspaceRoot, astroBin, timeoutMs);
     const files = await collectDistFiles(distRoot);
     return { files, workspaceRoot, distRoot, cleanup };
   } catch (error) {
