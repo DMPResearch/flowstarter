@@ -11,7 +11,10 @@
 # Blocks merge if lint, typecheck, unit tests, or tenant isolation fail.
 #
 # Steps:
-#   1. Lint  — flowstarter-main
+#   1. Lint  — flowstarter-main, plus a check that no two Supabase migrations
+#      share a version (supabase_migrations.schema_migrations keys by
+#      version alone, so a collision there is a stack-inconsistency bug, not
+#      a style nit — see docs/release-process.md, "Migration versions")
 #   2. Typecheck — flow-design-system + flowstarter-main
 #   3. Unit tests with coverage for flowstarter-main, agentic-codegen and
 #      build-worker (vitest), then the coverage ratchet. Each package's vitest
@@ -60,6 +63,13 @@ jobs:
         continue-on-error: true
         env:
           ESLINT_USE_FLAT_CONFIG: 'false'
+      # supabase_migrations.schema_migrations keys an applied migration by
+      # its filename's version prefix alone. Two files sharing a version is
+      # a defect the CLI itself does not catch consistently — see
+      # scripts/check-migration-versions.mjs and docs/release-process.md,
+      # "Migration versions".
+      - name: Migration versions — no two files share a version
+        run: node scripts/check-migration-versions.mjs
   # ── 2. Typecheck ──────────────────────────────────────────────────────────
   typecheck:
     name: Typecheck

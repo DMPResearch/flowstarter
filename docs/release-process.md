@@ -119,6 +119,66 @@ Announce an out-of-band redeploy so the synthetic checks it:
 gh api repos/DMPResearch/flowstarter/dispatches -f event_type=prod-deploy-succeeded
 ```
 
+## Migration versions
+
+`supabase_migrations.schema_migrations` (the CLI's own tracking table, both on
+the Hetzner staging stack and any local dev stack) keys applied migrations by
+their filename's version prefix, not by name or content. Two files under
+`supabase/migrations/` sharing a version is therefore a real defect, not a
+cosmetic one: whichever file the CLI processes second either silently fails
+to insert its tracking row (leaving the migration re-run, and re-recorded
+under a name that doesn't match, on every future `migration up`) or is
+skipped outright, depending on ordering — see PR that fixed the
+`20260913120000` collision between `assets_original_name` and
+`workspaces_cal_provisioning` for a worked example. `scripts/check-migration-
+versions.mjs` catches a repeat of this before merge; it runs in the Quality
+Gate lint job (`.depot/workflows/quality-gate.yml`).
+
+**Repairing a stack that already applied the DDL under the old version.** If
+a version collision reaches `main` anyway and a stack's `migrate` step (or a
+developer's local `supabase migration up`) already ran before the fix
+landed, renaming the losing file to a free version does not, by itself,
+change what that stack already recorded. Two cases:
+
+- The stack never got as far as applying either colliding file: nothing to
+  do. The next `supabase migration up --include-all` applies both files
+  cleanly under their now-distinct versions.
+- The stack already applied one file's DDL under the shared, now-vacated
+  version (check with `supabase migration list --local`, or query
+  `select version, name from supabase_migrations.schema_migrations where
+  version like '<prefix>%'` through the db container). Because every
+  migration in this repo is required to be idempotent (`add column if not
+  exists`, `create index if not exists`, etc. — see below), simply letting
+  `migration up --include-all` run again is harmless: it re-runs a no-op DDL
+  and inserts a fresh, correctly-named tracking row for the new version. But
+  to avoid the stale duplicate bookkeeping that leaves behind (the old
+  version number still sitting in `schema_migrations` with no local file of
+  its own), repair the ledger once, by hand, instead of letting `migrate`
+  do it:
+
+  ```sh
+  # Run this BEFORE the next `supabase migration up --include-all` /
+  # deploy-slot.sh main cycle picks the renamed file up — repair tells the
+  # CLI the version is already applied instead of having it re-run the DDL
+  # and mint a second row for what is, on this stack, the same change.
+  supabase migration repair --local --status applied 20260913121000
+  ```
+
+  Run it once per affected stack (fs-sites-01 staging, and any local dev
+  stack that already had the old `20260913120000_assets_original_name.sql`
+  applied). No repair is needed for the file that kept its original version
+  (`20260913120000_workspaces_cal_provisioning.sql`): a version already
+  present in `schema_migrations` is treated as applied regardless of which
+  file historically produced it, and its own idempotent DDL is safe to run
+  again on any stack where it never got recorded.
+
+Every migration in this repo must be safe to re-run: `if not exists` on
+`create table`/`create index`, `add column if not exists` rather than bare
+`add column`, no unconditional `insert`. That is what makes both the
+`--include-all` re-ordering staging already relies on (see
+`deploy/hetzner-staging/scripts/supabase-stack.sh`) and the repair path
+above safe.
+
 ## What blocks a release
 
 A job that **ran and failed** blocks it. A job that **skipped** does not.
