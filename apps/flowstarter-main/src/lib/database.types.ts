@@ -1806,6 +1806,7 @@ export type Database = {
           offer: string
           override_at: string | null
           override_by: string | null
+          page_count: string | null
           palette: Json
           photo_asset_ids: string[]
           projects: Json
@@ -1821,6 +1822,7 @@ export type Database = {
           offer?: string
           override_at?: string | null
           override_by?: string | null
+          page_count?: string | null
           palette?: Json
           photo_asset_ids?: string[]
           projects?: Json
@@ -1836,6 +1838,7 @@ export type Database = {
           offer?: string
           override_at?: string | null
           override_by?: string | null
+          page_count?: string | null
           palette?: Json
           photo_asset_ids?: string[]
           projects?: Json

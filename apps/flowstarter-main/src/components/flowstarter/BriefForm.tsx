@@ -62,7 +62,30 @@ export interface BriefView {
   portraitAssetId: string | null;
   readyAt: string | null;
   overrideAt: string | null;
+  pageCount: string | null;
 }
+
+/** The wizard's own answers, mirrored so this file needs no import from the
+ * agentic-codegen package. */
+type PageCountValue = 'lt-5' | '5-7' | '8-15' | '15+' | 'unsure';
+
+/**
+ * Same five answers and the same labels the intake asks with
+ * (`landing.discovery.options.pages.*` / `PAGE_OPTIONS` in
+ * `intake-script.ts`), so a client who saw the wizard's wording is not asked
+ * the same question in different words on the brief.
+ */
+const PAGE_COUNT_OPTIONS: ReadonlyArray<{
+  value: PageCountValue;
+  label: string;
+  sub: string;
+}> = [
+  { value: 'lt-5', label: 'Under 5', sub: 'Single landing or simple site' },
+  { value: '5-7', label: '5 – 7', sub: 'Standard service site' },
+  { value: '8-15', label: '8 – 15', sub: 'Multi-page or content-driven' },
+  { value: '15+', label: '15+', sub: 'Large site, blog, locations' },
+  { value: 'unsure', label: 'Not sure', sub: "We'll work it out on the call" },
+];
 
 /** One file, as `/api/client/brief/[workspaceId]` reports it. */
 export interface BriefAssetView {
@@ -80,6 +103,13 @@ export interface BriefFormProps {
   initialBrief: BriefView;
   initialReadiness: BriefReadiness;
   initialAssets: BriefAssetView[];
+  /**
+   * What `derivedBriefPageCount` works out from this brief right now, computed
+   * on the server so the client bundle never needs the page-set rule. Shown as
+   * the pre-selected option whenever `initialBrief.pageCount` is null, i.e.
+   * the client has never made an explicit choice.
+   */
+  derivedPageCount: string;
 }
 
 interface BriefResponse {
@@ -123,6 +153,7 @@ export function BriefForm({
   initialBrief,
   initialReadiness,
   initialAssets,
+  derivedPageCount,
 }: BriefFormProps) {
   const [offer, setOffer] = useState(initialBrief.offer);
   const [offerLeft, setOfferLeft] = useState(false);
@@ -130,6 +161,9 @@ export function BriefForm({
     initialBrief.projects
   );
   const [noProjects, setNoProjects] = useState(initialBrief.noProjects);
+  const [pageCount, setPageCount] = useState<string | null>(
+    initialBrief.pageCount
+  );
   const [referenceIds, setReferenceIds] = useState(
     initialBrief.designReferenceAssetIds
   );
@@ -226,6 +260,7 @@ export function BriefForm({
           designReferenceAssetIds: referenceIds,
           photoAssetIds: photoIds,
           portraitAssetId: portraitId,
+          pageCount,
         }),
       });
       const payload = (await response
@@ -243,6 +278,7 @@ export function BriefForm({
       setReferenceIds(payload.brief.designReferenceAssetIds);
       setPhotoIds(payload.brief.photoAssetIds);
       setPortraitId(payload.brief.portraitAssetId);
+      setPageCount(payload.brief.pageCount);
       setReadiness(payload.readiness);
       setAssets(payload.assets ?? []);
       setLinkErrors({});
@@ -256,6 +292,7 @@ export function BriefForm({
     endpoint,
     noProjects,
     offer,
+    pageCount,
     photoIds,
     portraitId,
     projects,
@@ -312,7 +349,67 @@ export function BriefForm({
         </div>
       </GlassSurface>
 
-      {/* ── 2. Products or projects ────────────────────────────────────── */}
+      {/* ── 2. How many pages ──────────────────────────────────────────── */}
+      <GlassSurface as="section" variant="card">
+        <div className="flex flex-col gap-3">
+          <SectionHeading
+            title="How many pages"
+            hint="Roughly how big the site should be. We start from what your other answers add up to; pick a different size if you want more or less."
+          />
+          <div
+            data-testid="brief-page-count"
+            role="radiogroup"
+            aria-label="How many pages"
+            className="flex flex-wrap gap-2"
+          >
+            {PAGE_COUNT_OPTIONS.map((option) => {
+              const selected = (pageCount ?? derivedPageCount) === option.value;
+              return (
+                <label
+                  key={option.value}
+                  data-testid="brief-page-count-option"
+                  data-selected={selected}
+                  className={cn(
+                    'flex w-40 cursor-pointer flex-col gap-0.5 rounded-xl border px-3 py-2 text-left transition-colors',
+                    selected
+                      ? 'border-[var(--purple-primary)] bg-[var(--purple-primary-lightest)]'
+                      : 'border-[var(--fs-rule)] hover:border-[var(--purple-primary)]/40'
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="brief-page-count"
+                    value={option.value}
+                    checked={selected}
+                    onChange={() => {
+                      setPageCount(option.value);
+                      setSaved(false);
+                    }}
+                    className="sr-only"
+                  />
+                  <span className="text-sm font-semibold text-[var(--fs-ink)]">
+                    {option.label}
+                  </span>
+                  <span className="text-xs text-[var(--fs-ink-dim)]">
+                    {option.sub}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          {pageCount === null ? (
+            <p
+              data-testid="brief-page-count-derived"
+              className="text-xs text-[var(--fs-ink-faint)]"
+            >
+              Pre-selected: what your brief adds up to. Pick a different size
+              any time.
+            </p>
+          ) : null}
+        </div>
+      </GlassSurface>
+
+      {/* ── 3. Products or projects ────────────────────────────────────── */}
       <GlassSurface as="section" variant="card">
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -477,7 +574,7 @@ export function BriefForm({
         </div>
       </GlassSurface>
 
-      {/* ── 3. Design references ───────────────────────────────────────── */}
+      {/* ── 4. Design references ───────────────────────────────────────── */}
       <GlassSurface as="section" variant="card">
         <div className="flex flex-col gap-3">
           <SectionHeading
@@ -500,7 +597,7 @@ export function BriefForm({
         </div>
       </GlassSurface>
 
-      {/* ── 4. Photos for your site ────────────────────────────────────── */}
+      {/* ── 5. Photos for your site ────────────────────────────────────── */}
       <GlassSurface as="section" variant="card">
         <div className="flex flex-col gap-3">
           <SectionHeading
@@ -561,7 +658,7 @@ export function BriefForm({
         </div>
       </GlassSurface>
 
-      {/* ── 5. What is still missing ───────────────────────────────────── */}
+      {/* ── 6. What is still missing ───────────────────────────────────── */}
       <GlassSurface as="section" variant="card">
         <div className="flex flex-col gap-3">
           <SectionHeading title="What is still missing" />

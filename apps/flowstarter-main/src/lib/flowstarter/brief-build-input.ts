@@ -35,12 +35,14 @@ import {
   type BriefInputAsset,
   type BriefInputProject,
 } from '@flowstarter/agentic-codegen/src/flowstarter/brief-input';
+import { resolvePageCountAnswer } from '@flowstarter/agentic-codegen/src/flowstarter/page-set';
 import type { BriefTone } from '@flowstarter/agentic-codegen/src/flowstarter/types';
 import { withTenant } from '@/lib/tenancy';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import {
   BRIEF_ROW_COLUMNS,
   briefViewFromRow,
+  derivedBriefPageCount,
   type BriefRow,
   type BriefView,
 } from './brief-data';
@@ -93,7 +95,12 @@ export interface ComposeBriefInputArgs {
   /** Rights-confirmed assets only. `loadUsableAssets` and nothing else. */
   assets: readonly UsableAsset[];
   reason: BriefInput['reason'];
-  /** The intake's page-count answer, carried so the payload is self-describing. */
+  /**
+   * The INTAKE's page-count answer -- the quick wizard's, from before the
+   * deposit -- carried so the payload is self-describing. It is only ever a
+   * fallback now: `composeBriefInput` runs rule 8 itself and the brief's own
+   * answer, when there is one, wins over this.
+   */
   pageCount?: string | null;
   /** The funnel's derived tone, when the workspace has one. */
   tone?: BriefTone | null;
@@ -164,7 +171,16 @@ export function composeBriefInput(args: ComposeBriefInputArgs): BriefInput {
     // matters.
     photos: photos.filter((photo) => photo.assetId !== portrait?.assetId),
     portrait,
-    ...(args.pageCount ? { pageCount: args.pageCount } : {}),
+    // Rule 8, run here rather than trusted from a caller: the brief's own
+    // answer wins, then the intake's (`args.pageCount`), then what rule 7
+    // derives from this same brief. Always emitted now -- the brief owns this
+    // answer, and the intake's is a fallback rather than a value nobody else
+    // may override.
+    pageCount: resolvePageCountAnswer({
+      briefPageCount: brief.pageCount,
+      derivedPageCount: derivedBriefPageCount(brief),
+      intakePageCount: args.pageCount,
+    }),
     ...(args.tone ? { tone: args.tone } : {}),
   };
 }
@@ -246,11 +262,15 @@ type SupabaseServiceClient = ReturnType<typeof createSupabaseServiceRoleClient>;
 /**
  * The two intake fields the payload carries forward so it is self-describing.
  *
- * Neither is the brief's to own -- the page-count answer comes from the
- * intake and the tone from the funnel's brand signals -- and the worker
- * prefers its own intake for both. They are here so an operator reading one
- * job payload can see the whole shape of what was asked for without joining
- * two tables. Failure is not an error: the payload simply omits them.
+ * The tone is still not the brief's to own -- it comes from the funnel's
+ * brand signals, and the brief page never asks for one. The page count used
+ * to be the same story, and is no longer: the brief now owns that answer
+ * (`workspace_briefs.page_count`), and this intake value is a fallback
+ * `composeBriefInput` reaches for only when the brief has not made an
+ * explicit choice and rule 7 (`derivedBriefPageCount`) found nothing to
+ * derive either. Both are here so an operator reading one job payload can see
+ * the whole shape of what was asked for without joining two tables. Failure
+ * is not an error: the payload simply omits them.
  */
 async function carriedIntakeFields(
   supabase: SupabaseServiceClient,

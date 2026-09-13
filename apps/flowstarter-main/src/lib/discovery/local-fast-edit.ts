@@ -3,10 +3,11 @@ import 'server-only';
 /**
  * Local-preview counterpart of daytona-utils' fastEditInSandbox: runs the same
  * sandbox/fast-edit-runner.mjs (Kimi implementer + Haiku critic over
- * OpenRouter) directly against the on-disk preview workspace that
- * FLOWSTARTER_LOCAL_PREVIEW mode serves via `astro dev`. HMR reflects the
- * change exactly as it does in the sandbox — this exists so the 15-prompt edit
- * loop works when there is no Daytona sandbox behind the preview.
+ * OpenRouter) directly against the workspace copy the static build was made
+ * from. This exists so the free-edit loop works when there is no Daytona
+ * sandbox behind the preview — which, since previews moved onto the platform,
+ * is the normal case. The rebuild that makes the edit visible is the
+ * publisher's `republish`, not this runner's job.
  */
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';

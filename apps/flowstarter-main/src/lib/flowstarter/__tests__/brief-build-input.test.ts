@@ -15,7 +15,11 @@ import {
   briefBuildReason,
   composeBriefInput,
 } from '../brief-build-input';
-import type { BriefView } from '../brief-data';
+import {
+  derivedBriefPageCount,
+  effectiveBriefPageCount,
+  type BriefView,
+} from '../brief-data';
 import type { UsableAsset } from '../generation-assets';
 
 const WORKSPACE_ID = '0f4e1088-8d8f-4f18-83b1-406cc292b23c';
@@ -55,6 +59,8 @@ function brief(overrides: Partial<BriefView> = {}): BriefView {
     portraitAssetId: PORTRAIT_ID,
     readyAt: '2026-09-12T09:00:00.000Z',
     overrideAt: null,
+    // The shape a brief has until the client touches the page-count control.
+    pageCount: null,
     ...overrides,
   };
 }
@@ -107,6 +113,83 @@ describe('briefAssetPath', () => {
   });
 });
 
+/**
+ * Rule 7 and rule 8 of the page set, read off a brief.
+ *
+ * The defect these close: the quick intake stopped asking for a page count,
+ * `quick-defaults.ts` wrote `'unsure'` on every brief, `'unsure'` bought six
+ * content pages, and the one place a brief's own answer could have won was
+ * gated on the intake's being falsy - which it never is. A four-page
+ * portfolio brief bought six pages and invented two.
+ */
+describe('derivedBriefPageCount', () => {
+  it('reads a portfolio brief with real projects as four pages', () => {
+    // home, work, about, contact. No services page (the offer is prose, not a
+    // list) and no blog (nobody asked for one).
+    expect(derivedBriefPageCount(brief())).toBe('lt-5');
+  });
+
+  it('still derives a count when the client has no work to show', () => {
+    expect(
+      derivedBriefPageCount(brief({ projects: [], noProjects: true }))
+    ).toBe('lt-5');
+  });
+
+  it('does not count a project row the client left unnamed', () => {
+    const withBlank = brief({
+      projects: [
+        {
+          name: '   ',
+          line: '',
+          link: '',
+          screenshotAssetIds: [],
+        },
+      ],
+    });
+    expect(derivedBriefPageCount(withBlank)).toBe('lt-5');
+  });
+
+  it('buys a services page for an offer written as a list, not as prose', () => {
+    const listed = brief({
+      offer: 'Bookkeeping\nVAT returns\nPayroll\nYear-end accounts',
+      projects: [],
+      noProjects: true,
+    });
+    // home, contact, services, about is still four - the point is that the
+    // services page is EARNED here and absent above.
+    expect(derivedBriefPageCount(listed)).toBe('lt-5');
+  });
+
+  it('widens when the brief earns a blog on top of everything else', () => {
+    const wide = brief({
+      offer: 'Bookkeeping\nVAT returns\nPayroll\nAnd a blog, please',
+    });
+    // home, contact, work, about, services, blog - six.
+    expect(derivedBriefPageCount(wide)).toBe('5-7');
+  });
+});
+
+describe('effectiveBriefPageCount', () => {
+  it("takes the client's own answer over everything", () => {
+    expect(effectiveBriefPageCount(brief({ pageCount: '8-15' }), 'lt-5')).toBe(
+      '8-15'
+    );
+  });
+
+  it('takes a real intake answer over the derivation', () => {
+    expect(effectiveBriefPageCount(brief(), '8-15')).toBe('8-15');
+  });
+
+  it("takes the derivation over the quick intake's 'unsure' default", () => {
+    expect(effectiveBriefPageCount(brief(), 'unsure')).toBe('lt-5');
+  });
+
+  it('falls back to the derivation when there is no intake answer at all', () => {
+    expect(effectiveBriefPageCount(brief())).toBe('lt-5');
+    expect(effectiveBriefPageCount(brief(), null)).toBe('lt-5');
+  });
+});
+
 describe('composeBriefInput', () => {
   it('carries the offer, the projects and every file with its public path', () => {
     const input = composeBriefInput({
@@ -136,7 +219,38 @@ describe('composeBriefInput', () => {
     expect(input.designReferences.map((asset) => asset.role)).toEqual([
       'design-reference',
     ]);
+    // The intake's real answer, because this brief has none of its own.
     expect(input.pageCount).toBe('5-7');
+  });
+
+  it("puts the client's own page count on the build input", () => {
+    const input = composeBriefInput({
+      brief: brief({ pageCount: '8-15' }),
+      assets: everyAsset,
+      reason: 'brief_ready',
+      pageCount: 'lt-5',
+    });
+    expect(input.pageCount).toBe('8-15');
+  });
+
+  it("derives one rather than inheriting the quick intake's default", () => {
+    const input = composeBriefInput({
+      brief: brief(),
+      assets: everyAsset,
+      reason: 'brief_ready',
+      // What `quick-defaults.ts` writes for a question nobody was asked.
+      pageCount: 'unsure',
+    });
+    expect(input.pageCount).toBe('lt-5');
+  });
+
+  it('always says what the page count is, even with nothing carried forward', () => {
+    const input = composeBriefInput({
+      brief: brief(),
+      assets: everyAsset,
+      reason: 'brief_ready',
+    });
+    expect(input.pageCount).toBe('lt-5');
   });
 
   it('lists the portrait once, as the portrait', () => {

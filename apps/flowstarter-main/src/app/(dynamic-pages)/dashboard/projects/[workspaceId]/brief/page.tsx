@@ -18,6 +18,7 @@ import { notFound, redirect } from 'next/navigation';
 import { requireWorkspaceAccess } from '@/lib/api-auth';
 import { listWorkspaceAssets } from '@/app/api/client/assets/asset-storage';
 import { evaluateBriefReadiness } from '@/lib/flowstarter/brief-readiness';
+import { derivedBriefPageCount } from '@/lib/flowstarter/brief-data';
 import { withTenant } from '@/lib/tenancy';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import {
@@ -35,6 +36,7 @@ interface BriefRow {
   photo_asset_ids: string[] | null;
   ready_at: string | null;
   override_at: string | null;
+  page_count: string | null;
 }
 
 export default async function ClientBriefPage({
@@ -65,7 +67,7 @@ export default async function ClientBriefPage({
   const { data: row } = await withTenant(supabase, access.workspaceId)
     .from('workspace_briefs')
     .select(
-      'offer, projects, no_projects, design_reference_asset_ids, photo_asset_ids, ready_at, override_at'
+      'offer, projects, no_projects, design_reference_asset_ids, photo_asset_ids, ready_at, override_at, page_count'
     )
     .maybeSingle<BriefRow>();
 
@@ -85,6 +87,7 @@ export default async function ClientBriefPage({
       )?.id ?? null,
     readyAt: row?.ready_at ?? null,
     overrideAt: row?.override_at ?? null,
+    pageCount: row?.page_count ?? null,
   };
 
   const readiness = evaluateBriefReadiness({
@@ -136,6 +139,7 @@ export default async function ClientBriefPage({
         workspaceId={workspaceId}
         initialBrief={brief}
         initialReadiness={readiness}
+        derivedPageCount={derivedBriefPageCount(brief)}
         initialAssets={assets.map((asset) => ({
           id: asset.id,
           kind: asset.kind,

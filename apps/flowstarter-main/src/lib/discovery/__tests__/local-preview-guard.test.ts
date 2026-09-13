@@ -21,10 +21,37 @@ describe('isLocalPreviewFrameAllowed', () => {
     ).toBe(true);
   });
 
-  it('refuses when the flag is off, even in development', () => {
+  // The flag is no longer the only way in. Since previews moved onto the
+  // platform, a developer machine with no previews host configured publishes
+  // to a local static server by rule, and the proxy is the only thing that can
+  // frame it. Asking the publisher rule is what keeps the two from disagreeing
+  // about whether a local preview exists at all.
+  it('allows a development machine whose publisher rule chose local-static', () => {
     expect(
       isLocalPreviewFrameAllowed({
         FLOWSTARTER_LOCAL_PREVIEW: undefined,
+        NODE_ENV: 'development',
+      })
+    ).toBe(true);
+  });
+
+  it('refuses in development once a previews host exists and the flag is off', () => {
+    expect(
+      isLocalPreviewFrameAllowed({
+        FLOWSTARTER_LOCAL_PREVIEW: undefined,
+        FLOWSTARTER_PREVIEW_DEPLOY_AGENT_URL: 'https://previews.example',
+        FLOWSTARTER_PREVIEW_DEPLOY_AGENT_SECRET: 'shhh',
+        NODE_ENV: 'development',
+      })
+    ).toBe(false);
+  });
+
+  it('refuses in development when the publisher is explicitly Daytona', () => {
+    expect(
+      isLocalPreviewFrameAllowed({
+        FLOWSTARTER_LOCAL_PREVIEW: undefined,
+        FLOWSTARTER_PREVIEW_PUBLISHER: 'daytona',
+        DAYTONA_API_KEY: 'dtn',
         NODE_ENV: 'development',
       })
     ).toBe(false);
@@ -53,6 +80,8 @@ describe('isLocalPreviewFrameAllowed', () => {
     expect(
       isLocalPreviewFrameAllowed({
         FLOWSTARTER_LOCAL_PREVIEW: '1',
+        FLOWSTARTER_PREVIEW_DEPLOY_AGENT_URL: 'https://previews.example',
+        FLOWSTARTER_PREVIEW_DEPLOY_AGENT_SECRET: 'shhh',
         NODE_ENV: 'development',
       })
     ).toBe(false);

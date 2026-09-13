@@ -629,6 +629,45 @@ describe('PUT /api/client/brief/[workspaceId]', () => {
     expect((await response.json()).error).toContain('portrait');
   });
 
+  /**
+   * The page budget. The client had no way to say how big the site should be:
+   * the quick intake stopped asking, the default `'unsure'` bought six
+   * content pages, and a four-page brief was handed two to invent. This is
+   * the column that lets them answer, and rule 8 of the page set is what
+   * makes their answer win.
+   */
+  it("stores the client's own page count", async () => {
+    const response = await callPut(WORKSPACE_A, body({ pageCount: '8-15' }));
+    expect(response.status).toBe(200);
+    expect(savedBrief()?.page_count).toBe('8-15');
+    expect((await response.json()).brief.pageCount).toBe('8-15');
+  });
+
+  it('stores null when the client has not chosen one', async () => {
+    const response = await callPut(WORKSPACE_A, body());
+    expect(response.status).toBe(200);
+    expect(savedBrief()?.page_count).toBeNull();
+    expect((await response.json()).brief.pageCount).toBeNull();
+  });
+
+  it('lets the client clear a page count they had set', async () => {
+    await callPut(WORKSPACE_A, body({ pageCount: '15+' }));
+    await callPut(WORKSPACE_A, body({ pageCount: null }));
+    expect(savedBrief()?.page_count).toBeNull();
+  });
+
+  it('refuses a page count that is not one of the answers on offer', async () => {
+    const response = await callPut(WORKSPACE_A, body({ pageCount: 'four' }));
+    expect(response.status).toBe(400);
+    expect(savedBrief()).toBeUndefined();
+  });
+
+  it('returns the stored page count on a read', async () => {
+    rows('workspace_briefs').push(briefRow({ page_count: '5-7' }));
+    const payload = await (await callGet(WORKSPACE_A)).json();
+    expect(payload.brief.pageCount).toBe('5-7');
+  });
+
   it('saves an incomplete brief without starting a build', async () => {
     const response = await callPut(
       WORKSPACE_A,
