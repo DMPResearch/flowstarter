@@ -35,6 +35,24 @@ services:
     container_name: ${FLOWSTARTER_CONTAINER:-flowstarter-staging-main}
     restart: unless-stopped
     network_mode: host
+    # Scratch space for the discovery funnel's preview build
+    # (apps/flowstarter-main/src/lib/discovery/static-preview-build.ts and the
+    # local-preview fallback beside it): both copy a generated workspace into
+    # os.tmpdir() before running `astro build`, then delete the copy once the
+    # `dist/` output has been read back. The image's runner stage now runs
+    # that build as a non-root `node` user against a read-only templates
+    # layer (see deploy/hetzner-staging/Dockerfile), so this box's /tmp is
+    # the only thing that build is still allowed to write to; a tmpfs makes
+    # that explicit rather than incidental, and means the container's root
+    # filesystem can be made read-only later without that build losing its
+    # scratch space out from under it. size=512m is generous for a handful
+    # of concurrent previews — a workspace copy plus its `dist/` output is a
+    # few MB; each template's node_modules is a symlink into the image layer
+    # and costs nothing here. noexec,nosuid: nothing under here is ever
+    # executed — astro's own binary lives in the read-only templates layer,
+    # this only ever holds a generated site's markup/config.
+    tmpfs:
+      - /tmp:size=512m,mode=1777,noexec,nosuid
     env_file:
       - ${FLOWSTARTER_ENV_FILE:-/etc/flowstarter/staging.env}
     environment:

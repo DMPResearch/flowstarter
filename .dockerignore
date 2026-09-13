@@ -40,7 +40,21 @@ apps/flowstarter-library/**
 apps/flowstarter-library/templates/**/node_modules/**
 apps/flowstarter-library/templates/**/.astro/**
 apps/flowstarter-library/templates/**/dist/**
-apps/flowstarter-templates
+# Excluded except for the four templates the `templates` stage of
+# deploy/hetzner-staging/Dockerfile installs and ships for the discovery
+# funnel's preview build (static-preview-build.ts): creative-portfolio,
+# local-trade, professional-services, wellness-therapy. dorin-portfolio
+# (legacy) and demo-coach (editor dev fixture) stay out — neither is a
+# template a generated site can be built from, see TEMPLATE_CATALOG in
+# packages/agentic-codegen/src/workspace.ts.
+apps/flowstarter-templates/**
+!apps/flowstarter-templates/creative-portfolio/**
+!apps/flowstarter-templates/local-trade/**
+!apps/flowstarter-templates/professional-services/**
+!apps/flowstarter-templates/wellness-therapy/**
+apps/flowstarter-templates/*/node_modules/**
+apps/flowstarter-templates/*/.astro/**
+apps/flowstarter-templates/*/dist/**
 apps/flowstarter-selfserve
 apps/shopify-landing
 apps/deploy-agent

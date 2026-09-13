@@ -78,6 +78,77 @@ RUN mkdir -p apps/flowstarter-main/public/preview && \
       echo "BUILD_LIBRARY_PREVIEWS is not true; public/preview stays empty."; \
     fi
 
+# ── Preview templates ────────────────────────────────────────────────────────
+# The discovery funnel builds a generated preview with the same fixed
+# `astro build` apps/build-worker runs for a paid site (see
+# apps/flowstarter-main/src/lib/discovery/static-preview-build.ts). That code
+# never runs `pnpm install` itself — it copies a generated workspace into a
+# scratch dir and symlinks `node_modules` in from
+# FLOWSTARTER_TEMPLATE_ROOT/<template>/node_modules. Before this stage the
+# runner shipped no templates at all (apps/flowstarter-templates is excluded
+# from the build context; see .dockerignore) and their node_modules didn't
+# exist anywhere in the image, so every platform preview failed here even
+# though the exact same build worked in CI and on a dev laptop.
+#
+# Only the four templates a generated site can actually be built from ship:
+# creative-portfolio, local-trade, professional-services, wellness-therapy —
+# TEMPLATE_CATALOG in packages/agentic-codegen/src/workspace.ts. dorin-portfolio
+# is legacy (superseded by creative-portfolio, kept only for
+# apps/flowstarter-library's own iframe preview above) and demo-coach is the
+# editor's own dev fixture; neither is reachable from the funnel, so neither
+# earns space in a production image.
+#
+# One `pnpm install --filter` across all four rather than four separate
+# `pnpm deploy` runs: they share a single `astro` version, so pnpm's
+# content-addressed store pays for that dependency tree once regardless of
+# how many of the four templates resolve it. Four independent deploys would
+# have paid for it four times over — measured at ~670MB for astro alone.
+#
+# --prod: astro is these templates' only dependency, so this changes nothing
+# about it, but keeps the rule identical to the `previews` stage above.
+# --ignore-scripts: same reasoning as `previews` — no native addon here
+# either, and this image has no Python to build one against.
+#
+# WORKDIR of its own, not the `base` stage's inherited /app: pnpm writes each
+# CLI's `.bin/astro` as a real shell shim with the `../../..` climb back to
+# its content-addressed store computed textually, from the package's depth
+# under whatever directory `pnpm install` ran in — not as a symlink, and not
+# re-derived later. `node`'s own loader then resolves that shim's target path
+# with plain string arithmetic (`path.resolve`, which never touches the
+# filesystem or follows a symlink) before it ever opens a file. So the
+# instant this layer's `apps/flowstarter-templates` sits at a different depth
+# than it did during install — merged into the runner's own /app alongside
+# the standalone build's unrelated node_modules, say — that shim silently
+# resolves to the wrong absolute path and `astro build` dies with a
+# MODULE_NOT_FOUND for a path that was never real anywhere (verified with
+# `docker build --target templates` on 2026-09-13; moving the installed tree
+# a single directory deeper than this reproduces it every time). Copying this
+# whole stage into the runner at the identical absolute path it was installed
+# at (see the runner stage below) is what keeps that arithmetic valid, and is
+# the actual reason this lands under /srv rather than under the runner's own
+# /app — not merely to dodge a same-name-package collision with the
+# standalone output, though it does that too.
+FROM base AS templates
+WORKDIR /srv/preview-templates
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/flowstarter-templates/creative-portfolio/package.json ./apps/flowstarter-templates/creative-portfolio/package.json
+COPY apps/flowstarter-templates/local-trade/package.json ./apps/flowstarter-templates/local-trade/package.json
+COPY apps/flowstarter-templates/professional-services/package.json ./apps/flowstarter-templates/professional-services/package.json
+COPY apps/flowstarter-templates/wellness-therapy/package.json ./apps/flowstarter-templates/wellness-therapy/package.json
+RUN pnpm install --frozen-lockfile --prod --ignore-scripts \
+      --filter @flowstarter/template-creative-portfolio \
+      --filter @flowstarter/template-local-trade \
+      --filter @flowstarter/template-professional-services \
+      --filter @flowstarter/template-wellness-therapy
+# The rest of each template's own source (components, content, public
+# assets). node_modules from the install above is untouched by this COPY:
+# .dockerignore strips node_modules out of the build context entirely, so
+# there is nothing here to overwrite it with.
+COPY apps/flowstarter-templates/creative-portfolio ./apps/flowstarter-templates/creative-portfolio
+COPY apps/flowstarter-templates/local-trade ./apps/flowstarter-templates/local-trade
+COPY apps/flowstarter-templates/professional-services ./apps/flowstarter-templates/professional-services
+COPY apps/flowstarter-templates/wellness-therapy ./apps/flowstarter-templates/wellness-therapy
+
 FROM base AS builder
 COPY --from=deps /app /app
 COPY apps/flowstarter-main ./apps/flowstarter-main
@@ -131,6 +202,57 @@ WORKDIR /app
 COPY --from=builder /app/apps/flowstarter-main/.next/standalone ./
 COPY --from=builder /app/apps/flowstarter-main/.next/static ./apps/flowstarter-main/.next/static
 COPY --from=builder /app/apps/flowstarter-main/public ./apps/flowstarter-main/public
+
+# The templates stage's own WORKDIR, copied in at the identical absolute
+# path it was installed at (see that stage's comment for why the path must
+# not move — a relocated `pnpm install` output is not just a style choice)
+# and not merged into this stage's own /app for a second reason on top of
+# that: the standalone copy above already put its own pruned node_modules at
+# /app/node_modules, real files traced out of the Next build rather than
+# pnpm's symlinks into a content-addressed store, and a same-named package
+# resolved to a different version between the two graphs would let whichever
+# COPY ran last silently win the collision. `--link`: a ~670MB layer is worth
+# letting BuildKit fetch independently of the layers above it.
+COPY --from=templates --link /srv/preview-templates /srv/preview-templates
+# apps/flowstarter-main/src/lib/discovery/static-preview-build.ts (and the
+# local-preview fallback beside it) read this to find each template's
+# pre-installed node_modules. Not left to that code's own default
+# (`resolve(process.cwd(), '../flowstarter-templates')`, which would resolve
+# under /app/apps and find nothing there) because the path above is fixed by
+# the `pnpm install` that built it, not by this image's WORKDIR.
+ENV FLOWSTARTER_TEMPLATE_ROOT=/srv/preview-templates/apps/flowstarter-templates
+
+# Astro's build calls into Vite, and Vite pre-bundles dependencies into a
+# `node_modules/.vite` cache it creates itself the first time anything asks
+# for it — it is not optional and there is no flag that turns it off, so a
+# strictly read-only template breaks `astro build` outright (verified with
+# `docker build --target templates` on 2026-09-13: EACCES creating
+# node_modules/.vite/deps_temp_*). The four `chown` targets below are each
+# template's own top-level node_modules DIRECTORY ENTRY only — not
+# recursive, so the symlinks inside it that point at the real dependency
+# code keep the ownership they already have. That is deliberate: the actual
+# astro/vite source under node_modules/.pnpm stays root-owned and
+# unwritable, which is the thing worth protecting from a generated site's
+# build; a directory entry that can hold nothing but a disposable cache is
+# not. All previews built from the same template share one cache directory,
+# same as they already share one node_modules — no worse than what this
+# layer already asks the four templates to live with.
+RUN chown node:node \
+      /srv/preview-templates/apps/flowstarter-templates/creative-portfolio/node_modules \
+      /srv/preview-templates/apps/flowstarter-templates/local-trade/node_modules \
+      /srv/preview-templates/apps/flowstarter-templates/professional-services/node_modules \
+      /srv/preview-templates/apps/flowstarter-templates/wellness-therapy/node_modules
+
+# node:${NODE_VERSION} ships uid 1000 as `node` (the same convention
+# apps/build-worker/src/isolation.ts assumes for the build container). Every
+# file above was laid down by root during the build; running as `node` means
+# a preview build that got its own fixed `astro build` command wrong still
+# cannot write anywhere under /srv/preview-templates or /app beyond the four
+# cache directories just handed to it — the funnel's build itself writes the
+# generated site's own copy into the OS temp dir (os.tmpdir(), see
+# static-preview-build.ts's PREVIEW_BUILD_PARENT), which needs no ownership
+# change here because /tmp is world-writable already.
+USER node
 
 WORKDIR /app/apps/flowstarter-main
 EXPOSE 3000
