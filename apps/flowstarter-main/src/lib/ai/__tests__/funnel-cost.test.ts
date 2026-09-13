@@ -66,11 +66,7 @@ describe('funnelBudgetState — accounting failures', () => {
 
     vi.doMock('@supabase/supabase-js', () => ({
       createClient: () => ({
-        from: () => ({
-          select: () => ({
-            gte: async () => ({ data: null, error: { message: 'boom' } }),
-          }),
-        }),
+        rpc: async () => ({ data: null, error: { message: 'boom' } }),
       }),
     }));
 
@@ -89,13 +85,9 @@ describe('funnelBudgetState — accounting failures', () => {
 
     vi.doMock('@supabase/supabase-js', () => ({
       createClient: () => ({
-        from: () => ({
-          select: () => ({
-            gte: async () => {
-              throw new Error('connection reset');
-            },
-          }),
-        }),
+        rpc: async () => {
+          throw new Error('connection reset');
+        },
       }),
     }));
 
@@ -115,11 +107,7 @@ describe('funnelBudgetState — accounting failures', () => {
 
     vi.doMock('@supabase/supabase-js', () => ({
       createClient: () => ({
-        from: () => ({
-          select: () => ({
-            gte: async () => ({ data: [{ cost_eur: 25 }], error: null }),
-          }),
-        }),
+        rpc: async () => ({ data: 25, error: null }),
       }),
     }));
 
@@ -130,6 +118,268 @@ describe('funnelBudgetState — accounting failures', () => {
     expect(result.reason).toBe('over-cap');
     expect(result.spentEur).toBe(25);
     vi.doUnmock('@supabase/supabase-js');
+  });
+
+  it('uses a server-side aggregate (funnel_budget_spent_eur), never a row fetch that could hit max_rows', async () => {
+    // Security audit F06: `select cost_eur ...` fetched individual rows and
+    // summed them client-side, silently truncating once the ledger passed
+    // PostgREST's max_rows. This asserts the fix's shape directly: the RPC
+    // is called by name, with the month-to-date `since` boundary, and its
+    // single returned number is trusted as the total regardless of how many
+    // rows contributed to it (simulated here as a total no batch of
+    // individually-fetched rows under max_rows could represent honestly:
+    // an amount a naive per-row sum limited to 1000 rows could never reach
+    // if each row were a fraction of a cent, so a real truncation bug would
+    // instead report something far lower than this and fail the assertion).
+    setNodeEnv('production');
+    process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://example.supabase.co';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key';
+    process.env.DISCOVERY_FUNNEL_BUDGET_EUR = '10000';
+
+    const rpcSpy = vi.fn(
+      async (name: string, args: Record<string, unknown>) => {
+        expect(name).toBe('funnel_budget_spent_eur');
+        expect(typeof (args as { since: string }).since).toBe('string');
+        return { data: 9999.99, error: null };
+      }
+    );
+    vi.doMock('@supabase/supabase-js', () => ({
+      createClient: () => ({ rpc: rpcSpy }),
+    }));
+
+    const { funnelBudgetState } = await freshModule();
+    const result = await funnelBudgetState();
+
+    expect(rpcSpy).toHaveBeenCalledOnce();
+    expect(result.spentEur).toBe(9999.99);
+    // Not 'blocked': the RPC's own number is trusted directly, never
+    // recomputed from (and truncated by) a capped row fetch.
+    expect(result.state).not.toBe('blocked');
+    vi.doUnmock('@supabase/supabase-js');
+  });
+});
+
+describe('reserveFunnelSpend / settleFunnelReservation / releaseFunnelReservation', () => {
+  beforeEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://example.supabase.co';
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key';
+  });
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    vi.restoreAllMocks();
+    vi.doUnmock('@supabase/supabase-js');
+  });
+
+  it('allows a reservation that fits under the cap, via the atomic RPC', async () => {
+    setNodeEnv('production');
+    const rpcSpy = vi.fn(async () => ({
+      data: [
+        {
+          reservation_id: 'res-1',
+          allowed: true,
+          spent_eur: 1.5,
+          caller_spent_eur: 0,
+          reason: null,
+        },
+      ],
+      error: null,
+    }));
+    vi.doMock('@supabase/supabase-js', () => ({
+      createClient: () => ({ rpc: rpcSpy }),
+    }));
+
+    const { reserveFunnelSpend } = await freshModule();
+    const result = await reserveFunnelSpend({
+      estimateEur: 0.5,
+      kind: 'codegen',
+      ip: '203.0.113.9',
+    });
+
+    expect(result).toEqual({
+      allowed: true,
+      reservationId: 'res-1',
+      spentEur: 1.5,
+    });
+    expect(rpcSpy).toHaveBeenCalledWith(
+      'reserve_funnel_spend',
+      expect.objectContaining({ p_estimate_eur: 0.5, p_kind: 'codegen' })
+    );
+  });
+
+  it('refuses a reservation that would exceed the global cap, with reason over-cap', async () => {
+    setNodeEnv('production');
+    vi.doMock('@supabase/supabase-js', () => ({
+      createClient: () => ({
+        rpc: async () => ({
+          data: [
+            {
+              reservation_id: null,
+              allowed: false,
+              spent_eur: 49.8,
+              caller_spent_eur: 0,
+              reason: 'over-cap',
+            },
+          ],
+          error: null,
+        }),
+      }),
+    }));
+
+    const { reserveFunnelSpend } = await freshModule();
+    const result = await reserveFunnelSpend({
+      estimateEur: 0.5,
+      kind: 'codegen',
+    });
+
+    expect(result).toEqual({
+      allowed: false,
+      reason: 'over-cap',
+      spentEur: 49.8,
+    });
+  });
+
+  it('refuses a reservation that would exceed the per-caller cap, with reason over-caller-cap', async () => {
+    setNodeEnv('production');
+    vi.doMock('@supabase/supabase-js', () => ({
+      createClient: () => ({
+        rpc: async () => ({
+          data: [
+            {
+              reservation_id: null,
+              allowed: false,
+              spent_eur: 1,
+              caller_spent_eur: 4.9,
+              reason: 'over-caller-cap',
+            },
+          ],
+          error: null,
+        }),
+      }),
+    }));
+
+    const { reserveFunnelSpend } = await freshModule();
+    const result = await reserveFunnelSpend({
+      estimateEur: 0.5,
+      kind: 'codegen',
+      ip: '203.0.113.9',
+    });
+
+    expect(result).toEqual({
+      allowed: false,
+      reason: 'over-caller-cap',
+      spentEur: 1,
+    });
+  });
+
+  it('fails CLOSED (not reserved) on a reservation RPC error outside development', async () => {
+    setNodeEnv('production');
+    vi.doMock('@supabase/supabase-js', () => ({
+      createClient: () => ({
+        rpc: async () => ({ data: null, error: { message: 'boom' } }),
+      }),
+    }));
+
+    const { reserveFunnelSpend } = await freshModule();
+    const result = await reserveFunnelSpend({
+      estimateEur: 0.5,
+      kind: 'codegen',
+    });
+
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) expect(result.reason).toBe('accounting-error');
+  });
+
+  it('fails OPEN (reserved) on a reservation RPC error in development', async () => {
+    setNodeEnv('development');
+    vi.doMock('@supabase/supabase-js', () => ({
+      createClient: () => ({
+        rpc: async () => ({ data: null, error: { message: 'boom' } }),
+      }),
+    }));
+
+    const { reserveFunnelSpend } = await freshModule();
+    const result = await reserveFunnelSpend({
+      estimateEur: 0.5,
+      kind: 'codegen',
+    });
+
+    expect(result).toEqual({
+      allowed: true,
+      reservationId: 'dev-unreserved',
+      spentEur: 0,
+    });
+  });
+
+  it('settleFunnelReservation keeps the reserved estimate when no actual cost/usage is given', async () => {
+    setNodeEnv('production');
+    const rpcSpy = vi.fn(async () => ({ error: null }));
+    vi.doMock('@supabase/supabase-js', () => ({
+      createClient: () => ({ rpc: rpcSpy }),
+    }));
+
+    const { settleFunnelReservation } = await freshModule();
+    await settleFunnelReservation('res-1');
+
+    expect(rpcSpy).toHaveBeenCalledWith('settle_funnel_reservation', {
+      p_reservation_id: 'res-1',
+      p_actual_cost_eur: null,
+      p_tokens_in: null,
+      p_tokens_out: null,
+    });
+  });
+
+  it('settleFunnelReservation uses a real reported cost when given one', async () => {
+    setNodeEnv('production');
+    const rpcSpy = vi.fn(async () => ({ error: null }));
+    vi.doMock('@supabase/supabase-js', () => ({
+      createClient: () => ({ rpc: rpcSpy }),
+    }));
+
+    const { settleFunnelReservation } = await freshModule();
+    await settleFunnelReservation('res-1', { costUsd: 1.23 });
+
+    expect(rpcSpy).toHaveBeenCalledWith(
+      'settle_funnel_reservation',
+      expect.objectContaining({ p_actual_cost_eur: 1.23 })
+    );
+  });
+
+  it('settleFunnelReservation counts and logs a failed RPC, without throwing', async () => {
+    setNodeEnv('production');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.doMock('@supabase/supabase-js', () => ({
+      createClient: () => ({
+        rpc: async () => ({ error: { message: 'boom' } }),
+      }),
+    }));
+
+    const {
+      settleFunnelReservation,
+      costLedgerWriteFailureCount,
+      _resetCostLedgerWriteFailureCountForTests,
+    } = await freshModule();
+    _resetCostLedgerWriteFailureCountForTests();
+
+    await expect(settleFunnelReservation('res-1')).resolves.toBeUndefined();
+    expect(costLedgerWriteFailureCount()).toBe(1);
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it('releaseFunnelReservation calls the release RPC and never throws', async () => {
+    setNodeEnv('production');
+    const rpcSpy = vi.fn(async () => ({ error: null }));
+    vi.doMock('@supabase/supabase-js', () => ({
+      createClient: () => ({ rpc: rpcSpy }),
+    }));
+
+    const { releaseFunnelReservation } = await freshModule();
+    await expect(releaseFunnelReservation('res-1')).resolves.toBeUndefined();
+
+    expect(rpcSpy).toHaveBeenCalledWith('release_funnel_reservation', {
+      p_reservation_id: 'res-1',
+    });
   });
 });
 

@@ -134,6 +134,19 @@ export const contactRateLimiter = new SlidingWindowRateLimiter({
 });
 
 /**
+ * A positive integer read from a named env var, falling back to a
+ * documented default — the same shape as `capEur()` in
+ * `src/lib/ai/funnel-cost.ts`, generalised so every per-route limit gets a
+ * named config knob instead of a bare literal (security audit 2026-09-13,
+ * H4's "not a bare literal" fix direction, applied to every limiter this
+ * module and its callers define, not only the funnel spend cap).
+ */
+export function namedIntEnv(envVar: string, fallback: number): number {
+  const raw = Number(process.env[envVar]);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+}
+
+/**
  * MVP readiness review, "Security": `/api/discovery/preview/live` — a real
  * Pi generation run, `maxDuration = 300` — had no rate limit at all. A
  * genuine visitor calls this once per completed intake, so this stays
@@ -141,8 +154,7 @@ export const contactRateLimiter = new SlidingWindowRateLimiter({
  * route, same as the funnel spend cap's `DISCOVERY_FUNNEL_BUDGET_EUR`.
  */
 function discoveryPreviewLiveLimit(): number {
-  const raw = Number(process.env.DISCOVERY_PREVIEW_LIVE_RATE_LIMIT);
-  return Number.isFinite(raw) && raw > 0 ? raw : 5;
+  return namedIntEnv('DISCOVERY_PREVIEW_LIVE_RATE_LIMIT', 5);
 }
 
 /** Rate limiter for `POST /api/discovery/preview/live`: 5 per minute per IP
@@ -243,4 +255,18 @@ export async function consumeRateLimit(
   } catch {
     return false;
   }
+}
+
+/**
+ * Test-only reset for {@link consumeRateLimit}'s process-local fallback
+ * state. The fallback limiters are module-level (one per limit/window pair,
+ * shared across every call site so a key's count is not lost between
+ * requests within a process — see {@link fallbackLimiter}), which means
+ * they persist across test cases in the same file unless explicitly reset,
+ * the same reasoning `__resetGuestDepositRateLimit` and similar per-route
+ * reset exports already exist for their own private maps.
+ */
+export function _resetRateLimitFallbacksForTests(): void {
+  fallbackLimiters.forEach((limiter) => limiter.destroy());
+  fallbackLimiters.clear();
 }

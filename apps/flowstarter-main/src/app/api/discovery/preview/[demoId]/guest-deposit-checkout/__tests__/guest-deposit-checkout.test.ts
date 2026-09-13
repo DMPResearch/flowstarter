@@ -15,6 +15,7 @@ import {
   rememberClaimablePreview,
 } from '@/lib/flowstarter/claim';
 import { POST, __resetGuestDepositRateLimit } from '../route';
+import { _resetRateLimitFallbacksForTests } from '@/lib/rate-limit';
 
 vi.mock('server-only', () => ({}));
 
@@ -104,6 +105,11 @@ beforeEach(() => {
   clearClaimablePreviews();
   createSessionSpy.mockClear();
   __resetGuestDepositRateLimit();
+  // Every test in this file reuses the same VALID_BODY email; without this,
+  // the per-email limiter added alongside the per-IP one (security audit
+  // 2026-09-13, H4/F06) would trip partway through the suite rather than in
+  // the dedicated rate-limit test below.
+  _resetRateLimitFallbacksForTests();
   vi.stubEnv('STRIPE_SECRET_KEY', 'sk_test_fake');
   vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'http://localhost:3000');
 });
@@ -249,18 +255,64 @@ describe('POST /api/discovery/preview/[demoId]/guest-deposit-checkout', () => {
   it('rate limits one IP after five attempts a minute', async () => {
     stashPreview();
 
+    // A distinct email per attempt isolates the IP limiter under test from
+    // the per-email limiter added alongside it (security audit 2026-09-13,
+    // H4/F06) — that one gets its own dedicated test below.
     for (let attempt = 0; attempt < 5; attempt++) {
-      const ok = await POST(checkoutRequest(VALID_BODY), params());
+      const ok = await POST(
+        checkoutRequest({
+          ...VALID_BODY,
+          email: `visitor-${attempt}@example.com`,
+        }),
+        params()
+      );
       expect(ok.status).toBe(200);
     }
 
-    const blocked = await POST(checkoutRequest(VALID_BODY), params());
+    const blocked = await POST(
+      checkoutRequest({ ...VALID_BODY, email: 'visitor-blocked@example.com' }),
+      params()
+    );
     expect(blocked.status).toBe(429);
     expect(createSessionSpy).toHaveBeenCalledTimes(5);
 
-    // A different visitor is unaffected.
+    // A different visitor (different IP, different email) is unaffected.
     const other = await POST(
-      checkoutRequest(VALID_BODY, '198.51.100.4'),
+      checkoutRequest(
+        { ...VALID_BODY, email: 'other-visitor@example.com' },
+        '198.51.100.4'
+      ),
+      params()
+    );
+    expect(other.status).toBe(200);
+  });
+
+  it('rate limits one email after three attempts a minute, across any IP', async () => {
+    stashPreview();
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const ok = await POST(
+        checkoutRequest(VALID_BODY, `203.0.113.${attempt + 10}`),
+        params()
+      );
+      expect(ok.status).toBe(200);
+    }
+
+    // A fourth attempt with the same email, from yet another IP, is refused
+    // — the per-IP limiter alone would have let this through.
+    const blocked = await POST(
+      checkoutRequest(VALID_BODY, '203.0.113.99'),
+      params()
+    );
+    expect(blocked.status).toBe(429);
+    expect(createSessionSpy).toHaveBeenCalledTimes(3);
+
+    // The same IP with a different email is unaffected by the email limit.
+    const other = await POST(
+      checkoutRequest(
+        { ...VALID_BODY, email: 'someone-else@example.com' },
+        '203.0.113.99'
+      ),
       params()
     );
     expect(other.status).toBe(200);

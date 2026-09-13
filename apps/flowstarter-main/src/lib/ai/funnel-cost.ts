@@ -22,18 +22,40 @@ import { createClient } from '@supabase/supabase-js';
  * where the local stack routinely has no `demo_generation_costs` row seeded,
  * or no service key at all — it still fails open, with a logged warning, so
  * a clean checkout is not blocked from ever seeing a live preview.
+ *
+ * Security audit 2026-09-13 (Claude H4; Codex F06) found two further
+ * problems, both fixed at the database layer (see
+ * supabase/migrations/20260913120000_funnel_budget_reservation.sql):
+ *
+ *   - {@link funnelBudgetState} used to sum `cost_eur` by fetching individual
+ *     rows and adding them in JavaScript, which silently truncated once the
+ *     ledger passed PostgREST's `max_rows` (1000) — the cap could report
+ *     itself un-hit while genuinely exceeded. It now calls the
+ *     `funnel_budget_spent_eur` SQL aggregate, which is one row regardless
+ *     of how many source rows it summed.
+ *   - The cap was read-then-act with no reservation: concurrent callers
+ *     could all read the same pre-existing total, all see it under the cap,
+ *     and all start a real, multi-minute, real-money run before any of
+ *     their costs were ever written back. {@link reserveFunnelSpend} closes
+ *     this by reserving the estimated cost against BOTH a global and a
+ *     per-caller cap inside one atomic, lock-serialized database call,
+ *     before the expensive work starts; {@link settleFunnelReservation} and
+ *     {@link releaseFunnelReservation} reconcile it afterwards.
  */
 
 export type FunnelBudgetState = 'ok' | 'degrade' | 'blocked';
 
 /**
- * Why a `blocked` state was returned: over the real monthly cap, or because
- * the accounting query itself failed and the cap could not be checked. The
- * caller (`/api/discovery/preview/live`) surfaces this in its own `reason`
- * field so the two are never confused with each other or with the
- * unrelated `not-configured` skip.
+ * Why a `blocked` state was returned: over the real monthly cap, over the
+ * one-caller-alone cap, or because the accounting query itself failed and
+ * the cap could not be checked. The caller (`/api/discovery/preview/live`)
+ * surfaces this in its own `reason` field so none of these are ever
+ * confused with each other or with the unrelated `not-configured` skip.
  */
-export type FunnelBudgetBlockedReason = 'over-cap' | 'accounting-error';
+export type FunnelBudgetBlockedReason =
+  | 'over-cap'
+  | 'over-caller-cap'
+  | 'accounting-error';
 
 export interface FunnelBudgetResult {
   state: FunnelBudgetState;
@@ -70,12 +92,44 @@ export interface FunnelUsage {
   completionTokens?: number;
 }
 
-export type GenerationKind = 'preview' | 'edit' | 'recommend' | 'codegen';
+export type GenerationKind =
+  | 'preview'
+  | 'edit'
+  | 'recommend'
+  | 'codegen'
+  | 'support_chat';
 
 /** Monthly € cap. Safe-low default; raise via env once economics are known. */
 function capEur(): number {
   const raw = Number(process.env.DISCOVERY_FUNNEL_BUDGET_EUR);
   return Number.isFinite(raw) && raw > 0 ? raw : 50;
+}
+
+/**
+ * A second, per-caller (per-IP) cap so one visitor rotating requests cannot
+ * alone exhaust the whole month's shared budget (security audit 2026-09-13,
+ * H4: "burning €50 of budget stops every legitimate visitor's preview for
+ * the rest of the month, which is a cheap way to take the funnel offline").
+ * Safe-low default; raise via env once economics are known, same as
+ * {@link capEur}.
+ */
+function perCallerCapEur(): number {
+  const raw = Number(process.env.DISCOVERY_FUNNEL_PER_CALLER_BUDGET_EUR);
+  return Number.isFinite(raw) && raw > 0 ? raw : 5;
+}
+
+/**
+ * A full `preview/live` generation run's estimated cost, reserved against
+ * both caps BEFORE the run starts (see {@link reserveFunnelSpend}) rather
+ * than only recorded after — the run itself does not report fine-grained
+ * token usage back to this module (its cost accounting happens inside
+ * `packages/agentic-codegen`), so this is deliberately a conservative
+ * per-run estimate, not a computed one. Safe-low default; raise via env once
+ * economics are known, same as {@link capEur}.
+ */
+export function previewLiveEstimatedCostEur(): number {
+  const raw = Number(process.env.DISCOVERY_PREVIEW_LIVE_ESTIMATED_COST_EUR);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0.5;
 }
 
 const SOFT_FRACTION = 0.7;
@@ -205,12 +259,27 @@ function accountingUnavailable(
   };
 }
 
+/** The first instant of the current UTC month — the window every funnel
+ * budget query (state, reservation) sums from. */
+function startOfMonthUtc(): Date {
+  const since = new Date();
+  since.setUTCDate(1);
+  since.setUTCHours(0, 0, 0, 0);
+  return since;
+}
+
 /**
  * Month-to-date funnel state.
  *
  * Fails OPEN only in development (see the module doc comment above); every
  * other environment fails CLOSED so a broken query cannot silently remove
  * the spend cap.
+ *
+ * This is the read-only, informational check (used for the soft-threshold
+ * `degrade` signal and by callers that do not commit a spend of their own).
+ * A caller about to spend money should reserve it with
+ * {@link reserveFunnelSpend} instead, which checks the same total but
+ * commits atomically rather than merely reading it.
  */
 export async function funnelBudgetState(): Promise<FunnelBudgetResult> {
   const cap = capEur();
@@ -221,19 +290,20 @@ export async function funnelBudgetState(): Promise<FunnelBudgetResult> {
         cap,
         'no Supabase service client configured'
       );
-    const since = new Date();
-    since.setUTCDate(1);
-    since.setUTCHours(0, 0, 0, 0);
-    const { data, error } = await sb
-      .from('demo_generation_costs')
-      .select('cost_eur')
-      .gte('created_at', since.toISOString());
+    const since = startOfMonthUtc();
+    // A server-side aggregate, not a row fetch: `select cost_eur ...` here
+    // used to be capped by PostgREST's `max_rows` (1000) once the ledger
+    // grew past it, silently truncating the total (audit F06). `sum()` is
+    // one row regardless of how many source rows it summed.
+    const { data: spentRaw, error } = await sb.rpc('funnel_budget_spent_eur', {
+      since: since.toISOString(),
+    });
     if (error) return accountingUnavailable(cap, error);
-    if (!data) return accountingUnavailable(cap, 'query returned no data');
-    const spent = data.reduce(
-      (s, r) => s + Number((r as { cost_eur: number }).cost_eur || 0),
-      0
-    );
+    if (spentRaw === null || spentRaw === undefined)
+      return accountingUnavailable(cap, 'query returned no data');
+    const spent = Number(spentRaw);
+    if (!Number.isFinite(spent))
+      return accountingUnavailable(cap, `non-numeric total: ${spentRaw}`);
     const state: FunnelBudgetState =
       spent >= cap
         ? 'blocked'
@@ -248,5 +318,188 @@ export async function funnelBudgetState(): Promise<FunnelBudgetResult> {
     };
   } catch (err) {
     return accountingUnavailable(cap, err);
+  }
+}
+
+// ─── Reserve-then-commit ────────────────────────────────────────────────
+//
+// The read-then-act shape above (`funnelBudgetState`) is fine for a soft,
+// informational signal, but it is exactly the shape that let concurrent
+// callers all observe "under the cap" and all proceed (audit H4). A caller
+// that is about to actually spend money reserves its estimated cost first;
+// the database — not this process, and not a lock only this process would
+// see — decides whether that reservation fits under both the global and the
+// per-caller cap, atomically, before the expensive work ever starts.
+
+export type FunnelReservationResult =
+  | { allowed: true; reservationId: string; spentEur: number }
+  | { allowed: false; reason: FunnelBudgetBlockedReason; spentEur: number };
+
+/** The one place a failed reservation query decides open vs. closed — same
+ * policy as {@link accountingUnavailable}, shaped for a reservation result
+ * instead of a budget-state result. The `dev-unreserved` id is never a real
+ * row; {@link settleFunnelReservation}/{@link releaseFunnelReservation}
+ * against it are harmless no-op updates (0 rows affected). */
+function reservationAccountingUnavailable(
+  detail: unknown
+): FunnelReservationResult {
+  if (isDevelopment()) {
+    console.warn(
+      '[funnel-cost] reservation accounting unavailable in development; failing open',
+      detail
+    );
+    return { allowed: true, reservationId: 'dev-unreserved', spentEur: 0 };
+  }
+  console.error(
+    '[funnel-cost] reservation accounting unavailable; failing closed',
+    detail
+  );
+  return { allowed: false, reason: 'accounting-error', spentEur: 0 };
+}
+
+/**
+ * Reserve `estimateEur` against both the global monthly cap and the
+ * per-caller cap, atomically, before starting an expensive run. See
+ * `supabase/migrations/20260913120000_funnel_budget_reservation.sql`'s
+ * `reserve_funnel_spend` for the transaction/locking detail.
+ *
+ * On success, the caller MUST eventually call {@link settleFunnelReservation}
+ * (the run produced a real, billable result) or {@link releaseFunnelReservation}
+ * (it did not) — never leave a reservation hanging, or it stays counted
+ * against the cap forever.
+ */
+export async function reserveFunnelSpend(input: {
+  estimateEur: number;
+  kind: GenerationKind;
+  model?: string;
+  demoId?: string | null;
+  ip?: string | null;
+  leadEmail?: string | null;
+}): Promise<FunnelReservationResult> {
+  try {
+    const sb = serviceClient();
+    if (!sb)
+      return reservationAccountingUnavailable(
+        'no Supabase service client configured'
+      );
+    const since = startOfMonthUtc();
+    const { data, error } = await sb.rpc('reserve_funnel_spend', {
+      p_since: since.toISOString(),
+      p_cap_eur: capEur(),
+      p_per_caller_cap_eur: perCallerCapEur(),
+      p_estimate_eur: input.estimateEur,
+      p_kind: input.kind,
+      p_model: input.model ?? null,
+      p_demo_id: input.demoId ?? null,
+      p_ip: input.ip ?? null,
+      p_lead_email: input.leadEmail ?? null,
+    });
+    if (error) return reservationAccountingUnavailable(error);
+    const row = (
+      data as
+        | {
+            reservation_id: string | null;
+            allowed: boolean;
+            spent_eur: number;
+            caller_spent_eur: number;
+            reason: string | null;
+          }[]
+        | null
+    )?.[0];
+    if (!row) return reservationAccountingUnavailable('rpc returned no row');
+    if (!row.allowed) {
+      return {
+        allowed: false,
+        reason: (row.reason as FunnelBudgetBlockedReason) ?? 'over-cap',
+        spentEur: Number(row.spent_eur),
+      };
+    }
+    if (!row.reservation_id)
+      return reservationAccountingUnavailable(
+        'rpc reported allowed with no reservation_id'
+      );
+    return {
+      allowed: true,
+      reservationId: row.reservation_id,
+      spentEur: Number(row.spent_eur),
+    };
+  } catch (err) {
+    return reservationAccountingUnavailable(err);
+  }
+}
+
+/**
+ * Reconcile a reservation to its actual cost once the run it paid for has
+ * finished. Passing neither `costUsd` nor `usage` keeps the reservation at
+ * its original estimate rather than zeroing it out — a run that spent real
+ * money but cannot report an exact figure back to this module (the
+ * `preview/live` pipeline does not, today; its cost accounting happens
+ * inside `packages/agentic-codegen`) still counts against the cap for at
+ * least its estimate, which is the conservative direction to be wrong in.
+ *
+ * Never throws, matching {@link recordGenerationCost} — a reconciliation
+ * failure must not fail the run it is billing for, but it is logged and
+ * counted via {@link costLedgerWriteFailureCount}.
+ */
+export async function settleFunnelReservation(
+  reservationId: string,
+  input: { model?: string; usage?: FunnelUsage; costUsd?: number } = {}
+): Promise<void> {
+  try {
+    const sb = serviceClient();
+    if (!sb) {
+      costLedgerWriteFailures += 1;
+      console.error(
+        '[funnel-cost] reservation settle skipped: no Supabase service client configured'
+      );
+      return;
+    }
+    let actualCostEur: number | null = null;
+    let tokensIn: number | null = null;
+    let tokensOut: number | null = null;
+    if (typeof input.costUsd === 'number' && input.costUsd > 0) {
+      actualCostEur = input.costUsd;
+    } else if (input.usage) {
+      const normalized = normalizeUsage(input.usage);
+      tokensIn = normalized.tokensIn;
+      tokensOut = normalized.tokensOut;
+      actualCostEur = estimateCostEur(input.model, input.usage);
+    }
+    const { error } = await sb.rpc('settle_funnel_reservation', {
+      p_reservation_id: reservationId,
+      p_actual_cost_eur: actualCostEur,
+      p_tokens_in: tokensIn,
+      p_tokens_out: tokensOut,
+    });
+    if (error) {
+      costLedgerWriteFailures += 1;
+      console.error('[funnel-cost] reservation settle failed', error);
+    }
+  } catch (err) {
+    costLedgerWriteFailures += 1;
+    console.error('[funnel-cost] reservation settle threw', err);
+  }
+}
+
+/**
+ * Release a reservation that never spent anything real — the run failed
+ * before starting, or before producing a billable result. Excluded from
+ * every budget aggregate from here on. Never throws, same reasoning as
+ * {@link settleFunnelReservation}.
+ */
+export async function releaseFunnelReservation(
+  reservationId: string
+): Promise<void> {
+  try {
+    const sb = serviceClient();
+    if (!sb) return;
+    const { error } = await sb.rpc('release_funnel_reservation', {
+      p_reservation_id: reservationId,
+    });
+    if (error) {
+      console.error('[funnel-cost] reservation release failed', error);
+    }
+  } catch (err) {
+    console.error('[funnel-cost] reservation release threw', err);
   }
 }
