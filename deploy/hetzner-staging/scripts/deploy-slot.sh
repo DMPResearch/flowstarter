@@ -31,9 +31,27 @@
 #   Production schema changes are applied deliberately, by hand, against the
 #   hosted project; nothing in this script writes to it.
 #
-# Requires: docker compose, caddy (or systemctl reload caddy), write access to
-# /etc/caddy/platform and /opt/flowstarter/staging, supabase-stack.sh
+# Locking
+#   This host runs ONE shared Supabase CLI stack and ONE Caddy config
+#   directory for every slot. Two lanes deploying in the same minute (e.g.
+#   `main` and a `pr-N`, or two `pr-N`s) can otherwise interleave
+#   `supabase-stack.sh ensure/check/migrate` or the write-then-reload of a
+#   Caddy snippet, and one of them fails at random (observed 2026-09-14:
+#   pr-127's SSH deploy step failed while main and pr-134 were deploying in
+#   the same minute; the same command succeeded by hand right after). Both
+#   sections are wrapped in `flock` on STAGING_LOCK_FILE, acquired and
+#   released separately so the lock is never held across the two. Per-slot
+#   work that touches nothing shared -- the image pull, `docker compose up`,
+#   the health wait -- runs outside both locks and stays parallel across
+#   slots.
+#
+# Requires: docker compose, caddy (or systemctl reload caddy), flock, write
+# access to /etc/caddy/platform and /opt/flowstarter/staging, supabase-stack.sh
 # alongside this script (staging slots only).
+#
+# Env overrides (locking):
+#   STAGING_LOCK_FILE     default ${STAGING_ROOT}/deploy.lock
+#   STAGING_LOCK_TIMEOUT  seconds to wait for the lock before giving up, default 300
 
 set -euo pipefail
 
@@ -49,11 +67,46 @@ PROD_DOMAIN="${PROD_DOMAIN:-flowstarter.net}"
 PROD_TLS_DIR="${PROD_TLS_DIR:-/etc/flowstarter/tls}"
 SUPABASE_STACK_SCRIPT="${SUPABASE_STACK_SCRIPT:-${STAGING_ROOT}/supabase-stack.sh}"
 SUPABASE_REPO_DIR="${SUPABASE_REPO_DIR:-${STAGING_ROOT}/repo}"
+STAGING_LOCK_FILE="${STAGING_LOCK_FILE:-${STAGING_ROOT}/deploy.lock}"
+STAGING_LOCK_TIMEOUT="${STAGING_LOCK_TIMEOUT:-300}"
 
 if [[ ! "$SLOT" =~ ^(main|prod|pr-[1-9][0-9]*)$ ]]; then
   echo "invalid slot: $SLOT (expected main, prod or pr-<number>)" >&2
   exit 1
 fi
+
+# ── Shared-host locking ─────────────────────────────────────────────────────
+# fd 200, not bash 4's `exec {FD}>...`, so this still runs under the bash 3.2
+# shipped on macOS as well as the host's bash. Held only around the two
+# sections that touch state shared by every slot on the box: the Supabase
+# CLI stack, and the Caddy config directory + reload. Each section acquires
+# and releases independently -- the lock is never held across both, and
+# never held during the image pull, `docker compose up`, or the health wait,
+# so independent slots keep deploying in parallel there.
+lock_acquire() {
+  local label="$1"
+  mkdir -p "$(dirname "$STAGING_LOCK_FILE")"
+  exec 200>>"$STAGING_LOCK_FILE"
+  if ! flock -w "$STAGING_LOCK_TIMEOUT" 200; then
+    local holder
+    holder="$(cat "${STAGING_LOCK_FILE}.holder" 2>/dev/null || true)"
+    echo "timed out after ${STAGING_LOCK_TIMEOUT}s waiting for the deploy lock (${STAGING_LOCK_FILE}) needed for: ${label}" >&2
+    echo "lock currently held by: ${holder:-<unknown; check for a stuck deploy on this host>}" >&2
+    exec 200>&-
+    exit 1
+  fi
+  # Diagnostic only, not the source of truth for the lock itself (the flock
+  # syscall on fd 200 is): read by a waiter that times out, so a stuck
+  # deploy names itself instead of leaving the next lane to guess.
+  printf 'slot=%s pid=%s step=%s since=%s\n' "$SLOT" "$$" "$label" "$(date -u +%FT%TZ)" >"${STAGING_LOCK_FILE}.holder"
+  echo "Acquired deploy lock (${STAGING_LOCK_FILE}) for: ${label}"
+}
+
+lock_release() {
+  rm -f "${STAGING_LOCK_FILE}.holder" 2>/dev/null || true
+  exec 200>&-
+  echo "Released deploy lock (${STAGING_LOCK_FILE})"
+}
 
 # ── Per-slot mapping ────────────────────────────────────────────────────────
 # One place decides port, hostname, env file, container and compose project, so
@@ -141,6 +194,9 @@ echo "Set FLOWSTARTER_ENV=${FLOWSTARTER_ENV_VALUE} in ${ENV_FILE}"
 if [[ "$SLOT" == "prod" ]]; then
   echo "Slot prod talks to the hosted Supabase project; skipping every local-stack step."
 else
+  # Every staging slot shares this one stack; see "Locking" above.
+  lock_acquire "the shared Supabase CLI stack (ensure/check/migrate)"
+
   echo "Ensuring the Supabase CLI stack is running on the host ..."
   REPO_DIR="$SUPABASE_REPO_DIR" FLOWSTARTER_ENV_FILE="$ENV_FILE" \
     "$SUPABASE_STACK_SCRIPT" ensure
@@ -159,6 +215,8 @@ else
     REPO_DIR="$SUPABASE_REPO_DIR" FLOWSTARTER_ENV_FILE="$ENV_FILE" \
       "$SUPABASE_STACK_SCRIPT" write-env
   fi
+
+  lock_release
 fi
 
 echo "Pulling $IMAGE ..."
@@ -202,6 +260,11 @@ if [[ "$ok" -ne 1 ]]; then
   docker logs "$CONTAINER" 2>&1 | tail -n 80 >&2 || true
   exit 1
 fi
+
+# The Caddy config directory is shared by every slot on the box too: two
+# lanes writing their own *.caddy file and reloading at once can race the
+# reload itself. See "Locking" above.
+lock_acquire "writing the Caddy config and reloading Caddy"
 
 SNIPPET="${CADDY_PLATFORM_DIR}/${SLOT}.caddy"
 if [[ "$SLOT" == "prod" ]]; then
@@ -254,5 +317,7 @@ if command -v systemctl >/dev/null 2>&1; then
 else
   caddy reload --config /etc/caddy/Caddyfile --force
 fi
+
+lock_release
 
 echo "Deployed https://${PRIMARY_HOSTNAME} (slot=${SLOT}, port=${HOST_PORT})"
