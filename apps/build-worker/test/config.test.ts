@@ -119,13 +119,16 @@ describe('worker configuration', () => {
     // every environment but production.
     it('is the bare platform domain in production', () => {
       expect(
-        loadConfig(validEnv({ FLOWSTARTER_ENV: 'production' })).platformOrigins,
+        loadConfig(
+          validEnv({ FLOWSTARTER_ENV: 'production', ...PREPARED_IMAGE }),
+        ).platformOrigins,
       ).toContain('https://flowstarter.net');
     });
 
     it('is staging.{domain} in staging, not the bare apex nothing answers on', () => {
       expect(
-        loadConfig(validEnv({ FLOWSTARTER_ENV: 'staging' })).platformOrigins,
+        loadConfig(validEnv({ FLOWSTARTER_ENV: 'staging', ...PREPARED_IMAGE }))
+          .platformOrigins,
       ).toContain('https://staging.flowstarter.dev');
     });
 
@@ -145,6 +148,7 @@ describe('worker configuration', () => {
         validEnv({
           FLOWSTARTER_ENV: 'production',
           FLOWSTARTER_MAIN_URL: 'https://internal.example.com',
+          ...PREPARED_IMAGE,
         }),
       ).platformOrigins;
       expect(origins).toContain('https://internal.example.com');
@@ -156,6 +160,7 @@ describe('worker configuration', () => {
         validEnv({
           FLOWSTARTER_ENV: 'staging',
           FLOWSTARTER_PUBLIC_APP_ORIGIN: 'https://pr-7.staging.flowstarter.dev',
+          ...PREPARED_IMAGE,
         }),
       ).platformOrigins;
       expect(origins).toContain('https://pr-7.staging.flowstarter.dev');
