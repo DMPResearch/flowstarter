@@ -15,7 +15,6 @@
   },
   "devDependencies": {
     "@tanstack/router-generator": "^1.141.2",
-    "puppeteer": "^24.36.0",
     "astro": "^7.3.2"
   }
 }
