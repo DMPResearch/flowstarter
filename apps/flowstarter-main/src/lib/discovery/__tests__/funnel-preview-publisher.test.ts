@@ -26,17 +26,33 @@ printf '<!doctype html><h1>Built</h1>' > dist/index.html
 `;
 
 const PREVIEW_ID = 'c0ffee00-0000-4000-8000-000000000001';
+// Matches `publishInput`'s `template: { slug: 'nowhere' }` below.
+const TEMPLATE_SLUG = 'nowhere';
 const scratch: string[] = [];
+let templateRoot = '';
+let previousTemplateRootEnv: string | undefined;
 
+/**
+ * `astro` lives under a template root of its own, not inside the workspace
+ * `workspace()` returns: the real publisher symlinks `node_modules` in from
+ * `FLOWSTARTER_TEMPLATE_ROOT`, it never installs into the workspace it is
+ * handed, and a stub placed directly in the workspace would let a
+ * regression that re-derives the CLI's path from the workspace copy instead
+ * pass anyway — see static-preview-build.test.ts's 'invokes the CLI at its
+ * own real path' for the test that exists precisely because that
+ * regression already shipped once.
+ */
 async function workspace(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'fs-pub-ws-'));
   scratch.push(root);
-  await mkdir(join(root, 'node_modules', '.bin'), { recursive: true });
   await writeFile(join(root, 'package.json'), '{"name":"site"}');
-  await writeFile(join(root, 'node_modules', '.bin', 'astro'), STUB_ASTRO);
-  await chmod(join(root, 'node_modules', '.bin', 'astro'), 0o755);
   await mkdir(join(root, 'src', 'pages'), { recursive: true });
   await writeFile(join(root, 'src', 'pages', 'index.astro'), '<h1>Source</h1>');
+
+  const binDir = join(templateRoot, TEMPLATE_SLUG, 'node_modules', '.bin');
+  await mkdir(binDir, { recursive: true });
+  await writeFile(join(binDir, 'astro'), STUB_ASTRO);
+  await chmod(join(binDir, 'astro'), 0o755);
   return root;
 }
 
@@ -64,11 +80,26 @@ const publishInput = (root: string) => ({
   brandConfig: { palette: {} } as never,
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   publishFunnelPreview.mockReset();
+  // Nested two levels below a bare mkdtemp dir so it never sits at the same
+  // depth from `/` as the publisher's own workspace copy (see
+  // static-preview-build.test.ts's beforeEach for why that depth mismatch
+  // matters here).
+  const shallow = await mkdtemp(join(tmpdir(), 'fs-pub-template-root-'));
+  scratch.push(shallow);
+  templateRoot = join(shallow, 'nested', 'deeper');
+  await mkdir(templateRoot, { recursive: true });
+  previousTemplateRootEnv = process.env.FLOWSTARTER_TEMPLATE_ROOT;
+  process.env.FLOWSTARTER_TEMPLATE_ROOT = templateRoot;
 });
 
 afterEach(async () => {
+  if (previousTemplateRootEnv === undefined) {
+    delete process.env.FLOWSTARTER_TEMPLATE_ROOT;
+  } else {
+    process.env.FLOWSTARTER_TEMPLATE_ROOT = previousTemplateRootEnv;
+  }
   while (scratch.length) {
     await rm(scratch.pop() as string, { recursive: true, force: true });
   }

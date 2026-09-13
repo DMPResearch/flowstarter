@@ -124,6 +124,13 @@ RESEND_API_KEY=<transactional email key>
 AUTH_TRANSFER_APP_ORIGIN=https://flowstarter.net     # optional; see below
 AUTH_TRANSFER_EDITOR_ORIGIN=https://code.flowstarter.net
 AUTH_TRANSFER_LIBRARY_ORIGIN=https://library.flowstarter.net
+
+# Discovery-funnel preview publishing (apps/flowstarter-main/src/lib/discovery).
+# The previews deploy-agent's own instance, port and secret — never the
+# paid-site deploy-agent's. Already set on this box: loopback 8444, and the
+# previews agent's own shared secret (not the one at 8443).
+FLOWSTARTER_PREVIEW_DEPLOY_AGENT_URL=http://127.0.0.1:8444
+FLOWSTARTER_PREVIEW_DEPLOY_AGENT_SECRET=<previews deploy-agent's shared secret>
 ```
 
 The three `AUTH_TRANSFER_*_ORIGIN` lines name the only origins a Clerk sign-in
@@ -429,7 +436,12 @@ sudo cp deploy/hetzner-staging/docker-compose.yml /opt/flowstarter/staging/
 sudo cp deploy/hetzner-staging/scripts/*.sh /opt/flowstarter/staging/
 sudo chmod +x /opt/flowstarter/staging/*.sh
 sudo install -m 600 /dev/null /etc/flowstarter/staging.env
-# Edit staging.env with Clerk/etc. for the staging Clerk application.
+# Edit staging.env with Clerk/etc. for the staging Clerk application, plus
+# the discovery-funnel preview vars (see "The production env file" above for
+# what they are; staging and production each point at the same previews
+# deploy-agent on this box):
+#   FLOWSTARTER_PREVIEW_DEPLOY_AGENT_URL=http://127.0.0.1:8444
+#   FLOWSTARTER_PREVIEW_DEPLOY_AGENT_SECRET=<previews deploy-agent's shared secret>
 # Supabase keys are written by supabase-stack.sh write-env below, not by hand.
 
 # Production slot only: its own env file, with the hosted project's values.

@@ -236,7 +236,15 @@ export function createFunnelPreviewPublisher(input: {
     decision,
     republish: async () => {
       if (!build) return;
-      const rebuilt = await compile(build.workspaceRoot, '', true);
+      // The same slug `publish` recorded, not a placeholder: a rebuild still
+      // resolves the CLI at the template's own real path (see
+      // static-preview-build.ts's `runAstroBuild`), which needs the slug to
+      // find it even though the workspace copy itself is being reused.
+      const rebuilt = await compile(
+        build.workspaceRoot,
+        template.slug ?? '',
+        true
+      );
       if (decision.publisher === 'platform') {
         await deployToPlatform({
           previewId: input.previewId,
