@@ -19,11 +19,28 @@ import { AlertTriangle, GitBranch, RefreshCw } from 'lucide-react';
 import { TeamDashboardShell } from '../components/TeamDashboardShell';
 import { Button } from '@/components/ui/button';
 import { usePipelineBoard } from '@/hooks/usePipeline';
+import {
+  useCustomWorkLane,
+  useMarkCustomWorkContacted,
+} from '@/hooks/useCustomWorkLane';
+import { useTranslations } from '@/lib/i18n';
 import { PipelineBoard } from './PipelineColumns';
+import { CustomWorkLane } from './CustomWorkLane';
 
 export default function PipelineBoardPage() {
   const { data, isLoading, error, refetch, isFetching } = usePipelineBoard();
   const [stalledOnly, setStalledOnly] = useState(false);
+  const { t: tStrict } = useTranslations();
+  const t = tStrict as (key: string) => string;
+
+  /**
+   * The custom work lane is its own query. A failure to load it leaves the
+   * board below intact, which is the point of not folding it into the pipeline
+   * endpoint: these are two unrelated reads and an operator needs the second
+   * one whether or not the first worked.
+   */
+  const lane = useCustomWorkLane();
+  const markContacted = useMarkCustomWorkContacted();
 
   const columns = useMemo(() => {
     if (!data) return [];
@@ -95,10 +112,26 @@ export default function PipelineBoardPage() {
           ))}
         </div>
       ) : (
-        <PipelineBoard
-          columns={columns}
-          emptyLabel={stalledOnly ? 'Nothing stalled here' : 'Empty'}
-        />
+        <>
+          {/* Above the columns, not among them: these are people with no
+              project and no state, and a seventh column would read as a state
+              a project can be in. */}
+          {lane.data && lane.data.total > 0 && (
+            <CustomWorkLane
+              cards={lane.data.cards}
+              waitingCount={lane.data.waitingCount}
+              markingId={
+                markContacted.isPending ? markContacted.variables ?? null : null
+              }
+              onMarkContacted={(id) => markContacted.mutate(id)}
+              t={t}
+            />
+          )}
+          <PipelineBoard
+            columns={columns}
+            emptyLabel={stalledOnly ? 'Nothing stalled here' : 'Empty'}
+          />
+        </>
       )}
     </TeamDashboardShell>
   );

@@ -98,9 +98,11 @@ const GuestDepositSchema = z.object({
   intakeChat: IntakeChatSchema.optional(),
 });
 
-// Same shape as /api/discovery/deposit: this is an unauthenticated endpoint
-// that creates Stripe objects, so a single IP cannot be allowed to mint them
-// in a loop. Backed by Arcjet (see `routeLimiter` / docs/security/rate-limits.md
+// This is an unauthenticated endpoint that creates Stripe objects, so a
+// single IP cannot be allowed to mint them in a loop. It is the only
+// anonymous checkout route in the funnel: /api/discovery/deposit, which had
+// the same shape, was retired on 2026-09-14 along with the pre-call booking
+// deposit it charged. Backed by Arcjet (see `routeLimiter` / docs/security/rate-limits.md
 // for the backend order); an Arcjet error fails closed here in production —
 // a checkout route is one of the documented exceptions. A second limiter,
 // keyed by the email address once the body is validated, catches the case of

@@ -5,7 +5,7 @@ import { Calendar, Mail, MessageCircle } from 'lucide-react';
 import { Button } from '@flowstarter/flow-design-system';
 import { MarketingShell, PageHero } from '@/components/marketing';
 import { useI18n } from '@/lib/i18n';
-import { useBookingModal } from '@/app/(dynamic-pages)/(main-pages)/components/booking-modal-store';
+import { DISCOVERY_CALL_PATH } from '@/lib/flowstarter/discovery-call';
 import { useFAQAccordion } from '@/app/(dynamic-pages)/(main-pages)/components/hooks/useFAQAccordion';
 
 // FAQ items built from translation keys; link hrefs stay hardcoded (not translatable).
@@ -40,7 +40,6 @@ const quickActionIconStyle = {
 export default function HelpPage() {
   const { t: tStrict } = useI18n();
   const t = tStrict as (key: string) => string;
-  const openBookingModal = useBookingModal((s) => s.open);
   const { openIndex, toggle } = useFAQAccordion(0);
 
   const faqItems = Array.from({ length: 10 }, (_, i) => {
@@ -90,13 +89,14 @@ export default function HelpPage() {
                   {t('help.card1.body')}
                 </p>
                 <Button
+                  asChild
                   variant="primary"
                   size="sm"
-                  onClick={openBookingModal}
                   className="mt-auto"
                   style={{ alignSelf: 'flex-start' }}
-                  iconPosition="right"
-                  icon={
+                >
+                  <Link href={DISCOVERY_CALL_PATH}>
+                    {t('help.card1.cta')}
                     <svg
                       fill="none"
                       viewBox="0 0 24 24"
@@ -109,9 +109,7 @@ export default function HelpPage() {
                         d="M5 12h14m-5-6l6 6-6 6"
                       />
                     </svg>
-                  }
-                >
-                  {t('help.card1.cta')}
+                  </Link>
                 </Button>
               </div>
 
@@ -325,8 +323,8 @@ export default function HelpPage() {
                   gap: '0.8rem 1.2rem',
                 }}
               >
-                <Button variant="primary" size="sm" onClick={openBookingModal}>
-                  {t('help.bookCall')}
+                <Button asChild variant="primary" size="sm">
+                  <Link href={DISCOVERY_CALL_PATH}>{t('help.bookCall')}</Link>
                 </Button>
                 <Link
                   href="/contact"

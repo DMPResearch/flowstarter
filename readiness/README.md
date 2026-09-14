@@ -8,7 +8,7 @@
 
 # MVP readiness
 
-**0%** of the MVP is proved: 0 of 16 journeys are green, and 0 of 5 money-path journeys. Money-path journeys count double, so the score is 0 of a possible 21.
+**9.5%** of the MVP is proved: 1 of 16 journeys are green, and 1 of 5 money-path journeys. Money-path journeys count double, so the score is 2 of a possible 21.
 
 A journey is green when every signal that could be measured came back green.
 
@@ -21,26 +21,26 @@ A journey is green when every signal that could be measured came back green.
 
 | journey | money | tier | api lines | page lines | bar | e2e | prod | verdict |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| intake-conversation |  | 1 | 63.3% | 0% | 80% | weak | no | not ready |
-| info-agent-followup |  | 1 | 80.3% | 0% | 80% | no | no | not ready |
-| preview-generation |  | 2 | 28.3% | 0% | 80% | no | no | not ready |
-| two-free-edits |  | 2 | 37% | 0% | 80% | no | no | not ready |
-| deposit-checkout | yes | 3 | 76.6% | 0% | 90% | weak | yes | not ready |
+| intake-conversation |  | 1 | 61.8% | 0% | 80% | weak | no | not ready |
+| info-agent-followup |  | 1 | 77.1% | 0% | 80% | no | no | not ready |
+| preview-generation |  | 2 | 51% | 0% | 80% | no | no | not ready |
+| two-free-edits |  | 2 | 38% | 0% | 80% | no | no | not ready |
+| deposit-checkout | yes | 3 | 96% | 77.8% | 90% | weak | yes | ready |
 | account-by-email | yes | 2 | 89.4% | 0% | 90% | no | no | not ready |
-| workspace-claim |  | 2 | 88.9% | 0% | 80% | no | no | not ready |
-| build-board-team-note |  | 2 | 97.1% | 0% | 80% | weak | no | not ready |
-| site-published |  | 4 | 93.5% | 0% | 80% | weak | no | not ready |
-| balance-payment | yes | 3 | 100% | 75% | 90% | no | yes | not ready |
+| workspace-claim |  | 2 | 90.6% | 100% | 80% | no | no | not ready |
+| build-board-team-note |  | 2 | 97.1% | 48% | 80% | weak | no | not ready |
+| site-published |  | 4 | 93% | 0% | 80% | weak | no | not ready |
+| balance-payment | yes | 3 | 99.1% | 80% | 90% | no | yes | not ready |
 | client-dashboard |  | 2 | 46.8% | 100% | 80% | weak | no | not ready |
-| editor-small-change-rebuild |  | 2 | 97.4% | 0% | 80% | no | no | not ready |
-| change-request-quoted-paid | yes | 3 | 98.5% | 100% | 90% | no | no | not ready |
+| editor-small-change-rebuild |  | 2 | 97.6% | 0% | 80% | no | no | not ready |
+| change-request-quoted-paid | yes | 3 | 97.4% | 100% | 90% | no | no | not ready |
 | custom-domain |  | 4 | 100% | 0% | 80% | weak | no | not ready |
 | operator-invite-roles |  | 2 | 0% | 0% | 80% | weak | no | not ready |
 | cancellation-and-refunds | yes | 3 | 100% | 0% | 90% | no | no | not ready |
 
 ## What is holding the number down
 
-Of the 16 journeys that are not ready:
+Of the 15 journeys that are not ready:
 
 - 7 are short on unit coverage of their API handlers.
 - 9 have no Playwright spec that walks them, or have one that failed.
@@ -76,7 +76,7 @@ The two-edit allowance is a rule in deterministic code, not a prompt. Unit-teste
 
 ### The visitor pays the deposit and Stripe confirms it
 
-`deposit-checkout`, tier 3, money path, not ready. Spec: `e2e/contract.spec.ts`.
+`deposit-checkout`, tier 3, money path, ready. Spec: `e2e/contract.spec.ts`.
 
 The contract spec proves the Stripe webhook refuses an unsigned POST and never 500s, and the production synthetic repeats that against flowstarter.net. Nothing drives a real test-mode checkout end to end.
 

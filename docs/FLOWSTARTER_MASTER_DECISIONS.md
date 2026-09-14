@@ -27,7 +27,7 @@
 
 Flowstarter builds and maintains websites for businesses that need a professional online presence without hiring a developer. The product is **self-serve with operator supervision**: a prospect answers four questions and gets a generated preview with no human in the loop; a human (Darius, and Dorin for design and client relationships) reviews the build before it goes live and handles anything outside the client editor's scope.
 
-Work that does not fit the self-serve funnel (bespoke integrations, scope a template cannot express) routes to a **DMPResearch custom-work discovery call**. That routing, plus an acceptable-use guardrail on what the funnel will build, is in progress on a separate branch as of this revision and is not yet merged to `main`.
+Work that does not fit the self-serve funnel (bespoke integrations, scope a template cannot express) routes to a **DMPResearch custom-work discovery call**. The routing half of that shipped in PR #162: after the four quick questions and before any generation, `classifyScope` reads the answers and the title of the linked page, `decideRoute` turns that verdict into `self-serve`, `discovery-call` or one clarifying question, and a `custom` brief is offered a free call on the self-hosted Cal.com instead of a build it would spend a generation run getting wrong. The acceptable-use guardrail is still on a separate branch; `decideRoute` already takes its verdict as an optional input and sends anything it did not clear to a person.
 
 ### Two Market Segments
 
@@ -47,14 +47,14 @@ This is what a client actually walks through today, in order:
 1. **Four quick questions.** The intake wizard (`apps/flowstarter-main/src/app/(dynamic-pages)/(main-pages)/components/discovery`) collects business name, what the business sells, tone, and optional public profile links.
 2. **A generated preview**, built by the agentic codegen pipeline and published on Flowstarter's own platform (see [Hosting, Previews, and Cal.com](#hosting-previews-and-calcom)). No payment happens before this.
 3. **Two free edits** on the preview, server-enforced (`LIVE_EDIT_CAP = 2`), before any money changes hands.
-4. **A 20% deposit** to start the full build. There is no pre-call booking deposit in this flow; see the flagged contradiction in section 10 about leftover code that still quotes one.
+4. **A 20% deposit** to start the full build. There is no pre-call booking deposit, in this flow or anywhere else: the discovery call is free, and the route, constants and Stripe handler that once implemented one were removed in PR #162.
 5. **A brief**, filled in by the client after the deposit: the offer, real projects, photographs, and design references. The build worker will not run the paid build until the brief is ready or an operator waives it (`waiting_brief` job state, `docs/preview-environment.md`, "Deposit to build").
 6. **The build**, with gates: compilation, binary-asset checks, teaser removal, approved-edit conformance, page-budget rules derived from the brief, placeholder-copy detection, an invented-project gate, and (since PR #134) a markup-safety gate over the generated HTML.
 7. **An 80% balance**, due after human QA and the client's approval, before launch.
 8. **A care plan** (the post-launch subscription): hosting, domain renewal, maintenance, support, and a monthly editor allowance. See [Pricing](#pricing).
 9. **Cal.com bookings**, self-hosted by the platform, for the client's own site.
 10. **Lead capture** on every delivered site, into that client's own workspace.
-11. **Acceptable-use guardrail and custom-work routing** to the DMPResearch discovery call, for anything outside what the self-serve funnel can build (in progress, see "About Flowstarter" above).
+11. **Custom-work routing** to the DMPResearch discovery call, for anything outside what the self-serve funnel can build (PR #162). The acceptable-use guardrail beside it is still in progress; see "About Flowstarter" above.
 
 ### Technical Defaults
 
@@ -177,7 +177,7 @@ Both also found real gaps, and a run of follow-up PRs (#133 through #146) closed
 1. **Payments and RON conversion.** Invoicing software (SmartBill / FacturaPlus / Oblio); Stripe remains primary for card payments.
 2. **VAT and cross-border invoicing.** Needs a cross-border B2B fiscal consultant before the first EU client outside Romania.
 3. **Legal copy pass.** Entity name, registration number, and address on the terms page; remove the Plausible mention if it is not actually in use; name Cal.com and remove any leftover Calendly reference; confirm or remove the DPA claim; enforce or restate the five retention periods the privacy page describes.
-4. **Custom-work discovery call and acceptable-use guardrail.** In progress on a separate branch as of this revision; reconcile this document again once it merges.
+4. **Acceptable-use guardrail.** In progress on a separate branch as of this revision; reconcile this document again once it merges. The custom-work discovery call it sits beside merged in PR #162.
 5. **Registrable domain separation** for tenant sites versus the platform (security audit finding H1); an infrastructure decision measured in weeks, not a code change.
 
 ---
@@ -186,7 +186,7 @@ Both also found real gaps, and a run of follow-up PRs (#133 through #146) closed
 
 Per this document's own instruction to flag rather than silently override:
 
-1. **The unlock page still quotes a 10% "holds the slot" booking deposit next to a 20% checkout button that actually charges 20%.** `apps/flowstarter-main/src/app/(dynamic-pages)/(main-pages)/unlock/[workspaceId]/page.tsx` imports `BOOKING_DEPOSIT_PERCENT` (10, from `discovery.logic.ts`) and renders it in one sentence ("A 10% deposit holds the slot and comes..."), while the same page's checkout button and a second sentence a few lines later both say 20%, and the actual Stripe Checkout amount is computed by `depositAmountMinor`, which is 20% everywhere else in the product. This is leftover copy from the pre-call booking-deposit model in the May 2026 draft that was never fully removed. It needs a code fix, not a document fix; tracked in `docs/next-steps.md`.
+1. ~~**The unlock page still quotes a 10% "holds the slot" booking deposit next to a 20% checkout button that actually charges 20%.**~~ **Resolved.** The copy was fixed in PR #156, and PR #162 removed the model behind it: `BOOKING_DEPOSIT_PERCENT`, `CUSTOM_BOOKING_DEPOSIT_EUR`, `bookingDepositAmount`, the `/api/discovery/deposit` Checkout route and the `kind=booking_deposit` Stripe handler are all gone. Nothing in the funnel had ever called that route. The only deposit in the product is the 20% build deposit, computed by `depositAmountMinor`.
 2. **Add-on packs are sold in copy with no purchase path**, described above under [Editor and Constrained Edits](#editor-and-constrained-edits).
 3. **A 50% refund is promised with no refund-processing code**, described above under [Pricing](#pricing).
 

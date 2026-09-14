@@ -462,6 +462,81 @@ export type Database = {
         }
         Relationships: []
       }
+      custom_work_leads: {
+        Row: {
+          acceptable_use: string | null
+          booking_reference: string | null
+          booking_status: string
+          clarification: string | null
+          classifier: string
+          confirmation_sent_at: string | null
+          contacted_at: string | null
+          contacted_by: string | null
+          created_at: string
+          description: string
+          email: string
+          id: string
+          link_title: string | null
+          link_url: string | null
+          name: string
+          route: string
+          route_rule: string
+          scope: string
+          scope_confidence: number
+          scope_evidence: Json
+          source: string
+          updated_at: string
+        }
+        Insert: {
+          acceptable_use?: string | null
+          booking_reference?: string | null
+          booking_status?: string
+          clarification?: string | null
+          classifier?: string
+          confirmation_sent_at?: string | null
+          contacted_at?: string | null
+          contacted_by?: string | null
+          created_at?: string
+          description?: string
+          email: string
+          id?: string
+          link_title?: string | null
+          link_url?: string | null
+          name: string
+          route: string
+          route_rule?: string
+          scope: string
+          scope_confidence?: number
+          scope_evidence?: Json
+          source?: string
+          updated_at?: string
+        }
+        Update: {
+          acceptable_use?: string | null
+          booking_reference?: string | null
+          booking_status?: string
+          clarification?: string | null
+          classifier?: string
+          confirmation_sent_at?: string | null
+          contacted_at?: string | null
+          contacted_by?: string | null
+          created_at?: string
+          description?: string
+          email?: string
+          id?: string
+          link_title?: string | null
+          link_url?: string | null
+          name?: string
+          route?: string
+          route_rule?: string
+          scope?: string
+          scope_confidence?: number
+          scope_evidence?: Json
+          source?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       demo_edit_counters: {
         Row: {
           created_at: string

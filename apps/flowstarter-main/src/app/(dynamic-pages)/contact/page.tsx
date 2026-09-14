@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import {
   Calendar,
   Check,
@@ -13,7 +14,7 @@ import {
 import { Button } from '@flowstarter/flow-design-system';
 import { MarketingShell, PageHero } from '@/components/marketing';
 import { useI18n } from '@/lib/i18n';
-import { useBookingModal } from '@/app/(dynamic-pages)/(main-pages)/components/booking-modal-store';
+import { DISCOVERY_CALL_PATH } from '@/lib/flowstarter/discovery-call';
 import { useContactForm } from '@/hooks/useContactForm';
 import { buildContactPayload } from '@/lib/contact-payload';
 
@@ -62,7 +63,6 @@ const cardKickerStyle = {
 export default function ContactPage() {
   const { t: tStrict } = useI18n();
   const t = tStrict as (key: string) => string;
-  const openBookingModal = useBookingModal((s) => s.open);
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -419,13 +419,15 @@ export default function ContactPage() {
                     {t('contact.call.body')}
                   </p>
                   <Button
+                    asChild
                     variant="primary"
                     size="sm"
-                    onClick={openBookingModal}
-                    icon={<Calendar className="h-3.5 w-3.5" />}
                     style={{ alignSelf: 'flex-start' }}
                   >
-                    {t('contact.call.cta')}
+                    <Link href={DISCOVERY_CALL_PATH}>
+                      <Calendar className="h-3.5 w-3.5" />
+                      {t('contact.call.cta')}
+                    </Link>
                   </Button>
                 </div>
 

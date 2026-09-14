@@ -53,10 +53,11 @@ experimentation. The Ecommerce package uses a dedicated store plan:
 **€129/mo** with product and collection editing. First month free; change or
 cancel anytime.
 
-**Booking deposit:** 10% of the build setup to book the discovery call
-(Starter €79 / Pro €119 / Commerce €149) or **€199 flat for Custom**.
-Refundable after the call before any build work; credited to the setup fee
-on proceed. Stripe Checkout (`/api/discovery/deposit`).
+**Booking the discovery call is free.** A 10%-of-setup booking deposit was
+planned here and never wired into the funnel; the route and its constants
+were removed on 2026-09-14. Calls are booked on the self-hosted Cal.com
+through `/discovery-call`, and the first money in the product is the 20%
+build deposit after the preview.
 
 All builds include: domain, professional email, hosting, smart editor,
 ongoing support, first month free, 50% setup refund if not happy in 30 days.

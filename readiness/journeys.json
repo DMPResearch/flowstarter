@@ -60,7 +60,6 @@
       "routes": ["/welcome/[previewId]", "/unlock/[workspaceId]"],
       "api": [
         "/api/discovery/preview/[demoId]/guest-deposit-checkout",
-        "/api/discovery/deposit",
         "/api/webhooks/stripe"
       ],
       "spec": "e2e/contract.spec.ts",

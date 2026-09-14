@@ -50,11 +50,29 @@ vi.mock('@/hooks/usePipeline', () => ({
   }),
 }));
 
+// The custom work lane is a second, independent query on this page (see
+// `useCustomWorkLane`). It is not what this test is about, and its own
+// rendering is covered in `custom-work-lane.test.tsx`.
+vi.mock('@/hooks/useCustomWorkLane', () => ({
+  useCustomWorkLane: () => ({ data: { cards: [], total: 0, waitingCount: 0 } }),
+  useMarkCustomWorkContacted: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    variables: undefined,
+  }),
+}));
+
+import en from '@/locales/en';
+import { I18nProvider } from '@/lib/i18n';
 import PipelineBoardPage from '../page';
 
 describe('pipeline board cards', () => {
   it('renders each project card as a link to the project page', () => {
-    render(<PipelineBoardPage />);
+    render(
+      <I18nProvider initialMessages={{ en }}>
+        <PipelineBoardPage />
+      </I18nProvider>
+    );
     const link = screen.getByRole('link', { name: /Riverside Dental/ });
     expect(link).toHaveAttribute('href', '/admin/dashboard/projects/ws-1');
     expect(link.tagName).toBe('A');

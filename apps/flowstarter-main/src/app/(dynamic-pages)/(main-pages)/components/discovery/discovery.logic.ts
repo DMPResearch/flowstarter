@@ -732,38 +732,18 @@ export const TIER_SETUP_FROM: Record<Tier, string> = {
   custom: '€2,499',
 };
 
-/** Numeric setup-fee minimum, used to compute the 10% booking deposit. */
-const TIER_SETUP_FROM_NUMERIC: Record<Tier, number> = {
-  starter: 799,
-  pro: 1199,
-  commerce: 1499,
-  custom: 2499,
-};
-
-/** Deposit % of setup fee required to book the discovery call. */
-export const BOOKING_DEPOSIT_PERCENT = 10;
-
-/**
- * Custom is "from €2,499" — open-ended scope, so the booking deposit is a
- * flat figure rather than 10% of an unknown final number.
+/*
+ * There was a pre-call booking deposit here: a 10%-of-setup figure per tier,
+ * a flat €199 for custom, and the two helpers that computed and formatted it.
+ * It is gone, along with `/api/discovery/deposit` and the Stripe handler
+ * behind it (2026-09-14). Nothing in the funnel ever called that route -- the
+ * MVP readiness review on 2026-09-12 already recorded "there is no booking
+ * deposit in the funnel" -- and the discovery call is free. The only deposit
+ * in the product is the 20% BUILD deposit, which is `depositAmountMinor` in
+ * `@flowstarter/agentic-codegen`'s state machine and `DEPOSIT_PERCENT` in
+ * `lib/flowstarter/preview-intent.ts`. Do not reintroduce a second thing
+ * called a deposit.
  */
-export const CUSTOM_BOOKING_DEPOSIT_EUR = 199;
-
-/** Booking-deposit amount in whole euros for a tier. */
-export function bookingDepositAmount(tier: Tier): number {
-  if (tier === 'custom') return CUSTOM_BOOKING_DEPOSIT_EUR;
-  // Setup fees end in 9 (€799, €1,199, €1,499); 10% is fractional
-  // (€79.9, €119.9, €149.9). Floor so the deposit keeps the .9-style
-  // price ending (€79 / €119 / €149) instead of rounding up.
-  return Math.floor(
-    TIER_SETUP_FROM_NUMERIC[tier] * (BOOKING_DEPOSIT_PERCENT / 100)
-  );
-}
-
-/** Formatted booking-deposit amount for a tier, e.g. "€79", "€199". */
-export function bookingDepositFor(tier: Tier): string {
-  return `€${bookingDepositAmount(tier).toLocaleString('en-IE')}`;
-}
 
 export const TIER_MONTHLY_FROM: Record<Tier, string> = {
   starter: '€49/mo',

@@ -250,5 +250,15 @@ export default {
     // on a module that only exists inside a Workers runtime.
     'pg',
     'playwright',
+    // The sigma classifier's encoder. `onnxruntime-node` is a native addon and
+    // `@huggingface/transformers` reaches for it; a bundler that follows either
+    // breaks the build on a `.node` binary. Both come in through
+    // `@flowstarter/sigma-flowstarter`, which is dynamically imported behind
+    // `FLOWSTARTER_SIGMA_SCOPE` (see src/lib/ai/classify-scope-sigma.ts) and so
+    // is never loaded at all on a deployment that has not opted in.
+    '@flowstarter/sigma-core',
+    '@flowstarter/sigma-flowstarter',
+    'onnxruntime-node',
+    '@huggingface/transformers',
   ],
 };

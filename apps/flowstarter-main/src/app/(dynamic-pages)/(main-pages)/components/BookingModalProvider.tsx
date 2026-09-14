@@ -6,8 +6,6 @@ import { PreQualModal } from './PreQualModalLazy';
 
 export function BookingModalProvider() {
   const { isOpen, open, close } = useBookingModal();
-  // After a Stripe deposit redirect we reopen straight on the calendar step.
-  const [resumeStep, setResumeStep] = useState<'calendar' | null>(null);
   const [resumeTier, setResumeTier] = useState<string | null>(null);
 
   useEffect(() => {
@@ -20,15 +18,13 @@ export function BookingModalProvider() {
       return;
     }
 
-    const deposit = params.get('deposit');
-    if (deposit === 'paid') {
-      // Deposit cleared — jump back into the modal at the calendar step.
-      setResumeTier(params.get('tier'));
-      setResumeStep('calendar');
-      open();
-      window.history.replaceState({}, '', window.location.pathname);
-    } else if (deposit === 'cancelled') {
-      // Payment abandoned — reopen the wizard so they can try again.
+    // `?deposit=paid` used to land here too, from the pre-call booking
+    // deposit's success redirect, and reopened the modal on the calendar
+    // step. That deposit is gone (2026-09-14) and so is the redirect; the
+    // discovery call is free and is booked on `/discovery-call`. What is left
+    // is the guest BUILD deposit's cancel redirect, which still comes back
+    // here so somebody who abandoned Stripe can pick the wizard back up.
+    if (params.get('deposit') === 'cancelled') {
       open();
       window.history.replaceState({}, '', window.location.pathname);
     }
@@ -38,13 +34,11 @@ export function BookingModalProvider() {
     <PreQualModal
       open={isOpen}
       onClose={() => {
-        setResumeStep(null);
         setResumeTier(null);
         close();
       }}
       source="page"
       initialPlan={resumeTier}
-      resumeStep={resumeStep}
     />
   );
 }

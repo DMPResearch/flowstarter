@@ -62,13 +62,18 @@ the process-local-only tier first (see "Startup posture").
 | `POST /api/leads/capture/[token]`                             | `lead-capture-ip`              | ip             | 20 / 60s | `RATE_LIMIT_LEAD_CAPTURE_IP_MAX` / `RATE_LIMIT_LEAD_CAPTURE_IP_WINDOW_MS`       | no                                                    |
 | `POST /api/discovery/preview/[demoId]/guest-deposit-checkout` | `guest-deposit-checkout-ip`    | ip             | 5 / 60s  | `RATE_LIMIT_GUEST_DEPOSIT_CHECKOUT_IP_MAX` / `..._WINDOW_MS`                    | **yes** — mints a Stripe Checkout session             |
 | `POST /api/discovery/preview/[demoId]/guest-deposit-checkout` | `guest-deposit-checkout-email` | email          | 3 / 60s  | `DISCOVERY_GUEST_DEPOSIT_EMAIL_RATE_LIMIT`                                      | **yes**                                               |
-| `POST /api/discovery/deposit`                                 | `booking-deposit-ip`           | ip             | 5 / 60s  | `RATE_LIMIT_BOOKING_DEPOSIT_IP_MAX` / `..._WINDOW_MS`                           | **yes** — mints a Stripe Checkout session             |
-| `POST /api/discovery/deposit`                                 | `booking-deposit-email`        | email          | 3 / 60s  | `DISCOVERY_DEPOSIT_EMAIL_RATE_LIMIT`                                            | **yes**                                               |
+| `POST /api/discovery/scope`                                   | `discovery-scope`              | ip             | 10 / 60s | `DISCOVERY_SCOPE_RATE_LIMIT` (limit only)                                       | **yes** — one model call, and it gates a generation   |
+| `POST /api/discovery-call/lead`                               | `discovery-call-enquiry`       | ip             | 5 / 60s  | `RATE_LIMIT_DISCOVERY_CALL_ENQUIRY_MAX` / `..._WINDOW_MS`                       | no                                                    |
 | `POST /api/support-chat`                                      | `support-chat`                 | ip             | 10 / 60s | `SUPPORT_CHAT_RATE_LIMIT`                                                       | no                                                    |
 
-Two checkout routes each carry a pair: IP catches one caller minting many
+The checkout route carries a pair: IP catches one caller minting many
 sessions, email catches the same address spread across many IPs. Neither
-alone sees both shapes of abuse. The two email limiters' env var names and
+alone sees both shapes of abuse. There were two such routes until
+2026-09-14, when `POST /api/discovery/deposit` was retired along with the
+pre-call booking deposit it charged; `DISCOVERY_DEPOSIT_EMAIL_RATE_LIMIT` is
+no longer read by anything, and an operator who set it can drop it. Do not
+confuse it with `DISCOVERY_GUEST_DEPOSIT_EMAIL_RATE_LIMIT` above, which is a
+different route and is still live. The two email limiters' env var names and
 defaults (3/60s) are [PR #141](https://github.com/DMPResearch/flowstarter/pull/141)'s
 (security audit 2026-09-13, Claude H4 / Codex F06) — kept as-is here rather
 than renamed, so an operator's existing config keeps meaning the same thing.

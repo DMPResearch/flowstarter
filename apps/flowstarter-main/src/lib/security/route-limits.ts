@@ -335,24 +335,38 @@ const ROUTE_LIMIT_DEFINITIONS = {
     defaultWindowMs: 60_000,
     failClosedInProduction: true,
   },
-  'booking-deposit-ip': {
-    name: 'booking-deposit-ip',
+  // The `booking-deposit-ip` / `booking-deposit-email` pair stood here, for
+  // `POST /api/discovery/deposit`. That route was retired on 2026-09-14 with
+  // the pre-call booking deposit it charged -- the discovery call is free --
+  // so both definitions went with it. `DISCOVERY_DEPOSIT_EMAIL_RATE_LIMIT` is
+  // no longer read anywhere; `DISCOVERY_GUEST_DEPOSIT_EMAIL_RATE_LIMIT`, the
+  // near-identical name above it, is a different route and is still live.
+  'discovery-scope': {
+    name: 'discovery-scope',
     characteristic: 'ip',
-    limitEnvVar: 'RATE_LIMIT_BOOKING_DEPOSIT_IP_MAX',
-    windowEnvVar: 'RATE_LIMIT_BOOKING_DEPOSIT_IP_WINDOW_MS',
-    defaultLimit: 5,
+    limitEnvVar: 'DISCOVERY_SCOPE_RATE_LIMIT',
+    defaultLimit: 10,
     defaultWindowMs: 60_000,
+    // One model call and, on the custom branch, two emails. Cheaper than a
+    // generation run, dearer than a page view, and it sits in front of the
+    // decision that stops a generation run -- so an Arcjet outage refuses
+    // rather than letting a burst through. The funnel's own fallback when
+    // this route answers 429 is the preview, which is the honest default and
+    // is what would have happened before this route existed.
     failClosedInProduction: true,
   },
-  'booking-deposit-email': {
-    name: 'booking-deposit-email',
-    characteristic: 'email',
-    // Same reasoning as `guest-deposit-checkout-email` above: #141 already
-    // shipped this env var name and default (3) on `main`.
-    limitEnvVar: 'DISCOVERY_DEPOSIT_EMAIL_RATE_LIMIT',
-    defaultLimit: 3,
+  'discovery-call-enquiry': {
+    name: 'discovery-call-enquiry',
+    characteristic: 'ip',
+    limitEnvVar: 'RATE_LIMIT_DISCOVERY_CALL_ENQUIRY_MAX',
+    windowEnvVar: 'RATE_LIMIT_DISCOVERY_CALL_ENQUIRY_WINDOW_MS',
+    defaultLimit: 5,
     defaultWindowMs: 60_000,
-    failClosedInProduction: true,
+    // A contact form by another name, and held to the same rule as
+    // `contact`: it writes a row and sends mail, but it mints nothing and
+    // spends nothing, so an Arcjet outage must not take the last way of
+    // reaching a person off the site.
+    failClosedInProduction: false,
   },
   'support-chat': {
     name: 'support-chat',

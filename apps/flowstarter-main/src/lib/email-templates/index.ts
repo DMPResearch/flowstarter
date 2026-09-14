@@ -33,3 +33,8 @@ export {
   siteLiveEmail,
 } from './client-notices';
 export { guestDepositWelcomeEmail } from './guest-deposit-welcome';
+export {
+  customWorkEnquiryEmail,
+  customWorkOperatorEmail,
+  discoveryCallBookedOfferEmail,
+} from './custom-work';

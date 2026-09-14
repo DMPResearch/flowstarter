@@ -57,7 +57,7 @@ Most of the 19 "must do before taking money from a stranger" items and the 11 "s
 
 ## Contradictions found while reconciling this document
 
-1. **The unlock page still quotes a 10% "holds the slot" deposit next to a 20% checkout.** `apps/flowstarter-main/src/app/(dynamic-pages)/(main-pages)/unlock/[workspaceId]/page.tsx` imports `BOOKING_DEPOSIT_PERCENT` (10) from `discovery.logic.ts` and prints it in one sentence, while the page's actual Checkout button charges 20% (`depositAmountMinor`), and a second sentence a few lines down correctly says 20%. Leftover from the pre-call booking-deposit model that was never shipped; needs a code fix to remove the 10% sentence and the now-unused `BOOKING_DEPOSIT_PERCENT` / `bookingDepositFor` / `/api/discovery/deposit` code path, or to explain what that path is actually for if it is being kept for the custom-work discovery call.
+1. ~~**The unlock page still quotes a 10% "holds the slot" deposit next to a 20% checkout.**~~ **Done.** The copy went in PR #156; PR #162 removed the model behind it -- `BOOKING_DEPOSIT_PERCENT`, `CUSTOM_BOOKING_DEPOSIT_EUR`, `bookingDepositAmount`, `bookingDepositFor`, the `/api/discovery/deposit` route and its two Arcjet limiter definitions, and the `kind=booking_deposit` Stripe handler. Nothing in the funnel had ever called that route. The custom-work discovery call the question asked about is free and is booked on the self-hosted Cal.com through `/discovery-call`; it never wanted a deposit.
 2. **Add-on edit packs are sold in the FAQ and the terms page with no purchase path.** See `docs/FLOWSTARTER_MASTER_DECISIONS.md`, "Editor and Constrained Edits."
 
 ---
