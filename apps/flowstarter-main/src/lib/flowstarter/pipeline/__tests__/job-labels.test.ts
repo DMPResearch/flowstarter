@@ -506,3 +506,48 @@ describe('a label for a word with no letters in it', () => {
     expect(errorCodeLabel('__')).toBe('Unknown');
   });
 });
+
+describe('an agent activity row, outside the timeline panel', () => {
+  it('says what the agent was doing, with the operator extra when there is one', () => {
+    expect(
+      eventSummary('activity', {
+        activity: {
+          at: '2026-09-14T10:00:00.000Z',
+          phase: 'Agents expanding the site',
+          kind: 'editing',
+          subject: 'section.services',
+          detail: 'src/components/Services.astro',
+        },
+      })
+    ).toBe('Editing: src/components/Services.astro');
+  });
+
+  it('says the verb alone when the worker recorded no extra', () => {
+    expect(eventSummary('activity', { activity: { kind: 'checking' } })).toBe(
+      'Checking'
+    );
+  });
+
+  /**
+   * The subject is a token, not a word. The panel words it from the
+   * dictionary; a row printed anywhere else must not be the place a raw
+   * `section.services` reaches a reader.
+   */
+  it('never prints the subject token', () => {
+    const summary = eventSummary('activity', {
+      activity: { kind: 'reading', subject: 'section.services' },
+    });
+    expect(summary).not.toContain('section.services');
+  });
+
+  it('says nothing for a row whose payload is not one of ours', () => {
+    expect(eventSummary('activity', {})).toBeNull();
+    expect(
+      eventSummary('activity', { activity: { subject: 'site' } })
+    ).toBeNull();
+  });
+
+  it('names the kind in words wherever a row is listed', () => {
+    expect(eventKindLabel('activity')).toBe('Step the agents took');
+  });
+});

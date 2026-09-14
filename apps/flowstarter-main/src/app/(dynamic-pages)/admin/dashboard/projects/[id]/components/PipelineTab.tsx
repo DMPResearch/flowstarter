@@ -49,6 +49,9 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { compactRelative } from '@/lib/format-utils';
+import { useTranslations } from '@/lib/i18n';
+import { AgentActivityPanel } from '@/components/flowstarter/AgentActivityPanel';
+import { activityStatus } from '@/lib/flowstarter/activity/steps';
 import {
   BOARD_COLUMNS,
   actorLabel,
@@ -65,6 +68,7 @@ import {
   type BoardColumnId,
 } from '@/lib/flowstarter/pipeline/job-labels';
 import {
+  useBuildJobActivity,
   useCancelPipelineJob,
   useOverrideProjectState,
   usePipelineDetail,
@@ -132,6 +136,94 @@ function StatusChip({ status }: { status: string }) {
       {status === 'running' && <RunningDot />}
       {jobStatusLabel(status)}
     </span>
+  );
+}
+
+/**
+ * What the agents actually did, step by step, for one build.
+ *
+ * The operator's copy of the timeline every other surface shows, and the one
+ * place `detail` is on: the file a step edited and the gate's own verdict are
+ * shown here, because the person reading this is the person who has to go and
+ * open that file. Clients get the same steps with `projectForClient` having
+ * taken the detail off.
+ *
+ * It draws nothing of its own. `AgentActivityPanel` returns null when a build
+ * has no steps, which is right inside a card and wrong inside a tab that would
+ * then be blank, so `placeholder` asks for a line in that case.
+ */
+export function BuildActivity({
+  projectId,
+  jobId,
+  status,
+  dense = false,
+  defaultOpen = true,
+  surface = 'panel',
+  placeholder = false,
+}: {
+  projectId: string;
+  jobId: string;
+  status: string;
+  dense?: boolean;
+  defaultOpen?: boolean;
+  surface?: 'panel' | 'card';
+  /** Say so when there is nothing to draw, instead of drawing nothing. */
+  placeholder?: boolean;
+}) {
+  const { t } = useTranslations();
+  const live = LIVE_STATUSES.has(status);
+  const { data, error, isLoading } = useBuildJobActivity(projectId, jobId, {
+    live,
+  });
+  const events = data ?? [];
+
+  if (error) {
+    return placeholder ? (
+      <p
+        data-testid="build-activity-error"
+        className="py-3 text-xs text-red-500"
+      >
+        {t('agentActivity.operator.error')}
+      </p>
+    ) : null;
+  }
+
+  if (events.length === 0) {
+    if (!placeholder) return null;
+    return (
+      <p
+        data-testid="build-activity-empty"
+        className="py-3 text-[11px] text-[var(--fs-ink-faint)]"
+      >
+        {isLoading || live
+          ? t('agentActivity.operator.waiting')
+          : t('agentActivity.operator.none')}
+      </p>
+    );
+  }
+
+  // The headline follows the steps rather than the job row: a worker that
+  // died mid-build leaves a job marked running and a timeline that simply
+  // stops, and the timeline is the honest one of the two.
+  const resolved = activityStatus(events);
+  const headline =
+    resolved === 'failed'
+      ? t('agentActivity.headline.stopped')
+      : resolved === 'done'
+      ? t('agentActivity.headline.buildDone')
+      : t('agentActivity.headline.build');
+
+  return (
+    <div data-testid="build-activity">
+      <AgentActivityPanel
+        events={events}
+        headline={headline}
+        detail
+        surface={surface}
+        dense={dense}
+        defaultOpen={defaultOpen}
+      />
+    </div>
   );
 }
 
@@ -222,6 +314,29 @@ function BuildCard({
               phase line does not need a second, purple one of its own. */}
           <span className="min-w-0">{phaseLabel(job.latestPhase)}</span>
         </p>
+      )}
+
+      {/* Folded away, so the card gains one line and not a timeline: the
+          summary is what shows until somebody opens it, and a build with no
+          steps draws nothing at all. Only the kinds this worker narrates are
+          asked for, so a card for any other kind makes no request. */}
+      {canTalk && (
+        <div
+          className="mt-1.5"
+          // The card opens the conversation on click and on Enter; the panel's
+          // own disclosure button has to do its own job on both.
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
+          <BuildActivity
+            projectId={projectId}
+            jobId={job.id}
+            status={job.status}
+            surface="card"
+            dense
+            defaultOpen={false}
+          />
+        </div>
       )}
 
       <p className="mt-1 text-[11px] text-[var(--fs-ink-faint)]">
@@ -341,6 +456,7 @@ function ConversationPanel({
   job: PipelineJobDetail;
   onClose: () => void;
 }) {
+  const { t } = useTranslations();
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
@@ -386,16 +502,17 @@ function ConversationPanel({
             <TabsList className="h-auto w-fit gap-1 rounded-full border border-[var(--fs-rule)] bg-[var(--fs-bg-elevated)] p-1">
               {(
                 [
-                  ['conversation', 'Conversation'],
-                  ['log', 'Full log'],
+                  ['conversation', 'agentActivity.operator.tab.conversation'],
+                  ['activity', 'agentActivity.operator.tab.activity'],
+                  ['log', 'agentActivity.operator.tab.log'],
                 ] as const
-              ).map(([value, label]) => (
+              ).map(([value, labelKey]) => (
                 <TabsTrigger
                   key={value}
                   value={value}
                   className="rounded-full px-4 py-1.5 text-xs font-semibold text-[var(--fs-ink-dim)] transition-colors hover:text-[var(--fs-ink)] data-[state=active]:bg-[linear-gradient(135deg,var(--landing-btn-from),var(--landing-btn-via))] data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-[var(--purple-primary-lightest)]"
                 >
-                  {label}
+                  {t(labelKey)}
                 </TabsTrigger>
               ))}
             </TabsList>
@@ -408,6 +525,20 @@ function ConversationPanel({
               projectId={projectId}
               jobId={job.id}
               status={job.status}
+            />
+          </TabsContent>
+          {/* The operator's copy of the timeline: the same rule-decided steps
+              a client sees, with the file paths and the gate verdicts left on.
+              `placeholder` because an empty tab has to say why it is empty. */}
+          <TabsContent
+            value="activity"
+            className="min-h-0 overflow-y-auto px-5 pb-5"
+          >
+            <BuildActivity
+              projectId={projectId}
+              jobId={job.id}
+              status={job.status}
+              placeholder
             />
           </TabsContent>
           <TabsContent value="log" className="min-h-0 px-5 pb-5">

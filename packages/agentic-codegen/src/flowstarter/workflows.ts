@@ -7,6 +7,13 @@ import {
   type AgentTraceEntry,
 } from './pi-sdk';
 import { JobLogSink, type JobLogWriter } from './job-log';
+import {
+  ActivityRecorder,
+  subjectForFailureCode,
+  type ActivityToolSink,
+  type AgentActivityEvent,
+  type AgentActivitySink,
+} from './activity';
 import type { TemplateClassifier } from './template-classifier';
 import { buildIntakeText } from './template-classifier';
 import {
@@ -266,8 +273,28 @@ export class PreviewGenerationPipeline {
      */
     deadlineAt?: number;
     onPhase?: (phase: string) => void;
+    /**
+     * The structured timeline. Every phase below reaches it as a rule-decided
+     * step, and so does every tool call the agents make, so the funnel can
+     * show a visitor what is happening instead of a spinner and a guess.
+     */
+    onActivity?: AgentActivitySink;
   }): Promise<PreviewPipelineResult> {
     assertSafeBusinessIntake(input.intake);
+    // One recorder for the run. It owns the current phase, so a tool call
+    // that arrives between two phases is filed under the one it happened in,
+    // and it owns the rate limit, so a pass that reads one file four hundred
+    // times costs four hundred log lines and a handful of steps.
+    const activity = input.onActivity
+      ? new ActivityRecorder({ sink: input.onActivity })
+      : null;
+    const announce = (phase: string): void => {
+      input.onPhase?.(phase);
+      activity?.phase(phase);
+    };
+    const onTool: ActivityToolSink | undefined = activity
+      ? (toolName, args) => activity.tool(toolName, args)
+      : undefined;
     // An optional pass that runs out of clock is abandoned, not fatal: the
     // preview ships with what is on disk. Anything else it throws is real.
     const optional = async (
@@ -295,7 +322,7 @@ export class PreviewGenerationPipeline {
       );
       return false;
     };
-    input.onPhase?.('Learning your voice and visual direction');
+    announce('Learning your voice and visual direction');
 
     // The sigma classifier reads the intake only, so template selection does
     // not have to wait for the vision pass to finish. Racing them removes the
@@ -311,15 +338,16 @@ export class PreviewGenerationPipeline {
       deterministicSelection,
     ]);
 
-    input.onPhase?.('Choosing the best starting design');
+    announce('Choosing the best starting design');
     const template =
       classified ??
       (await this.agents.selectTemplate({
         intake: input.intake,
         brandConfig,
         library: this.library,
+        ...(onTool ? { onActivity: onTool } : {}),
       }));
-    input.onPhase?.('Preparing your selected design');
+    announce('Preparing your selected design');
     // The page set is decided here, deterministically, before a model ever
     // sees the workspace. A template ships seven pages and a booking page
     // whatever the brief asked for; this is what keeps a four-page brief from
@@ -373,7 +401,7 @@ export class PreviewGenerationPipeline {
         ...(input.budgetDegraded === undefined
           ? {}
           : { budgetDegraded: input.budgetDegraded }),
-        ...(input.onPhase ? { onPhase: input.onPhase } : {}),
+        onPhase: announce,
       }).catch((error: unknown) => {
         // Nothing in this stage may cost a client their preview.
         console.warn(
@@ -395,9 +423,10 @@ export class PreviewGenerationPipeline {
           templateConfig: scaffold.template.config,
           feedback,
           fullTemplateContext: this.options.fullTemplateContext,
+          ...(onTool ? { onActivity: onTool } : {}),
         });
 
-      input.onPhase?.('Personalizing the site with your business');
+      announce('Personalizing the site with your business');
       let build = await personalize();
       if (build.timedOut) {
         console.warn(
@@ -413,7 +442,7 @@ export class PreviewGenerationPipeline {
           // Logged so the residue rule can be calibrated against real runs:
           // what it flags is what the sweep costs five minutes to fix.
           if (residue) console.info(`[quality-sweep] ${residue.slice(0, 600)}`);
-          input.onPhase?.('Polishing voice and honesty');
+          announce('Polishing voice and honesty');
           const sweep = await optional('quality sweep', () =>
             personalize(
               residue
@@ -448,7 +477,7 @@ export class PreviewGenerationPipeline {
         roomFor('personalization repair');
         repairs += 1
       ) {
-        input.onPhase?.('Refining the personalization');
+        announce('Refining the personalization');
         const repair = await personalize(issue);
         // Re-check against everything written so far, not just this pass. A
         // repair that correctly concludes there is nothing left to change
@@ -484,7 +513,7 @@ export class PreviewGenerationPipeline {
         hasBookingLink: input.hasBookingLink ?? false,
       });
       if (placeholder && roomFor('placeholder copy repair')) {
-        input.onPhase?.('Removing placeholder copy');
+        announce('Removing placeholder copy');
         const feedback = placeholder;
         const repair = await optional('placeholder copy repair', () =>
           personalize(feedback),
@@ -512,7 +541,7 @@ export class PreviewGenerationPipeline {
         build,
       );
       if (mediaIssue && roomFor('client media repair')) {
-        input.onPhase?.('Placing your own photos');
+        announce('Placing your own photos');
         build =
           (await optional('client media repair', () =>
             personalize(mediaIssue),
@@ -525,7 +554,7 @@ export class PreviewGenerationPipeline {
         build,
       );
       if (heroIssue && roomFor('hero image repair')) {
-        input.onPhase?.('Choosing the right hero image');
+        announce('Choosing the right hero image');
         build =
           (await optional('hero image repair', () => personalize(heroIssue))) ??
           build;
@@ -539,7 +568,7 @@ export class PreviewGenerationPipeline {
         generated.entries,
       );
       if (generatedIssue && roomFor('brand imagery repair')) {
-        input.onPhase?.('Placing your brand imagery');
+        announce('Placing your brand imagery');
         build =
           (await optional('brand imagery repair', () =>
             personalize(generatedIssue),
@@ -559,7 +588,7 @@ export class PreviewGenerationPipeline {
       );
       if (integrity) {
         if (roomFor('style repair')) {
-          input.onPhase?.('Repairing the styles');
+          announce('Repairing the styles');
           const feedback = integrity.feedback;
           await optional('style repair', () => personalize(feedback));
           integrity = await findWorkspaceIntegrityIssue(
@@ -592,7 +621,7 @@ export class PreviewGenerationPipeline {
         template.slug,
       );
       if (missingLabelBlocks.length > 0) {
-        input.onPhase?.(
+        announce(
           `The generated content was missing ${missingLabelBlocks.join(', ')}; filled it in deterministically from the intake instead of retrying the whole generation.`,
         );
         await repairMissingLabelBlocks(workspace.root, missingLabelBlocks, {
@@ -604,11 +633,11 @@ export class PreviewGenerationPipeline {
         });
       }
 
-      input.onPhase?.('Checking the preview');
+      announce('Checking the preview');
       try {
         await this.validator.validate(workspace.root, 'preview');
       } catch (error) {
-        input.onPhase?.('Repairing the preview');
+        announce('Repairing the preview');
         const detail =
           error instanceof Error ? error.message.slice(0, 2_000) : 'unknown';
         await personalize(
@@ -622,10 +651,10 @@ export class PreviewGenerationPipeline {
       // worker's validator fails a build that still carries it. See
       // `teaser-rule.ts` for the rule in full.
       if (this.options.teaser !== false && this.options.teaser !== undefined) {
-        input.onPhase?.('Preparing the preview teaser');
+        announce('Preparing the preview teaser');
         await injectPreviewTeaser(workspace.root, this.options.teaser);
       }
-      input.onPhase?.('Publishing your live preview');
+      announce('Publishing your live preview');
       let published = await this.publisher.publish({
         projectId: input.intake.projectId,
         workspaceRoot: workspace.root,
@@ -633,7 +662,7 @@ export class PreviewGenerationPipeline {
         brandConfig,
       });
       if (this.options.renderedAudit) {
-        input.onPhase?.('Reviewing the rendered preview');
+        announce('Reviewing the rendered preview');
         let renderIssue: string | undefined;
         try {
           renderIssue = await this.options.renderedAudit(published.previewUrl);
@@ -646,7 +675,7 @@ export class PreviewGenerationPipeline {
           );
         }
         if (renderIssue) {
-          input.onPhase?.('Repairing rendered issues');
+          announce('Repairing rendered issues');
           await personalize(
             `A rendered review of the published preview found visual defects you must repair by editing content and style-token values only: ${renderIssue.slice(
               0,
@@ -663,12 +692,22 @@ export class PreviewGenerationPipeline {
           });
         }
       }
+      // The last step of the timeline, and the only one that lets a reader
+      // fold it away. Emitted after the publish that made the preview real,
+      // not after the return, so a client watching sees it land.
+      activity?.finish('preview');
       return {
         brandConfig,
         template,
         ...published,
         generatedAssetsCostUsd: generated.costUsd,
       };
+    } catch (error) {
+      // The timeline says the run stopped and names the stage it stopped in.
+      // It does not carry the error text: that is the operator's, and this
+      // one is read by a visitor on a marketing page.
+      activity?.fail('preview', activity.phaseName || undefined);
+      throw error;
     } finally {
       await rm(workspace.root, { recursive: true, force: true });
     }
@@ -1571,8 +1610,16 @@ export interface FullSiteBuildJob {
   briefInput?: BriefInput | null;
 }
 
-/** What the worker tells the operator board while a build is in flight. */
-export type FullSiteBuildEventKind = 'phase' | 'log' | 'reply';
+/**
+ * What the worker tells the operator board while a build is in flight.
+ *
+ * `activity` is the structured one: its `body` is the phase it belongs to and
+ * its `payload.activity` is an `AgentActivityEvent`. It is a kind of its own
+ * rather than a `log` with a flag because the board, the client dashboard and
+ * the log download all have to be able to ask for it -- or refuse it -- by
+ * name, and a flag inside a payload is a thing every reader has to remember.
+ */
+export type FullSiteBuildEventKind = 'phase' | 'log' | 'reply' | 'activity';
 
 export interface FullSiteBuildEvent {
   kind: FullSiteBuildEventKind;
@@ -2507,9 +2554,21 @@ export class FullSiteBuildWorker {
     // It is also where a build that has lost its lease stops: the phases are
     // the seams of this workflow, and stopping on one leaves the conversation
     // ending on a line that says what happened.
+    // The structured timeline, alongside the prose one. Every phase below
+    // reaches it, and so does every tool call the agents make. It writes
+    // through `say`, so it inherits the same rule the conversation has: a
+    // timeline that fails to record is a nuisance, never a failed build.
+    const activity = new ActivityRecorder({
+      sink: (event) => {
+        void say('activity', event.phase || event.kind, { activity: event });
+      },
+    });
+    const onTool: ActivityToolSink = (toolName, args) =>
+      activity.tool(toolName, args);
     const phase = async (body: string) => {
       this.assertStillHeld(jobId, signal);
       await log?.flush();
+      activity.phase(body);
       await say('phase', body);
     };
 
@@ -2521,7 +2580,7 @@ export class FullSiteBuildWorker {
     // over text the client themselves removed. The continuity guarantee for
     // that path is the absence of an agent, not an assertion about one.
     if (job.kind === 'SITE_REBUILD') {
-      await this.rebuild(job, say, log, signal);
+      await this.rebuild(job, say, log, activity, signal);
       return;
     }
     // A paid change request is the one path where agents touch a site that is
@@ -2530,7 +2589,7 @@ export class FullSiteBuildWorker {
     // the project is past DEPOSIT_PAID), so it gets its own leg rather than a
     // flag on one of theirs.
     if (job.kind === 'CHANGE_REQUEST_BUILD') {
-      await this.changeRequestBuild(job, say, log, signal);
+      await this.changeRequestBuild(job, say, log, activity, signal);
       return;
     }
     if (job.projectState !== ProjectState.DEPOSIT_PAID) {
@@ -2731,6 +2790,7 @@ export class FullSiteBuildWorker {
           ...(briefDigest ? { briefDigest } : {}),
           ...(feedback ? { feedback } : {}),
           ...(onTrace ? { onTrace } : {}),
+          onActivity: onTool,
         });
       // One agent pass, reported: the phase it is, then what the agent said
       // when it finished. The summary is the agent's own words; the board
@@ -2980,7 +3040,10 @@ export class FullSiteBuildWorker {
       // carry it. Only a build actually holding a portrait pays for that read.
       const imageGateFiles = async () =>
         portrait
-          ? [...(await builtSiteText()), ...(await readSiteContentFiles(siteRoot))]
+          ? [
+              ...(await builtSiteText()),
+              ...(await readSiteContentFiles(siteRoot)),
+            ]
           : await builtSiteText();
 
       let imageGateScan = await imageGateFiles();
@@ -3087,19 +3150,30 @@ export class FullSiteBuildWorker {
         leadCaptureEndpoint: job.leadCaptureEndpoint ?? null,
       });
       await this.store.markHumanQa(jobId, { commitSha, ...published });
+      // No `activity.finish()` here: 'Handed to human QA' is already a `done`
+      // step by the phase rule, and saying it twice would put two full stops
+      // on the timeline.
       await phase('Handed to human QA');
     } catch (error) {
       await say(
         'log',
         `Build failed: ${error instanceof Error ? error.message : 'unknown'}`,
       );
+      const failureCode =
+        error instanceof LeaseLostError
+          ? BUILD_LEASE_LOST
+          : error instanceof FullSiteBuildFailure
+            ? error.code
+            : 'FULL_SITE_BUILD_FAILED';
+      // The gate that stopped it, named by the same table the board uses. The
+      // detail is the operator's copy of the verdict; the client's projection
+      // drops it before the event leaves the server.
+      activity.fail(
+        subjectForFailureCode(failureCode),
+        error instanceof Error ? error.message.slice(0, 300) : undefined,
+      );
       await this.recordFailure(jobId, {
-        code:
-          error instanceof LeaseLostError
-            ? BUILD_LEASE_LOST
-            : error instanceof FullSiteBuildFailure
-              ? error.code
-              : 'FULL_SITE_BUILD_FAILED',
+        code: failureCode,
         detail:
           error instanceof Error
             ? error.message.slice(0, 2_000)
@@ -3141,6 +3215,7 @@ export class FullSiteBuildWorker {
       payload?: Record<string, unknown>,
     ) => Promise<void>,
     log: JobLogWriter | null,
+    activity: ActivityRecorder,
     signal?: AbortSignal,
   ): Promise<void> {
     const jobId = job.id;
@@ -3148,8 +3223,11 @@ export class FullSiteBuildWorker {
     const phase = async (body: string) => {
       this.assertStillHeld(jobId, signal);
       await log?.flush();
+      activity.phase(body);
       await say('phase', body);
     };
+    const onTool: ActivityToolSink = (toolName, args) =>
+      activity.tool(toolName, args);
 
     // The same two states a rebuild is valid from, for the same reason: this
     // edits a site the client already has, and before the deposit build has
@@ -3266,6 +3344,7 @@ export class FullSiteBuildWorker {
           requiredIntegrations: job.requiredIntegrations,
           feedback: withRequest(feedback),
           ...(onTrace ? { onTrace } : {}),
+          onActivity: onTool,
         });
         await log?.flush();
         await say('reply', replyExcerpt(built.summary), {
@@ -3528,6 +3607,14 @@ export class FullSiteBuildWorker {
       unpublishedVersion = null;
       await phase(`Live, in version ${saved.version}`);
     } catch (error) {
+      activity.fail(
+        subjectForFailureCode(
+          error instanceof FullSiteBuildFailure
+            ? error.code
+            : 'CHANGE_REQUEST_BUILD_FAILED',
+        ),
+        error instanceof Error ? error.message.slice(0, 300) : undefined,
+      );
       const detail =
         error instanceof Error
           ? error.message
@@ -3632,6 +3719,7 @@ export class FullSiteBuildWorker {
       payload?: Record<string, unknown>,
     ) => Promise<void>,
     log: JobLogWriter | null,
+    activity: ActivityRecorder,
     signal?: AbortSignal,
   ): Promise<void> {
     const jobId = job.id;
@@ -3639,6 +3727,7 @@ export class FullSiteBuildWorker {
     const phase = async (body: string) => {
       this.assertStillHeld(jobId, signal);
       await log?.flush();
+      activity.phase(body);
       await say('phase', body);
     };
 
@@ -3723,6 +3812,10 @@ export class FullSiteBuildWorker {
       await this.store.markRebuilt(jobId, { commitSha, ...published });
       await phase('Live');
     } catch (error) {
+      activity.fail(
+        subjectForFailureCode('SITE_REBUILD_FAILED'),
+        error instanceof Error ? error.message.slice(0, 300) : undefined,
+      );
       const detail =
         error instanceof Error ? error.message : 'Unknown rebuild failure';
       await say('log', `Rebuild failed: ${detail}`);

@@ -24,12 +24,13 @@ import {
   ShoppingBag,
   type LucideIcon,
 } from 'lucide-react';
-import type { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
+import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
 import {
   GlassSurface,
   type Tone,
 } from '@flowstarter/flow-design-system/components/surfaces/GlassSurface';
 import { StatTile } from '@flowstarter/flow-design-system/components/surfaces/StatTile';
+import { ClientBuildActivity } from './ClientBuildActivity';
 import { ProjectStateStepper } from './ProjectStateStepper';
 import type { ClientBuildSignal } from './project-build-signal';
 import type { SiteOverviewTile, SiteOverviewTileKey } from './site-overview';
@@ -71,15 +72,36 @@ export function tilePalette(tile: SiteOverviewTile): Tone {
   return SUBJECT_PALETTE[tile.key];
 }
 
+/**
+ * Whether the timeline belongs on this page at all.
+ *
+ * One state, because the six in `project-progress.ts` are the only vocabulary
+ * this panel has and only one of them means "an agent is working on it right
+ * now". A change request on a live site is a build too, but that one runs
+ * while the project sits in LIVE_SUBSCRIPTION and is watched from the editor,
+ * where the client asked for it — putting it here as well would report the
+ * same work twice on two pages.
+ */
+export function buildIsRunning(state: ProjectState): boolean {
+  return state === ProjectState.AGENTS_WORKING;
+}
+
 export function SiteOverview({
   state,
   tiles,
   buildSignal,
+  workspaceId,
 }: {
   state: ProjectState;
   tiles: SiteOverviewTile[];
   /** Passed straight through: the stepper owns what a stopped build reads as. */
   buildSignal?: ClientBuildSignal | null;
+  /**
+   * Optional, and the only thing that switches the live build timeline on.
+   * Without it this stays the server-renderable, fetch-free panel the design
+   * gallery mounts against fixtures.
+   */
+  workspaceId?: string;
 }) {
   return (
     <GlassSurface as="section" variant="panel">
@@ -91,6 +113,13 @@ export function SiteOverview({
           Your site
         </p>
         <ProjectStateStepper state={state} buildSignal={buildSignal} />
+        {/* Under the stepper, because it is the detail behind the stage the
+            stepper has just named, not a subject of its own. It draws nothing
+            until the build has written a step, so the panel above is unmoved
+            for a build that has only just been claimed. */}
+        {workspaceId && buildIsRunning(state) ? (
+          <ClientBuildActivity workspaceId={workspaceId} live />
+        ) : null}
       </div>
 
       {/* Five subjects into four columns left the fifth tile stranded on a row

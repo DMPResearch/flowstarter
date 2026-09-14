@@ -1,5 +1,7 @@
 import 'server-only';
 
+import type { AgentActivityEvent } from '@flowstarter/agentic-codegen/src/flowstarter/activity';
+
 /**
  * In-memory live-demo job store. A demo = one generated, sandbox-hosted site
  * the visitor can see and edit up to LIVE_EDIT_CAP times. Keyed by demoId.
@@ -66,6 +68,17 @@ export interface LiveJob {
   failedPhase?: string;
   /** Latest streamed progress phase. */
   phase?: string;
+  /**
+   * The structured activity timeline: one rule-decided step per phase
+   * boundary and per tool call, produced by the pipeline's own recorder and
+   * never by a model. The SSE stream replays it on connect for the same
+   * reason `phases` is replayed, so a visitor who reloads the wizard sees the
+   * whole story rather than the tail of it.
+   *
+   * Capped at ACTIVITY_CAP: a runaway pass must not be able to grow a
+   * process-local record without bound.
+   */
+  activity?: AgentActivityEvent[];
   /**
    * Every phase this run has entered, with the second it started at. The SSE
    * stream replays this on connect, so a client that subscribes late (or
@@ -146,6 +159,30 @@ export function updateJob(demoId: string, patch: Partial<LiveJob>): void {
     ];
   }
   jobs.set(demoId, next);
+}
+
+/**
+ * Steps one demo may record. The recorder in the pipeline already rate-limits
+ * and caps what it emits; this is the second half of the same promise, on the
+ * side that holds the memory.
+ */
+export const ACTIVITY_CAP = 400;
+
+/**
+ * Append one activity event to a job. Separate from `updateJob` because this
+ * is an append and that is a patch: passing the whole array through a patch
+ * would make every caller read-modify-write a list two processes could be
+ * writing to.
+ */
+export function appendActivity(
+  demoId: string,
+  event: AgentActivityEvent
+): void {
+  const job = jobs.get(demoId);
+  if (!job) return;
+  const existing = job.activity ?? [];
+  if (existing.length >= ACTIVITY_CAP) return;
+  jobs.set(demoId, { ...job, activity: [...existing, event] });
 }
 
 /** Best-effort GC: tear down + drop demos older than the TTL. */

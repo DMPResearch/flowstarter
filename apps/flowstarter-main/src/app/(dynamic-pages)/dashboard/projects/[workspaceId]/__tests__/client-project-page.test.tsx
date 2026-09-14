@@ -5,6 +5,7 @@
  * `requireWorkspaceAccess` is therefore the whole of the isolation, and the
  * first case here is a non-member asking for someone else's project.
  */
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 import { NextResponse } from 'next/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -226,11 +227,22 @@ function liveWorkspace(overrides: Record<string, unknown> = {}) {
   });
 }
 
+/**
+ * The page is a server component, but it mounts one client island: the build
+ * timeline, which polls with React Query. `app/layout.tsx` provides the
+ * client for it in the product; rendering the page on its own here has to
+ * provide one too, or the island throws before the page under test is drawn.
+ */
 async function renderPage(workspaceId: string) {
   const element = (await ClientProjectPage({
     params: Promise.resolve({ workspaceId }),
   })) as React.ReactElement;
-  return render(element);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>{element}</QueryClientProvider>
+  );
 }
 
 beforeEach(() => {

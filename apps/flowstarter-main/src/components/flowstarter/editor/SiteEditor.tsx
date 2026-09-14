@@ -19,6 +19,12 @@
  *
  * REFUSALS ARE SHOWN. Every control the policy denies stays visible with the
  * policy's reason next to it. See PolicyNotice.
+ *
+ * PROGRESS IS DERIVED, NOT NARRATED. `/edit` and `/apply` answer once and do
+ * not stream, so the activity timeline beside the proposal is built by rule
+ * from the request lifecycle this component actually observes -- see
+ * `lib/flowstarter/activity/editor-events.ts`. No step on it is a guess, and
+ * a stage the component never entered never appears.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
@@ -26,6 +32,13 @@ import {
   editCreditsLine,
   type EditCreditPosition,
 } from '@/lib/flowstarter/edit-credits';
+import { useTranslations } from '@/lib/i18n';
+import { AgentActivityPanel } from '@/components/flowstarter/AgentActivityPanel';
+import {
+  editorActivityEvents,
+  type EditorActivityReached,
+  type EditorActivityStage,
+} from '@/lib/flowstarter/activity/editor-events';
 import { PolicyNotice } from './PolicyNotice';
 import { EscalationPanel } from './EscalationPanel';
 import { ImageSlotsPanel } from './ImageSlotsPanel';
@@ -62,6 +75,7 @@ export function SiteEditor({
   workspaceId: string;
   initial: EditorState;
 }) {
+  const { t } = useTranslations();
   const base = editorApiBase(workspaceId);
   const frame = useRef<HTMLIFrameElement | null>(null);
 
@@ -79,6 +93,12 @@ export function SiteEditor({
   const [instruction, setInstruction] = useState('');
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [busy, setBusy] = useState<'edit' | 'apply' | null>(null);
+  // The timeline's own state, kept beside `busy` rather than replacing it:
+  // `busy` is what disables the buttons, this is what the client reads. The
+  // second value is where a failed run got to, because "stopped" on its own
+  // cannot say how much of the ladder really happened.
+  const [stage, setStage] = useState<EditorActivityStage>('idle');
+  const [reached, setReached] = useState<EditorActivityReached>('idle');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [frameKey, setFrameKey] = useState(0);
@@ -135,6 +155,10 @@ export function SiteEditor({
   async function propose() {
     if (!selected || !instruction.trim()) return;
     setBusy('edit');
+    // The agent is reading the block the client picked. Nothing beyond this
+    // has happened yet, so nothing beyond it is on the timeline yet.
+    setStage('reading');
+    setReached('reading');
     setError(null);
     setNotice(null);
     try {
@@ -156,12 +180,19 @@ export function SiteEditor({
       });
       setUsed(result.allowance.used);
       setCredits(result.allowance.credits);
+      // The change is written and on screen. The ladder stops here until the
+      // client presses save: nothing has been checked and nothing saved.
+      setStage('writing');
+      setReached('writing');
     } catch (caught) {
       setError(
         caught instanceof EditorRequestError
           ? caught.message
           : 'That did not work. Please try again.'
       );
+      // `reached` is left where it was, so the timeline says how far the run
+      // got rather than implying a full one that happened to end badly.
+      setStage('failed');
     } finally {
       setBusy(null);
     }
@@ -170,6 +201,9 @@ export function SiteEditor({
   async function apply() {
     if (!proposal) return;
     setBusy('apply');
+    // The server is checking the change before it goes anywhere near the site.
+    setStage('checking');
+    setReached('checking');
     setError(null);
     try {
       const result = await requestEditor<{
@@ -185,13 +219,20 @@ export function SiteEditor({
       setInstruction('');
       setNotice(`Saved as version ${result.version}.`);
       setFrameKey((key) => key + 1);
+      // Two rungs, because they are two facts: the version was written, and
+      // then the editor re-read the site and agrees with it.
+      setStage('saving');
+      setReached('saving');
       await refreshState();
+      setStage('saved');
+      setReached('saved');
     } catch (caught) {
       setError(
         caught instanceof EditorRequestError
           ? caught.message
           : 'That change could not be saved.'
       );
+      setStage('failed');
       // A stale original means the site moved on; the frame and the list have
       // to be re-read before another attempt can mean anything.
       if (caught instanceof EditorRequestError && caught.status === 409) {
@@ -203,6 +244,15 @@ export function SiteEditor({
       setBusy(null);
     }
   }
+
+  // Derived from the two pieces of state above and nothing else, so the
+  // timeline cannot drift from what the component actually did. The clock is
+  // read once per recomputation rather than once per render, which is what
+  // keeps the step list stable between paints.
+  const activityEvents = useMemo(
+    () => editorActivityEvents(stage, () => new Date().toISOString(), reached),
+    [stage, reached]
+  );
 
   const sections = useMemo(() => {
     const grouped = new Map<string, EditorTarget[]>();
@@ -369,6 +419,37 @@ export function SiteEditor({
             >
               {busy === 'edit' ? 'Writing…' : 'Suggest a change'}
             </button>
+
+            {/* What the agent is doing with the change, while it does it. The
+                button label says the editor is busy; this says what with. It
+                draws nothing before the first request, so the panel appears
+                when the client asks for something and not before. */}
+            <div data-testid="editor-activity">
+              <AgentActivityPanel
+                events={activityEvents}
+                headline={
+                  stage === 'failed'
+                    ? t('agentActivity.headline.stopped')
+                    : stage === 'saved'
+                    ? t('agentActivity.headline.changeDone')
+                    : stage === 'writing' && busy === null
+                    ? t('agentActivity.headline.changeReady')
+                    : t('agentActivity.headline.change')
+                }
+                // `busy` and not the stage, because a proposal sitting on
+                // screen waiting for the client to press save is not the
+                // agent working. A spinner there would be a lie that spins.
+                status={
+                  stage === 'failed'
+                    ? 'failed'
+                    : busy !== null
+                    ? 'running'
+                    : 'done'
+                }
+                surface="card"
+                dense
+              />
+            </div>
 
             {proposal ? (
               <div

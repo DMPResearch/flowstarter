@@ -8,6 +8,9 @@
  * exactly as the client project page does.
  */
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
+// Deep path, not the package root: the root re-exports the Pi SDK and the
+// whole generation graph, and this module is imported by browser code.
+import type { AgentActivityEvent } from '@flowstarter/agentic-codegen/src/flowstarter/activity';
 import { editCreditPosition } from '@/lib/flowstarter/edit-credits';
 import type { SiteOverviewInput } from '@/components/flowstarter/site-overview';
 import type { TeamDashboardStatsPayload } from '@/lib/team-dashboard/team-dashboard-stats';
@@ -542,3 +545,85 @@ export const briefGallery = {
     },
   ],
 };
+
+/**
+ * The agent activity timeline, in the states it has.
+ *
+ * These are `AgentActivityEvent`s and not steps on purpose. The collapse rule
+ * in `@flowstarter/agentic-codegen` and the phrasing rule in
+ * `lib/flowstarter/activity/steps.ts` are the things worth looking at in a
+ * screenshot, so writing "Read the services section (3)" here by hand would
+ * be a picture of a component nobody ships. The burst of three reads below is
+ * three events, and the summary line is counted from the events under it.
+ */
+function activityAt(seconds: number): string {
+  return new Date(Date.UTC(2026, 8, 14, 10, 0, seconds)).toISOString();
+}
+
+function activityEvent(
+  seconds: number,
+  kind: AgentActivityEvent['kind'],
+  subject: AgentActivityEvent['subject'],
+  extra: Partial<AgentActivityEvent> = {}
+): AgentActivityEvent {
+  return {
+    at: activityAt(seconds),
+    phase: 'Agents expanding the site',
+    kind,
+    subject,
+    ...extra,
+  };
+}
+
+/** A run part-way through: a library search, a burst of reads, a live edit. */
+export const galleryActivityRunning: AgentActivityEvent[] = [
+  activityEvent(1, 'thinking', 'brief'),
+  activityEvent(4, 'searching', 'template.library', {
+    chips: ['plumber local trade', 'local-trade'],
+  }),
+  activityEvent(9, 'building', 'page.home'),
+  activityEvent(14, 'reading', 'section.services', {
+    detail: 'src/components/Services.astro',
+  }),
+  activityEvent(15, 'reading', 'section.services', {
+    detail: 'src/components/Services.astro',
+  }),
+  activityEvent(16, 'reading', 'section.services', {
+    detail: 'src/components/Services.astro',
+  }),
+  activityEvent(21, 'editing', 'section.services', {
+    detail: 'src/components/Services.astro',
+  }),
+];
+
+/** A run that finished: four pages, six checks, two repairs. */
+export const galleryActivityFinished: AgentActivityEvent[] = [
+  ...(
+    ['page.home', 'page.about', 'page.services', 'page.contact'] as const
+  ).map((subject, index) => activityEvent(10 + index * 6, 'building', subject)),
+  ...(
+    [
+      'gate.build',
+      'gate.copy',
+      'gate.images',
+      'gate.markup',
+      'gate.pages',
+      'gate.brief',
+    ] as const
+  ).map((subject, index) => activityEvent(40 + index * 6, 'checking', subject)),
+  activityEvent(80, 'repairing', 'gate.copy'),
+  activityEvent(86, 'repairing', 'gate.images'),
+  activityEvent(92, 'publishing', 'site'),
+  activityEvent(98, 'done', 'site'),
+];
+
+/** A run a gate stopped, with the verdict the operator gets to read. */
+export const galleryActivityFailed: AgentActivityEvent[] = [
+  activityEvent(10, 'building', 'page.home'),
+  activityEvent(16, 'checking', 'gate.copy'),
+  activityEvent(22, 'repairing', 'gate.copy'),
+  activityEvent(28, 'checking', 'gate.copy'),
+  activityEvent(34, 'failed', 'gate.copy', {
+    detail: 'Two placeholder sentinels are still in src/components/Hero.astro',
+  }),
+];

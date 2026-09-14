@@ -27,7 +27,16 @@ import {
 import { routeLimiter } from '@/lib/security/route-limits';
 import { llmActionConfig, recordLlmUsage } from '@/lib/ai/llm';
 import { missingGenerationPrerequisites } from '@/lib/discovery/generation-availability';
-import { createJob, getJob, updateJob } from '@/lib/discovery/live-jobs';
+// Deep import on purpose. The package root pulls in the Pi SDK and the
+// whole generation graph, which this route is at pains to load lazily; the
+// activity module is pure rules and a handful of types.
+import { projectForClient } from '@flowstarter/agentic-codegen/src/flowstarter/activity';
+import {
+  appendActivity,
+  createJob,
+  getJob,
+  updateJob,
+} from '@/lib/discovery/live-jobs';
 import { isTransientPipelineFailure } from '@/lib/discovery/preview-failure';
 import { clientIp } from '@/lib/request-ip';
 import { previewUrlForClient } from '@/lib/discovery/local-preview-frame';
@@ -753,6 +762,12 @@ export async function POST(req: NextRequest) {
           ),
           deadlineAt: runDeadlineAt,
           onPhase: (phase) => updateJob(demoId, { phase }),
+          // The structured half of the same progress. `onPhase` moves one
+          // string the wizard prints; this records the step list the activity
+          // timeline draws, including the tool calls the phases say nothing
+          // about. The recorder that produces them lives in the pipeline, so
+          // nothing here decides what a step is.
+          onActivity: (event) => appendActivity(demoId, event),
         });
       let result: Awaited<ReturnType<typeof runPipeline>>;
       try {
@@ -952,6 +967,12 @@ export async function GET(req: NextRequest) {
       // moment they are given the link, never afterwards.
       hostedPreviewExpiresAt: job.hostedPreviewExpiresAt,
       editsUsed: job.editsUsed,
+      // The whole activity timeline, not a delta: this is the fallback the
+      // wizard polls when the stream is unavailable, and a poll that returned
+      // only what changed since an unstated moment would leave a reconnecting
+      // client with holes in the list. `projectForClient` strips the operator
+      // detail, the same as the stream does.
+      activity: (job.activity ?? []).map(projectForClient),
       error: job.status === 'failed' ? job.error : undefined,
       failedPhase: job.status === 'failed' ? job.failedPhase : undefined,
     },

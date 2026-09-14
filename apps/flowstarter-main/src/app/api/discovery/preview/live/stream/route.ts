@@ -7,6 +7,9 @@
  * a poll happens to land. Phases already recorded are replayed on connect, so
  * a late subscriber or a reconnect still sees the whole run.
  */
+// Deep import: the package root would pull the Pi SDK and the generation
+// graph into a route whose whole job is to hold a socket open cheaply.
+import { projectForClient } from '@flowstarter/agentic-codegen/src/flowstarter/activity';
 import { NextRequest, NextResponse } from 'next/server';
 import { getJob } from '@/lib/discovery/live-jobs';
 import { previewUrlForClient } from '@/lib/discovery/local-preview-frame';
@@ -34,6 +37,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       const startedAt = Date.now();
       let lastHeartbeat = startedAt;
       let sentPhases = 0;
+      let sentActivity = 0;
       let closed = false;
 
       const send = (event: string, data: unknown) => {
@@ -70,6 +74,16 @@ export async function GET(request: NextRequest): Promise<Response> {
             at: entry?.at,
             index: sentPhases + 1,
           });
+        }
+
+        // The structured timeline, replayed the same way and for the same
+        // reason. `projectForClient` strips each event's `detail` on the way
+        // out: that field carries workspace file paths and raw gate verdicts,
+        // and this stream is read by a visitor on a marketing page.
+        const activity = job.activity ?? [];
+        for (; sentActivity < activity.length; sentActivity += 1) {
+          const entry = activity[sentActivity];
+          if (entry) send('activity', projectForClient(entry));
         }
 
         if (job.status === 'ready') {

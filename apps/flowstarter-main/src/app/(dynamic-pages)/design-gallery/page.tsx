@@ -30,6 +30,7 @@ import { BriefForm } from '@/components/flowstarter/BriefForm';
 import { evaluateBriefReadiness } from '@/lib/flowstarter/brief-readiness';
 import { derivedBriefPageCount } from '@/lib/flowstarter/brief-data';
 import { AdminDashboardGallery, AdminPipelineGallery } from './AdminSection';
+import { AgentActivityGallery } from './ActivitySection';
 import { briefGallery, starterOverview, ecommerceOverview } from './fixtures';
 
 export const metadata: Metadata = {
@@ -183,6 +184,20 @@ export default function DesignGalleryPage() {
           stands in for: a screenshot of "the pipeline board" should be a
           screenshot of `/admin/dashboard/pipeline`, page header and all, not
           of a board bolted to the bottom of the dashboard. */}
+      {/* The one surface that is not a route: the timeline appears on four
+          of them, so it is reviewed here on its own, in every state it has,
+          rather than four times inside four screenshots of other things. */}
+      <section
+        aria-labelledby="design-gallery-agent-activity"
+        className="flex flex-col gap-6"
+      >
+        <SectionLabel
+          id="design-gallery-agent-activity"
+          title="Agent activity"
+        />
+        <AgentActivityGallery />
+      </section>
+
       <section
         aria-labelledby="design-gallery-admin-dashboard"
         className="flex flex-col gap-6"
