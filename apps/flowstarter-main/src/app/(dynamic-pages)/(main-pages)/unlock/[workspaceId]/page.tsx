@@ -14,13 +14,13 @@
 import { auth } from '@clerk/nextjs/server';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { depositAmountMinor } from '@flowstarter/agentic-codegen/src/flowstarter/state-machine';
+import {
+  DEPOSIT_PERCENT,
+  depositAmountMinor,
+} from '@flowstarter/agentic-codegen/src/flowstarter/state-machine';
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
-import {
-  BOOKING_DEPOSIT_PERCENT,
-  TIER_SETUP_FROM,
-} from '../../components/discovery/discovery.logic';
+import { TIER_SETUP_FROM } from '../../components/discovery/discovery.logic';
 import { UnlockCheckoutButton } from './UnlockCheckoutButton';
 
 export const dynamic = 'force-dynamic';
@@ -80,8 +80,8 @@ export default async function UnlockPage({
               <span className="ls-unlock__step-n">01</span>
               <h2 className="ls-unlock__step-title">Book the call</h2>
               <p className="ls-unlock__step-body">
-                A {BOOKING_DEPOSIT_PERCENT}% deposit holds the slot and comes
-                off your setup fee. Setup starts at {STARTER_SETUP_FROM}.
+                Booking is free, no deposit. We look at your preview together
+                and confirm the scope. Setup starts at {STARTER_SETUP_FROM}.
               </p>
             </li>
             <li className="ls-card ls-unlock__step">
@@ -96,8 +96,9 @@ export default async function UnlockPage({
               <span className="ls-unlock__step-n">03</span>
               <h2 className="ls-unlock__step-title">We build it</h2>
               <p className="ls-unlock__step-body">
-                20% starts the build, the balance is due when you approve the
-                finished site. Both of us review it before it ships.
+                A {DEPOSIT_PERCENT}% deposit starts the build, the balance is
+                due when you approve the finished site. Both of us review it
+                before it ships.
               </p>
             </li>
           </ol>
@@ -126,6 +127,7 @@ export default async function UnlockPage({
   const previewApproved =
     workspace.project_state === ProjectState.PREVIEW_READY;
   const payable = !alreadyPaid && quoteReady && previewApproved;
+  const balancePercent = 100 - DEPOSIT_PERCENT;
 
   return (
     <main className="mx-auto flex min-h-[70vh] w-full max-w-2xl flex-col justify-center px-5 py-16">
@@ -148,28 +150,28 @@ export default async function UnlockPage({
         <>
           <p className="mb-6 text-base leading-relaxed text-[var(--fs-ink)]/75">
             The blurred sections are part of your full site. Before we can take
-            a deposit we need to agree the final scope with you on the preview
-            call, so the price you pay is the price we quoted.
+            a deposit we need to agree the final scope with you first, so the
+            price you pay is the price we quoted.
           </p>
           <Link
             href="/contact"
             className="inline-flex w-fit items-center rounded-full bg-[var(--fs-ink)] px-6 py-3 text-sm font-semibold text-white transition-colors hover:opacity-90"
           >
-            Book the preview call
+            Talk to us
           </Link>
         </>
       ) : (
         <>
           <p className="mb-7 text-base leading-relaxed text-[var(--fs-ink)]/75">
             Everything blurred in your preview gets built, reviewed by a human,
-            and handed over. You pay a 20% deposit now to start the build; the
-            balance is due when the finished site is approved.
+            and handed over. You pay a {DEPOSIT_PERCENT}% deposit now to start
+            the build; the balance is due when the finished site is approved.
           </p>
 
           <dl className="mb-8 divide-y divide-[var(--fs-ink)]/10 rounded-2xl border border-[var(--fs-ink)]/10 bg-white/60 px-5">
             <div className="flex items-baseline justify-between py-4">
               <dt className="text-sm text-[var(--fs-ink)]/70">
-                Deposit due now (20%)
+                Deposit due now ({DEPOSIT_PERCENT}%)
               </dt>
               <dd className="text-lg font-bold text-[var(--fs-ink)]">
                 {formatMinor(depositMinor, currency)}
@@ -177,7 +179,7 @@ export default async function UnlockPage({
             </div>
             <div className="flex items-baseline justify-between py-4">
               <dt className="text-sm text-[var(--fs-ink)]/70">
-                Balance on approval (80%)
+                Balance on approval ({balancePercent}%)
               </dt>
               <dd className="text-sm font-semibold text-[var(--fs-ink)]/80">
                 {formatMinor(balanceMinor, currency)}
