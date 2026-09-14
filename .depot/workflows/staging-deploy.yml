@@ -155,12 +155,18 @@ jobs:
       # 20260913120000_assets_original_name.sql →
       # 20260913121000_assets_original_name.sql) left BOTH files on the box,
       # so `supabase migration up` saw two migrations sharing one version and
-      # every deploy failed until someone deleted the stale copy by hand. The
-      # fix extracts into a throwaway staging directory first, then swaps it
-      # into place with two directory renames (mv), so the live
-      # repo/supabase/ is either the complete old tree or the complete new
-      # one, never a half-applied overlay of both, and anything dropped from
-      # the repo is actually gone on the host.
+      # every deploy failed until someone deleted the stale copy by hand.
+      #
+      # The extract-to-temp-and-swap logic that fixed this lives in
+      # sync-supabase.sh (deployed to the host alongside deploy-slot.sh and
+      # supabase-stack.sh, see README.md, "Bootstrap"), not inline here: the
+      # deploy user's sudoers entry (/etc/sudoers.d/flowstarter-deploy on the
+      # host) grants NOPASSWD only for exact commands, and a `Cmnd_Alias` for
+      # the slot scripts by path (`/opt/flowstarter/staging/*.sh`). Shell
+      # logic embedded straight into the ssh argument — the first version of
+      # this fix — is not a command sudoers can name, so it failed outright
+      # ("sudo: a password is required") the moment it shipped. Piping to one
+      # already-whitelisted script is what sudoers can actually grant.
       - name: Sync supabase/ to the host
         if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
         env:
@@ -172,26 +178,8 @@ jobs:
           install -m 600 /dev/null "$RUNNER_TEMP/staging_key"
           printf '%s\n' "$KEY" > "$RUNNER_TEMP/staging_key"
           SSH=(ssh -i "$RUNNER_TEMP/staging_key" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
-          # Passed as the ssh command argument (not over stdin, which is
-          # reserved for the piped tar stream below), so this is expanded by
-          # the REMOTE shell, not this one: quoted single, not double.
-          # shellcheck disable=SC2016
-          REMOTE_SCRIPT='
-            set -euo pipefail
-            REPO_DIR=/opt/flowstarter/staging/repo
-            STAGE_DIR=/opt/flowstarter/staging/repo.supabase.sync
-            sudo mkdir -p "$REPO_DIR"
-            sudo rm -rf "$STAGE_DIR"
-            sudo mkdir -p "$STAGE_DIR"
-            sudo tar -C "$STAGE_DIR" -xf -
-            sudo rm -rf "${REPO_DIR}/supabase.stale"
-            if [ -d "${REPO_DIR}/supabase" ]; then
-              sudo mv "${REPO_DIR}/supabase" "${REPO_DIR}/supabase.stale"
-            fi
-            sudo mv "${STAGE_DIR}/supabase" "${REPO_DIR}/supabase"
-            sudo rm -rf "$STAGE_DIR" "${REPO_DIR}/supabase.stale"
-          '
-          tar -C . -cf - supabase | "${SSH[@]}" "${USER}@${HOST}" "$REMOTE_SCRIPT"
+          tar -C . -cf - supabase | "${SSH[@]}" "${USER}@${HOST}" \
+            "sudo /opt/flowstarter/staging/sync-supabase.sh"
 
       - name: Deploy slot main over SSH
         if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
