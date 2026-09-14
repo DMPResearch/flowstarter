@@ -512,6 +512,11 @@ export const briefGallery = {
       source: 'upload',
       sourceUrl: null,
       rightsConfirmedAt: '2026-09-12T10:00:00.000Z',
+      // Captioned by us and not yet confirmed, so the gallery shows the
+      // "we had a guess at this" state rather than only the settled one.
+      caption: 'The Ereno inbox, unread mail grouped by sender',
+      captionSource: 'auto' as const,
+      autoCaptionKind: 'screenshot' as const,
     },
     {
       id: '22222222-2222-4222-8222-222222222222',
@@ -524,6 +529,9 @@ export const briefGallery = {
       source: 'upload',
       sourceUrl: null,
       rightsConfirmedAt: '2026-09-12T10:00:00.000Z',
+      caption: 'A pricing page with three plans and a lot of white space',
+      captionSource: 'client' as const,
+      autoCaptionKind: 'screenshot' as const,
     },
     {
       // Under the 1600px long edge the guidance asks for, so the form shows
@@ -542,6 +550,11 @@ export const briefGallery = {
       source: 'linkedin',
       sourceUrl: 'https://media.licdn.com/dms/image/example/profile.jpg',
       rightsConfirmedAt: '2026-09-12T10:00:00.000Z',
+      // Uncaptioned, which is the state the form has to render as silence
+      // rather than as an invented description.
+      caption: null,
+      captionSource: null,
+      autoCaptionKind: null,
     },
   ],
 };

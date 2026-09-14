@@ -285,6 +285,38 @@ describe('describeBriefInput', () => {
     expect(digest).toContain('never place one on the site as content');
   });
 
+  it('says what each project screenshot shows, not only where it is', () => {
+    // The path alone reached the agent once, and a caption the client typed
+    // was dropped on the way to the one pass that decides which case study a
+    // picture goes on.
+    const digest = describeBriefInput(parseBriefInput(payload()));
+    expect(digest).toContain(
+      '[screenshots: /flowstarter-media/brief-c2f0f3a1.png (The Ereno inbox)]',
+    );
+  });
+
+  it('writes a screenshot with no caption as a bare path', () => {
+    const digest = describeBriefInput(
+      parseBriefInput(
+        payload({
+          projects: [
+            {
+              name: 'Ereno',
+              line: 'A calm inbox for freelance invoices.',
+              link: 'https://ereno.example',
+              screenshotAssetIds: [SHOT_ID],
+              screenshots: [asset(SHOT_ID, 'brief-c2f0f3a1.png')],
+            },
+          ],
+        }),
+      ),
+    );
+    expect(digest).toContain(
+      '[screenshots: /flowstarter-media/brief-c2f0f3a1.png]',
+    );
+    expect(digest).not.toContain('brief-c2f0f3a1.png ()');
+  });
+
   it('states the no-projects case as an instruction rather than an empty list', () => {
     const digest = describeBriefInput(
       parseBriefInput(payload({ projects: [], noProjects: true })),

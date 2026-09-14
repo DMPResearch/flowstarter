@@ -29,10 +29,22 @@ import 'server-only';
  * picture"; it does not say "I own this and you may publish it". The client
  * makes that statement over a named set of assets in `rights/route.ts`, and
  * anything without `rights_confirmed_at` is reported as unusable.
+ *
+ *  - Every upload gets a caption on the way in, one way or another. A client
+ *    who typed one wins outright (`caption_source: 'client'`); one who did
+ *    not gets a bounded vision-model guess (`caption_source: 'auto'`), cached
+ *    by content hash so the same photograph is never captioned twice, and
+ *    failing closed to no caption at all rather than a fabricated one. This
+ *    is the fix for the night workspace c009105e's job c8f48c1e shipped a
+ *    change request onto the wrong case study: six identical "Untitled
+ *    picture" uploads gave the operator nothing to tell them apart by, and
+ *    the build agent guessed where the caption should have told it. See
+ *    `@/lib/ai/asset-caption.ts` for the call itself.
  */
 import { createHash } from 'node:crypto';
 import { assertSafeUploadedImage } from '@flowstarter/agentic-codegen/src/flowstarter/site-media';
 import { probeImageSize } from '@flowstarter/agentic-codegen/src/flowstarter/preview-assets';
+import { autoCaptionAsset, type AutoCaption } from '@/lib/ai/asset-caption';
 import {
   clientIp as resolveClientIp,
   NO_FORWARDED_HEADER,
@@ -59,6 +71,15 @@ export const MAX_REQUEST_BYTES = 24 * 1024 * 1024;
 
 /** How long a display URL lives. Long enough to render, short enough to leak badly. */
 export const SIGNED_URL_TTL_SECONDS = 300;
+
+/**
+ * A client's typed caption, capped. Matches the cap
+ * `packages/agentic-codegen/src/flowstarter/change-request-build.ts` already
+ * carries a caption under (`text(asset['caption'], 300)`) — the same column,
+ * the same ceiling, so a caption can never be truncated differently by
+ * whichever of the two places reads it first.
+ */
+export const MAX_CLIENT_CAPTION_CHARS = 300;
 
 /** Content types, derived from the verified bytes — never from the upload. */
 const MIME_BY_EXTENSION: Record<string, string> = {
@@ -102,7 +123,16 @@ export interface UploadedAsset {
   rightsConfirmedAt: string | null;
   /** True when this upload matched a file the workspace already had. */
   deduplicated: boolean;
+  /** What the picture shows, in one sentence — client's words or an auto-caption's. */
+  caption: string | null;
+  /** Who is answerable for `caption`: the client, or (until confirmed) a guess. */
+  captionSource: CaptionSource;
+  /** The auto-caption's `kind`, for display — never populated from a client caption. */
+  autoCaptionKind: AutoCaption['kind'] | null;
 }
+
+/** `null` before any caption exists; see the column comment in the migration. */
+export type CaptionSource = 'client' | 'auto' | null;
 
 export interface VerifiedFile {
   bytes: Buffer;
@@ -180,6 +210,15 @@ export interface StoreUploadInput {
    * their photo to without it ever reaching a path.
    */
   originalName?: string | null;
+  /**
+   * What the client typed about this specific file, if anything. Trimmed and
+   * capped to `MAX_CLIENT_CAPTION_CHARS`; blank or omitted means "let the
+   * auto-caption answer this", never "leave it uncaptioned by choice" — an
+   * upload with no caption still gets one, unless the vision call itself
+   * fails, in which case it fails closed to none rather than a guess nobody
+   * checked.
+   */
+  caption?: string | null;
 }
 
 /**
@@ -195,6 +234,7 @@ export async function storeUpload({
   slot = null,
   kind = null,
   originalName = null,
+  caption = null,
 }: StoreUploadInput): Promise<UploadedAsset> {
   const storagePath = assetObjectPath({
     workspaceId,
@@ -222,6 +262,13 @@ export async function storeUpload({
 
   const usableFor = usableForSlot(slot);
   const resolvedKind = kind ?? (slot === 'logo' ? 'logo' : null);
+  const resolvedCaption = await resolveUploadCaption(supabase, {
+    workspaceId,
+    sha256: file.sha256,
+    bytes: file.bytes,
+    mime: file.mime,
+    caption,
+  });
 
   const { data: inserted, error: insertError } = await withTenant(
     supabase,
@@ -240,8 +287,13 @@ export async function storeUpload({
       usable_for: usableFor,
       is_placeholder: false,
       ai_generated: false,
+      caption: resolvedCaption.caption,
+      caption_source: resolvedCaption.captionSource,
+      auto_caption: resolvedCaption.autoCaption,
     })
-    .select('id, kind, width, height, usable_for, rights_confirmed_at')
+    .select(
+      'id, kind, width, height, usable_for, rights_confirmed_at, caption, caption_source, auto_caption'
+    )
     .maybeSingle<AssetRowShape>();
 
   if (!insertError && inserted) {
@@ -256,12 +308,18 @@ export async function storeUpload({
       usableFor: inserted.usable_for ?? [],
       rightsConfirmedAt: inserted.rights_confirmed_at,
       deduplicated: false,
+      caption: inserted.caption,
+      captionSource: asCaptionSource(inserted.caption_source),
+      autoCaptionKind: inserted.auto_caption?.kind ?? null,
     };
   }
 
   // 23505: the partial unique index on (workspace_id, sha256) fired. The
   // client sent a photograph this workspace already has, which is a
-  // successful no-op, not an error — return what is already there.
+  // successful no-op, not an error — return what is already there
+  // (including whatever caption that earlier upload already resolved; this
+  // retry does not spend a second vision call or overwrite a client's own
+  // words with a blank).
   if (!isUniqueViolation(insertError)) {
     console.error('[api/client/assets] asset insert failed', insertError);
     throw new AssetUploadError(
@@ -287,10 +345,113 @@ interface AssetRowShape {
   height: number | null;
   usable_for: string[] | null;
   rights_confirmed_at: string | null;
+  caption: string | null;
+  caption_source: string | null;
+  auto_caption: AutoCaption | null;
+}
+
+function asCaptionSource(value: string | null): CaptionSource {
+  return value === 'client' || value === 'auto' ? value : null;
 }
 
 function isUniqueViolation(error: unknown): boolean {
   return (error as { code?: string } | null)?.code === '23505';
+}
+
+interface CaptionResolution {
+  caption: string | null;
+  captionSource: CaptionSource;
+  autoCaption: AutoCaption | null;
+}
+
+/**
+ * What `assets.caption`/`caption_source`/`auto_caption` should hold for one
+ * upload, decided once, at the one place every client upload passes through.
+ *
+ *   1. A client's own words win outright, trimmed and capped. No vision call
+ *      is made — asking the model to describe a picture the client already
+ *      described would be spending money to second-guess them.
+ *   2. Otherwise, the same bytes may already have been captioned: any asset
+ *      row anywhere (not just this workspace — a stock photo or a shared
+ *      template graphic can land in two workspaces with identical bytes and
+ *      an identical honest description) whose sha256 matches and which
+ *      already carries an auto-caption is reused verbatim. This is the
+ *      "cached by content hash" rule: the same picture is never sent to the
+ *      vision model twice.
+ *   3. Otherwise, one bounded vision call. Its failure (`autoCaptionAsset`
+ *      returning null — a timeout, a budget breach, an unparseable answer)
+ *      is not this function's failure: the upload still succeeds, just with
+ *      no caption, which is the fail-closed contract the whole feature is
+ *      built on.
+ */
+async function resolveUploadCaption(
+  supabase: ReturnType<typeof createSupabaseServiceRoleClient>,
+  input: {
+    workspaceId: string;
+    sha256: string;
+    bytes: Buffer;
+    mime: string;
+    caption: string | null;
+  }
+): Promise<CaptionResolution> {
+  const typed = input.caption?.trim();
+  if (typed) {
+    return {
+      caption: typed.slice(0, MAX_CLIENT_CAPTION_CHARS),
+      captionSource: 'client',
+      autoCaption: null,
+    };
+  }
+
+  const cached = await findCachedAutoCaption(supabase, input.sha256);
+  const auto =
+    cached ??
+    (await autoCaptionAsset({
+      bytes: input.bytes,
+      mime: input.mime,
+      workspaceId: input.workspaceId,
+    }));
+  if (!auto) {
+    return { caption: null, captionSource: null, autoCaption: null };
+  }
+  return { caption: auto.subject, captionSource: 'auto', autoCaption: auto };
+}
+
+/**
+ * An existing auto-caption for the same bytes, from any workspace, or null.
+ *
+ * Deliberately not `withTenant`-scoped: the whole point is to find a match
+ * outside this upload's own workspace (a match inside it would already have
+ * hit the (workspace_id, sha256) unique index and never reached this
+ * function at all). A cache hit here spends zero tokens and is not logged as
+ * a call — `recordLlmUsage` never runs for it, exactly as if captioning had
+ * simply been instant.
+ */
+async function findCachedAutoCaption(
+  supabase: ReturnType<typeof createSupabaseServiceRoleClient>,
+  sha256: string
+): Promise<AutoCaption | null> {
+  try {
+    // Filtered in JS rather than with `.not(...).limit(1).maybeSingle()`:
+    // the same bytes can legitimately exist under several sha256-matching
+    // rows across workspaces, most of them never captioned, and
+    // `maybeSingle()` errors on more than one row — this only ever wants
+    // "the first one that has an answer", not "assert there is one".
+    const { data, error } = (await supabase
+      .from('assets')
+      .select('auto_caption')
+      .eq('sha256', sha256)) as {
+      data: Array<{ auto_caption: AutoCaption | null }> | null;
+      error: unknown;
+    };
+    if (error || !data) return null;
+    return data.find((row) => row.auto_caption)?.auto_caption ?? null;
+  } catch (error) {
+    console.warn('[api/client/assets] auto-caption cache lookup failed', {
+      error: error instanceof Error ? error.message : 'unknown',
+    });
+    return null;
+  }
 }
 
 async function findBySha256(
@@ -301,7 +462,7 @@ async function findBySha256(
   const { data, error } = await withTenant(supabase, workspaceId)
     .from('assets')
     .select(
-      'id, kind, width, height, usable_for, rights_confirmed_at, storage_path, mime'
+      'id, kind, width, height, usable_for, rights_confirmed_at, storage_path, mime, caption, caption_source, auto_caption'
     )
     .eq('sha256', sha256)
     .maybeSingle<
@@ -319,6 +480,9 @@ async function findBySha256(
     usableFor: data.usable_for ?? [],
     rightsConfirmedAt: data.rights_confirmed_at,
     deduplicated: true,
+    caption: data.caption,
+    captionSource: asCaptionSource(data.caption_source),
+    autoCaptionKind: data.auto_caption?.kind ?? null,
   };
 }
 
@@ -352,6 +516,12 @@ export interface ClientAsset {
   usable: boolean;
   /** Short-lived signed URL, or null when the object could not be signed. */
   url: string | null;
+  /** What the picture shows, in one sentence — client's words or an auto-caption's. */
+  caption: string | null;
+  /** Who is answerable for `caption`: the client, or (until confirmed) a guess. */
+  captionSource: CaptionSource;
+  /** The auto-caption's `kind`, for display. */
+  autoCaptionKind: AutoCaption['kind'] | null;
 }
 
 export interface ListedAssetsRow extends AssetRowShape {
@@ -378,7 +548,7 @@ export async function listWorkspaceAssets(
   const { data, error } = await withTenant(supabase, workspaceId)
     .from('assets')
     .select(
-      'id, source, source_url, kind, mime, width, height, usable_for, selected, rights_confirmed_at, created_at, storage_path'
+      'id, source, source_url, kind, mime, width, height, usable_for, selected, rights_confirmed_at, created_at, storage_path, caption, caption_source, auto_caption'
     )
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -412,6 +582,9 @@ async function toClientAsset(
     createdAt: row.created_at,
     usable: Boolean(row.rights_confirmed_at),
     url: await signedUrl(supabase, workspaceId, row.storage_path),
+    caption: row.caption,
+    captionSource: asCaptionSource(row.caption_source),
+    autoCaptionKind: row.auto_caption?.kind ?? null,
   };
 }
 
@@ -462,6 +635,52 @@ export async function signedAssetUrl(
   storagePath: string | null
 ): Promise<string | null> {
   return signedUrl(createSupabaseServiceRoleClient(), workspaceId, storagePath);
+}
+
+export interface SetAssetCaptionResult {
+  id: string;
+  caption: string;
+  captionSource: 'client';
+}
+
+/**
+ * A client confirming or editing a caption — theirs, typed for the first
+ * time, or an auto-caption they read and stood behind unchanged. Either way
+ * the result is the same: `caption_source` becomes `'client'`, because from
+ * here on a human is answerable for the sentence, not a guess.
+ *
+ * `auto_caption` (the structured guess) is left alone. It is evidence for the
+ * change-request placement gate in `@flowstarter/agentic-codegen`, not a
+ * record of what the client currently endorses, and overwriting it here would
+ * erase the one thing that let that gate work when a client's edited caption
+ * no longer matches the model's own words.
+ *
+ * Returns `null` when the asset id does not belong to this workspace —
+ * `withTenant` makes that the same "not found" a cross-tenant id gets
+ * anywhere else in this module, not a distinguishable error a prober could
+ * use to enumerate other workspaces' asset ids.
+ */
+export async function setAssetCaption(
+  workspaceId: string,
+  assetId: string,
+  caption: string
+): Promise<SetAssetCaptionResult | null> {
+  const trimmed = caption.trim().slice(0, MAX_CLIENT_CAPTION_CHARS);
+  if (!trimmed) return null;
+
+  const supabase = createSupabaseServiceRoleClient();
+  const { data, error } = await withTenant(supabase, workspaceId)
+    .from('assets')
+    .update({ caption: trimmed, caption_source: 'client' })
+    .eq('id', assetId)
+    .select('id, caption')
+    .maybeSingle<{ id: string; caption: string | null }>();
+  if (error || !data) return null;
+  return {
+    id: data.id,
+    caption: data.caption ?? trimmed,
+    captionSource: 'client',
+  };
 }
 
 /**

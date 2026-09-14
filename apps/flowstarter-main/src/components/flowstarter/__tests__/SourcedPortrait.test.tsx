@@ -51,6 +51,9 @@ function asset(overrides: Partial<BriefAssetView> = {}): BriefAssetView {
     source: 'linkedin',
     sourceUrl: 'https://media.licdn.com/dms/image/example/profile.jpg',
     rightsConfirmedAt: null,
+    caption: null,
+    captionSource: null,
+    autoCaptionKind: null,
     ...overrides,
   };
 }

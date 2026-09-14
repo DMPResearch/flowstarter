@@ -10,6 +10,12 @@
  * The other half is the operator case: `OpenAsks` without a `workspaceId`
  * renders no uploader at all, so a read-only surface cannot accidentally
  * offer a write.
+ *
+ * Captions are the same shape of claim as the rights statement, and are
+ * tested the same way: an automatic caption is shown as a guess until a person
+ * saves it, and under `requireCaption` the confirm button is held shut until
+ * every picture has one. The pictures this exists for arrived without any, and
+ * two of them ended up on the wrong case study.
  */
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -21,6 +27,7 @@ import type { ProjectMessage } from '../ProjectThread';
 
 const WORKSPACE = '0f4e1088-8d8f-4f18-83b1-406cc292b23c';
 const ASSET_ONE = '11111111-1111-4111-8111-111111111111';
+const ASSET_TWO = '22222222-2222-4222-8222-222222222222';
 
 /**
  * A stand-in for XMLHttpRequest. The component uses XHR rather than `fetch`
@@ -69,25 +76,64 @@ class FakeXhr {
 const originalXhr = global.XMLHttpRequest;
 const originalFetch = global.fetch;
 
-function uploadResponse(usable: boolean) {
+function assetPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    id: ASSET_ONE,
+    kind: null,
+    mime: 'image/png',
+    width: 1600,
+    height: 900,
+    usable: false,
+    url: 'https://storage.test/signed.png',
+    caption: null,
+    captionSource: null,
+    autoCaptionKind: null,
+    ...overrides,
+  };
+}
+
+/** What the upload route answers with, for whichever assets the test needs. */
+function uploadOf(assets: Array<Record<string, unknown>>) {
   return JSON.stringify({
-    uploaded: [{ id: ASSET_ONE, deduplicated: false }],
-    assets: [
-      {
-        id: ASSET_ONE,
-        kind: null,
-        mime: 'image/png',
-        width: 1600,
-        height: 900,
-        usable,
-        url: 'https://storage.test/signed.png',
-      },
-    ],
+    uploaded: assets.map((asset) => ({ id: asset.id, deduplicated: false })),
+    assets,
     sufficiency: {
       ready: false,
       missing: [{ code: 'logo_missing', message: 'Send your logo' }],
     },
   });
+}
+
+function uploadResponse(usable: boolean) {
+  return uploadOf([assetPayload({ usable })]);
+}
+
+/**
+ * The caption route, answering whatever it was asked to store. Captions are
+ * the one write where "the same text again" is a real change -- it moves the
+ * source from us to the client -- so the double echoes the body back rather
+ * than returning a fixed row.
+ */
+function answerCaptionSaves() {
+  const mock = vi.fn(async (_url: string, init: RequestInit) => {
+    const body = JSON.parse(String(init.body)) as {
+      assetId: string;
+      caption: string;
+    };
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        asset: {
+          id: body.assetId,
+          caption: body.caption,
+          captionSource: 'client',
+        },
+      }),
+    };
+  });
+  global.fetch = mock as unknown as typeof fetch;
+  return mock;
 }
 
 async function pickAFile() {
@@ -195,6 +241,159 @@ describe('AssetUploader', () => {
       'larger than 8MB'
     );
     expect(screen.queryByTestId('asset-thumbnail')).not.toBeInTheDocument();
+  });
+});
+
+describe('AssetUploader captions', () => {
+  it('shows the automatic caption as a guess, in a box that can be corrected', async () => {
+    FakeXhr.body = uploadOf([
+      assetPayload({
+        caption: 'A dashboard listing three client projects',
+        captionSource: 'auto',
+        autoCaptionKind: 'screenshot',
+      }),
+    ]);
+    render(<AssetUploader workspaceId={WORKSPACE} />);
+    await pickAFile();
+
+    expect(
+      await screen.findByTestId(`asset-caption-input-${ASSET_ONE}`)
+    ).toHaveValue('A dashboard listing three client projects');
+    expect(
+      screen.getByTestId(`asset-caption-source-${ASSET_ONE}`)
+    ).toHaveTextContent('We had a guess at this');
+  });
+
+  it('says nothing about the source of a caption nobody has written', async () => {
+    render(<AssetUploader workspaceId={WORKSPACE} />);
+    await pickAFile();
+
+    await screen.findByTestId(`asset-caption-input-${ASSET_ONE}`);
+    expect(
+      screen.queryByTestId(`asset-caption-source-${ASSET_ONE}`)
+    ).not.toBeInTheDocument();
+  });
+
+  it('saves an edited caption as the client’s own words', async () => {
+    FakeXhr.body = uploadOf([
+      assetPayload({ caption: 'A screenshot', captionSource: 'auto' }),
+    ]);
+    const fetchMock = answerCaptionSaves();
+    render(<AssetUploader workspaceId={WORKSPACE} />);
+    await pickAFile();
+
+    const input = await screen.findByTestId(`asset-caption-input-${ASSET_ONE}`);
+    await userEvent.clear(input);
+    await userEvent.type(input, 'The booking page on a phone');
+    await userEvent.click(
+      screen.getByTestId(`asset-caption-save-${ASSET_ONE}`)
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string }
+    ];
+    expect(url).toBe(`/api/client/assets/${WORKSPACE}/caption`);
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body)).toEqual({
+      assetId: ASSET_ONE,
+      caption: 'The booking page on a phone',
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId(`asset-caption-source-${ASSET_ONE}`)
+      ).toHaveTextContent('You confirmed this')
+    );
+  });
+
+  it('surfaces a refused caption rather than showing it as confirmed', async () => {
+    FakeXhr.body = uploadOf([
+      assetPayload({ caption: 'A screenshot', captionSource: 'auto' }),
+    ]);
+    global.fetch = vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: 'That caption is too long.' }),
+    })) as unknown as typeof fetch;
+
+    render(<AssetUploader workspaceId={WORKSPACE} />);
+    await pickAFile();
+    await userEvent.click(
+      await screen.findByTestId(`asset-caption-save-${ASSET_ONE}`)
+    );
+
+    expect(await screen.findByTestId('asset-uploader-error')).toHaveTextContent(
+      'too long'
+    );
+    expect(
+      screen.getByTestId(`asset-caption-source-${ASSET_ONE}`)
+    ).toHaveTextContent('We had a guess at this');
+  });
+
+  it('holds the rights confirmation shut until every picture has been captioned', async () => {
+    FakeXhr.body = uploadOf([
+      assetPayload({ caption: 'A dashboard', captionSource: 'auto' }),
+      assetPayload({
+        id: ASSET_TWO,
+        caption: 'A settings page',
+        captionSource: 'auto',
+      }),
+    ]);
+    answerCaptionSaves();
+    render(
+      <AssetUploader
+        workspaceId={WORKSPACE}
+        requireCaption
+        captionPrompt="Say what this shows, and name the project it belongs to"
+      />
+    );
+    await pickAFile();
+
+    await screen.findByTestId(`asset-caption-input-${ASSET_ONE}`);
+    await userEvent.click(screen.getByTestId('rights-checkbox'));
+    expect(screen.getByTestId('confirm-rights')).toBeDisabled();
+    expect(screen.getByTestId('asset-caption-required-hint')).toHaveTextContent(
+      'name the project it belongs to'
+    );
+
+    // One of two is not enough: the picture without a caption is exactly the
+    // one that would be placed by guesswork.
+    await userEvent.click(
+      screen.getByTestId(`asset-caption-save-${ASSET_ONE}`)
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByTestId(`asset-caption-source-${ASSET_ONE}`)
+      ).toHaveTextContent('You confirmed this')
+    );
+    expect(screen.getByTestId('confirm-rights')).toBeDisabled();
+
+    await userEvent.click(
+      screen.getByTestId(`asset-caption-save-${ASSET_TWO}`)
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('confirm-rights')).toBeEnabled()
+    );
+    expect(
+      screen.queryByTestId('asset-caption-required-hint')
+    ).not.toBeInTheDocument();
+  });
+
+  it('leaves the rights confirmation alone where a caption is optional', async () => {
+    FakeXhr.body = uploadOf([
+      assetPayload({ caption: 'A workshop bench', captionSource: 'auto' }),
+    ]);
+    render(<AssetUploader workspaceId={WORKSPACE} />);
+    await pickAFile();
+
+    await screen.findByTestId(`asset-caption-input-${ASSET_ONE}`);
+    await userEvent.click(screen.getByTestId('rights-checkbox'));
+    expect(screen.getByTestId('confirm-rights')).toBeEnabled();
+    expect(
+      screen.queryByTestId('asset-caption-required-hint')
+    ).not.toBeInTheDocument();
   });
 });
 

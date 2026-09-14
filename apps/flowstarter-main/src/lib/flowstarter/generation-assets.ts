@@ -26,6 +26,24 @@ export interface UsableAsset {
   usableFor: string[];
   caption: string | null;
   /**
+   * Who is answerable for `caption`: `'client'` once a human typed or
+   * confirmed it, `'auto'` while it is still only a vision call's unconfirmed
+   * guess, null before any caption exists. The change-request placement rule
+   * and its build-output gate (`@flowstarter/agentic-codegen`) read this the
+   * same as `caption` itself — an auto-caption is still evidence, just
+   * evidence nobody has stood behind yet.
+   */
+  captionSource: 'client' | 'auto' | null;
+  /**
+   * The auto-caption's structured `kind` (`screenshot` | `photo` | `logo` |
+   * `document`), for display next to `caption` in the operator's
+   * change-request picker. Distinct from `kind` above, which is
+   * `assets.kind` and means something else entirely (`portrait` for the
+   * about-section photograph); this one is never written by anything but
+   * `autoCaptionAsset`.
+   */
+  autoCaptionKind: 'screenshot' | 'photo' | 'logo' | 'document' | null;
+  /**
    * The browser's own filename, kept for display only (the operator's
    * change-request asset picker leans on it when there is no caption). It is
    * never the storage key — that is the content hash in `storagePath` — so
@@ -63,6 +81,8 @@ interface AssetRow {
   height: number | null;
   usable_for: string[] | null;
   caption: string | null;
+  caption_source: string | null;
+  auto_caption: { kind: string } | null;
   original_name: string | null;
   created_at: string | null;
   kind: string | null;
@@ -78,7 +98,7 @@ export async function loadUsableAssets(
   const { data, error } = await withTenant(supabase, workspaceId)
     .from('assets')
     .select(
-      'id, storage_path, mime, width, height, usable_for, caption, original_name, created_at, kind, source, source_url, rights_confirmed_at'
+      'id, storage_path, mime, width, height, usable_for, caption, caption_source, auto_caption, original_name, created_at, kind, source, source_url, rights_confirmed_at'
     )
     .not('rights_confirmed_at', 'is', null);
   if (error) throw error;
@@ -94,6 +114,12 @@ export async function loadUsableAssets(
       height: row.height,
       usableFor: row.usable_for ?? [],
       caption: row.caption,
+      captionSource:
+        row.caption_source === 'client' || row.caption_source === 'auto'
+          ? row.caption_source
+          : null,
+      autoCaptionKind:
+        (row.auto_caption?.kind as UsableAsset['autoCaptionKind']) ?? null,
       originalName: row.original_name,
       createdAt: row.created_at,
       kind: row.kind,

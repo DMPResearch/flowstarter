@@ -61,6 +61,9 @@ function asset(overrides: Partial<BriefAssetView> = {}): BriefAssetView {
     source: 'upload',
     sourceUrl: null,
     rightsConfirmedAt: '2026-09-12T10:00:00.000Z',
+    caption: null,
+    captionSource: null,
+    autoCaptionKind: null,
     ...overrides,
   };
 }
@@ -783,5 +786,97 @@ describe('BriefForm — business name', () => {
     await user.click(screen.getByTestId('brief-save'));
     await waitFor(() => expect(lastPutBody().offer).toBe(''));
     expect(lastPutBody().businessName).toBe('Arome Coffee');
+  });
+});
+
+/**
+ * Captions, on the form that shows them back.
+ *
+ * The form neither writes nor guesses one: it displays what is stored and says
+ * whose sentence it is, and it asks for one on the upload where placement
+ * depends on it -- a project screenshot -- while leaving it optional on the
+ * general photographs.
+ */
+describe('BriefForm — captions', () => {
+  const SHOT = '44444444-4444-4444-8444-444444444444';
+
+  it('shows a screenshot’s caption under it, and says we suggested it', () => {
+    mount(
+      brief({
+        projects: [
+          {
+            name: 'Arome Coffee',
+            line: '',
+            link: '',
+            screenshotAssetIds: [SHOT],
+          },
+        ],
+      }),
+      [
+        asset({
+          id: SHOT,
+          caption: 'The Arome Coffee order page on a phone',
+          captionSource: 'auto',
+          autoCaptionKind: 'screenshot',
+        }),
+      ]
+    );
+
+    const row = screen.getByTestId('brief-project-row');
+    expect(within(row).getByTestId('brief-asset-caption')).toHaveTextContent(
+      'The Arome Coffee order page on a phone'
+    );
+    expect(
+      within(row).getByTestId('brief-asset-caption-source')
+    ).toHaveTextContent('We suggested this');
+  });
+
+  it('says a photo’s caption is the client’s when they wrote it', () => {
+    mount(brief({ photoAssetIds: [PHOTO_BIG] }), [
+      asset({
+        id: PHOTO_BIG,
+        caption: 'The bench at the back of the workshop',
+        captionSource: 'client',
+      }),
+    ]);
+
+    const photo = screen.getByTestId('brief-photo');
+    expect(within(photo).getByTestId('brief-asset-caption')).toHaveTextContent(
+      'The bench at the back of the workshop'
+    );
+    expect(
+      within(photo).getByTestId('brief-asset-caption-source')
+    ).toHaveTextContent('You wrote this');
+  });
+
+  it('shows nothing at all for a picture nobody has captioned', () => {
+    mount(brief({ photoAssetIds: [PHOTO_BIG] }), [asset({ id: PHOTO_BIG })]);
+
+    expect(screen.getByTestId('brief-photo')).toBeInTheDocument();
+    expect(screen.queryByTestId('brief-asset-caption')).toBeNull();
+    expect(screen.queryByTestId('brief-asset-caption-source')).toBeNull();
+  });
+
+  // A screenshot with no caption cannot be filed against a project; a
+  // photograph of a workshop is still a photograph of a workshop. So the gate
+  // is on one uploader and not the other, and the prompt names the project.
+  it('asks for a caption on project screenshots and not on the photos', () => {
+    mount(
+      brief({
+        projects: [
+          { name: 'Arome Coffee', line: '', link: '', screenshotAssetIds: [] },
+        ],
+      })
+    );
+
+    const projectUploader = within(
+      screen.getByTestId('brief-project-row')
+    ).getByTestId('asset-uploader');
+    expect(projectUploader).toHaveAttribute('data-require-caption', 'true');
+
+    const photosUploader = screen
+      .getAllByTestId('asset-uploader')
+      .find((node) => node.textContent?.includes('Add photos'));
+    expect(photosUploader).toHaveAttribute('data-require-caption', 'false');
   });
 });

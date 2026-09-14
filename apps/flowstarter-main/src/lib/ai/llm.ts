@@ -60,6 +60,8 @@ export const LLM_ACTIONS = [
    * would only ever hide a bug.
    */
   'acceptable_use',
+  /** A bounded vision call describing one client upload it was not told. */
+  'caption_asset',
 ] as const;
 
 export type LlmAction = (typeof LLM_ACTIONS)[number];
@@ -131,6 +133,15 @@ export const LLM_BUDGETS: Record<LlmAction, LlmActionConfig> = {
     maxTokens: 6_000,
     maxOutputTokens: 300,
     model: 'openai/gpt-4o-mini',
+  },
+  // Reuses `models.vision` in client.ts (the alias already routed to this
+  // model before any caller existed for it). One image plus a short prompt
+  // is a few hundred input tokens; the ceiling is generous headroom against
+  // a provider's own image-tokenization cost, not a sized estimate of it.
+  caption_asset: {
+    maxTokens: 3_000,
+    maxOutputTokens: 400,
+    model: 'anthropic/claude-3.7-sonnet',
   },
 };
 

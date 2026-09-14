@@ -21,6 +21,16 @@
  * Progress is real (XHR upload events), not a spinner pretending: a client on
  * a phone sending four photographs over a slow connection deserves to know
  * whether anything is happening.
+ *
+ * The third thing it does, after the thumbnails are back, is ask what each
+ * picture *shows*. Six files that arrived on 2026-09-12 carried no caption at
+ * all, so the operator's picker offered six identical lines and the build
+ * agent -- rightly forbidden from guessing -- put two screenshots on the wrong
+ * case study under an invented caption. A caption the client wrote, or an
+ * automatic one they read and confirmed, is the only thing downstream that can
+ * tell one 1200x750 PNG from another. `requireCaption` makes that confirmation
+ * part of the same gate the rights statement already is, for the uploads where
+ * placement depends on it.
  */
 import { useCallback, useId, useRef, useState } from 'react';
 import { cn } from '@/lib/utils';
@@ -38,6 +48,12 @@ export interface ClientAssetView {
   height: number | null;
   usable: boolean;
   url: string | null;
+  /** What the picture shows, in the client's words or ours. */
+  caption: string | null;
+  /** Whose words those are. Null when nothing has been written yet. */
+  captionSource: 'client' | 'auto' | null;
+  /** What the automatic pass took the picture to be, when it ran. */
+  autoCaptionKind: 'screenshot' | 'photo' | 'logo' | 'document' | null;
 }
 
 export interface SufficiencySummary {
@@ -55,6 +71,16 @@ export interface AssetUploaderProps {
   label?: string;
   /** Fired with the server's recomputed readiness after any successful write. */
   onSufficiency?: (sufficiency: SufficiencySummary | null) => void;
+  /**
+   * Whether a caption is part of what "confirmed" means here. True on the
+   * uploads whose placement is decided by what the picture shows -- a project
+   * screenshot has to say which project it belongs to, and nothing else in
+   * the request carries that. False everywhere else: a photograph of a
+   * workshop is still a photograph of a workshop with nothing typed under it.
+   */
+  requireCaption?: boolean;
+  /** The sentence shown while a required caption is still outstanding. */
+  captionPrompt?: string;
   className?: string;
 }
 
@@ -108,6 +134,8 @@ export function AssetUploader({
   slot = null,
   label = 'Add photos',
   onSufficiency,
+  requireCaption = false,
+  captionPrompt = 'Say what each picture shows, so we put it in the right place.',
   className,
 }: AssetUploaderProps) {
   const inputId = useId();
@@ -117,6 +145,11 @@ export function AssetUploader({
   const [error, setError] = useState<string | null>(null);
   const [uploaded, setUploaded] = useState<ClientAssetView[]>([]);
   const [agreed, setAgreed] = useState(false);
+  // What is in the caption boxes right now, keyed by asset. Held apart from
+  // `uploaded` so an automatic caption being edited is still distinguishable
+  // from one that was saved: only the save moves the source to 'client'.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [savingCaption, setSavingCaption] = useState<string | null>(null);
 
   const endpoint = `/api/client/assets/${workspaceId}`;
   const statement = rightsStatementText();
@@ -205,13 +238,66 @@ export function AssetUploader({
     }
   }, [agreed, endpoint, onSufficiency, uploaded]);
 
+  /**
+   * Writes one caption. Re-sending an automatic caption unchanged is not a
+   * no-op: the route sets the source to 'client' either way, and that is the
+   * whole record that a person read the sentence and stood behind it.
+   */
+  const saveCaption = useCallback(
+    async (assetId: string, caption: string) => {
+      const text = caption.trim();
+      if (text.length === 0) return;
+      setSavingCaption(assetId);
+      setError(null);
+      try {
+        const response = await fetch(`${endpoint}/caption`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ assetId, caption: text }),
+        });
+        const payload = (await response.json().catch(() => ({}))) as {
+          asset?: { id: string; caption: string; captionSource: 'client' };
+          error?: string;
+        };
+        if (!response.ok || !payload.asset) {
+          setError(payload.error ?? 'We could not save that caption.');
+          return;
+        }
+        const saved = payload.asset;
+        // The stored text wins over what is in the box, the way the brief
+        // form takes the server's answer back after a save.
+        setUploaded((current) =>
+          current.map((asset) =>
+            asset.id === saved.id
+              ? {
+                  ...asset,
+                  caption: saved.caption,
+                  captionSource: saved.captionSource,
+                }
+              : asset
+          )
+        );
+        setDrafts((current) => ({ ...current, [saved.id]: saved.caption }));
+      } catch {
+        setError('We could not save that caption. Please try again.');
+      } finally {
+        setSavingCaption(null);
+      }
+    },
+    [endpoint]
+  );
+
   const busy = phase === 'uploading' || phase === 'confirming';
   const needsRights = uploaded.some((asset) => !asset.usable);
+  const captionsOutstanding =
+    requireCaption &&
+    uploaded.some((asset) => asset.captionSource !== 'client');
 
   return (
     <div
       className={cn('flex flex-col gap-3', className)}
       data-testid="asset-uploader"
+      data-require-caption={requireCaption ? 'true' : 'false'}
     >
       <div className="flex flex-wrap items-center gap-3">
         <label
@@ -268,23 +354,71 @@ export function AssetUploader({
       ) : null}
 
       {uploaded.length > 0 ? (
-        <ul className="flex flex-wrap gap-2" aria-label="Files you sent">
-          {uploaded.map((asset) => (
-            <li key={asset.id} className="relative">
-              {/* eslint-disable-next-line @next/next/no-img-element -- a signed, short-lived URL on a private bucket cannot be optimised by next/image */}
-              <img
-                src={asset.url ?? ''}
-                alt="Uploaded file"
-                data-testid="asset-thumbnail"
-                data-usable={asset.usable ? 'true' : 'false'}
-                className={cn(
-                  'h-16 w-16 rounded-xl border border-[var(--fs-rule)] object-cover',
-                  !asset.usable && 'opacity-60'
-                )}
-              />
-            </li>
-          ))}
+        <ul className="flex flex-wrap gap-3" aria-label="Files you sent">
+          {uploaded.map((asset) => {
+            const draft = drafts[asset.id] ?? asset.caption ?? '';
+            return (
+              <li key={asset.id} className="flex w-44 flex-col gap-1">
+                {/* eslint-disable-next-line @next/next/no-img-element -- a signed, short-lived URL on a private bucket cannot be optimised by next/image */}
+                <img
+                  src={asset.url ?? ''}
+                  alt="Uploaded file"
+                  data-testid="asset-thumbnail"
+                  data-usable={asset.usable ? 'true' : 'false'}
+                  className={cn(
+                    'h-16 w-16 rounded-xl border border-[var(--fs-rule)] object-cover',
+                    !asset.usable && 'opacity-60'
+                  )}
+                />
+                <input
+                  type="text"
+                  value={draft}
+                  aria-label="What this picture shows"
+                  placeholder="What this picture shows"
+                  disabled={savingCaption === asset.id}
+                  data-testid={`asset-caption-input-${asset.id}`}
+                  onChange={(event) =>
+                    setDrafts((current) => ({
+                      ...current,
+                      [asset.id]: event.target.value,
+                    }))
+                  }
+                  className="w-full rounded-lg border border-[var(--fs-rule)] bg-transparent px-2 py-1 text-[11px] text-[var(--fs-ink)] outline-none focus:border-[var(--purple-primary)]"
+                />
+                {asset.captionSource ? (
+                  <span
+                    data-testid={`asset-caption-source-${asset.id}`}
+                    className="text-[11px] leading-snug text-[var(--fs-ink-faint)]"
+                  >
+                    {asset.captionSource === 'auto'
+                      ? 'We had a guess at this. Check it is right.'
+                      : 'You confirmed this.'}
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  disabled={
+                    savingCaption === asset.id || draft.trim().length === 0
+                  }
+                  onClick={() => void saveCaption(asset.id, draft)}
+                  data-testid={`asset-caption-save-${asset.id}`}
+                  className="w-fit rounded-lg border border-[var(--fs-rule)] px-2 py-1 text-[11px] font-semibold text-[var(--fs-ink)] transition-colors hover:border-[var(--purple-primary)]/40 disabled:pointer-events-none disabled:opacity-40"
+                >
+                  {savingCaption === asset.id ? 'Saving…' : 'Save caption'}
+                </button>
+              </li>
+            );
+          })}
         </ul>
+      ) : null}
+
+      {captionsOutstanding ? (
+        <p
+          data-testid="asset-caption-required-hint"
+          className="text-[11px] leading-relaxed text-[var(--fs-ink-dim)]"
+        >
+          {captionPrompt}
+        </p>
       ) : null}
 
       {needsRights ? (
@@ -302,7 +436,7 @@ export function AssetUploader({
           </label>
           <button
             type="button"
-            disabled={!agreed || busy}
+            disabled={!agreed || busy || captionsOutstanding}
             onClick={() => void confirmRights()}
             data-testid="confirm-rights"
             className="w-fit rounded-lg bg-[linear-gradient(135deg,var(--landing-btn-from),var(--landing-btn-via))] px-4 py-2 text-xs font-semibold text-white shadow-md shadow-[var(--purple-primary-lightest)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-[linear-gradient(135deg,var(--landing-btn-hover-from),var(--landing-btn-hover-via))] active:translate-y-0 disabled:pointer-events-none disabled:opacity-40"
@@ -311,6 +445,9 @@ export function AssetUploader({
           </button>
           <p className="text-[11px] text-[var(--fs-ink-faint)]">
             We won&apos;t put anything on your site until you confirm this.
+            {captionsOutstanding
+              ? ' Save a caption on each picture first, so it lands where you meant it to.'
+              : ''}
           </p>
         </div>
       ) : null}
