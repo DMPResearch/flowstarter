@@ -289,13 +289,13 @@ describe('the intake conversation', () => {
 });
 
 describe('the composer', () => {
-  it('sends on Enter, the way every chat the visitor already uses does', async () => {
+  it('sends on Shift+Enter so Enter can keep adding lines', async () => {
     const { user } = renderWizard();
     const composer = screen.getByLabelText(
       t('landing.discovery.chat.composerLabel')
     );
 
-    await user.type(composer, 'Maria Ionescu{Enter}');
+    await user.type(composer, 'Maria Ionescu{Shift>}{Enter}{/Shift}');
 
     // The next question is up, and the answer landed in the transcript —
     // same outcome as clicking Send, this time from the keyboard alone.
@@ -306,15 +306,15 @@ describe('the composer', () => {
     expect(within(log).getByText('Maria Ionescu')).toBeInTheDocument();
   });
 
-  it('breaks the line on Shift+Enter instead of sending', async () => {
+  it('breaks the line on Enter instead of sending', async () => {
     const { user } = renderWizard();
     const composer = screen.getByLabelText(
       t('landing.discovery.chat.composerLabel')
     );
 
-    await user.type(composer, 'Maria{Shift>}{Enter}{/Shift}Ionescu');
+    await user.type(composer, 'Maria{Enter}Ionescu');
 
-    // Still on the same question — Shift+Enter did not submit.
+    // Still on the same question — Enter did not submit.
     expect(
       screen.getByText(t('landing.discovery.chat.q.fullName.prompt'))
     ).toBeInTheDocument();
@@ -323,6 +323,13 @@ describe('the composer', () => {
     ).toBeNull();
     // And the newline really is in the value, not swallowed.
     expect(composer).toHaveValue('Maria\nIonescu');
+  });
+
+  it('tells the visitor how Enter and Shift+Enter work', () => {
+    renderWizard();
+    expect(
+      screen.getByText(t('landing.discovery.chat.composerHint'))
+    ).toBeInTheDocument();
   });
 });
 

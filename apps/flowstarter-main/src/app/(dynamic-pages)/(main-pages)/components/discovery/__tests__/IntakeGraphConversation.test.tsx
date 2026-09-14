@@ -313,7 +313,7 @@ describe('answering resumes the thread', () => {
     expect(await screen.findByText('And your email?')).toBeInTheDocument();
   });
 
-  it('sends on Enter, the same as clicking Send', async () => {
+  it('sends on Shift+Enter, the same as clicking Send', async () => {
     const user = userEvent.setup();
     let call = 0;
     global.fetch = vi.fn(async (_input, init) => {
@@ -366,12 +366,12 @@ describe('answering resumes the thread', () => {
     const composer = screen.getByLabelText(
       t('landing.discovery.chat.composerLabel')
     );
-    await user.type(composer, 'Maria Ionescu{Enter}');
+    await user.type(composer, 'Maria Ionescu{Shift>}{Enter}{/Shift}');
 
     expect(await screen.findByText('And your email?')).toBeInTheDocument();
   });
 
-  it('breaks the line on Shift+Enter instead of sending', async () => {
+  it('breaks the line on Enter instead of sending', async () => {
     const user = userEvent.setup();
     global.fetch = vi.fn(async () => ({
       ok: true,
@@ -398,9 +398,9 @@ describe('answering resumes the thread', () => {
     const composer = screen.getByLabelText(
       t('landing.discovery.chat.composerLabel')
     );
-    await user.type(composer, 'Maria{Shift>}{Enter}{/Shift}Ionescu');
+    await user.type(composer, 'Maria{Enter}Ionescu');
 
-    // No second call to the route — Shift+Enter never submitted.
+    // No second call to the route — Enter never submitted.
     expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(composer).toHaveValue('Maria\nIonescu');
     expect(screen.getByText('What should I call you?')).toBeInTheDocument();

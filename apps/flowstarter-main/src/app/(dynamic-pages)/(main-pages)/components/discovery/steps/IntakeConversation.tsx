@@ -801,33 +801,38 @@ function Composer({
   useAutosizeTextarea(composerRef, value);
 
   return (
-    <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
-      <textarea
-        ref={composerRef}
-        value={value}
-        onChange={(event) => setValue(event.target.value)}
-        onKeyDown={(event) => {
-          // Enter sends, Shift+Enter breaks the line — the convention every
-          // chat the visitor already uses follows.
-          if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault();
-            send();
-          }
-        }}
-        rows={1}
-        aria-label={t('landing.discovery.chat.composerLabel')}
-        placeholder={placeholder}
-        className={composerClass}
-      />
-      <Button
-        variant="primary"
-        size="sm"
-        onClick={send}
-        disabled={question.required && isWords && value.trim().length === 0}
-        className={composerSendClass}
-      >
-        {t('landing.discovery.chat.send')}
-      </Button>
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+        <textarea
+          ref={composerRef}
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          onKeyDown={(event) => {
+            // Shift+Enter sends. Plain Enter inserts a new line so longer
+            // answers can be written without fighting the keyboard.
+            if (event.key === 'Enter' && event.shiftKey) {
+              event.preventDefault();
+              send();
+            }
+          }}
+          rows={1}
+          aria-label={t('landing.discovery.chat.composerLabel')}
+          placeholder={placeholder}
+          className={composerClass}
+        />
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={send}
+          disabled={question.required && isWords && value.trim().length === 0}
+          className={composerSendClass}
+        >
+          {t('landing.discovery.chat.send')}
+        </Button>
+      </div>
+      <p className="text-xs text-[var(--fs-ink-faint)]">
+        {t('landing.discovery.chat.composerHint')}
+      </p>
     </div>
   );
 }

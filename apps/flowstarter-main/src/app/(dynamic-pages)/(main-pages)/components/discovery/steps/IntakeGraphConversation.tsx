@@ -496,35 +496,42 @@ function TypedAnswer({
   useAutosizeTextarea(composerRef, draft);
 
   return (
-    <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
-      <textarea
-        ref={composerRef}
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault();
-            onSubmit(draft);
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+        <textarea
+          ref={composerRef}
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            // Shift+Enter sends. Plain Enter inserts a new line so longer
+            // answers can be written without fighting the keyboard.
+            if (event.key === 'Enter' && event.shiftKey) {
+              event.preventDefault();
+              onSubmit(draft);
+            }
+          }}
+          rows={1}
+          aria-label={t('landing.discovery.chat.composerLabel')}
+          placeholder={
+            question.placeholderKey
+              ? t(question.placeholderKey)
+              : t('landing.discovery.chat.composerPlaceholder')
           }
-        }}
-        rows={1}
-        aria-label={t('landing.discovery.chat.composerLabel')}
-        placeholder={
-          question.placeholderKey
-            ? t(question.placeholderKey)
-            : t('landing.discovery.chat.composerPlaceholder')
-        }
-        className={composerClass}
-      />
-      <Button
-        variant="primary"
-        size="sm"
-        onClick={() => onSubmit(draft)}
-        disabled={question.required && draft.trim().length === 0}
-        className={composerSendClass}
-      >
-        {t('landing.discovery.chat.send')}
-      </Button>
+          className={composerClass}
+        />
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={() => onSubmit(draft)}
+          disabled={question.required && draft.trim().length === 0}
+          className={composerSendClass}
+        >
+          {t('landing.discovery.chat.send')}
+        </Button>
+      </div>
+      <p className="text-xs text-[var(--fs-ink-faint)]">
+        {t('landing.discovery.chat.composerHint')}
+      </p>
     </div>
   );
 }
