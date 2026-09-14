@@ -126,38 +126,82 @@ Notes for the gate:
   touches nothing in this package:
   `classifyAcceptableUse(text, { tiers: { acceptable_use: myTier } })`. It is
   consulted only where the local tier abstained.
-- **Bundling.** Artifacts are read with `readFileSync` from paths next to the
-  source, so mark the package external in any bundler that traces imports only
-  (`serverExternalPackages` in Next), or set `SIGMA_FLOWSTARTER_ROOT` and
-  `SIGMA_CORE_ROOT`.
+- **Bundling.** `main`/`types`/`exports` point at built `dist/` output (see
+  `@flowstarter/sigma-core`'s README, "Packaging: this ships built JS, not
+  source" — the same fix applies here, via the same `tsc -p
+  tsconfig.lib.json` build). `config/` and `models/` are read with
+  `readFileSync` from paths next to the package root, which `dist/` sits
+  beside exactly as `src/` did, so this resolves normally in a bundler that
+  traces real files on disk — no `webpackIgnore`, no runtime-only import, no
+  `serverExternalPackages` needed for **this** package. The one thing that
+  still may need external-package treatment in the consuming app is
+  `onnxruntime-node`'s native `.node` binding, several hops down in
+  `@flowstarter/sigma-core`'s dependency tree — that is an ordinary "don't
+  bundle a native addon" concern and not specific to this package. Override
+  `SIGMA_FLOWSTARTER_ROOT` / `SIGMA_CORE_ROOT` only for something unusual, like
+  a deploy layout that does not keep `config/`/`models/` next to `dist/`.
 
-## Measured, 2026-09-14
+## Measured, 2026-09-14 (retrained)
 
 Encoder: `Xenova/multilingual-e5-small`, q8 ONNX (`onnx/model_quantized.onnx`),
 pinned at `761b726d…`, 135 MB on disk, 384 dimensions.
 
 Operating point, from `scripts/calibrate.mjs` on a template-disjoint holdout
-(1 344 phrases):
+(1 416 phrases, up from 1 344 — see "Medical and clinical adjacency retrain"
+below):
 
 | head | `min_sim` | `margin` | holdout coverage | accuracy on covered | cost | robust cost |
 |---|---|---|---|---|---|---|
-| `acceptable_use` | 0.02 | 0.035 | 93.1 % | 96.9 % | 669 | 706 |
-| `scope` | 0.06 | 0.00 | 93.5 % | 93.7 % | 210 | 234 |
+| `acceptable_use` | 0.02 | 0.04 | 93.2 % | 97.2 % | 693 | 717 |
+| `scope` | 0.06 | 0.00 | 93.2 % | 93.7 % | 212 | 236 |
 
 Held-out evaluation, from the committed datasets (real briefs, written to look
 nothing like the training templates):
 
 | | cases | cost (gate) | coverage | accuracy on covered | the mistake that is not tradeable |
 |---|---|---|---|---|---|
-| acceptable use | 156 scored (+4 xfail) | **142** (≤ 200) | 94.9 % | 89.9 % | 0 prohibited misses |
+| acceptable use | 157 scored (+4 xfail) | **135** (≤ 200) | 95.5 % | 90.0 % | 0 prohibited misses |
 | scope | 130 | **2** (≤ 40) | 99.2 % | 99.2 % | 0 custom work called standard |
 
 Latency on an M-series Mac (`pnpm bench`), whole decision, both heads:
 
-- cold load 576 ms, paid once by `warmSigma()`
-- warm, uncached **p50 4.3 ms**, p95 6.5 ms
+- cold load 571 ms, paid once by `warmSigma()`
+- warm, uncached **p50 4.6 ms**, p95 6.0 ms
 - warm, cached 0.0 ms (content-hash embedding cache)
 - per-call budget 400 ms, after which the tier fails open to `review`
+
+### Medical and clinical adjacency retrain, 2026-09-14
+
+`test/data/acceptable-use-eval.json` gained `clean_dermatology_laser_tattoo_removal`,
+mirroring flowstarter-main's own acceptable-use fixture `au-060` (a licensed
+dermatology clinic offering laser tattoo removal and skin cancer screening).
+Before this retrain, the committed centroids read that brief as
+`unlicensed_medical_financial_claims` — margin 0.053 over the runner-up,
+close enough to the `review` side of the `refuse` guard that it landed on
+`review` rather than `refuse`, but for the wrong reason and one calibration
+away from becoming a hard refusal. Confident and correct is the property that
+matters here, not "did not quite refuse."
+
+Fix: five new `clean` seeds per language in `src/training/phrases.ts`
+(dermatology clinic with laser tattoo removal and skin cancer screening,
+registered dermatologist for mole checks, physiotherapy clinic, cosmetic
+clinic run by licensed practitioners, optician), plus one `licensed_pharmacy`
+seed per language stating a licence number explicitly, then a full
+`train` → `calibrate` cycle. Dentistry and veterinary practice were already
+represented in `clean`.
+
+| | before | after |
+|---|---|---|
+| `au-060`-equivalent fixture | `unlicensed_medical_financial_claims`, `review` (margin 0.053, one calibration from `refuse`) | `clean`, `allow` (similarity 0.304, margin 0.137) |
+| acceptable-use held-out cost (157 cases incl. the new fixture) | 155 | **135** (≤ 200 gate) |
+| acceptable-use held-out coverage | 94.9 % | 95.5 % |
+| acceptable-use held-out accuracy on covered | 89.3 % | 90.0 % |
+| prohibited misses | 0 | 0 (unchanged; the gate that must never move) |
+
+Both numbers in the "before" row were measured on this same head with the new
+fixture already added to the eval set but the old, unretrained centroids
+still committed, so the comparison isolates the seed change rather than also
+crediting it for a fixture that did not previously exist in the set.
 
 ## Known weaknesses
 
@@ -209,6 +253,15 @@ calibrated against geometry that no longer exists, and `train` also rewrites
 per-label phrase counts, the date — so a number in the band file can be traced
 to something rather than to somebody's afternoon.
 
+Each of `train`, `calibrate`, `test`, `bench`, `build` and `typecheck` carries
+a `pre*` hook that builds `@flowstarter/sigma-core` first, because this
+package now imports it through `exports` pointing at *its* `dist/` (see
+"Bundling" below) rather than its source — a stale or missing
+`sigma-core/dist` would otherwise be a confusing "cannot find module" a layer
+away from the command you actually ran. The hooks make the commands above
+work standalone on a fresh checkout; you do not need to build sigma-core by
+hand first.
+
 **To add a category**: add its labels to `src/taxonomy.ts`, seeds in six
 languages to `src/training/phrases.ts`, rows to the eval dataset, then
 train → calibrate → test. No code changes anywhere else; that is the payoff of
@@ -250,4 +303,6 @@ src/gate.ts                classifyAcceptableUse, classifyScope, decide, warmSig
 src/costs.ts               which mistake happened; config/ prices it
 src/training/phrases.ts    the synthetic multilingual seeds, no LLM in the loop
 test/data/*.json           the held-out evaluation sets
+dist/                      what `main`/`exports` actually point at (generated,
+                           gitignored — `pnpm run build`, see "Bundling")
 ```

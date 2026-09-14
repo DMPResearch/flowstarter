@@ -5,7 +5,7 @@
     "number in semantic-config.json can be traced to an encoder revision and",
     "a phrase count, not to somebody’s afternoon."
   ],
-  "built_at": "2026-09-14T09:16:10.377Z",
+  "built_at": "2026-09-14T13:54:08.952Z",
   "centroids_version": "2026-09-14",
   "encoder": "Xenova/multilingual-e5-small@q8",
   "encoder_revision": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
@@ -27,7 +27,7 @@
   "generator": "src/training/phrases.ts - seeds x templates, no LLM in the loop; the train/holdout split is by template so calibration never sees a phrasing the centroids were built from",
   "splits": {
     "train": {
-      "phrases": 4032,
+      "phrases": 4248,
       "counts": {
         "acceptable_use/illegal_drugs": 180,
         "acceptable_use/prostitution_escort": 180,
@@ -38,20 +38,20 @@
         "acceptable_use/hate_harassment": 180,
         "acceptable_use/scams_impersonation": 180,
         "acceptable_use/unlicensed_medical_financial_claims": 180,
-        "acceptable_use/licensed_pharmacy": 144,
+        "acceptable_use/licensed_pharmacy": 180,
         "acceptable_use/legal_cannabis": 144,
         "acceptable_use/firearms_training": 144,
         "acceptable_use/sexual_health": 144,
         "acceptable_use/licensed_betting": 144,
         "acceptable_use/adult_adjacent_retail": 144,
-        "acceptable_use/clean": 576,
+        "acceptable_use/clean": 756,
         "scope/standard-site": 504,
         "scope/custom-work": 288,
         "scope/unclear": 180
       }
     },
     "holdout": {
-      "phrases": 1344,
+      "phrases": 1416,
       "counts": {
         "acceptable_use/illegal_drugs": 60,
         "acceptable_use/prostitution_escort": 60,
@@ -62,13 +62,13 @@
         "acceptable_use/hate_harassment": 60,
         "acceptable_use/scams_impersonation": 60,
         "acceptable_use/unlicensed_medical_financial_claims": 60,
-        "acceptable_use/licensed_pharmacy": 48,
+        "acceptable_use/licensed_pharmacy": 60,
         "acceptable_use/legal_cannabis": 48,
         "acceptable_use/firearms_training": 48,
         "acceptable_use/sexual_health": 48,
         "acceptable_use/licensed_betting": 48,
         "acceptable_use/adult_adjacent_retail": 48,
-        "acceptable_use/clean": 192,
+        "acceptable_use/clean": 252,
         "scope/standard-site": 168,
         "scope/custom-work": 96,
         "scope/unclear": 60

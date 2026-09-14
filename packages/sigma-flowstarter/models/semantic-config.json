@@ -24,7 +24,7 @@
   "encoder": "Xenova/multilingual-e5-small@q8",
   "encoder_revision": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
   "centroids_version": "2026-09-14",
-  "calibrated_at": "2026-09-14T09:18:42.019Z",
+  "calibrated_at": "2026-09-14T13:54:17.598Z",
   "platform_noise_allowance": 0.006,
   "decisions": {
     "acceptable_use": {
@@ -47,18 +47,18 @@
         "weapons_ammunition"
       ],
       "min_sim": 0.02,
-      "margin": 0.035,
+      "margin": 0.04,
       "held_out": {
-        "cases": 1020,
-        "coverage": 0.9314,
-        "accuracy_on_covered": 0.9695,
-        "weighted_cost": 669,
-        "robust_cost": 706,
+        "cases": 1092,
+        "coverage": 0.9322,
+        "accuracy_on_covered": 0.9725,
+        "weighted_cost": 693,
+        "robust_cost": 717,
         "counts": {
-          "abstention": 70,
-          "category_confusion": 13,
-          "review_instead_of_allow": 5,
-          "refuse_clean_business": 16
+          "abstention": 74,
+          "category_confusion": 10,
+          "refuse_clean_business": 18,
+          "review_instead_of_allow": 3
         }
       }
     },
@@ -72,12 +72,12 @@
       "margin": 0,
       "held_out": {
         "cases": 324,
-        "coverage": 0.9352,
-        "accuracy_on_covered": 0.9373,
-        "weighted_cost": 210,
-        "robust_cost": 234,
+        "coverage": 0.9321,
+        "accuracy_on_covered": 0.9371,
+        "weighted_cost": 212,
+        "robust_cost": 236,
         "counts": {
-          "scope_abstention": 30,
+          "scope_abstention": 31,
           "standard_sent_to_a_call": 10
         }
       }

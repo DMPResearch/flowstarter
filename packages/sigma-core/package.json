@@ -4,25 +4,27 @@
   "private": true,
   "type": "module",
   "description": "Taxonomy-agnostic sigma classifier core: a local multilingual embedding encoder, a centroid tier with an explicit abstention band, a budgeted fail-open cascade with injectable tiers, a generic policy boundary, an asymmetric-cost held-out scorer with a provenance gate, and the centroid trainer/calibrator. Knows no categories of its own.",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "import": "./src/index.ts",
-      "default": "./src/index.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./config/encoder.json": "./config/encoder.json"
   },
-  "files": ["src", "config", "scripts", "README.md"],
+  "files": ["dist", "config", "scripts", "README.md"],
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.lib.json && node scripts/verify-build-output.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "fetch-model": "node scripts/fetch-model.mjs"
   },
   "dependencies": {
-    "@huggingface/transformers": "^4.2.0"
+    "@huggingface/transformers": "^4.2.0",
+    "onnxruntime-node": "1.24.3"
   },
   "devDependencies": {
     "@types/node": "^24.10.13",
