@@ -73,6 +73,67 @@ cache miss throws at load rather than reaching for huggingface.co inside
 somebody's request. That is deliberate: an encoder that can fetch is an encoder
 that can hang.
 
+## Packaging: this ships built JS, not source
+
+`main`, `types` and `exports` point at `dist/`, produced by:
+
+```bash
+pnpm --filter @flowstarter/sigma-core build   # tsc -p tsconfig.lib.json, then a
+                                               # Node ESM smoke test of dist/
+```
+
+`dist/` is gitignored, same as every other build output in this repo — it is
+not committed, it is produced. `build` is a real Nx target (inferred from the
+`build` script plus `tsconfig.lib.json`, the same convention
+`@nx/js/typescript` uses everywhere else in the workspace), so
+`nx build @flowstarter/sigma-core`, `nx run-many -t build` and `pnpm run
+build:all` at the repo root all pick it up, and `nx.json`'s existing
+`"build": { "dependsOn": ["^build"] }` default means anything that depends on
+this package gets it built first automatically when built through Nx.
+`@flowstarter/sigma-flowstarter` also carries a `prebuild`/`pretest`/
+`pretypecheck` hook that runs this package's `build` directly, so the plain
+`pnpm --filter @flowstarter/sigma-flowstarter <script>` workflows documented
+in its README keep working without going through Nx at all.
+
+**Why this exists.** The package used to ship raw TypeScript as `main` and
+`exports`, with internal relative imports written the Node-ESM way (`from
+'./artifacts.js'`, pointing at a sibling file that does not exist — only
+`artifacts.ts` does). `tsc` type-checks that fine (`moduleResolution:
+"Bundler"` does not require the file to exist on disk), and `vitest`/`tsx` run
+the `.ts` source directly so they never notice either. A bundler that traces
+real files on disk to decide what to ship — `next build`'s production output
+tracing, via `@vercel/nft` — cannot follow a specifier to a file that is not
+there, and fails to resolve the package. `dist/artifacts.js` is a real file
+with the same relative specifiers, so the same trace now succeeds; see
+`scripts/verify-build-output.mjs`, which is exactly this check, run in plain
+Node against the built output on every `build`.
+
+**The native binding.** `@huggingface/transformers` depends on
+`onnxruntime-node` (the ONNX runtime's native `.node` addon) as an
+`optionalDependencies`-adjacent transitive dependency. It is declared here
+directly, pinned to the exact version Transformers.js 4.2.0 resolves
+(`1.24.3`), so it is a first-class entry in this package's own dependency
+graph rather than something a file tracer or a pruned install only finds by
+walking two levels of somebody else's `package.json`. A native addon loaded
+via a dynamic `require()` still generally needs to be told apart from ordinary
+traced code by whatever bundles the *consuming* app (Next's
+`serverExternalPackages`, for one) — that part is the app's own config and out
+of scope for this package.
+
+**Follow-up for consumers.** flowstarter-main's acceptable-use gate (#158)
+currently imports this package's sibling, `@flowstarter/sigma-flowstarter`, at
+runtime only — `webpackIgnore` plus a variable specifier — specifically to
+route around the packaging defect fixed here, plus `downlevelIteration: true`
+added to the app's `tsconfig.json` to let `tsc --noEmit` accept this package's
+ES2022 source under `target: es5`. Both were flagged in that PR as "the honest
+fix is for sigma-core to ship built output." With this change in place, that
+runtime-only import can become a normal static `import`, and
+`downlevelIteration` can come back out — `dist/index.d.ts` is now the `types`
+entry, so nothing downstream of it type-checks against ES2022 syntax anymore.
+That swap is intentionally **not** made in this PR (it touches #158's branch,
+which this change was asked not to do); the next person who rebases #158 onto
+a `main` that includes this should make it.
+
 ## Building a classifier
 
 The short version; `test/toy-taxonomy.test.ts` is the same thing, executable.

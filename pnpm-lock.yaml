@@ -1334,6 +1334,9 @@ importers:
       '@huggingface/transformers':
         specifier: ^4.2.0
         version: 4.2.0
+      onnxruntime-node:
+        specifier: 1.24.3
+        version: 1.24.3
     devDependencies:
       '@types/node':
         specifier: ^24.10.13

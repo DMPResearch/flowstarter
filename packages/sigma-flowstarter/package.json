@@ -4,24 +4,31 @@
   "private": true,
   "type": "module",
   "description": "Flowstarter's sigma heads: acceptable use (prohibited / sensitive / clean) and commercial scope (standard site / custom work / unclear), with their centroids, calibrated bands, cost tables and held-out eval sets. All the generic machinery lives in @flowstarter/sigma-core.",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "import": "./src/index.ts",
-      "default": "./src/index.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
-  "files": ["src", "config", "models", "scripts", "README.md"],
+  "files": ["dist", "config", "models", "scripts", "README.md"],
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "pretypecheck": "pnpm --filter @flowstarter/sigma-core build",
+    "build": "tsc -p tsconfig.lib.json && node scripts/verify-build-output.mjs",
+    "prebuild": "pnpm --filter @flowstarter/sigma-core build",
     "test": "vitest run",
+    "pretest": "pnpm --filter @flowstarter/sigma-core build",
     "test:watch": "vitest",
     "fetch-model": "pnpm --filter @flowstarter/sigma-core fetch-model",
     "train": "tsx scripts/train-centroids.mjs",
+    "pretrain": "pnpm --filter @flowstarter/sigma-core build",
     "calibrate": "tsx scripts/calibrate.mjs",
-    "bench": "tsx scripts/bench.mjs"
+    "precalibrate": "pnpm --filter @flowstarter/sigma-core build",
+    "bench": "tsx scripts/bench.mjs",
+    "prebench": "pnpm --filter @flowstarter/sigma-core build"
   },
   "dependencies": {
     "@flowstarter/sigma-core": "workspace:*"
