@@ -8,6 +8,18 @@
  * over the source can tell the difference. So this one copies a real template,
  * runs the real `astro build`, and reads the real `dist/contact/index.html`.
  *
+ * Two endpoint shapes are built, not one. A prior version of this file only
+ * ever exercised a production-shaped `https://flowstarter.net/...` endpoint,
+ * which `normalizeLeadCaptureEndpoint` always accepted — so it kept passing
+ * while every *real* local build silently lost its contact form, because
+ * `publicAppOrigin()` (`@flowstarter/platform-config`) correctly answers
+ * `http://localhost:{PORT}` in development, and that shape was being refused.
+ * The dev case here is what `leadCaptureEndpointFor()`
+ * (`apps/build-worker/src/job-store.ts`) and the funnel preview's
+ * `previewLeadCaptureEndpoint()` (`apps/flowstarter-main`) actually hand the
+ * injector on a laptop or in CI, so this is the shape a real end-to-end run
+ * exercises — the one the bug report was filed against.
+ *
  * It is skipped, loudly, when the template has no `node_modules` - a developer
  * who has not installed the workspace should get a skip with a reason, not a
  * failure about a missing binary.
@@ -31,13 +43,23 @@ const TEMPLATE_DIR = join(
 );
 const ASTRO_BIN = join(TEMPLATE_DIR, 'node_modules/.bin/astro');
 const TOKEN = 'Kx9-_abcdefghijklmnopqrstuvwxyz0123456789AB';
-const ENDPOINT = `https://flowstarter.net/api/leads/capture/${TOKEN}`;
 
 const installed = existsSync(ASTRO_BIN);
 
-describe.skipIf(!installed)(
-  'a built template carries the capture script and this workspace token',
-  () => {
+const SCENARIOS = [
+  {
+    name: 'a production-shaped endpoint (publicAppOrigin() in production/staging)',
+    endpoint: `https://flowstarter.net/api/leads/capture/${TOKEN}`,
+  },
+  {
+    name: 'a dev-shaped endpoint (publicAppOrigin() on a laptop with nothing overridden)',
+    endpoint: `http://localhost:3000/api/leads/capture/${TOKEN}`,
+  },
+] as const;
+
+describe.skipIf(!installed).each(SCENARIOS)(
+  'a built template carries the capture script and this workspace token — $name',
+  ({ endpoint }) => {
     let workspace = '';
     let html = '';
 
@@ -60,7 +82,7 @@ describe.skipIf(!installed)(
 
       const applied = await applyIntegrationsToWorkspace(workspace, {
         booking: { provider: 'cal.com', url: null },
-        leadCapture: { endpoint: ENDPOINT },
+        leadCapture: { endpoint },
       });
       expect(applied.changedPaths).toContain('src/pages/contact.astro');
 
@@ -75,7 +97,7 @@ describe.skipIf(!installed)(
     it('emits the script inline, in the HTML itself', () => {
       expect(html).toContain('data-flowstarter-lead-capture="true"');
       expect(html).toContain('<script>');
-      expect(html).toContain(ENDPOINT);
+      expect(html).toContain(endpoint);
       // The proof the marker is not just a src attribute somewhere.
       expect(html).toContain("querySelector('[data-contact-form]')");
     });

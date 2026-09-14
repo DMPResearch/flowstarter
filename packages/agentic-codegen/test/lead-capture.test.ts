@@ -77,6 +77,29 @@ describe('normalizeLeadCaptureEndpoint', () => {
       expect(normalizeLeadCaptureEndpoint(bad)).toBeNull();
     }
   });
+
+  // `publicAppOrigin()` (`@flowstarter/platform-config`) correctly answers
+  // `http://localhost:{PORT}` in development, and both the build worker's
+  // `leadCaptureEndpointFor()` and the funnel preview's
+  // `previewLeadCaptureEndpoint()` build this string from exactly that
+  // origin. A plain https-only gate here refused every one of them and
+  // `injectLeadCapture` silently took the block back out — the endpoint
+  // never being wrong, the block just never being there to find in the
+  // built page. This is the regression test for that: a real dev origin has
+  // to survive normalization the same way a real production one does.
+  it('accepts the capture path on http, but only on loopback', () => {
+    const devEndpoint = `http://localhost:3000/api/leads/capture/${TOKEN}`;
+    const devEndpointIp = `http://127.0.0.1:4000/api/leads/capture/${TOKEN}`;
+    expect(normalizeLeadCaptureEndpoint(devEndpoint)).toBe(devEndpoint);
+    expect(normalizeLeadCaptureEndpoint(devEndpointIp)).toBe(devEndpointIp);
+    // A non-loopback host stays refused on http — this is not "http is fine
+    // now", it is "loopback cannot have a certificate".
+    expect(
+      normalizeLeadCaptureEndpoint(
+        `http://flowstarter.net/api/leads/capture/${TOKEN}`,
+      ),
+    ).toBeNull();
+  });
 });
 
 // ── Real templates ─────────────────────────────────────────────────────────
