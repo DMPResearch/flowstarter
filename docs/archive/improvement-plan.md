@@ -1,3 +1,16 @@
+> **Archived 2026-09-14.** This scored a branch called `feature/concierge-pivot`
+> that no longer exists as the shipped product; the self-serve funnel described
+> in `docs/FLOWSTARTER_MASTER_DECISIONS.md` replaced it. Two of its items are
+> specifically stale: S2 assumes Convex codegen, which the shipped product
+> never adopted (Supabase is the database everywhere, see the master decisions
+> doc), and SEC3 audits Daytona sandbox isolation, which PR #132 dropped for
+> preview publishing in favor of the platform's own deploy-agent. The file
+> paths, line numbers, and priority order below predate the current
+> architecture and should not be treated as current. For the actual open work,
+> see `docs/next-steps.md`, which lists live items from the 2026-09-13 security
+> audits and the 2026-09-12 MVP readiness review instead. Kept here for
+> historical context only.
+
 # Flowstarter Monorepo — Improvement Plan
 
 > Created after multi-agent quality pass on feature/concierge-pivot

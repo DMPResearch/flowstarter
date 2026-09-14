@@ -10,6 +10,7 @@ Docs in this folder predate or were superseded by the **concierge pivot** (start
 | `IMPLEMENTATION_PLAN.md` | Heavy assumptions on Cloudflare Pages hosting + Daytona sandboxes. Hosting target is now Hetzner; sandboxes are per-client Docker. |
 | `CLIENT_EDITOR_PLAN.md` | Detailed client-editor flow assuming Cloudflare Pages publish + `{slug}.pages.dev` subdomains. Replaced by Hetzner deploy-agent + `{slug}.preview.flowstarter.app` topology. |
 | `AUDIT.md` | Snapshot codebase audit dated 2026-03-02. References pre-pivot file paths (e.g. `lib/editor/daytona/client.ts`) that no longer exist. Useful as historical context only. |
+| `improvement-plan.md` | Scored a branch called `feature/concierge-pivot` that no longer exists as the shipped product; assumes Convex codegen (never adopted) and audits Daytona sandbox isolation (dropped for previews by PR #132). Archived 2026-09-14; see `docs/next-steps.md` for current open items. |
 
 **Canonical docs** for the current model:
 - `docs/CONCIERGE_PIVOT_PLAN.md` — strategic roadmap.
