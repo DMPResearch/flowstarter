@@ -1,0 +1,70 @@
+---
+import site from '../data/site.json';
+import '../styles/global.css';
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Page not found — {site.brand.name}</title>
+    <meta name="robots" content="noindex" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=Plus+Jakarta+Sans:ital,wght@0,400..700&display=swap"
+      rel="stylesheet"
+    />
+    <style is:inline define:vars={{
+      brandAccent: site.brand.accent,
+      brandSoft: site.brand.accentSoft,
+      brandInk: site.brand.ink,
+    }}>
+      :root {
+        --brand-accent: var(--brandAccent);
+        --brand-soft: var(--brandSoft);
+        --brand-ink: var(--brandInk);
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <a href="/" class="brand" aria-label={`${site.brand.name}, home`}>
+        <span class="brand-mark" aria-hidden="true">{site.brand.initial}</span>
+        <span class="brand-name">{site.brand.name}</span>
+      </a>
+    </header>
+
+    <main>
+      <section class="section not-found">
+        <p class="eyebrow">404</p>
+        <h1 class="display display--mid">This page does not exist</h1>
+        <p class="lede">The link may be broken, or the page may have moved.</p>
+        <div class="hero-actions">
+          <a href="/" class="cta">Back to home</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>© {site.brand.name} · {site.footer.tagline}</p>
+    </footer>
+  </body>
+</html>
+
+<style>
+  .not-found {
+    text-align: center;
+    display: grid;
+    justify-items: center;
+    gap: 20px;
+    padding-top: clamp(64px, 12vh, 120px);
+    padding-bottom: clamp(64px, 12vh, 120px);
+  }
+
+  .not-found .lede {
+    max-width: 46ch;
+  }
+</style>

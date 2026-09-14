@@ -477,5 +477,10 @@ export {
   publicAppOrigin,
   publicCallbackOrigin,
   readPublicOriginEnvFromProcess,
+  isLoopbackHostname,
+  isLoopbackUrl,
+  isPublicHttpsOrigin,
+  assertPublicPlatformOrigin,
+  UnsafePlatformOriginError,
 } from './public-origin';
 export type { PublicOriginEnvInput } from './public-origin';

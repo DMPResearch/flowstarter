@@ -4,26 +4,51 @@
 	persist_config off
 }
 
+# The site's security headers — Content-Security-Policy, nosniff, referrer
+# and permissions policy — are written in here by the deploy agent
+# (`site-csp.ts`), because the policy depends on what this particular
+# artifact contains: the hash of each managed inline script, and the origins
+# its pages frame. The agent refuses to build a site image from a Caddyfile
+# that has lost this line, so a template edit cannot quietly ship a site
+# with no policy. Defined once as a snippet and imported by both the normal
+# route and `handle_errors` below, so the template's own 404 page carries
+# the same policy as every other page rather than going out unprotected.
+(security_headers) {
+	header {
+		-Server
+	}
+	# flowstarter:security-headers
+}
+
 # TLS terminates once at the host's front Caddy, which reverse-proxies here
 # over loopback — see caddy-snippet.ts's `ServeTarget: proxy` output.
 :8080 {
 	root * /srv
 	encode zstd gzip
-	header {
-		-Server
-	}
-	# The site's security headers — Content-Security-Policy, nosniff, referrer
-	# and permissions policy — are written in here by the deploy agent
-	# (`site-csp.ts`), because the policy depends on what this particular
-	# artifact contains: the hash of each managed inline script, and the
-	# origins its pages frame. The agent refuses to build a site image from a
-	# Caddyfile that has lost this line, so a template edit cannot quietly
-	# ship a site with no policy.
-	# flowstarter:security-headers
+	import security_headers
 	@assets path *.js *.mjs *.css *.woff *.woff2 *.png *.jpg *.jpeg *.gif *.svg *.webp *.avif *.ico
 	header @assets Cache-Control "public, max-age=31536000, immutable"
 	@pages not path *.js *.mjs *.css *.woff *.woff2 *.png *.jpg *.jpeg *.gif *.svg *.webp *.avif *.ico
 	header @pages Cache-Control "no-cache"
-	try_files {path} {path}/ /index.html
+
+	# An unknown path is a real 404, never the home page. `try_files` only
+	# rewrites to a file, or a directory's own index, that actually exists on
+	# disk — `{path}` for a file, `{path}/` for a directory, which is what
+	# lets a request for `/work` still resolve to `/work/index.html` — and
+	# `=404` is the literal fallback: nothing on disk answered, so the
+	# request becomes a real 404 response instead of silently rewriting to
+	# `/index.html`.
+	try_files {path} {path}/ =404
 	file_server
+
+	# The template's own 404 page (every template ships `404.astro`, built to
+	# `404.html`) serves with the real 404 status. If a build somehow shipped
+	# no `404.html`, `file_server` here fails too and Caddy falls back to its
+	# own minimal built-in error response — still a 404, never `index.html`.
+	handle_errors {
+		import security_headers
+		@404 expression `{http.error.status_code} == 404`
+		rewrite @404 /404.html
+		file_server
+	}
 }

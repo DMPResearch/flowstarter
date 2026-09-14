@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assertPublicPlatformOrigin,
+  isLoopbackHostname,
+  isLoopbackUrl,
+  isPublicHttpsOrigin,
   publicAppOrigin,
   publicCallbackOrigin,
+  UnsafePlatformOriginError,
   type PublicOriginEnvInput,
 } from '../src/public-origin';
 
@@ -167,5 +172,127 @@ describe('publicCallbackOrigin', () => {
         publicAppOrigin: 'https://app-only.example.com',
       }),
     ).toBe('https://app-only.example.com');
+  });
+});
+
+describe('isLoopbackHostname / isLoopbackUrl', () => {
+  it.each(['localhost', 'LOCALHOST', '127.0.0.1', '::1', '[::1]', '0.0.0.0'])(
+    'treats %s as loopback',
+    (hostname) => {
+      expect(isLoopbackHostname(hostname)).toBe(true);
+    },
+  );
+
+  it.each(['flowstarter.dev', 'staging.flowstarter.dev', '192.168.1.5'])(
+    'does not treat %s as loopback',
+    (hostname) => {
+      expect(isLoopbackHostname(hostname)).toBe(false);
+    },
+  );
+
+  it('reads the hostname out of a full URL', () => {
+    expect(isLoopbackUrl('http://localhost:3005/api/leads/capture/x')).toBe(
+      true,
+    );
+    expect(isLoopbackUrl('http://127.0.0.1:3000')).toBe(true);
+    expect(isLoopbackUrl('https://staging.flowstarter.dev')).toBe(false);
+  });
+
+  it('is false, not throwing, for a value that is not a URL at all', () => {
+    expect(isLoopbackUrl('not-a-url')).toBe(false);
+  });
+});
+
+describe('isPublicHttpsOrigin', () => {
+  it('accepts a real https origin', () => {
+    expect(isPublicHttpsOrigin('https://flowstarter.dev')).toBe(true);
+    expect(
+      isPublicHttpsOrigin(
+        'https://staging.flowstarter.dev/api/leads/capture/tok',
+      ),
+    ).toBe(true);
+  });
+
+  it('refuses plain http even on a real host', () => {
+    expect(isPublicHttpsOrigin('http://flowstarter.dev')).toBe(false);
+  });
+
+  it('refuses every loopback shape regardless of scheme', () => {
+    expect(isPublicHttpsOrigin('http://localhost:3005')).toBe(false);
+    expect(isPublicHttpsOrigin('https://localhost:3005')).toBe(false);
+    expect(isPublicHttpsOrigin('http://127.0.0.1:3000')).toBe(false);
+  });
+
+  it('refuses a value that is not a URL', () => {
+    expect(isPublicHttpsOrigin('definitely not a url')).toBe(false);
+  });
+});
+
+describe('assertPublicPlatformOrigin', () => {
+  it('is a no-op when the target is not a platform host', () => {
+    expect(() =>
+      assertPublicPlatformOrigin({
+        variable: 'FLOWSTARTER_PUBLIC_APP_ORIGIN',
+        value: 'http://localhost:3005/api/leads/capture/x',
+        targetIsPlatformHost: false,
+      }),
+    ).not.toThrow();
+  });
+
+  it('is a no-op for a null or empty value, whatever the target', () => {
+    expect(() =>
+      assertPublicPlatformOrigin({
+        variable: 'FLOWSTARTER_PUBLIC_APP_ORIGIN',
+        value: null,
+        targetIsPlatformHost: true,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertPublicPlatformOrigin({
+        variable: 'FLOWSTARTER_PUBLIC_APP_ORIGIN',
+        value: '  ',
+        targetIsPlatformHost: true,
+      }),
+    ).not.toThrow();
+  });
+
+  it('passes a public https origin against a platform host', () => {
+    expect(() =>
+      assertPublicPlatformOrigin({
+        variable: 'FLOWSTARTER_PUBLIC_APP_ORIGIN',
+        value: 'https://staging.flowstarter.dev/api/leads/capture/x',
+        targetIsPlatformHost: true,
+      }),
+    ).not.toThrow();
+  });
+
+  it('refuses a loopback origin against a platform host, naming the variable', () => {
+    let caught: unknown;
+    try {
+      assertPublicPlatformOrigin({
+        variable: 'FLOWSTARTER_PUBLIC_APP_ORIGIN',
+        value: 'http://localhost:3005/api/leads/capture/x',
+        targetIsPlatformHost: true,
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(UnsafePlatformOriginError);
+    const error = caught as InstanceType<typeof UnsafePlatformOriginError>;
+    expect(error.variable).toBe('FLOWSTARTER_PUBLIC_APP_ORIGIN');
+    expect(error.message).toContain('FLOWSTARTER_PUBLIC_APP_ORIGIN');
+    expect(error.message).toContain(
+      'http://localhost:3005/api/leads/capture/x',
+    );
+  });
+
+  it('refuses plain http against a platform host even off a real hostname', () => {
+    expect(() =>
+      assertPublicPlatformOrigin({
+        variable: 'FLOWSTARTER_PUBLIC_APP_ORIGIN',
+        value: 'http://flowstarter.dev',
+        targetIsPlatformHost: true,
+      }),
+    ).toThrow(UnsafePlatformOriginError);
   });
 });

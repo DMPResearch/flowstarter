@@ -14,11 +14,16 @@ interface Props {
 }
 
 const { intro } = Astro.props;
+// See AboutFreeTimeSection: no photo means no <img>, never src="".
+const introImage =
+  typeof intro.imageSrc === 'string' ? intro.imageSrc.trim() : '';
 ---
 
 <section class="about-intro-section container" data-zigzag-section>
   <div class="about-intro-section__media" data-zigzag-part="left">
-    <img src={intro.imageSrc} alt={intro.imageAlt} loading="eager" />
+    {introImage ? (
+      <img src={introImage} alt={intro.imageAlt} loading="eager" />
+    ) : null}
   </div>
   <div class="about-intro-section__content" data-zigzag-part="right">
     <h2 class="about-intro-section__heading">{intro.eyebrow}</h2>

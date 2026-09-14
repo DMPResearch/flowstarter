@@ -28,6 +28,11 @@ import {
   type FileMap,
 } from '@flowstarter/agentic-codegen';
 import type { PullRequestPublisher } from '@flowstarter/agentic-codegen';
+import {
+  assertPublicPlatformOrigin,
+  isLoopbackUrl,
+  UnsafePlatformOriginError,
+} from '@flowstarter/platform-config';
 import { ArtifactStore } from './artifacts';
 import { collectSiteFiles, resolveSiteOutputDir } from './site-output';
 
@@ -72,6 +77,40 @@ export class LocalSitePublisher implements PullRequestPublisher {
     changeRequestId?: string | null;
     siteVersion?: number | null;
   }): Promise<{ pullRequestUrl: string; stagingUrl: string }> {
+    // "The platform host" here means: this build is about to be deployed by
+    // asking a *real* flowstarter-main to run `deploySite` — the same check
+    // `deploySite`'s own deploy-agent URL makes, below in the app, for the
+    // half of this rule that lives there. `flowstarterMainUrl` loopback is
+    // exactly the one case a local publish is what it says on the tin: a
+    // laptop with nothing provisioned, talking to its own dev server. Every
+    // other value here — a staging or production flowstarter-main — means
+    // this artifact is headed at a real host, and a loopback origin baked
+    // into it (from a worker whose own environment was never told it was
+    // publishing to one) is dead on arrival and its own CSP would refuse it
+    // anyway — exactly what happened with `FLOWSTARTER_PUBLIC_APP_ORIGIN`
+    // unset on a dev-stack worker whose `FLOWSTARTER_MAIN_URL` pointed at a
+    // real deploy.
+    const targetIsPlatformHost = !isLoopbackUrl(
+      this.options.flowstarterMainUrl,
+    );
+    try {
+      assertPublicPlatformOrigin({
+        variable: 'FLOWSTARTER_PUBLIC_APP_ORIGIN',
+        value: input.leadCaptureEndpoint,
+        targetIsPlatformHost,
+      });
+      assertPublicPlatformOrigin({
+        variable: 'the workspace Cal.com link',
+        value: input.calComUrl,
+        targetIsPlatformHost,
+      });
+    } catch (e) {
+      if (e instanceof UnsafePlatformOriginError) {
+        throw new LocalPublishError(e.message);
+      }
+      throw e;
+    }
+
     const siteRoot = input.siteRoot ?? input.worktreePath;
     // The exported copy whenever there is one, which on every real build there
     // is: it is the version of the output the validator proved contained and

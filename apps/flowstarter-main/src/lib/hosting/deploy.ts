@@ -24,12 +24,17 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { isLoopbackUrl } from '@flowstarter/platform-config';
 import type { Database } from '../database.types';
 import { CloudflareClient, CloudflareRecordConflictError } from './cloudflare';
 import { finalHostname } from './site-hostnames';
 
 export class DeployError extends Error {
-  constructor(public code: string, message: string, public cause?: unknown) {
+  constructor(
+    public code: string,
+    message: string,
+    public cause?: unknown,
+  ) {
     super(message);
     this.name = 'DeployError';
   }
@@ -79,13 +84,13 @@ export interface DeployAgentClient {
  */
 export class HttpDeployAgentClient implements DeployAgentClient {
   constructor(
-    private readonly fetchImpl: typeof globalThis.fetch = globalThis.fetch
+    private readonly fetchImpl: typeof globalThis.fetch = globalThis.fetch,
   ) {}
 
   async push(opts: Parameters<DeployAgentClient['push']>[0]) {
     const url = `${opts.deployAgentUrl.replace(
       /\/$/,
-      ''
+      '',
     )}/sites/${encodeURIComponent(opts.siteSlug)}/deploy`;
     const headers: Record<string, string> = {
       Authorization: `Bearer ${opts.sharedSecret}`,
@@ -121,7 +126,7 @@ export class HttpDeployAgentClient implements DeployAgentClient {
       throw new DeployError(
         'agent_error',
         `deploy-agent ${res.status}: ${text || res.statusText}`,
-        parsed
+        parsed,
       );
     }
     const data = (parsed ?? {}) as { sha256?: string; sizeBytes?: number };
@@ -135,7 +140,7 @@ export class HttpDeployAgentClient implements DeployAgentClient {
   async remove(opts: Parameters<DeployAgentClient['remove']>[0]) {
     const url = `${opts.deployAgentUrl.replace(
       /\/$/,
-      ''
+      '',
     )}/sites/${encodeURIComponent(opts.siteSlug)}`;
     const res = await this.fetchImpl(url, {
       method: 'DELETE',
@@ -191,7 +196,7 @@ export function requireSiteSlug(raw: string | null | undefined): string {
   if (!slug) {
     throw new DeployError(
       'workspace_unallocated',
-      'Workspace slug is invalid; cannot derive a site directory.'
+      'Workspace slug is invalid; cannot derive a site directory.',
     );
   }
   return slug;
@@ -207,7 +212,7 @@ export function requireSiteSlug(raw: string | null | undefined): string {
  */
 export async function allocateHostingServer(
   supabase: SupabaseClient<Database>,
-  workspace: { id: string; slug: string | null }
+  workspace: { id: string; slug: string | null },
 ): Promise<string> {
   const { data: candidates, error } = await supabase
     .from('hosting_servers')
@@ -217,12 +222,12 @@ export async function allocateHostingServer(
     .limit(5);
   if (error) throw new DeployError('db_error', error.message, error);
   const pick = (candidates ?? []).find(
-    (server) => server.sites_count < server.site_capacity
+    (server) => server.sites_count < server.site_capacity,
   );
   if (!pick) {
     throw new DeployError(
       'workspace_unallocated',
-      'Workspace has no hosting server and no active server has capacity. Provision one via /api/admin/hosting/servers.'
+      'Workspace has no hosting server and no active server has capacity. Provision one via /api/admin/hosting/servers.',
     );
   }
   const slug = requireSiteSlug(workspace.slug);
@@ -285,7 +290,7 @@ export async function deploySite(opts: {
     .from('workspaces')
     .select(
       `id, slug, hosting_server_id, site_directory, deploy_status,
-       cloudflare_zone_id`
+       cloudflare_zone_id`,
     )
     .eq('id', opts.workspaceId)
     .maybeSingle();
@@ -296,7 +301,7 @@ export async function deploySite(opts: {
   if (!workspace) {
     throw new DeployError(
       'workspace_not_found',
-      `Workspace ${opts.workspaceId} not found`
+      `Workspace ${opts.workspaceId} not found`,
     );
   }
   // Before anything is pushed or any DNS is written, and whether or not this
@@ -331,35 +336,35 @@ export async function deploySite(opts: {
   if (!server) {
     throw new DeployError(
       'server_not_found',
-      `Server ${hostingServerId} not found for this workspace`
+      `Server ${hostingServerId} not found for this workspace`,
     );
   }
   if (server.status !== 'active') {
     throw new DeployError(
       'server_not_active',
-      `Server status is ${server.status}; cannot deploy`
+      `Server status is ${server.status}; cannot deploy`,
     );
   }
   if (!server.deploy_agent_url) {
     throw new DeployError(
       'agent_not_configured',
-      `Server ${server.name} has no deploy_agent_url set; finish bootstrap first`
+      `Server ${server.name} has no deploy_agent_url set; finish bootstrap first`,
     );
   }
   if (!server.deploy_agent_secret_ref) {
     throw new DeployError(
       'secret_not_configured',
-      `Server ${server.name} has no deploy_agent_secret_ref set`
+      `Server ${server.name} has no deploy_agent_secret_ref set`,
     );
   }
 
   const sharedSecret = await opts.resolveSharedSecret(
-    server.deploy_agent_secret_ref
+    server.deploy_agent_secret_ref,
   );
   if (!sharedSecret) {
     throw new DeployError(
       'secret_unavailable',
-      `Could not resolve shared secret for ${server.deploy_agent_secret_ref}`
+      `Could not resolve shared secret for ${server.deploy_agent_secret_ref}`,
     );
   }
 
@@ -389,7 +394,7 @@ export async function deploySite(opts: {
   if (deployInsertErr || !deploy) {
     throw new DeployError(
       'db_error',
-      deployInsertErr?.message ?? 'Failed to insert deployment row'
+      deployInsertErr?.message ?? 'Failed to insert deployment row',
     );
   }
 
@@ -502,13 +507,17 @@ export async function deploySite(opts: {
       slug: siteSlug,
       primaryDomain,
       deploymentId: deploy.id,
+      // Ground truth from the push that just succeeded, not an env guess: a
+      // real, non-loopback deploy-agent URL is what "reached a platform
+      // host" means here. See `deployedSiteUrl`.
+      targetIsPlatformHost: !isLoopbackUrl(server.deploy_agent_url),
     });
   } catch (e) {
     // A deploy that worked is not allowed to be reported as failed because an
     // email did not go out.
     console.error(
       '[deploySite] site-live email could not be attempted:',
-      e instanceof Error ? e.message : e
+      e instanceof Error ? e.message : e,
     );
   }
 

@@ -100,6 +100,7 @@ export * from './flowstarter/change-request-build';
 export * from './flowstarter/teaser-rule';
 export * from './flowstarter/cal-preview-rule';
 export * from './flowstarter/markup-policy';
+export * from './flowstarter/empty-image';
 export * from './flowstarter/site-html-sanitizer';
 export * from './flowstarter/placeholder-copy';
 export * from './flowstarter/placeholder-images';
