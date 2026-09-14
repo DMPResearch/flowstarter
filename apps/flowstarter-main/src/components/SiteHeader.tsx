@@ -11,6 +11,7 @@ import { UserMenu } from '@/components/ui/user-menu';
 import { useI18n } from '@/lib/i18n';
 import { useHeaderState } from '@/app/(dynamic-pages)/(main-pages)/components/hooks/useHeaderState';
 import { useBookingModal } from '@/app/(dynamic-pages)/(main-pages)/components/booking-modal-store';
+import { LANDING_NAV } from '@/app/(dynamic-pages)/(main-pages)/landing-nav';
 type SiteHeaderMode = 'landing' | 'public' | 'auth' | 'app';
 
 interface SiteHeaderProps {
@@ -23,6 +24,8 @@ const HEADER_TRANSPARENT =
 
 const HEADER_FROSTED =
   'border-b border-gray-200/30 dark:border-white/[0.06] bg-white/72 dark:bg-[rgba(20,22,34,0.72)] backdrop-blur-2xl backdrop-saturate-[1.8] shadow-[0_1px_2px_rgba(0,0,0,0.04)]';
+
+const HEADER_SCROLL_OFFSET = 96;
 
 export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
   const openBookingModal = useBookingModal((s) => s.open);
@@ -42,9 +45,14 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
     (e: MouseEvent<HTMLAnchorElement>) => {
       e.preventDefault();
       if (closeMobile) setMobileMenuOpen(false);
-      document
-        .getElementById(sectionId)
-        ?.scrollIntoView({ behavior: 'smooth' });
+      const el = document.getElementById(sectionId);
+      if (!el) return;
+      const top =
+        el.getBoundingClientRect().top + window.scrollY - HEADER_SCROLL_OFFSET;
+      window.scrollTo({ top, behavior: 'smooth' });
+      if (history.pushState) {
+        history.pushState(null, '', `#${sectionId}`);
+      }
     };
 
   const navLinkClass = (isActive: boolean) =>
@@ -93,34 +101,16 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
                 className="hidden lg:flex items-center gap-6"
                 aria-label="Main navigation"
               >
-                <a
-                  href="#process"
-                  onClick={scrollToSection('process')}
-                  className={navLinkClass(activeSection === 'process')}
-                >
-                  {tLanding('nav.process')}
-                </a>
-                <a
-                  href="#editor-showcase"
-                  onClick={scrollToSection('editor-showcase')}
-                  className={navLinkClass(activeSection === 'editor-showcase')}
-                >
-                  {tLanding('nav.smartEditor')}
-                </a>
-                <a
-                  href="#pricing"
-                  onClick={scrollToSection('pricing')}
-                  className={navLinkClass(activeSection === 'pricing')}
-                >
-                  {tLanding('nav.pricing')}
-                </a>
-                <a
-                  href="#faq"
-                  onClick={scrollToSection('faq')}
-                  className={navLinkClass(activeSection === 'faq')}
-                >
-                  {tLanding('nav.faq')}
-                </a>
+                {LANDING_NAV.map((item) => (
+                  <a
+                    key={item.id}
+                    href={`#${item.id}`}
+                    onClick={scrollToSection(item.id)}
+                    className={navLinkClass(activeSection === item.id)}
+                  >
+                    {tLanding(item.navKey)}
+                  </a>
+                ))}
               </nav>
 
               <div className="flex items-center gap-2 sm:gap-4">
@@ -200,56 +190,21 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
                 </div>
 
                 <div className="ls-mobile-links flex flex-col">
-                  <a
-                    href="#process"
-                    onClick={scrollToSection('process', true)}
-                    className={mobileNavLinkClass(activeSection === 'process')}
-                  >
-                    <span className="ls-mobile-index" aria-hidden="true">
-                      01
-                    </span>
-                    <span className="ls-mobile-link-text">
-                      {tLanding('nav.process')}
-                    </span>
-                  </a>
-                  <a
-                    href="#editor-showcase"
-                    onClick={scrollToSection('editor-showcase', true)}
-                    className={mobileNavLinkClass(
-                      activeSection === 'editor-showcase'
-                    )}
-                  >
-                    <span className="ls-mobile-index" aria-hidden="true">
-                      02
-                    </span>
-                    <span className="ls-mobile-link-text">
-                      {tLanding('nav.smartEditor')}
-                    </span>
-                  </a>
-                  <a
-                    href="#pricing"
-                    onClick={scrollToSection('pricing', true)}
-                    className={mobileNavLinkClass(activeSection === 'pricing')}
-                  >
-                    <span className="ls-mobile-index" aria-hidden="true">
-                      03
-                    </span>
-                    <span className="ls-mobile-link-text">
-                      {tLanding('nav.pricing')}
-                    </span>
-                  </a>
-                  <a
-                    href="#faq"
-                    onClick={scrollToSection('faq', true)}
-                    className={mobileNavLinkClass(activeSection === 'faq')}
-                  >
-                    <span className="ls-mobile-index" aria-hidden="true">
-                      04
-                    </span>
-                    <span className="ls-mobile-link-text">
-                      {tLanding('nav.faq')}
-                    </span>
-                  </a>
+                  {LANDING_NAV.map((item) => (
+                    <a
+                      key={item.id}
+                      href={`#${item.id}`}
+                      onClick={scrollToSection(item.id, true)}
+                      className={mobileNavLinkClass(activeSection === item.id)}
+                    >
+                      <span className="ls-mobile-index" aria-hidden="true">
+                        {item.index}
+                      </span>
+                      <span className="ls-mobile-link-text">
+                        {tLanding(item.navKey)}
+                      </span>
+                    </a>
+                  ))}
                 </div>
 
                 <div className="ls-mobile-actions mt-7 flex flex-col gap-2.5 md:hidden">

@@ -212,9 +212,11 @@ export function LandingHero() {
                 href="#process"
                 onClick={(e) => {
                   e.preventDefault();
-                  document
-                    .getElementById('process')
-                    ?.scrollIntoView({ behavior: 'smooth' });
+                  const el = document.getElementById('process');
+                  if (!el) return;
+                  const top =
+                    el.getBoundingClientRect().top + window.scrollY - 96;
+                  window.scrollTo({ top, behavior: 'smooth' });
                 }}
                 className="ls-link ls-link--hero w-full text-center sm:w-auto sm:text-left"
               >

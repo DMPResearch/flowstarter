@@ -1,4 +1,7 @@
 import { useState, useEffect } from 'react';
+import { LANDING_NAV_IDS } from '../landing-nav';
+
+const HEADER_SCROLL_OFFSET = 96;
 
 export function useHeaderState() {
   const [isLoaded] = useState(true);
@@ -13,33 +16,28 @@ export function useHeaderState() {
   }, []);
 
   useEffect(() => {
-    // The nav sections, listed as the header lists them. 'templates' used to
-    // sit in here and matched nothing: that section's id is 'template-library'.
-    const sectionIds = [
-      'process',
-      'editor-showcase',
-      'pricing',
-      'faq',
-    ] as const;
-    // Sorted by where they actually are, because the loop below keeps the last
-    // section above the marker and would otherwise depend on this array being
-    // in page order. It was not: 'editor-showcase' sits after 'process' on the
-    // page, so scrolling into the editor highlighted Process instead.
+    // Same ids the header lists, sorted by live document position so the
+    // scroll-spy cannot disagree with the menu when the page is reordered.
     const getSections = () =>
-      sectionIds
-        .map((id) => document.getElementById(id))
+      LANDING_NAV_IDS.map((id) => document.getElementById(id))
         .filter((el): el is HTMLElement => el !== null)
-        .sort((a, b) => a.offsetTop - b.offsetTop);
+        .sort(
+          (a, b) =>
+            a.getBoundingClientRect().top +
+            window.scrollY -
+            (b.getBoundingClientRect().top + window.scrollY)
+        );
 
     const onScroll = () => {
       const sections = getSections();
       if (sections.length === 0) return;
 
-      const marker = window.scrollY + 140; // header + breathing room
+      const marker = window.scrollY + HEADER_SCROLL_OFFSET + 44;
       let current = '';
 
       for (const section of sections) {
-        if (section.offsetTop <= marker) {
+        const top = section.getBoundingClientRect().top + window.scrollY;
+        if (top <= marker) {
           current = section.id;
         }
       }

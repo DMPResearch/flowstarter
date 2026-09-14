@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/unified-button';
 import { useI18n } from '@/lib/i18n';
 import { LANDING_COPY } from '../landing-copy';
 import { PreQualModal } from './PreQualModal';
+import { SectionEyebrow } from './SectionEyebrow';
+import { landingNavIndex } from '../landing-nav';
 
 const CARE_PLANS = [
   {
@@ -45,14 +47,19 @@ export function LandingPricing() {
   };
 
   return (
-    <section id="pricing" className="ls-scope ls-section ls-section--pad">
+    <section id="pricing" className="ls-scope ls-section ls-section--pad scroll-mt-24">
       <div className="ls-mesh" aria-hidden />
       <div className="ls-orb ls-orb--violet ls-orb--c" aria-hidden />
       <div className="ls-grain" aria-hidden />
 
       <div className="ls-container">
         <div className="ls-section-intro">
-          <h2 className="ls-display" style={{ textWrap: 'balance' }}>
+          <SectionEyebrow
+            index={landingNavIndex('pricing')}
+            label={t('landing.pricing.eyebrow')}
+            align="left"
+          />
+          <h2 className="ls-display mt-7" style={{ textWrap: 'balance' }}>
             <span className="line">{t('landing.pricing.headlinePrefix')}</span>
             <span className="line flourish mt-2">
               {t('landing.pricing.headlineFlourish')}

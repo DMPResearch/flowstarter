@@ -5,6 +5,7 @@ import { useI18n } from '@/lib/i18n';
 import { useMockEditor } from './useMockEditor';
 import { MockEditorPreview } from './MockEditorPreview';
 import { SectionEyebrow } from './SectionEyebrow';
+import { landingNavIndex } from '../landing-nav';
 
 export function EditorShowcase() {
   const { t: tStrict } = useI18n();
@@ -45,7 +46,7 @@ export function EditorShowcase() {
     <section
       ref={sectionRef}
       id="editor-showcase"
-      className="ls-scope ls-section ls-section--pad ls-fade-top"
+      className="ls-scope ls-section ls-section--pad ls-fade-top scroll-mt-24"
     >
       <div className="ls-mesh" aria-hidden />
       <div className="ls-orb ls-orb--violet ls-orb--tl" aria-hidden />
@@ -54,7 +55,7 @@ export function EditorShowcase() {
       <div className="ls-container">
         <div className="text-center max-w-3xl mx-auto">
           <SectionEyebrow
-            index="02"
+            index={landingNavIndex('editor-showcase')}
             label={t('landing.editorShowcase.eyebrow')}
           />
           <h2 className="ls-display mt-7" style={{ textWrap: 'balance' }}>
