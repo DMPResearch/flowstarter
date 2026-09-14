@@ -1,0 +1,29 @@
+# GitGuardian configuration for ggshield — the CLI and the pre-commit/pre-push
+# scanner. This file is NOT read by GitGuardian's GitHub app check that runs
+# on pull requests; that check scans the diff independently and has no path
+# exclusions of its own. See docs/security/secret-scanning.md.
+#
+# Because the PR check still scans everything, fixture "secrets" committed
+# under the paths below must be minted at runtime (see that doc's fixture
+# convention), not hardcoded as string literals — this file only silences
+# ggshield locally, it does not make the PR check green on its own.
+#
+# Scope is deliberately narrow: test and fixture locations only, so a real
+# secret leaking into application code is never masked.
+version: 2
+
+secret:
+  ignored_paths:
+    - '**/__tests__/**'
+    - '**/*.test.ts'
+    - '**/*.test.tsx'
+    - '**/*.test.mjs'
+    - '**/*.test.sh'
+    - '**/test/**'
+    - '**/tests/**'
+    - 'e2e/**'
+    - '**/fixtures/**'
+    - '**/*.spec.ts'
+
+  ignore_known_secrets: false
+  show_secrets: false
