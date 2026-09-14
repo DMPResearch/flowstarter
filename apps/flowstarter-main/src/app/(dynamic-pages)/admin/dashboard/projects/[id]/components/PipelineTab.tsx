@@ -79,6 +79,7 @@ import {
 import type { Project } from './form-helpers';
 import { BuildConversation } from './BuildConversation';
 import { BuildLog } from './BuildLog';
+import { PolicyReviewPanel } from './PolicyReviewPanel';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 /**
@@ -663,6 +664,8 @@ export function PipelineTab({ project }: { project: Project }) {
 
   return (
     <div className="space-y-5">
+      <PolicyReviewPanel projectId={project.id} />
+
       <ShellCard>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>

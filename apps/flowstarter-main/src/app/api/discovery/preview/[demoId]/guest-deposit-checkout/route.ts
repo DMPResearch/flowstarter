@@ -30,6 +30,12 @@ import { z } from 'zod';
 import { publicAppOrigin } from '@flowstarter/platform-config';
 import { IntakeChatSchema } from '@/lib/flowstarter/intake-chat-schema';
 import { stashGuestIntakeChat } from '@/lib/hosting/funnel-previews';
+import {
+  policyErrorBody,
+  policyStatusFor,
+  screenAcceptableUse,
+} from '@/lib/policy/gate';
+import { intakeSubject } from '@/lib/policy/subject';
 import { depositAmountMinor } from '@flowstarter/agentic-codegen/src/flowstarter/state-machine';
 import { STRIPE_API_VERSION } from '@/lib/billing/stripe';
 import {
@@ -179,6 +185,33 @@ export async function POST(
       { error: 'This preview is no longer available' },
       { status: 404 }
     );
+  }
+
+  // The acceptable-use gate, before a Stripe session exists. A refused
+  // category cannot pay: taking a deposit and then telling the payer we will
+  // not build it is a refund, an argument and a chargeback, in that order.
+  //
+  // The subject is the preview's own intake rather than this body, because
+  // this endpoint collects almost nothing: a name, an email and a link. The
+  // description the visitor actually wrote is on the preview the deposit is
+  // for, which is also the thing the build would be made from.
+  const screening = await screenAcceptableUse({
+    surface: 'guest_deposit',
+    text: intakeSubject({
+      businessName: spec.businessName ?? preview.intake?.business?.name,
+      description: preview.intake?.business?.description,
+      offer: preview.intake?.offer,
+      industry: preview.intake?.business?.niche,
+      targetAudience: preview.intake?.business?.targetAudience,
+      goal: preview.intake?.business?.primaryGoal,
+      websiteUrl:
+        spec.websiteUrl ?? preview.intake?.business?.existingWebsiteUrl,
+    }),
+  });
+  if (screening.blocked && screening.notice) {
+    return NextResponse.json(policyErrorBody(screening.notice), {
+      status: policyStatusFor(screening.verdict),
+    });
   }
 
   // Best-effort: a failed stash costs the build its citable conversation,

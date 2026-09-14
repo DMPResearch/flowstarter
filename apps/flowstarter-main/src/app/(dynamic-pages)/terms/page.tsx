@@ -1,4 +1,13 @@
 import { MarketingShell, PageHero, ProseSection } from '@/components/marketing';
+import { PROHIBITED_CATEGORIES } from '@/lib/policy/acceptable-use';
+
+/**
+ * The list on this page is the list the gate enforces, read from the same
+ * module. A terms page that is written by hand drifts from the code within a
+ * quarter, and the version a client can point at has to be the version that
+ * actually stopped their project.
+ */
+const ACCEPTABLE_USE_SECTION = PROHIBITED_CATEGORIES;
 
 export const metadata = {
   title: 'Terms of Service',
@@ -68,9 +77,42 @@ export default function TermsPage() {
             </li>
             <li>
               Lawful use. We do not host content that promotes illegal activity,
-              hate, or fraud.
+              hate, or fraud. The next section says exactly what that means.
             </li>
           </ul>
+
+          <h2 id="acceptable-use">Acceptable use</h2>
+          <p>
+            There are businesses we will not build a site for. This is not a
+            judgement on anyone; it is the licensing, payment and legal exposure
+            a two-person studio in Romania is not equipped to carry. We would
+            rather tell you now than after you have paid.
+          </p>
+          <p>We do not build sites whose purpose is any of the following.</p>
+          <ul>
+            {ACCEPTABLE_USE_SECTION.map((category) => (
+              <li key={category.id}>
+                <strong>{category.label}.</strong> {category.reason}
+              </li>
+            ))}
+          </ul>
+          <p>
+            Plenty of lawful businesses sit close to that list: a pharmacy, a
+            dispensary where cannabis is legal, a firearms training school, a
+            sexual health clinic, a licensed bookmaker, a lingerie shop. Those
+            are ordinary work. Where our checks cannot tell the difference on
+            their own, one of us reads it and comes back to you, usually the
+            same working day. Nothing is charged while a project is waiting for
+            that answer.
+          </p>
+          <p>
+            We check twice: once when you describe your business, and once on
+            the finished site before it goes live. If we stop a project we tell
+            you which part of this section it fell under, and if we have read
+            you wrong you can{' '}
+            <a href="/contact">tell us what you actually do</a> and a person
+            will look at it.
+          </p>
 
           <h2>Pricing, invoicing, and refunds</h2>
           <p>

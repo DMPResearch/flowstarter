@@ -33,6 +33,7 @@ import {
 } from '@flowstarter/agentic-codegen';
 import { ArtifactStore, artifactTokenFromPath } from './artifacts';
 import { ConfigError, loadConfig } from './config';
+import { createContentPolicyScanner } from './content-policy';
 import { handleRequest, VERSION } from './http';
 import {
   attachMachineLog,
@@ -190,6 +191,16 @@ const worker = new FullSiteBuildWorker(
     // The agent-side half of the `GENERATED_HTML_UNSAFE` gate measures the
     // build against the same origins the validator does.
     platformOrigins: config.platformOrigins,
+    // The `PROHIBITED_CONTENT` gate. The worker keeps no policy of its own and
+    // asks flowstarter-main, so a built site is judged by the same classifier,
+    // prompt version and thresholds the client's intake and brief were.
+    contentPolicy: config.contentPolicy
+      ? createContentPolicyScanner({
+          flowstarterMainUrl: config.contentPolicy.url,
+          sharedSecret: config.sharedSecret,
+        })
+      : undefined,
+    contentPolicyRequired: config.contentPolicy?.required ?? false,
   },
 );
 

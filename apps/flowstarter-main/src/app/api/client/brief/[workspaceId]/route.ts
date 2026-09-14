@@ -41,6 +41,9 @@ import {
   type BriefReadyOutcome,
 } from '@/lib/flowstarter/deposit-workflow';
 import { uniqueSlug } from '@/lib/flowstarter/claim';
+import type { PolicyNotice } from '@/lib/policy/copy';
+import { screenAcceptableUse } from '@/lib/policy/gate';
+import { briefSubject } from '@/lib/policy/subject';
 import { withTenant } from '@/lib/tenancy';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import {
@@ -69,6 +72,12 @@ export interface BriefResponse {
    * their build is no longer waiting on them.
    */
   build?: { outcome: BriefReadyOutcome; jobId: string | null };
+  /**
+   * Present when the acceptable-use gate parked this save. The brief is
+   * saved either way; this says why no build started, in the words the client
+   * reads, with the terms anchor and the contact link.
+   */
+  policy?: PolicyNotice;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -356,9 +365,33 @@ export async function PUT(
     // queued, running or finished is recognised, and the function never
     // throws, so a nudge that fails cannot fail a save the client watched
     // succeed. The worker's own reconciliation sweep is the backstop.
-    const build = readyAt
-      ? await enqueueBuildOnBriefReady({ workspaceId: access.workspaceId })
-      : null;
+    //
+    // Except when the acceptable-use gate says otherwise. The four quick
+    // questions before the preview describe a business in a sentence; the
+    // brief is where the client writes what they actually sell, and it is the
+    // only place a clean intake can turn into a prohibited offer. So the brief
+    // is screened on its own words, and a workspace the gate stops is parked
+    // for an operator instead of dispatching a paid build nobody may publish.
+    //
+    // The brief itself is already saved. The client's writing is their own and
+    // losing it would be a second injury; what stops is the build.
+    const screening = await screenAcceptableUse({
+      surface: 'brief',
+      text: briefSubject({ offer: body.offer, projects }),
+      workspaceId: access.workspaceId,
+      actor: access.userId,
+      // Post-deposit surface: a refusal here is a person's call, not a
+      // threshold's. See `refusalBecomesReview` in the gate.
+      refusalBecomesReview: true,
+    });
+    if (screening.blocked) {
+      await parkForReview(supabase, access.workspaceId);
+    }
+
+    const build =
+      readyAt && !screening.blocked
+        ? await enqueueBuildOnBriefReady({ workspaceId: access.workspaceId })
+        : null;
 
     const refreshed = await listWorkspaceAssets(access.workspaceId);
     return NextResponse.json({
@@ -379,6 +412,7 @@ export async function PUT(
       ...(build
         ? { build: { outcome: build.outcome, jobId: build.jobId } }
         : {}),
+      ...(screening.notice ? { policy: screening.notice } : {}),
     } satisfies BriefResponse);
   } catch (error) {
     return failure(error);
@@ -388,6 +422,36 @@ export async function PUT(
 // ───────────────────────────────────────────────────────────────────────────
 // Helpers
 // ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Put the workspace on the operator's desk.
+ *
+ * `internal_review` is the concierge stage that already means "a human at
+ * Flowstarter is looking at this before it goes further", which is exactly
+ * what an acceptable-use hold is. Reusing it keeps the board one board: the
+ * operator finds the workspace where they already look, with the policy card
+ * and its evidence on the project page.
+ *
+ * Never throws into the caller. The hold that actually stops the build is the
+ * open `policy_reviews` row and the skipped dispatch above; this is the flag
+ * that makes it visible, and failing the client's save because a stage column
+ * would not write would be the wrong trade.
+ */
+async function parkForReview(
+  supabase: ReturnType<typeof createSupabaseServiceRoleClient>,
+  workspaceId: string
+): Promise<void> {
+  const { error } = await supabase
+    .from('workspaces')
+    .update({ concierge_stage: 'internal_review' })
+    .eq('id', workspaceId);
+  if (error) {
+    console.error(
+      `[policy] could not park ${workspaceId} for review; the build is still held`,
+      error
+    );
+  }
+}
 
 /**
  * An absolute `https:` address and nothing else. Local on purpose: the intake

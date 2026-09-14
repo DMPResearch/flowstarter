@@ -165,6 +165,21 @@ export interface WorkerConfig {
    */
   platformOrigins: string[];
   /**
+   * The acceptable-use scan of the built site (`PROHIBITED_CONTENT`).
+   *
+   * `url` is flowstarter-main, which owns the one classifier in the system;
+   * this worker holds no category list, no thresholds and no prompt, and asks
+   * instead. Null when `FLOWSTARTER_MAIN_URL` is unset, which on a laptop is
+   * ordinary and in production is a misconfiguration.
+   *
+   * `required` makes the difference visible. When it is true a build that
+   * cannot be scanned fails with `CONTENT_POLICY_UNAVAILABLE` instead of being
+   * published unchecked, because "the gate passed" and "the gate never ran"
+   * must not look the same on the ledger. It defaults to true wherever the
+   * worker publishes for real (github mode) and false on a laptop.
+   */
+  contentPolicy: { url: string; required: boolean } | null;
+  /**
    * How the build's output leaves the worktree. The validator copies it into a
    * fresh directory under `exportRoot` — a path this worker owns and generated
    * code has never been able to write to — and everything downstream reads the
@@ -912,6 +927,36 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
 
   const platformOrigins = resolvePlatformOrigins(env);
 
+  // The acceptable-use scan's endpoint. `FLOWSTARTER_MAIN_URL` is already
+  // required in local publish mode; in github mode it was optional until now,
+  // so this reads it directly rather than borrowing that thrower.
+  //
+  // The test-runtime fallback is the same one `resolveFlowstarterMainUrl` uses
+  // and is there for the same reason: `loadConfig` is exercised by dozens of
+  // suites that care about lease timings or validator isolation and have no
+  // opinion about the policy endpoint. A config parser that refused to build
+  // for them would make this one variable everybody's problem. Nothing under
+  // test ever calls the URL.
+  const policyUrl =
+    env.FLOWSTARTER_MAIN_URL?.trim() ||
+    (isTestRuntime() ? 'http://127.0.0.1:3000' : null);
+  const policyRequired =
+    env.FLOWSTARTER_POLICY_SCAN_REQUIRED === 'true'
+      ? true
+      : env.FLOWSTARTER_POLICY_SCAN_REQUIRED === 'false'
+        ? false
+        : publishMode === 'github';
+  if (policyRequired && !policyUrl) {
+    throw new ConfigError(
+      'FLOWSTARTER_MAIN_URL is required: the built site is checked against ' +
+        'the acceptable-use policy before it is published, and this worker ' +
+        'asks flowstarter-main for that verdict rather than keeping its own ' +
+        'copy of the policy. Set it, or set ' +
+        'FLOWSTARTER_POLICY_SCAN_REQUIRED=false if this worker genuinely ' +
+        'publishes nothing a client will see.',
+    );
+  }
+
   const validateCommands = parseValidateCommands(
     env.FLOWSTARTER_BUILD_VALIDATE_COMMANDS,
   );
@@ -982,6 +1027,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
         : null,
     stagingUrlTemplate,
     platformOrigins,
+    contentPolicy: policyUrl
+      ? {
+          url: parseHttpUrl(policyUrl, 'FLOWSTARTER_MAIN_URL'),
+          required: policyRequired,
+        }
+      : null,
     validateOutput: parseOutputExport(env),
     validateCommands,
     validateIsolation,

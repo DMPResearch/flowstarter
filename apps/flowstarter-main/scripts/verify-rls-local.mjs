@@ -474,6 +474,14 @@ export const SERVER_ONLY_TABLES = [
   'deployments',
   'editor_sessions',
   'leads',
+  // The acceptable-use review queue. Most rows are written before a workspace
+  // exists (the quick intake and the guest checkout are both anonymous), the
+  // client learns the outcome from the funnel's own copy rather than by
+  // reading a row, and the operator's note on why they approved a firearms
+  // range is not client-facing text. RLS on with zero policies, every grant to
+  // anon and authenticated revoked. See
+  // supabase/migrations/20260914150000_acceptable_use_reviews.sql.
+  'policy_reviews',
   'profiles',
   'setup_payment_milestones',
   'vault_encrypted_secrets',

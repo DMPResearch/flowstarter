@@ -24,6 +24,12 @@ COPY packages/agentic-codegen/package.json ./packages/agentic-codegen/package.js
 COPY packages/daytona-utils/package.json ./packages/daytona-utils/package.json
 COPY packages/flow-design-system/package.json ./packages/flow-design-system/package.json
 COPY packages/platform-config/package.json ./packages/platform-config/package.json
+# The acceptable-use gate's embedding tier. The `--filter flowstarter...`
+# install below resolves flowstarter-main's dependencies, so their manifests
+# have to be here; the sources arrive with `COPY packages` in the builder
+# stage, where flowstarter-main's `prebuild` compiles them.
+COPY packages/sigma-core/package.json ./packages/sigma-core/package.json
+COPY packages/sigma-flowstarter/package.json ./packages/sigma-flowstarter/package.json
 # Pull the transitive workspace graph for flowstarter-main.
 RUN pnpm install --frozen-lockfile --filter flowstarter...
 

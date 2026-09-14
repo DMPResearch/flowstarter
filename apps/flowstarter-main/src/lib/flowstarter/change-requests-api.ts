@@ -28,6 +28,8 @@ import { enqueueChangeRequestBuild } from './change-request-build';
 import { changeRequestAssetLabel } from './change-request-asset-label';
 import { loadUsableAssets } from './generation-assets';
 import { dispatchAgentJob } from './pipeline/dispatch';
+import { policyStatusFor, screenAcceptableUse } from '@/lib/policy/gate';
+import { changeRequestSubject } from '@/lib/policy/subject';
 import { signedAssetUrl } from '@/app/api/client/assets/asset-storage';
 
 const UUID =
@@ -172,6 +174,37 @@ export async function quoteChangeRequestHandler(
   try {
     const row = await getChangeRequest(op.db, op.workspaceId, op.changeId!);
     if (!row) return fail('Change request not found', 'NOT_FOUND', 404);
+
+    // The acceptable-use gate, again, at the moment the work gets a price.
+    //
+    // It ran when the client filed this request. It runs again here because a
+    // quote is the point of no return: after it the client can accept, pay,
+    // and hold a receipt for work we then have to refuse. The operator's own
+    // note is screened alongside the request, so the gate reads what will
+    // actually be built rather than only what was asked for.
+    //
+    // Cheap by construction: the same request text hashes to the same key the
+    // filing gate already classified, so the usual answer costs nothing.
+    const screening = await screenAcceptableUse({
+      surface: 'operator_quote',
+      text: changeRequestSubject({
+        request: row.request,
+        note: parsed.data.note || null,
+      }),
+      workspaceId: op.workspaceId,
+      actor: op.userId,
+      refusalBecomesReview: true,
+    });
+    if (screening.blocked && screening.notice) {
+      return fail(
+        // The operator is the reader here, so they are told what the gate saw
+        // and what to do about it, not the sentence written for a visitor.
+        `${screening.notice.message} Resolve the acceptable-use review on this project before quoting.`,
+        'ACCEPTABLE_USE',
+        policyStatusFor(screening.verdict)
+      );
+    }
+
     const quoted = await quoteChangeRequest(op.db, row, {
       amountMinor: parsed.data.amountMinor,
       note: parsed.data.note || null,
