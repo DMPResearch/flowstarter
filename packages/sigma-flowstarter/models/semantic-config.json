@@ -1,0 +1,86 @@
+{
+  "_comment": [
+    "Operating points for the two Flowstarter heads. A head is confident only",
+    "when top cosine >= min_sim AND (top - second) >= margin; inside the band",
+    "it abstains and the policy boundary takes the safe action.",
+    "",
+    "Cosines here are measured in the MEAN-CENTRED space (see `centered` in",
+    "models/centroids.json), not raw e5 cosines: two unrelated business",
+    "descriptions sit at ~0.8 raw, which leaves a band nothing to work with.",
+    "Numbers from this file are only comparable to centroids built the same way.",
+    "",
+    "Written by scripts/calibrate.mjs on a template-disjoint holdout. Never",
+    "hand-edit: rerun the sweep and commit what it printed. `held_out` records",
+    "what the point actually scored so a reviewer can see what is being asked.",
+    "",
+    "int8 kernels differ between ARM (dev Macs) and x86 (CI, prod) by roughly",
+    "0.006 on a cosine for the SAME text. The sweep therefore does not pick",
+    "the cheapest point; it picks the point that is cheapest IN THE WORST CASE",
+    "across that noise ball, which is `robust_cost` below. A band chosen for",
+    "its cost at exactly one pair of thresholds is a band chosen for one CPU —",
+    "Ereno shipped one of those once and spent a PR cycle finding it."
+  ],
+  "version": "2026-09-14",
+  "encoder": "Xenova/multilingual-e5-small@q8",
+  "encoder_revision": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
+  "centroids_version": "2026-09-14",
+  "calibrated_at": "2026-09-14T09:18:42.019Z",
+  "platform_noise_allowance": 0.006,
+  "decisions": {
+    "acceptable_use": {
+      "labels": [
+        "adult_adjacent_retail",
+        "adult_content",
+        "clean",
+        "counterfeit_goods",
+        "firearms_training",
+        "hate_harassment",
+        "illegal_drugs",
+        "legal_cannabis",
+        "licensed_betting",
+        "licensed_pharmacy",
+        "prostitution_escort",
+        "scams_impersonation",
+        "sexual_health",
+        "unlicensed_gambling",
+        "unlicensed_medical_financial_claims",
+        "weapons_ammunition"
+      ],
+      "min_sim": 0.02,
+      "margin": 0.035,
+      "held_out": {
+        "cases": 1020,
+        "coverage": 0.9314,
+        "accuracy_on_covered": 0.9695,
+        "weighted_cost": 669,
+        "robust_cost": 706,
+        "counts": {
+          "abstention": 70,
+          "category_confusion": 13,
+          "review_instead_of_allow": 5,
+          "refuse_clean_business": 16
+        }
+      }
+    },
+    "scope": {
+      "labels": [
+        "custom-work",
+        "standard-site",
+        "unclear"
+      ],
+      "min_sim": 0.06,
+      "margin": 0,
+      "held_out": {
+        "cases": 324,
+        "coverage": 0.9352,
+        "accuracy_on_covered": 0.9373,
+        "weighted_cost": 210,
+        "robust_cost": 234,
+        "counts": {
+          "scope_abstention": 30,
+          "standard_sent_to_a_call": 10
+        }
+      }
+    }
+  }
+}

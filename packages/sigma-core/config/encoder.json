@@ -1,0 +1,53 @@
+{
+  "_comment": [
+    "The shared encoder, pinned. `revision` is a Hugging Face commit sha, not",
+    "a tag: a tag can move, and a moved encoder silently invalidates every",
+    "calibrated band in every semantic-config.json built against it.",
+    "`files[].sha256` is verified against the bytes actually fetched by",
+    "scripts/fetch-model.mjs, so a mirror serving different weights fails the",
+    "fetch instead of quietly shifting cosines by a few thousandths.",
+    "",
+    "Nothing here is fetched at request time. fetch-model.mjs runs at install",
+    "or build time; the runtime sets allowRemoteModels=false, so a missing",
+    "cache is a startup error, never a network call inside a request.",
+    "",
+    "Same encoder family as Ereno sigma (multilingual-e5-small, int8/q8 ONNX),",
+    "on purpose: centroid sets built on one platform stay meaningful on the",
+    "other. See README, 'Relationship to Ereno sigma'."
+  ],
+  "model": "Xenova/multilingual-e5-small",
+  "revision": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
+  "dtype": "q8",
+  "queryPrefix": "query: ",
+  "maxLength": 192,
+  "cacheDir": "~/.cache/flowstarter/sigma-core",
+  "budgetMs": 400,
+  "embeddingCacheSize": 512,
+  "files": [
+    {
+      "path": "onnx/model_quantized.onnx",
+      "sha256": "f80102d3f2a1229f387d3c81909990d8945513e347b0eab049f7de3c6f98c193",
+      "bytes": 118308185
+    },
+    {
+      "path": "tokenizer.json",
+      "sha256": "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39",
+      "bytes": 17082730
+    },
+    {
+      "path": "tokenizer_config.json",
+      "sha256": "a1d6bc8734a6f635dc158508bef000f8e2e5a759c7d92f984b2c86e5ff53425b",
+      "bytes": 443
+    },
+    {
+      "path": "config.json",
+      "sha256": "cb99455288675345e1a4f411438d5d0adbba5fbd3a67ea4fb03c015433b996c1",
+      "bytes": 658
+    },
+    {
+      "path": "special_tokens_map.json",
+      "sha256": "d05497f1da52c5e09554c0cd874037a083e1dc1b9cfd48034d1c717f1afc07a7",
+      "bytes": 167
+    }
+  ]
+}
