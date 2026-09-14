@@ -90,4 +90,18 @@ export function useI18n() {
   return ctx;
 }
 
+/**
+ * The dictionary when there is a provider above, and undefined when there is
+ * not, instead of throwing.
+ *
+ * For a component that can be dropped into a surface that threads `t` down as
+ * a prop rather than mounting a provider -- the discovery wizard does exactly
+ * that -- and that must not be able to take the page down simply by being
+ * mounted there. A caller that genuinely requires the dictionary still uses
+ * `useI18n`, which still throws.
+ */
+export function useOptionalI18n() {
+  return useContext(I18nContext);
+}
+
 export const useTranslations = useI18n;

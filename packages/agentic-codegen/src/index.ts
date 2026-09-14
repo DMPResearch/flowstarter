@@ -88,6 +88,7 @@ export * from './flowstarter/pi-sdk';
 export * from './flowstarter/worktree';
 export * from './flowstarter/workflows';
 export * from './flowstarter/job-log';
+export * from './flowstarter/activity';
 export * from './flowstarter/template-classifier';
 export * from './flowstarter/preview-teaser';
 export * from './flowstarter/site-media';

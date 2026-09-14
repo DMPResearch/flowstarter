@@ -10,6 +10,12 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
+// Deep import, not the package root: the root re-exports the Pi SDK and the
+// whole generation pipeline, and this module is imported by browser code.
+import {
+  isAgentActivityEvent,
+  type AgentActivityEvent,
+} from '@flowstarter/agentic-codegen/src/flowstarter/activity';
 
 export interface PipelineJobSummary {
   id: string;
@@ -79,7 +85,14 @@ export interface PipelineDetail {
   events: PipelineEvent[];
 }
 
-export type BuildJobEventKind = 'phase' | 'log' | 'note' | 'reply';
+/**
+ * Every kind of row one build writes. `activity` is a structured step of the
+ * agent timeline rather than a line of prose, so the conversation endpoint
+ * leaves it out of its default answer and `useBuildJobActivity` asks for it
+ * by name; it is in this union because the row is still a build event and a
+ * caller reading one has to be able to tell.
+ */
+export type BuildJobEventKind = 'phase' | 'log' | 'note' | 'reply' | 'activity';
 
 export interface BuildJobEvent {
   id: string;
@@ -226,6 +239,53 @@ export function useBuildJobFeed(
       if (!res.ok)
         await readError(res, 'Failed to load the build conversation');
       return res.json();
+    },
+    staleTime: 2_000,
+    refetchInterval: options.live ? BUILD_FEED_LIVE_INTERVAL_MS : false,
+    retry: 1,
+  });
+}
+
+export const buildJobActivityQueryKey = (
+  id: string | undefined,
+  jobId: string | undefined
+) => ['pipeline-job-activity', id, jobId] as const;
+
+/**
+ * The agent's own timeline for one build: the steps it took, in order.
+ *
+ * The same endpoint as the conversation, asked a different question. Activity
+ * rows are excluded from that feed by default -- there are hundreds per build
+ * and the conversation is prose -- so this opts back in with `?kinds=activity`
+ * and unwraps `payload.activity` from each row.
+ *
+ * Rows are validated on the way in and a malformed one is dropped rather than
+ * repaired: a repaired step is an invented step, and this timeline only ever
+ * shows work that actually happened. `detail` survives, because the operator
+ * reading this is the person who has to go and open the file it names.
+ */
+export function useBuildJobActivity(
+  id: string | undefined,
+  jobId: string | undefined,
+  options: { live: boolean }
+) {
+  return useQuery({
+    queryKey: buildJobActivityQueryKey(id, jobId),
+    enabled: Boolean(id && jobId),
+    queryFn: async (): Promise<AgentActivityEvent[]> => {
+      const res = await fetch(
+        `/api/admin/projects/${id}/pipeline/jobs/${jobId}/events?kinds=activity`,
+        { cache: 'no-store' }
+      );
+      if (!res.ok) await readError(res, 'Failed to load the build activity');
+      const body = (await res.json()) as {
+        events?: Array<{ payload?: unknown }>;
+      };
+      return (body.events ?? [])
+        .map(
+          (event) => (event.payload as { activity?: unknown } | null)?.activity
+        )
+        .filter(isAgentActivityEvent);
     },
     staleTime: 2_000,
     refetchInterval: options.live ? BUILD_FEED_LIVE_INTERVAL_MS : false,

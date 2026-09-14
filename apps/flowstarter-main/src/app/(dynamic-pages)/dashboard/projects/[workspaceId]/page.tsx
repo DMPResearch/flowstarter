@@ -262,7 +262,15 @@ export default async function ClientProjectPage({
         </Link>
       </header>
 
-      <SiteOverview state={state} tiles={tiles} buildSignal={buildSignal} />
+      {/* `workspaceId` is what turns the stepper's Building stage into a live
+          timeline: the panel polls /api/client/site/[workspaceId]/activity,
+          which runs the same access check this page just did. */}
+      <SiteOverview
+        state={state}
+        tiles={tiles}
+        buildSignal={buildSignal}
+        workspaceId={workspaceId}
+      />
 
       {position.length > 0 ? (
         <section

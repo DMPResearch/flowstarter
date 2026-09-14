@@ -1024,6 +1024,49 @@ describe('the full build log', () => {
     ]);
   });
 
+  it('keeps the agent activity steps out of the chat feed, and serves them when asked', async () => {
+    seedWorkspace();
+    seedJob({ status: 'running' });
+    seedJobEvent({ kind: 'phase', body: 'Agents expanding the site' });
+    seedJobEvent({
+      kind: 'activity',
+      body: 'Agents expanding the site',
+      payload: {
+        activity: {
+          at: '2026-09-14T10:00:00.000Z',
+          phase: 'Agents expanding the site',
+          kind: 'reading',
+          subject: 'section.services',
+          detail: 'src/components/Services.astro',
+        },
+      },
+    });
+    seedJobEvent({ kind: 'reply', body: 'Built the site.' });
+
+    // A build writes hundreds of steps and the conversation is what was said
+    // about it, so the default answer has none of them in it.
+    const feed = await jobEventsHandler(get(), jobCtx());
+    const feedBody = await feed.json();
+    expect(feedBody.events.map((e: { kind: string }) => e.kind)).toEqual([
+      'phase',
+      'reply',
+    ]);
+
+    const withActivity = await jobEventsHandler(
+      get('http://test.local/x?kinds=activity'),
+      jobCtx()
+    );
+    const activityBody = await withActivity.json();
+    expect(activityBody.events).toHaveLength(1);
+    expect(activityBody.events[0].payload.activity).toMatchObject({
+      kind: 'reading',
+      subject: 'section.services',
+      // The operator's copy keeps the path. Only the client projection drops
+      // it, and that happens in the client route, not here.
+      detail: 'src/components/Services.astro',
+    });
+  });
+
   it('flattens the batches into lines, oldest first, carrying the source', async () => {
     seedWorkspace();
     seedJob({ status: 'succeeded' });

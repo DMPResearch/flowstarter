@@ -106,6 +106,15 @@ function isStreamLog(payload: unknown): boolean {
 }
 
 /**
+ * The kind the worker writes one row of the agent activity timeline as. Those
+ * rows are structured steps in `payload.activity`, not sentences: the
+ * conversation renders a bubble per row, so a build's several hundred steps
+ * would bury the handful of lines a person actually said. They are the
+ * activity panel's material, and `?kinds=activity` is how it asks for them.
+ */
+const ACTIVITY_EVENT_KIND = 'activity';
+
+/**
  * How far back the detail view scans job events to find each job's current
  * phase and last agent line. One bounded query for the whole workspace beats
  * one query per job, and 500 newest lines covers every build a workspace has
@@ -857,6 +866,10 @@ async function resolveJob(
  * Everything said about one build, oldest first: the worker's phases and
  * logs, the agents' replies, the operators' notes. `?after=<iso>` returns
  * only what is newer, so a live panel can poll cheaply.
+ *
+ * Two kinds of row are left out of that default and asked for by name with
+ * `?kinds=`: the batched stream the log view flattens, and the `activity`
+ * rows the agent timeline draws.
  */
 export async function jobEventsHandler(
   req: NextRequest,
@@ -883,6 +896,11 @@ export async function jobEventsHandler(
     .select(JOB_EVENT_COLUMNS)
     .eq('job_id', found.job.id);
   if (after) query = query.gt('created_at', after);
+  // An explicit `?kinds=` narrows in the query and not only in memory. The cap
+  // below takes the oldest rows, and a long build writes thousands of stream
+  // and activity rows, so a caller asking for one kind would otherwise be
+  // served whatever fraction of it fitted under the cap beside every other.
+  if (kinds.length > 0) query = query.in('kind', kinds);
   const { data, error } = await query
     .order('created_at', { ascending: true })
     .limit(JOB_EVENT_LIMIT);
@@ -896,8 +914,13 @@ export async function jobEventsHandler(
 
   // Filtered here rather than in the query: the feed is capped either way,
   // and the fact a log row is a stream batch lives in its jsonb payload.
+  // Activity rows are dropped by kind for the same reason the stream is
+  // dropped by payload — the conversation is what was said about the build,
+  // and neither of those is anybody talking.
   const events = ((data ?? []) as unknown as JobEventRow[]).filter((event) =>
-    kinds.length > 0 ? kinds.includes(event.kind) : !isStreamLog(event.payload)
+    kinds.length > 0
+      ? kinds.includes(event.kind)
+      : event.kind !== ACTIVITY_EVENT_KIND && !isStreamLog(event.payload)
   );
   const latestPhase = [...events]
     .reverse()

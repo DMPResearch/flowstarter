@@ -49,6 +49,16 @@ export {
   StatusDot,
   type StatusDotProps,
 } from './components/feedback/StatusDot';
+export {
+  AgentActivity,
+  AGENT_ACTIVITY_KINDS,
+  type AgentActivityKind,
+  type AgentActivityLabels,
+  type AgentActivityProps,
+  type AgentActivityStatus,
+  type AgentActivityStep,
+  type AgentActivityStepState,
+} from './components/feedback/AgentActivity';
 
 // Components - Backgrounds
 export {

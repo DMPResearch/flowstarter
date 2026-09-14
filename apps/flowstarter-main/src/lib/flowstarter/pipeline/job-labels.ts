@@ -381,6 +381,10 @@ const EVENT_KIND_LABELS: Readonly<Record<string, string>> = {
   client_reply_recorded: 'Client replied',
   guest_account_provisioned: 'Guest account created for the client',
   guest_credentials_email_failed: 'Welcome email could not be sent',
+  // A job-event kind rather than a `project_events` one, and named here
+  // because the same pair labels a build's own rows wherever one is printed
+  // outside the activity panel. The timeline never invents a word for it.
+  activity: 'Step the agents took',
 };
 
 /** A kind nobody has named yet still reads as words instead of an enum. */
@@ -472,6 +476,19 @@ export function eventSummary(kind: string, payload: unknown): string | null {
     case 'job_canceled': {
       const jobKind = typeof p.jobKind === 'string' ? p.jobKind : null;
       return jobKind ? `${jobKindLabel(jobKind)} cancelled` : null;
+    }
+    // One step of the agent timeline, as a row rather than as a drawn step:
+    // what the agent was doing, and the operator's extra when the worker
+    // recorded one. The subject token stays out of it -- the panel words that
+    // from the dictionary, and this line is never the place a token leaks.
+    case 'activity': {
+      const activity = isRecord(p.activity) ? p.activity : null;
+      if (!activity) return null;
+      const kind = typeof activity.kind === 'string' ? activity.kind : null;
+      if (!kind) return null;
+      const detail =
+        typeof activity.detail === 'string' ? activity.detail.trim() : '';
+      return detail ? `${sentenceCase(kind)}: ${detail}` : sentenceCase(kind);
     }
     case 'build_dispatch_failed': {
       const detail = typeof p.detail === 'string' ? p.detail : null;

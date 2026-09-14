@@ -1,3 +1,9 @@
+// Deep import, not the package root: the root re-exports the Pi SDK and the
+// whole generation graph, and this hook runs in the browser.
+import {
+  isAgentActivityEvent,
+  type AgentActivityEvent,
+} from '@flowstarter/agentic-codegen/src/flowstarter/activity';
 import { useEffect, useState } from 'react';
 
 /**
@@ -29,6 +35,13 @@ export interface PreviewProgressSnapshot {
   phase: string | null;
   /** Every phase seen so far, in order — the running log the UI renders. */
   phases: PreviewPhaseEntry[];
+  /**
+   * The structured activity timeline, oldest first: one step per phase
+   * boundary and per tool call, decided by rules in the pipeline and never by
+   * a model. Both transports carry it, and both replay the whole list rather
+   * than a delta, so a reconnect leaves no holes.
+   */
+  activity: AgentActivityEvent[];
   previewUrl?: string;
   /**
    * The durable, shareable copy on the previews host. Not the same thing as
@@ -54,6 +67,7 @@ const IDLE_SNAPSHOT: PreviewProgressSnapshot = {
   status: 'idle',
   phase: null,
   phases: [],
+  activity: [],
   personalized: false,
   usingFallback: false,
 };
@@ -115,6 +129,21 @@ export function usePreviewProgress(
       stopPoll();
     };
 
+    // The stream sends each step once and the poll sends the whole list, so
+    // this takes the list either way and keeps whichever is longer. Two
+    // transports cannot then disagree about how far the run has got.
+    const mergeActivity = (incoming: AgentActivityEvent[]) => {
+      if (incoming.length === 0) return;
+      setSnapshot((prev) =>
+        incoming.length > prev.activity.length
+          ? { ...prev, activity: incoming }
+          : prev
+      );
+    };
+    const appendActivityEvent = (event: AgentActivityEvent) => {
+      setSnapshot((prev) => ({ ...prev, activity: [...prev.activity, event] }));
+    };
+
     const appendPhase = (phase: string, at: number) => {
       setSnapshot((prev) => ({
         ...prev,
@@ -139,6 +168,7 @@ export function usePreviewProgress(
         phase?: string;
         previewUrl?: string;
         personalized?: boolean;
+        activity?: unknown;
         error?: string;
       } = {};
       try {
@@ -151,6 +181,9 @@ export function usePreviewProgress(
       if (json.phase && json.phase !== lastPolledPhase) {
         lastPolledPhase = json.phase;
         appendPhase(json.phase, Math.round((Date.now() - startedAt) / 1000));
+      }
+      if (Array.isArray(json.activity)) {
+        mergeActivity(json.activity.filter(isAgentActivityEvent));
       }
       if (json.status === 'ready') {
         setSnapshot((prev) => ({
@@ -198,6 +231,17 @@ export function usePreviewProgress(
               at?: number;
             };
             if (data.phase) appendPhase(data.phase, data.at ?? 0);
+          } catch {
+            /* malformed frame — skip it, the connection is still good */
+          }
+        });
+        source.addEventListener('activity', (event) => {
+          if (cancelled) return;
+          try {
+            const data: unknown = JSON.parse((event as MessageEvent).data);
+            // A frame that is not an event of ours is dropped, never coerced.
+            // The timeline shows what the pipeline said and nothing else.
+            if (isAgentActivityEvent(data)) appendActivityEvent(data);
           } catch {
             /* malformed frame — skip it, the connection is still good */
           }

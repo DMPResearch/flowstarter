@@ -27,6 +27,7 @@ import {
 } from '../intake-chat.shared';
 import { deriveBusinessName, withQuickDefaults } from '../quick-defaults';
 import { usePreviewProgress } from '../usePreviewProgress';
+import { AgentActivityPanel } from '@/components/flowstarter/AgentActivityPanel';
 import { formatPreviewExpiry } from '@/components/flowstarter/site-link';
 import { DemoSiteFrame } from './DemoSiteFrame';
 import { BrandStrip, type BrandStripProps } from './BrandStrip';
@@ -1171,6 +1172,32 @@ export function PreviewStep({
             </p>
           </div>
         )}
+      </div>
+
+      {/* The steps the agents are taking, under the skeleton that stands in
+          for the site. The two say different things and both are derived from
+          the run: the skeleton is the shape the answers imply, this is what is
+          being done to it. It augments the skeleton rather than replacing it,
+          because a visitor who looks away for a minute should still be able to
+          see what they are getting as well as how far along it is. */}
+      <div data-testid="preview-activity" className="mt-3">
+        <AgentActivityPanel
+          events={progress.activity}
+          headline={
+            buildFailure
+              ? t('agentActivity.headline.stopped')
+              : finished
+              ? t('agentActivity.headline.previewDone')
+              : t('agentActivity.headline.preview')
+          }
+          status={buildFailure ? 'failed' : finished ? 'done' : 'running'}
+          // The wizard threads its dictionary down as a prop rather than
+          // mounting a provider, so the panel is handed the same `t` every
+          // other string on this step is written with.
+          t={t}
+          surface="card"
+          dense
+        />
       </div>
 
       {/* The shareable copy, and the date it stops working.

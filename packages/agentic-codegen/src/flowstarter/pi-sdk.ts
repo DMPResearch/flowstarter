@@ -54,6 +54,7 @@ import {
 } from './prompts';
 import type { GeneratedAssetEntry } from './generated-assets';
 import type { TemplateLibrary } from './template-library-mcp';
+import type { ActivityToolSink } from './activity/recorder';
 import type {
   BrandConfig,
   BusinessIntakePayload,
@@ -114,6 +115,7 @@ const TEMPLATE_TREE_IGNORED_DIRECTORIES = new Set([
 ]);
 
 /** The outcome of one bounded coding-agent session over an isolated workspace. */
+
 export interface AgentBuildResult {
   summary: string;
   /** Workspace-relative paths the agent actually wrote or edited. */
@@ -514,6 +516,8 @@ export class PiSdkFlowstarterAgents {
     intake: BusinessIntakePayload;
     brandConfig: BrandConfig;
     library: TemplateLibrary;
+    /** Structured timeline sink; the library lookups become search steps. */
+    onActivity?: ActivityToolSink;
   }): Promise<TemplateSelection> {
     const discoveredSlugs = new Set<string>();
     let highestRankedCandidate: TemplateCandidate | undefined;
@@ -588,6 +592,7 @@ export class PiSdkFlowstarterAgents {
         'search_flowstarter_templates',
         'get_flowstarter_template_details',
       ],
+      ...(input.onActivity ? { onActivity: input.onActivity } : {}),
     });
     if (searchCalls === 0)
       throw new Error('Template selector did not query the approved library');
@@ -760,6 +765,12 @@ export class PiSdkFlowstarterAgents {
      * agent sees every component and layout without spending tool calls.
      */
     fullTemplateContext?: boolean;
+    /**
+     * Structured timeline sink. The preview leg has no operator log, so this
+     * is the only narration it produces, and it is the one a visitor reads
+     * while the funnel builds their site.
+     */
+    onActivity?: ActivityToolSink;
   }): Promise<AgentBuildResult> {
     const changedPaths = new Set<string>();
     const tools = await createBoundedFileTools(
@@ -830,6 +841,7 @@ export class PiSdkFlowstarterAgents {
         tools: tools.map((tool) => tool.name),
         role: 'preview',
         action: 'preview_generate',
+        ...(input.onActivity ? { onActivity: input.onActivity } : {}),
       });
     } catch (error) {
       // A personalization pass that ran out of clock after rewriting the
@@ -869,6 +881,8 @@ export class PiSdkFlowstarterAgents {
      * the pass runs; the returned summary is unaffected either way.
      */
     onTrace?: AgentTraceSink;
+    /** Structured timeline sink, one rule-decided step per tool call. */
+    onActivity?: ActivityToolSink;
   }): Promise<AgentBuildResult> {
     const changedPaths = new Set<string>();
     const tools = await createBoundedFileTools(
@@ -893,6 +907,7 @@ export class PiSdkFlowstarterAgents {
       role: 'fullSite',
       action: 'preview_generate',
       ...(input.onTrace ? { onTrace: input.onTrace } : {}),
+      ...(input.onActivity ? { onActivity: input.onActivity } : {}),
     });
     return { summary, changedPaths: Array.from(changedPaths) };
   }
@@ -989,6 +1004,12 @@ export class PiSdkFlowstarterAgents {
     action: PiUsageAction;
     /** Live work log for this call. Every attempt reports into it. */
     onTrace?: AgentTraceSink;
+    /**
+     * The structured timeline. Where `onTrace` carries prose for the operator
+     * log, this carries one rule-decided step per tool call for the activity
+     * timeline a client reads. Both, or neither: they are different readers.
+     */
+    onActivity?: ActivityToolSink;
   }): Promise<string> {
     const cfg: ResolvedSessionConfig = input.role
       ? this.resolveRole(input.role)
@@ -1062,6 +1083,7 @@ export class PiSdkFlowstarterAgents {
       role?: PiAgentRole;
       action: PiUsageAction;
       onTrace?: AgentTraceSink;
+      onActivity?: ActivityToolSink;
     },
     cfg: ResolvedSessionConfig,
   ): Promise<string> {
@@ -1154,6 +1176,11 @@ export class PiSdkFlowstarterAgents {
       // tools are keyed on, so the log names the file, not just the tool.
       if (event.type === 'tool_execution_start') {
         trace?.toolCall(event.toolName, event.args);
+        // The same call, said twice for two readers: prose above for the
+        // operator's log, a structured step below for the timeline. The rule
+        // that decides which step it is lives in the activity module, so a
+        // new tool cannot start narrating itself by accident.
+        input.onActivity?.(event.toolName, event.args);
       }
       if (event.type === 'tool_execution_end') {
         trace?.toolResult(event.toolName, event.result, event.isError);

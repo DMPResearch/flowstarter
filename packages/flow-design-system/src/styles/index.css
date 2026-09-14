@@ -900,3 +900,267 @@ a.fs-glass-tile {
 .fs-glass-tile.fs-glass--plain {
   --fs-tile-wash: transparent;
 }
+
+/* ── Agent activity ─────────────────────────────────────────────────────────
+   The steps the agent is taking, while it takes them. A header that names the
+   work and spins while it runs, a vertical timeline under it, and one line of
+   summary once the timeline is folded away.
+
+   It is deliberately the quietest thing on any surface it lands on. The rail
+   is `--fs-rule`, the dots are ink at two weights, the chips are neutral
+   pills: twenty steps each carrying a colour of its own is a list nobody
+   finishes. A failure is the single exception, because that is the one line
+   the reader has to be able to find without reading. */
+.fs-activity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fs-space-3);
+}
+
+/* The header is the whole fold control, so it spans the surface and keeps the
+   surface's own radius at the top corners rather than drawing a box inside a
+   box. */
+.fs-activity__header {
+  display: flex;
+  align-items: center;
+  gap: var(--fs-space-3);
+  inline-size: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: start;
+  font: inherit;
+}
+
+.fs-activity__glyph {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  inline-size: 16px;
+  block-size: 16px;
+}
+
+/* A 16px ring with one lit quarter. It is drawn here rather than reusing the
+   Spinner component because that one carries its own inline colours and a
+   MutationObserver; inside a surface this quiet the spinner is a token job. */
+.fs-activity__spinner {
+  inline-size: 14px;
+  block-size: 14px;
+  border: 2px solid var(--fs-rule-strong);
+  border-block-start-color: var(--fs-ink-dim);
+  border-radius: var(--fs-radius-full);
+  animation: fs-activity-spin 0.8s linear infinite;
+}
+
+/* Finished or failed: a still dot rather than a ring that has stopped, which
+   reads as a spinner that broke. */
+.fs-activity__mark {
+  inline-size: 8px;
+  block-size: 8px;
+  border-radius: var(--fs-radius-full);
+  background: var(--fs-ink-faint);
+}
+
+.fs-activity[data-status='failed'] .fs-activity__mark {
+  background: var(--fs-tone-danger);
+}
+
+.fs-activity__heading {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: var(--fs-space-2);
+  min-inline-size: 0;
+  font-size: var(--fs-text-body-sm);
+}
+
+.fs-activity__headline {
+  flex: none;
+  color: var(--fs-ink);
+  font-weight: var(--fs-weight-medium);
+}
+
+.fs-activity__sep {
+  flex: none;
+  color: var(--fs-ink-faint);
+}
+
+/* The topic is the part that can be long, so it is the part that truncates. */
+.fs-activity__topic {
+  overflow: hidden;
+  color: var(--fs-ink-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fs-activity__chevron {
+  flex: none;
+  inline-size: 8px;
+  block-size: 8px;
+  border-inline-end: 1.5px solid var(--fs-ink-faint);
+  border-block-end: 1.5px solid var(--fs-ink-faint);
+  transform: rotate(45deg) translate(-1px, -1px);
+  transition: transform var(--fs-dur-micro) var(--fs-ease-spring);
+}
+
+.fs-activity__header[aria-expanded='true'] .fs-activity__chevron {
+  transform: rotate(-135deg) translate(-1px, -1px);
+}
+
+/* The live region. It is read, never drawn: the same words are already on
+   screen in the timeline, and a second copy of them is a second copy. */
+.fs-activity__announce {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.fs-activity__failure {
+  margin: 0;
+  color: var(--fs-tone-danger);
+  font-size: var(--fs-text-body-sm);
+}
+
+.fs-activity__summary {
+  margin: 0;
+  color: var(--fs-ink-dim);
+  font-size: var(--fs-text-body-sm);
+}
+
+.fs-activity__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fs-space-3);
+}
+
+/* The rail is drawn once, on the list, rather than once per step: a border on
+   every row leaves a hairline gap at each join that shows up as a dashed line
+   at 1px. */
+.fs-activity__list {
+  display: flex;
+  position: relative;
+  flex-direction: column;
+  gap: var(--fs-space-3);
+  margin: 0;
+  padding: 0;
+  padding-inline-start: var(--fs-space-5);
+  list-style: none;
+}
+
+.fs-activity__list::before {
+  content: '';
+  position: absolute;
+  inset-block: 6px;
+  inset-inline-start: 3px;
+  inline-size: 1px;
+  background: var(--fs-rule);
+}
+
+.fs-activity__step {
+  display: flex;
+  position: relative;
+  gap: var(--fs-space-2);
+  font-size: var(--fs-text-body-sm);
+}
+
+.fs-activity__dot {
+  position: absolute;
+  inset-block-start: 6px;
+  inset-inline-start: calc(var(--fs-space-5) * -1);
+  inline-size: 7px;
+  block-size: 7px;
+  border-radius: var(--fs-radius-full);
+  background: var(--fs-ink-faint);
+}
+
+/* The live step is the only one wearing full ink, which is what makes it
+   findable in a list of twenty without a colour or a highlight. */
+.fs-activity__step[data-state='active'] .fs-activity__dot {
+  background: var(--fs-ink);
+  box-shadow: 0 0 0 3px var(--fs-tone-neutral-soft);
+}
+
+.fs-activity__step[data-state='failed'] .fs-activity__dot {
+  background: var(--fs-tone-danger);
+}
+
+.fs-activity__step-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fs-space-1);
+  min-inline-size: 0;
+}
+
+.fs-activity__label {
+  color: var(--fs-ink-dim);
+}
+
+.fs-activity__step[data-state='active'] .fs-activity__label {
+  color: var(--fs-ink);
+}
+
+.fs-activity__step[data-state='failed'] .fs-activity__label {
+  color: var(--fs-tone-danger);
+}
+
+.fs-activity__detail {
+  color: var(--fs-ink-faint);
+  font-size: var(--fs-text-caption);
+  overflow-wrap: anywhere;
+}
+
+.fs-activity__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--fs-space-2);
+  margin-block-start: var(--fs-space-1);
+}
+
+/* A chip carries a query or a template name, which can be long enough to push
+   a panel wide. It truncates rather than letting the panel grow. */
+.fs-activity__chip {
+  max-inline-size: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fs-activity__footer {
+  display: flex;
+  gap: var(--fs-space-2);
+  align-items: center;
+}
+
+.fs-activity--dense {
+  gap: var(--fs-space-2);
+}
+
+.fs-activity--dense .fs-activity__list {
+  gap: var(--fs-space-2);
+}
+
+@keyframes fs-activity-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* A spinner that cannot spin still has to say the work is live, so it holds
+   the lit quarter as a static ring rather than disappearing. */
+@media (prefers-reduced-motion: reduce) {
+  .fs-activity__spinner {
+    animation: none;
+  }
+
+  .fs-activity__chevron {
+    transition: none;
+  }
+}

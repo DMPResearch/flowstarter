@@ -69,6 +69,7 @@ describe('the design gallery gate', () => {
 
     for (const name of [
       'Client dashboard',
+      'Agent activity',
       'Admin dashboard',
       'Admin pipeline',
     ]) {
@@ -97,6 +98,31 @@ describe('the design gallery gate', () => {
     ) {
       expect(node.className).not.toMatch(/\bmax-w-/);
     }
+  });
+
+  /**
+   * The same rule the tile copy is held to, applied to the timeline: the
+   * fixtures are events, and every sentence on the screen is produced by the
+   * collapse and phrasing rules from them. A fixture that spelled the
+   * sentences out would make this section a picture of itself.
+   */
+  it('derives the activity steps and the summary from the fixture events', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+
+    render(<DesignGalleryPage />);
+
+    // Three read events on one file collapse to one step with a count.
+    expect(
+      screen.getAllByText('Read the services section (3)').length
+    ).toBeGreaterThan(0);
+    // Four page builds, six gate checks and two repairs, counted.
+    expect(
+      screen.getAllByText('Built 4 pages, checked 6 rules, 2 repairs').length
+    ).toBeGreaterThan(0);
+    // The gate that stopped the failed run, named in plain words.
+    expect(
+      screen.getAllByText('Stopped at the placeholder copy check').length
+    ).toBeGreaterThan(0);
   });
 
   it('feeds the rules module real inputs instead of hardcoding the tile copy', () => {
