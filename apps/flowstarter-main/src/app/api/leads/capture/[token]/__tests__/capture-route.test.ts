@@ -24,6 +24,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { OPTIONS, POST } from '../route';
 import { createFakeSupabase } from '@/lib/flowstarter/__tests__/fake-supabase';
+import { _resetRateLimitFallbacksForTests } from '@/lib/rate-limit';
 
 vi.mock('server-only', () => ({}));
 
@@ -46,9 +47,16 @@ vi.mock('@/lib/flowstarter/client-notifications', () => ({
 
 // Every test starts with a fresh limiter, or the eleventh assertion in the
 // file would be the one that trips it rather than the one that means to.
-const limiter = vi.hoisted(() => ({ consumeRateLimit: vi.fn() }));
-vi.mock('@/lib/rate-limit', () => ({
-  consumeRateLimit: limiter.consumeRateLimit,
+// Mocked at the `routeLimiter` boundary rather than Arcjet itself — this
+// suite is about the route's own call order (token then IP, refuse before
+// touching the database), which `src/lib/security/__tests__/route-limits.test.ts`
+// already covers independently.
+const limiter = vi.hoisted(() => ({ check: vi.fn() }));
+vi.mock('@/lib/security/route-limits', () => ({
+  routeLimiter: (name: string) => ({
+    name,
+    check: (...args: unknown[]) => limiter.check(name, ...args),
+  }),
 }));
 
 const body = {
@@ -78,8 +86,14 @@ beforeEach(() => {
   db.reset();
   notify.notifyClientOnce.mockReset();
   notify.notifyClientOnce.mockResolvedValue({ sent: true });
-  limiter.consumeRateLimit.mockReset();
-  limiter.consumeRateLimit.mockResolvedValue(false);
+  limiter.check.mockReset();
+  limiter.check.mockResolvedValue({ ok: true, retryAfter: 0 });
+  // The route's own replay guard (PR #152) calls the real `consumeRateLimit`
+  // (only the token/IP limiters above are mocked, at the `routeLimiter`
+  // boundary) — its in-memory fallback is module-level state, so an
+  // identical `body` posted by an earlier test in this file would otherwise
+  // register as a replay of this one.
+  _resetRateLimitFallbacksForTests();
   process.env.PLATFORM_DOMAIN = 'flowstarter.test';
   db.seed('workspaces', [
     {
@@ -305,13 +319,15 @@ describe('rate limiting', () => {
       post(TOKEN_A, body, { origin: ORIGIN_A, 'x-forwarded-for': '1.2.3.4' }),
       params(TOKEN_A)
     );
-    const keys = limiter.consumeRateLimit.mock.calls.map((call) => call[0]);
-    expect(keys).toContain(`lead-capture:token:${TOKEN_A}`);
-    expect(keys).toContain('lead-capture:ip:1.2.3.4');
+    const calls = limiter.check.mock.calls.map(
+      ([name, , key]) => `${name as string}:${key as string}`
+    );
+    expect(calls).toContain(`lead-capture-token:${TOKEN_A}`);
+    expect(calls).toContain('lead-capture-ip:1.2.3.4');
   });
 
   it('refuses once limited, before touching the database', async () => {
-    limiter.consumeRateLimit.mockResolvedValue(true);
+    limiter.check.mockResolvedValue({ ok: false, retryAfter: 30 });
     const response = await POST(post(TOKEN_A, body), params(TOKEN_A));
     expect(response.status).toBe(429);
     expect(db.rows('leads')).toHaveLength(0);

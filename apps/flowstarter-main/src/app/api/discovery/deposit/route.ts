@@ -18,12 +18,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { z } from 'zod';
 import { readJsonCapped } from '@/lib/net/ingress';
+import { routeLimiter } from '@/lib/security/route-limits';
 import {
   type Tier,
   bookingDepositAmount,
 } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/discovery.logic';
 import { clientIp } from '@/lib/request-ip';
-import { consumeRateLimit, namedIntEnv } from '@/lib/rate-limit';
 
 const STRIPE_API_VERSION = '2026-02-25.clover' as const;
 
@@ -36,42 +36,6 @@ const DepositSchema = z.object({
   source: z.string().max(100).optional().default('cta'),
   leadId: z.string().uuid().nullish(),
 });
-
-const RATE_LIMIT = 5;
-const RATE_WINDOW_MS = 60_000;
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
-
-function isRateLimited(ip: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(ip);
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
-    return false;
-  }
-  entry.count++;
-  return entry.count > RATE_LIMIT;
-}
-
-/** Test seam: the limiter is module state and suites must be able to reset
- * it, same as `__resetGuestDepositRateLimit` in the sibling checkout route. */
-export function __resetDiscoveryDepositRateLimit(): void {
-  rateLimitMap.clear();
-}
-
-/**
- * Security audit 2026-09-13 (Claude H4 / Codex F06): this creates a real
- * Stripe Checkout session for an anonymous guest, so the per-IP limiter
- * above is not enough on its own — it is trivially defeated by rotating
- * `X-Forwarded-For` (closed at the source in `@/lib/request-ip`, but a
- * second, IP-independent dimension is still worth having). A per-email
- * limiter closes the other half: however many addresses an attacker spoofs,
- * they still name the same email to get a usable Checkout redirect.
- * Named, env-overridable config, never a bare literal — same pattern as
- * `capEur()` in `src/lib/ai/funnel-cost.ts`.
- */
-const DEPOSIT_EMAIL_RATE_LIMIT_ENV = 'DISCOVERY_DEPOSIT_EMAIL_RATE_LIMIT';
-const DEPOSIT_EMAIL_RATE_LIMIT_DEFAULT = 3;
-const DEPOSIT_EMAIL_RATE_WINDOW_MS = 60_000;
 
 /** Absolute origin of the current request — no hardcoded domains. */
 function requestOrigin(request: NextRequest): string {
@@ -89,8 +53,15 @@ function requestOrigin(request: NextRequest): string {
 
 export async function POST(request: NextRequest) {
   const ip = clientIp(request.headers);
-  if (isRateLimited(ip)) {
-    return NextResponse.json({ error: 'Too many attempts' }, { status: 429 });
+  // Backed by Arcjet (see `routeLimiter` / docs/security/rate-limits.md for
+  // the backend order); an Arcjet error fails closed here in production —
+  // this mints Stripe Checkout sessions, one of the documented exceptions.
+  const ipLimit = await routeLimiter('booking-deposit-ip').check(request, ip);
+  if (!ipLimit.ok) {
+    return NextResponse.json(
+      { error: 'Too many attempts' },
+      { status: 429, headers: { 'Retry-After': String(ipLimit.retryAfter) } }
+    );
   }
 
   // Capped as it streams rather than buffered and measured afterwards: an
@@ -117,16 +88,21 @@ export async function POST(request: NextRequest) {
   }
   const lead = parsed.data;
   const normalizedEmail = lead.email.trim().toLowerCase();
-  if (
-    await consumeRateLimit(`discovery-deposit-email:${normalizedEmail}`, {
-      limit: namedIntEnv(
-        DEPOSIT_EMAIL_RATE_LIMIT_ENV,
-        DEPOSIT_EMAIL_RATE_LIMIT_DEFAULT
-      ),
-      windowMs: DEPOSIT_EMAIL_RATE_WINDOW_MS,
-    })
-  ) {
-    return NextResponse.json({ error: 'Too many attempts' }, { status: 429 });
+
+  // Same email, many IPs is the other half of this abuse shape the IP
+  // limiter above cannot see on its own.
+  const emailLimit = await routeLimiter('booking-deposit-email').check(
+    request,
+    normalizedEmail
+  );
+  if (!emailLimit.ok) {
+    return NextResponse.json(
+      { error: 'Too many attempts' },
+      {
+        status: 429,
+        headers: { 'Retry-After': String(emailLimit.retryAfter) },
+      }
+    );
   }
 
   const secret = process.env.STRIPE_SECRET_KEY;

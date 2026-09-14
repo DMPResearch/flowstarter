@@ -12,7 +12,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST } from '../route';
-import { _resetRateLimitFallbacksForTests } from '@/lib/rate-limit';
+import { __resetRouteLimitersForTest } from '@/lib/security/route-limits';
 
 vi.mock('server-only', () => ({}));
 
@@ -47,7 +47,7 @@ beforeEach(() => {
   funnelBudgetState.mockResolvedValue({ state: 'ok' as const });
   callLlm.mockReset();
   callLlm.mockResolvedValue({ text: 'A helpful reply.' });
-  _resetRateLimitFallbacksForTests();
+  __resetRouteLimitersForTest();
 });
 
 describe('POST /api/support-chat', () => {

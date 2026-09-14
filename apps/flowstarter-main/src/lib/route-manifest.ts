@@ -117,3 +117,64 @@ export const KNOWN_APP_ROUTES = [
   '/library(.*)',
   '/design-gallery(.*)',
 ] as const;
+
+/**
+ * Signature/shared-secret callers, not browsers: Cal.com's webhook delivery
+ * (`X-Cal-Signature-256`, verified inside `api/integrations/cal/[workspaceId]`)
+ * and the build worker's callbacks to this app (`Authorization: Bearer
+ * <FLOWSTARTER_BUILD_WORKER_SECRET>`, verified inside
+ * `api/internal/build/deploy` — every route under `/api/internal` is the same
+ * shape, see its own comment in `PUBLIC_ROUTES` above).
+ *
+ * Arcjet's bot detection fingerprints exactly what these callers look like —
+ * no browser headers, no session, a server posting a signed request — so
+ * running it against them would 403 a legitimate delivery before the route
+ * itself ever gets to check the signature. `arcjetPolicyFor` below routes a
+ * path here to the `machine` policy (shield and the route's own rate limit,
+ * no bot detection) instead of `browser`'s full set. The allow-list lives
+ * here, next to the same-shaped `PUBLIC_ROUTES` entries, rather than as
+ * scattered `pathname.startsWith(...)` checks in the middleware itself.
+ */
+const MACHINE_ROUTE_PREFIXES = [
+  '/api/internal',
+  '/api/integrations/cal',
+] as const;
+
+/** Never protected by Arcjet at all — verified (or trivially safe) before
+ * Arcjet would ever run, same as today. */
+const UNPROTECTED_ROUTE_PREFIXES = ['/api/webhooks', '/api/health'] as const;
+
+export type ArcjetPolicy = 'browser' | 'machine' | 'none';
+
+/** `pathname` is `prefix` itself, or `prefix` followed by `/…` — not merely
+ * a string that happens to start with the same characters (so a future
+ * `/api/integrations/calendly` route, say, is not accidentally caught by the
+ * `/api/integrations/cal` prefix). */
+function isUnderPrefix(pathname: string, prefix: string): boolean {
+  return pathname === prefix || pathname.startsWith(`${prefix}/`);
+}
+
+/**
+ * The one place a request path becomes an Arcjet policy. Pure and
+ * dependency-free so a test can call it directly without booting Clerk,
+ * Arcjet or the Edge runtime — same reasoning as the route lists above.
+ *
+ *   - `none`: webhooks and the health check.
+ *   - `machine`: {@link MACHINE_ROUTE_PREFIXES} — shield and the per-route
+ *     rate limit, no bot detection.
+ *   - `browser`: everything else, the default — shield, bot detection and
+ *     the blanket rate limit.
+ */
+export function arcjetPolicyFor(pathname: string): ArcjetPolicy {
+  if (
+    UNPROTECTED_ROUTE_PREFIXES.some((prefix) => isUnderPrefix(pathname, prefix))
+  ) {
+    return 'none';
+  }
+  if (
+    MACHINE_ROUTE_PREFIXES.some((prefix) => isUnderPrefix(pathname, prefix))
+  ) {
+    return 'machine';
+  }
+  return 'browser';
+}

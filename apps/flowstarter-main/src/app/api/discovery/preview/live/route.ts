@@ -24,7 +24,7 @@ import {
   reserveFunnelSpend,
   settleFunnelReservation,
 } from '@/lib/ai/funnel-cost';
-import { discoveryPreviewLiveRateLimiter } from '@/lib/rate-limit';
+import { routeLimiter } from '@/lib/security/route-limits';
 import { llmActionConfig, recordLlmUsage } from '@/lib/ai/llm';
 import { missingGenerationPrerequisites } from '@/lib/discovery/generation-availability';
 import { createJob, getJob, updateJob } from '@/lib/discovery/live-jobs';
@@ -380,12 +380,16 @@ export async function POST(req: NextRequest) {
   // Per-IP rate limit: this is the funnel's most expensive endpoint (a real
   // Pi generation run, `maxDuration = 300`), and until now had no limit at
   // all — see the MVP readiness review, "Security". Computed once and reused
-  // below for the job's own `ip` field.
+  // below for the job's own `ip` field. Backed by Arcjet (see `routeLimiter` /
+  // docs/security/rate-limits.md); an Arcjet error fails closed here in
+  // production — this is one of the documented "expensive anonymous
+  // endpoint" exceptions.
   const ip = clientIp(req.headers);
-  if (discoveryPreviewLiveRateLimiter.check(ip).limited) {
+  const limit = await routeLimiter('discovery-preview-live').check(req, ip);
+  if (!limit.ok) {
     return NextResponse.json(
       { skip: true, reason: 'rate-limited' },
-      { status: 429 }
+      { status: 429, headers: { 'Retry-After': String(limit.retryAfter) } }
     );
   }
 

@@ -39,6 +39,7 @@ import {
   requestOrigin,
   rotateLeadCaptureToken,
 } from '@/lib/flowstarter/lead-capture';
+import { __resetRouteLimitersForTest } from '@/lib/security/route-limits';
 
 vi.mock('server-only', () => ({}));
 
@@ -89,9 +90,13 @@ const limiter = vi.hoisted(() => {
     ),
   };
 });
-vi.mock('@/lib/rate-limit', () => ({
-  consumeRateLimit: limiter.consumeRateLimit,
-}));
+vi.mock('@/lib/rate-limit', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/rate-limit')>();
+  return {
+    ...actual,
+    consumeRateLimit: limiter.consumeRateLimit,
+  };
+});
 
 const enquiry = {
   name: 'Elena Popescu',
@@ -146,6 +151,12 @@ beforeEach(() => {
   db.reset();
   limiter.hits.clear();
   limiter.consumeRateLimit.mockClear();
+  // The token/IP limiters now go through `routeLimiter` (Arcjet first,
+  // Upstash second, in-memory last) rather than calling `consumeRateLimit`
+  // directly — with neither Arcjet nor Upstash configured in this suite,
+  // that is real in-memory state, module-level and shared across tests
+  // unless reset the same way `limiter.hits` is above.
+  __resetRouteLimitersForTest();
   notify.notifyClientOnce.mockReset();
   notify.notifyClientOnce.mockResolvedValue({ sent: true });
   process.env.PLATFORM_DOMAIN = 'flowstarter.test';
@@ -575,23 +586,32 @@ describe('volume', () => {
     // that list gives a fresh bucket to every forged value, which is a
     // per-request limit, which is no limit. The walk from the right is
     // `clientIp` (`lib/request-ip.ts`, PR #141); this asserts the capture
-    // endpoint actually keys its limiter on that rather than on the raw
-    // header, which is the half a unit test of the rule cannot cover.
-    for (let i = 0; i < 3; i += 1) {
-      await POST(
+    // endpoint actually keys its per-IP limiter on that rather than on the
+    // raw header.
+    //
+    // A distinct, well-formed-but-unregistered token on every attempt keeps
+    // the per-token limiter (a separate, lower cap) from ever tripping, so a
+    // 429 here can only be the per-IP limiter — and it can only see all of
+    // these as the same address if it read the header correctly.
+    const ipLimit = DEFAULT_LEAD_CAPTURE_LIMITS.ipPerMinute;
+    const statuses: number[] = [];
+    for (let i = 0; i <= ipLimit; i += 1) {
+      const token = String.fromCharCode(103 + (i % 20)).repeat(43);
+      const response = await POST(
         post(
-          TOKEN_A,
+          token,
           { ...enquiry, message: `Enquiry ${i}` },
           {
             origin: ORIGIN_A,
             'x-forwarded-for': `10.0.0.${i}, 203.0.113.9`,
           }
         ),
-        params(TOKEN_A)
+        params(token)
       );
+      statuses.push(response.status);
     }
-    expect(limiter.hits.get('lead-capture:ip:203.0.113.9')).toBe(3);
-    expect(limiter.hits.get('lead-capture:ip:10.0.0.0')).toBeUndefined();
+    expect(statuses[statuses.length - 1]).toBe(429);
+    expect(statuses.slice(0, -1)).not.toContain(429);
   });
 
   it('stores a replayed payload once and answers both times identically', async () => {

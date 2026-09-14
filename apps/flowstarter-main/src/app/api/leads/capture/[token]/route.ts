@@ -66,6 +66,7 @@ import { notifyClientOnce } from '@/lib/flowstarter/client-notifications';
 import { readJsonCapped } from '@/lib/net/ingress';
 import { consumeRateLimit } from '@/lib/rate-limit';
 import { clientIp } from '@/lib/request-ip';
+import { routeLimiter } from '@/lib/security/route-limits';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 
 export const dynamic = 'force-dynamic';
@@ -97,18 +98,16 @@ export async function POST(
     return notConnected();
   }
 
+  // Rate: per token and per IP, both, backed by Arcjet (see `routeLimiter` /
+  // docs/security/rate-limits.md for the backend order) — one scraped token
+  // hammered from a botnet is caught by the token limiter, one host walking
+  // every token it can find is caught by the IP limiter.
   const ip = clientIp(request.headers);
-  const [tokenLimited, ipLimited] = await Promise.all([
-    consumeRateLimit(`lead-capture:token:${token}`, {
-      limit: limits.tokenPerMinute,
-      windowMs: MINUTE_MS,
-    }),
-    consumeRateLimit(`lead-capture:ip:${ip}`, {
-      limit: limits.ipPerMinute,
-      windowMs: MINUTE_MS,
-    }),
+  const [tokenLimit, ipLimit] = await Promise.all([
+    routeLimiter('lead-capture-token').check(request, token),
+    routeLimiter('lead-capture-ip').check(request, ip),
   ]);
-  if (tokenLimited || ipLimited) {
+  if (!tokenLimit.ok || !ipLimit.ok) {
     return refusal(
       429,
       'Too many messages just now. Try again in a minute.',

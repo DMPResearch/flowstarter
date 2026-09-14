@@ -476,7 +476,7 @@ describe('POST /api/contact — per-IP rate limit', () => {
       subject: 'Project',
       message: 'Aș dori o programare pentru vineri.',
     };
-    const limit = 5; // matches contactRateLimiter's documented limit
+    const limit = 5; // matches routeLimiter('contact')'s documented default
 
     for (let i = 0; i < limit; i += 1) {
       const res = await POST(postRequest(payload, { 'x-forwarded-for': ip }));

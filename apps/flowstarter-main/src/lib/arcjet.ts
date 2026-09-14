@@ -66,6 +66,32 @@ export const ajWithRateLimit = arcjet({
 });
 
 /**
+ * Arcjet client for the middleware's `machine` policy: signature/shared-secret
+ * callers (Cal.com's webhook delivery, the build worker's callbacks) rather
+ * than a browser. See `arcjetPolicyFor` in `@/lib/route-manifest` for the
+ * allow-list and the reasoning.
+ *
+ * Shield and the same rate limit as `ajWithRateLimit`, deliberately without
+ * `detectBot`: every legitimate caller on these routes IS a bot by Arcjet's
+ * own definition, so bot detection would 403 a correctly-signed delivery
+ * before the route itself ever gets to check the signature. The signature
+ * check inside each route is the real authentication; this client's job is
+ * only shield (common attack patterns) and a ceiling on request volume.
+ */
+export const ajMachine = arcjet({
+  key: process.env.ARCJET_KEY!,
+  characteristics: ['ip.src'],
+  rules: [
+    shield({ mode: 'LIVE' }),
+    slidingWindow({
+      mode: 'LIVE',
+      interval: '1m',
+      max: 20,
+    }),
+  ],
+});
+
+/**
  * Arcjet client for AI endpoints with stricter rate limiting.
  * Uses token bucket for burst protection.
  */
@@ -138,6 +164,7 @@ export const ajPublic = arcjet({
 export type ArcjetClient =
   | typeof aj
   | typeof ajWithRateLimit
+  | typeof ajMachine
   | typeof ajAI
   | typeof ajSensitive
   | typeof ajPublic;

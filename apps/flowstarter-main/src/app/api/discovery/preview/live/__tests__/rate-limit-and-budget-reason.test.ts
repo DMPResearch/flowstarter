@@ -110,7 +110,7 @@ describe('POST /api/discovery/preview/live — per-IP rate limit', () => {
     // The rate-limit check runs before body parsing, so a body that fails
     // schema validation still proves the limiter counted the request — the
     // response would be `{ skip: true }` at 200, not a 429.
-    const limit = 5; // discoveryPreviewLiveLimit()'s documented default
+    const limit = 5; // routeLimiter('discovery-preview-live')'s documented default
     for (let i = 0; i < limit; i += 1) {
       const res = await POST(liveRequest());
       expect(res.status).not.toBe(429);
