@@ -513,9 +513,21 @@ const findLeadCaptureSlot = (html: string) =>
  *
  * Deliberately narrow. This string becomes the address every enquiry a client
  * ever receives is posted to, written into a public page by a build nobody
- * watches, so "looks like a URL" is not the bar: it has to be https and it has
- * to be a capture path. Anything else is refused and the site keeps its mailto
- * fallback, which is a worse contact form and not a leak.
+ * watches, so "looks like a URL" is not the bar: it has to be https — or
+ * plain http on loopback, the one case a real answer cannot be https — and it
+ * has to be a capture path. Anything else is refused and the site keeps its
+ * mailto fallback, which is a worse contact form and not a leak.
+ *
+ * The loopback exception exists because `publicAppOrigin()`
+ * (`@flowstarter/platform-config`) correctly answers `http://localhost:{PORT}`
+ * in development — nothing there ever has a certificate — and both the build
+ * worker's `leadCaptureEndpointFor()` and the funnel preview's
+ * `previewLeadCaptureEndpoint()` build this string from exactly that origin.
+ * Refusing it unconditionally didn't make a dev build safer, it just made
+ * `injectLeadCapture` silently remove the block on every local and preview
+ * build, which is what shipped a contact form with no script and no endpoint
+ * in any of the four artefacts. Same rule `assertSafeUnlockUrl` in
+ * `preview-teaser.ts` already uses for the same reason.
  */
 export function normalizeLeadCaptureEndpoint(
   endpoint: string | null | undefined,
@@ -529,7 +541,10 @@ export function normalizeLeadCaptureEndpoint(
   } catch {
     return null;
   }
-  if (url.protocol !== 'https:') return null;
+  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  if (url.protocol !== 'https:' && !(loopback && url.protocol === 'http:')) {
+    return null;
+  }
   if (!/^\/api\/leads\/capture\/[^/]+$/.test(url.pathname)) return null;
   if (url.search || url.hash) return null;
   return url.toString();

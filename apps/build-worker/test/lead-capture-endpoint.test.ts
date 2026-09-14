@@ -111,6 +111,31 @@ describe('leadCaptureEndpoint on the job', () => {
     );
   });
 
+  // The floor beneath even that: a developer's own machine with nothing set
+  // at all, which `publicAppOrigin()` answers with `http://localhost:{PORT}`
+  // (3000 when `PORT` is unset either). This is the exact shape a real local
+  // build produces, and the one `normalizeLeadCaptureEndpoint`
+  // (`@flowstarter/agentic-codegen`) used to refuse outright for being http
+  // — the endpoint here was never empty, so this line always passed; what
+  // broke was the injector silently discarding a non-empty, entirely correct
+  // dev endpoint one layer up. Asserted non-empty here to pin the contract
+  // this test's own name promises: a workspace with a token gets an
+  // endpoint, in every environment, full stop.
+  it('posts to http://localhost:{PORT} in development with nothing overridden', () => {
+    process.env.FLOWSTARTER_ENV = 'development';
+    delete process.env.PLATFORM_DOMAIN;
+    delete process.env.NEXT_PUBLIC_SITE_URL;
+    delete process.env.PORT;
+    expect(jobWith(TOKEN).leadCaptureEndpoint).toBe(
+      `http://localhost:3000/api/leads/capture/${TOKEN}`,
+    );
+
+    process.env.PORT = '4123';
+    expect(jobWith(TOKEN).leadCaptureEndpoint).toBe(
+      `http://localhost:4123/api/leads/capture/${TOKEN}`,
+    );
+  });
+
   it('is overridden outright by FLOWSTARTER_PUBLIC_APP_ORIGIN, for a slot on its own subdomain', () => {
     process.env.FLOWSTARTER_PUBLIC_APP_ORIGIN =
       'https://pr-7.staging.flowstarter.dev';
