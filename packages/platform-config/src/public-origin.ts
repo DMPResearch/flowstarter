@@ -136,9 +136,19 @@ function stripTrailingSlash(value: string): string {
  * the three environment guesses covers on its own, such as a PR staging slot
  * answering at `pr-7.staging.{domain}` rather than its environment's default
  * subdomain.
+ *
+ * `requestOrigin` is the incoming request's own origin (`request.nextUrl.origin`,
+ * say), offered by a route that has one. It is the LAST fallback, consulted
+ * only in development and only once every named source — the override, the
+ * staging/production domain, `NEXT_PUBLIC_SITE_URL` — has had nothing to say.
+ * Production and staging never reach it: their answer is the platform domain,
+ * always, whether or not a request happens to be in scope. A route with no
+ * request (an email, a background job) simply omits it and falls through to
+ * the generic `localhost:{PORT}` guess below, same as before.
  */
 export function publicAppOrigin(
   env: PublicOriginEnvInput = readPublicOriginEnvFromProcess(),
+  requestOrigin?: string,
 ): string {
   const override = env.publicAppOrigin?.trim();
   if (override) return stripTrailingSlash(override);
@@ -155,6 +165,15 @@ export function publicAppOrigin(
 
   const siteUrl = env.siteUrl?.trim();
   if (siteUrl) return stripTrailingSlash(siteUrl);
+
+  const fromRequest = requestOrigin?.trim();
+  if (fromRequest) {
+    try {
+      return stripTrailingSlash(new URL(fromRequest).origin);
+    } catch {
+      /* not a parseable origin; fall through to the generic guess below */
+    }
+  }
 
   const port = env.port?.trim() || '3000';
   return `http://localhost:${port}`;

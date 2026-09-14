@@ -181,7 +181,18 @@ production env file".
 | `FLOWSTARTER_PORTRAIT_STATE_TTL_MS`        | No                       | `600000` (ten minutes). How long a signed connect state stays good.                                                                                                                                                                                                                                                    |
 | `FLOWSTARTER_PORTRAIT_MAX_BYTES`           | No                       | `4194304` (4 MiB). A headshot, not a hero photograph.                                                                                                                                                                                                                                                                  |
 | `FLOWSTARTER_PORTRAIT_STATE_SECRET`        | No                       | The provider's own client secret, which is already a shared secret between us and the provider and never reaches a browser. There is deliberately no default beyond that.                                                                                                                                              |
-| `FLOWSTARTER_PORTRAIT_REDIRECT_BASE`       | Recommended on the box   | The request's own origin. Pin it per environment, because staging and production are different apps with different registered URLs while a request's origin is whatever host header reached us. A pull-request slot should pin the staging base rather than its own `pr-N` hostname, which is not registered anywhere. |
+
+**The OAuth `redirect_uri`** sent to LinkedIn and Instagram, which must match
+the provider's registration byte for byte, is `publicAppOrigin()` (from
+`@flowstarter/platform-config`) plus `/api/connect/<provider>/callback` —
+the same rule every other "where does the app answer" call site in the app
+now uses, not a redirect-base variable of its own. Pin it with
+`FLOWSTARTER_PUBLIC_APP_ORIGIN` (see `.env.example`, "PUBLIC APP / CALLBACK
+ORIGIN") on a `pr-N` slot, whose own ephemeral hostname is not registered
+with either provider; production and staging need no override, and a
+developer on a tunnel needs nothing set at all — the request's own origin is
+the last fallback. See `src/lib/flowstarter/portrait-connect.ts`,
+`portraitRedirectUri`.
 
 **When the credentials are unset**, nothing breaks. The intake asks
 `configuredPortraitProviders` which providers this deployment can actually

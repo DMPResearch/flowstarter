@@ -16,7 +16,7 @@
     "lint": "ESLINT_USE_FLAT_CONFIG=false pnpm eslint --fix src",
     "lint:prettier": "prettier --write src",
     "tsc": "tsc",
-    "postbuild": "next-sitemap --config next-sitemap.config.cjs",
+    "postbuild": "tsx ./node_modules/next-sitemap/bin/next-sitemap.mjs --config next-sitemap.config.mjs",
     "supabase:login": "pnpm -w run supabase:login",
     "db:link": "pnpm -w run db:link",
     "db:start": "pnpm -w run db:start",
@@ -214,6 +214,7 @@
     "husky": "^9.1.7",
     "lint-staged": "^16.2.6",
     "playwright": "^1.55.1",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.2"
   }
 }

@@ -79,7 +79,13 @@ const PORTRAIT_ENV_KEYS = [
   'INSTAGRAM_APP_ID',
   'INSTAGRAM_APP_SECRET',
   'FLOWSTARTER_PORTRAIT_STATE_SECRET',
-  'FLOWSTARTER_PORTRAIT_REDIRECT_BASE',
+  // `portraitRedirectUri` now delegates to `publicAppOrigin()`
+  // (platform-config), so these are the env vars it reads. Deleting them
+  // here before every test is what makes the `redirect_uri` assertions below
+  // deterministic regardless of the developer's own shell environment.
+  'FLOWSTARTER_PUBLIC_APP_ORIGIN',
+  'NEXT_PUBLIC_SITE_URL',
+  'FLOWSTARTER_ENV',
 ] as const;
 
 const savedEnv: Record<string, string | undefined> = {};

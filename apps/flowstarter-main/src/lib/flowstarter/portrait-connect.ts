@@ -48,6 +48,7 @@ import 'server-only';
  */
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 
+import { publicAppOrigin } from '@flowstarter/platform-config';
 import {
   type EnvLike,
   type PortraitProvider,
@@ -89,26 +90,24 @@ export const PORTRAIT_PROVIDER_ENDPOINTS: Record<
   },
 };
 
-/** The env var that pins the redirect base a provider has on file. */
-export const PORTRAIT_REDIRECT_BASE_ENV_VAR =
-  'FLOWSTARTER_PORTRAIT_REDIRECT_BASE';
-
 /**
  * The callback URL we send, which must match the one registered with the
  * provider byte for byte.
  *
- * Prefers the pinned base, because staging and production are different apps
- * with different registered URLs and a request's own origin is whatever host
- * header reached us. Falls back to the request origin so a developer running
- * on localhost with a tunnel does not have to set anything.
+ * Built from `publicAppOrigin()` — the one rule for where the app itself is
+ * publicly served (`@flowstarter/platform-config`) — rather than a second
+ * copy of it. `FLOWSTARTER_PUBLIC_APP_ORIGIN` is the pinned base staging and
+ * production need (they are different apps with different registered URLs,
+ * and a request's own origin is whatever host header reached us — wrong for
+ * a `pr-N` slot, which must send the URL the provider has on file rather than
+ * its own ephemeral hostname); `requestOrigin` is the fallback so a developer
+ * running on localhost, or behind a tunnel, does not have to set anything.
  */
 export function portraitRedirectUri(
   provider: PortraitProvider,
-  requestOrigin: string,
-  env: EnvLike = process.env
+  requestOrigin: string
 ): string {
-  const base = (env[PORTRAIT_REDIRECT_BASE_ENV_VAR] ?? '').trim();
-  const origin = (base || requestOrigin).replace(/\/+$/, '');
+  const origin = publicAppOrigin(undefined, requestOrigin);
   return `${origin}/api/connect/${provider}/callback`;
 }
 

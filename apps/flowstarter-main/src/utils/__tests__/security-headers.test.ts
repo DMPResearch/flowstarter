@@ -103,11 +103,12 @@ describe('security-headers', () => {
       expect(buildCSPHeader()).toContain("object-src 'none'");
     });
 
-    it('includes upgrade-insecure-requests in production when the site URL is https', () => {
-      // `buildCSPHeader` only emits this directive when production AND
-      // `NEXT_PUBLIC_SITE_URL` is https — otherwise staging / LAN HTTP
-      // access silently breaks (see `utils/security-headers.ts`).
-      vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'https://flowstarter.net');
+    it('includes upgrade-insecure-requests in production, where publicAppOrigin() is always https', () => {
+      // `buildCSPHeader` only emits this directive when `!isDev` AND
+      // `publicAppOrigin()` (platform-config) is https — which it always is
+      // in production, regardless of `NEXT_PUBLIC_SITE_URL` (production
+      // never consults it). Staging / LAN HTTP access would otherwise
+      // silently break (see `utils/security-headers.ts`).
       expect(buildCSPHeader()).toContain('upgrade-insecure-requests');
     });
 

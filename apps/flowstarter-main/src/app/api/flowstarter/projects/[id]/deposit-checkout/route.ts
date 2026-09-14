@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
+import { publicAppOrigin } from '@flowstarter/platform-config';
 import { depositAmountMinor } from '@flowstarter/agentic-codegen/src/flowstarter/state-machine';
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
 import { requireAuth } from '@/lib/api-auth';
@@ -82,7 +83,7 @@ export async function POST(
 
   const amountMinor = depositAmountMinor(workspace.final_value_minor);
   const currency = workspace.billing_currency.toLowerCase();
-  const origin = publicAppOrigin();
+  const origin = publicAppOrigin(undefined, request.nextUrl.origin);
   const stripe = new Stripe(secret, { apiVersion: STRIPE_API_VERSION });
   const session = await stripe.checkout.sessions.create({
     mode: 'payment',
@@ -125,16 +126,4 @@ export async function POST(
     currency,
     depositPercent: 20,
   });
-}
-
-function publicAppOrigin(): string {
-  const raw = process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000';
-  const url = new URL(raw);
-  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
-  if (url.protocol !== 'https:' && !(loopback && url.protocol === 'http:')) {
-    throw new Error(
-      'NEXT_PUBLIC_SITE_URL must be HTTPS outside local development'
-    );
-  }
-  return url.origin;
 }

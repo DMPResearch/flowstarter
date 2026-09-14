@@ -102,6 +102,46 @@ describe('publicAppOrigin', () => {
     ).toBe('https://tunnel.example.com');
   });
 
+  it('prefers NEXT_PUBLIC_SITE_URL over a request origin', () => {
+    expect(
+      publicAppOrigin(
+        { ...DEVELOPMENT, siteUrl: 'http://192.168.1.5:3000' },
+        'https://abc123.ngrok.app',
+      ),
+    ).toBe('http://192.168.1.5:3000');
+  });
+
+  it('falls back to the request origin, LAN address and all, when nothing is configured', () => {
+    // This is the bug: a LAN dev box with NEXT_PUBLIC_SITE_URL unset used to
+    // get a bare localhost guess (wrong host) or, in the old per-route
+    // reimplementations, an outright throw. The one rule accepts the
+    // request's own origin instead.
+    expect(publicAppOrigin(DEVELOPMENT, 'http://192.168.3.119:3000')).toBe(
+      'http://192.168.3.119:3000',
+    );
+  });
+
+  it('strips a trailing slash off a request origin', () => {
+    expect(publicAppOrigin(DEVELOPMENT, 'http://192.168.3.119:3000/')).toBe(
+      'http://192.168.3.119:3000',
+    );
+  });
+
+  it('ignores an unparseable request origin and falls back to localhost:{PORT}', () => {
+    expect(publicAppOrigin(DEVELOPMENT, 'not-a-url')).toBe(
+      'http://localhost:3000',
+    );
+  });
+
+  it('never consults the request origin in staging or production', () => {
+    expect(publicAppOrigin(PRODUCTION, 'http://evil.example.com')).toBe(
+      'https://flowstarter.net',
+    );
+    expect(publicAppOrigin(STAGING, 'http://evil.example.com')).toBe(
+      'https://staging.flowstarter.dev',
+    );
+  });
+
   it('reads live process.env when called with no argument', () => {
     const previous = {
       FLOWSTARTER_ENV: process.env.FLOWSTARTER_ENV,

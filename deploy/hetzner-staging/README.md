@@ -154,11 +154,14 @@ is every slot on this box. See `docs/security/auth-transfer-policy.md`.
 
 The four portrait lines may be left empty: unset, the LinkedIn and Instagram
 connect buttons render disabled, saying "this connection is not switched on
-yet", and nothing else in the funnel changes. See
-`docs/portrait-sources.md` for the two developer apps that produce those
-credentials, for the redirect URLs, which must match byte for byte, and for
-`FLOWSTARTER_PORTRAIT_REDIRECT_BASE`, which is worth pinning here so a slot
-sends the URL the provider has on file rather than its own hostname.
+yet", and nothing else in the funnel changes. See `docs/portrait-sources.md`
+for the two developer apps that produce those credentials and for the
+redirect URLs, which must match byte for byte: that URL is
+`FLOWSTARTER_PUBLIC_APP_ORIGIN` (below) plus `/api/connect/<provider>/callback`
+now, the same override every other public-origin call site reads, not a
+redirect-base variable of its own — pin `FLOWSTARTER_PUBLIC_APP_ORIGIN` here
+so a `pr-N` slot sends the URL the provider has on file rather than its own
+ephemeral hostname.
 
 The `NEXT_PUBLIC_*` values also exist as Depot secrets (`PROD_NEXT_PUBLIC_*`),
 because those are inlined into the client bundle at **build** time while the
@@ -177,15 +180,20 @@ delivery) must be able to reach it — a different question from `PLATFORM_DOMAI
 which names the zone _client sites_ are hosted under. The two only agree in
 production. Neither needs setting on `main` or `prod`: `publicAppOrigin()`
 already derives `https://flowstarter.net` in production and
-`https://staging.flowstarter.dev` in staging from `FLOWSTARTER_ENV` alone,
-which is also why a client site's contact-form endpoint and its Cal.com
-webhook subscriber URL now resolve correctly there without either variable —
-before this rule existed, both were built from the bare platform domain (a
-404 on this box outside production) or from `NEXT_PUBLIC_SITE_URL` (a LAN
-address on a developer's laptop). Set `FLOWSTARTER_PUBLIC_APP_ORIGIN` on a
-`pr-N` slot only if that slot's own contact-form and Cal.com testing need to
-resolve to its own ephemeral hostname (`https://pr-N.staging.flowstarter.dev`)
-rather than the `main` slot's; leave it unset otherwise. Set
+`https://staging.flowstarter.dev` in staging from `FLOWSTARTER_ENV` alone.
+That is also why a client site's contact-form endpoint, its Cal.com webhook
+subscriber URL, every Stripe checkout's success/cancel URL, every
+notification email's dashboard link, and the portrait connect flows' OAuth
+`redirect_uri` all now resolve correctly there without either variable —
+before this rule existed (and before every one of those call sites read it),
+each was built a different way: from the bare platform domain (a 404 on this
+box outside production), from `NEXT_PUBLIC_SITE_URL` (a LAN address on a
+developer's laptop, which is also what used to 500 the signed-in deposit
+checkout on a LAN dev stack), or from its own redirect-base variable. Set
+`FLOWSTARTER_PUBLIC_APP_ORIGIN` on a `pr-N` slot only if that slot's own
+contact-form, Cal.com, Stripe and portrait-connect testing need to resolve to
+its own ephemeral hostname (`https://pr-N.staging.flowstarter.dev`) rather
+than the `main` slot's; leave it unset otherwise. Set
 `FLOWSTARTER_PUBLIC_CALLBACK_ORIGIN` only in development, for a tunnel in
 front of a laptop Cal.com's servers cannot otherwise reach.
 

@@ -109,9 +109,15 @@ afterEach(() => {
   vi.restoreAllMocks();
   delete process.env.NEXT_PUBLIC_SITE_URL;
   delete process.env.NEXT_PUBLIC_APP_URL;
+  delete process.env.FLOWSTARTER_PUBLIC_APP_ORIGIN;
+  delete process.env.FLOWSTARTER_ENV;
 });
 
 describe('clientDashboardUrl', () => {
+  // `publicAppOrigin()` (platform-config) is the one rule now, so this is a
+  // thin wrapper: the interesting cases live in
+  // packages/platform-config/test/public-origin.test.ts. These just pin that
+  // the wrapper actually calls it and appends the right path.
   it('prefers the configured site origin and trims its trailing slashes', () => {
     process.env.NEXT_PUBLIC_SITE_URL = 'https://www.flowstarter.dev//';
     expect(clientDashboardUrl(WORKSPACE)).toBe(
@@ -119,12 +125,16 @@ describe('clientDashboardUrl', () => {
     );
   });
 
-  it('falls back to the app origin, then to production', () => {
-    process.env.NEXT_PUBLIC_APP_URL = 'https://app.example';
+  it('lets FLOWSTARTER_PUBLIC_APP_ORIGIN win outright', () => {
+    process.env.NEXT_PUBLIC_SITE_URL = 'http://192.168.3.119:3000';
+    process.env.FLOWSTARTER_PUBLIC_APP_ORIGIN = 'https://app.example';
     expect(clientDashboardUrl(WORKSPACE)).toBe(
       `https://app.example/dashboard/projects/${WORKSPACE}`
     );
-    delete process.env.NEXT_PUBLIC_APP_URL;
+  });
+
+  it('is the bare platform domain in production, never a relative path', () => {
+    process.env.FLOWSTARTER_ENV = 'production';
     // Never a relative path: an email is read outside any tab we control, so
     // a relative link is not degraded, it is broken.
     expect(clientDashboardUrl(WORKSPACE)).toMatch(

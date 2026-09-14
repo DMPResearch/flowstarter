@@ -9,6 +9,7 @@ import 'server-only';
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+import { publicAppOrigin } from '@flowstarter/platform-config';
 import {
   ChangeRequestError,
   acceptFreeChangeRequest,
@@ -33,25 +34,6 @@ const UUID =
 const RespondSchema = z.object({
   decision: z.enum(['accept', 'decline']),
 });
-
-function publicOrigin(request: NextRequest): string {
-  const raw = process.env.NEXT_PUBLIC_SITE_URL?.trim();
-  if (raw) {
-    try {
-      const url = new URL(raw);
-      const loopback =
-        url.hostname === 'localhost' || url.hostname === '127.0.0.1';
-      if (url.protocol === 'https:' || (loopback && url.protocol === 'http:')) {
-        return url.origin;
-      }
-    } catch {
-      /* fall through */
-    }
-  }
-  const explicit = request.headers.get('origin');
-  if (explicit) return explicit.replace(/\/$/, '');
-  return request.nextUrl.origin;
-}
 
 export async function POST(
   request: NextRequest,
@@ -146,7 +128,7 @@ export async function POST(
       row,
       clientEmail: workspace?.client_email ?? null,
       businessName: context.site.workspaceName,
-      origin: publicOrigin(request),
+      origin: publicAppOrigin(undefined, request.nextUrl.origin),
     });
     return NextResponse.json({ checkoutUrl: checkout.url }, { status: 201 });
   } catch (error) {

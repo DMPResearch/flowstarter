@@ -37,6 +37,7 @@ import type {
   ScrapedTextDocument,
 } from '@flowstarter/agentic-codegen/src/flowstarter/types';
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
+import { publicAppOrigin } from '@flowstarter/platform-config';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import {
   TIER_SETUP_FROM,
@@ -1194,23 +1195,11 @@ export function uniqueSlug(base: string): string {
 }
 
 /**
- * Absolute when the configured origin is one we would put in front of a
- * client, relative otherwise — a misconfigured NEXT_PUBLIC_SITE_URL must not
- * cost the visitor the workspace they just claimed.
+ * Where the unlock link sends the visitor who just claimed a preview.
+ * `publicAppOrigin()` is the one rule for where the app itself is publicly
+ * served, so this is always absolute rather than falling back to a relative
+ * path a misconfigured environment used to force.
  */
 export function unlockUrlFor(workspaceId: string): string {
-  const path = `/unlock/${workspaceId}`;
-  const raw = process.env.NEXT_PUBLIC_SITE_URL?.trim();
-  if (!raw) return path;
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return path;
-  }
-  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
-  if (url.protocol !== 'https:' && !(loopback && url.protocol === 'http:')) {
-    return path;
-  }
-  return `${url.origin}${path}`;
+  return `${publicAppOrigin()}/unlock/${workspaceId}`;
 }

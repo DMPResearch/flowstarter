@@ -1,3 +1,4 @@
+import { publicAppOrigin } from '@flowstarter/platform-config';
 import { previewZone } from '@/lib/hosting/site-hostnames';
 import { createSecureHeaders } from 'next-secure-headers';
 import { NextResponse } from 'next/server';
@@ -20,7 +21,7 @@ const ALLOWED_SCRIPT_DOMAINS = [
   // Cal.com booking widget used inside Astro template previews
   'https://app.cal.com',
   'https://cal.com',
-  process.env.NEXT_PUBLIC_SITE_URL,
+  publicAppOrigin(),
 ];
 
 const ALLOWED_CONNECT_DOMAINS = [
@@ -61,14 +62,12 @@ const ALLOWED_IMG_DOMAINS = [
 const ALLOWED_FONT_DOMAINS = ["'self'", 'https://fonts.gstatic.com', 'data:'];
 
 /**
- * In dev, allow browser calls to the same machine on a LAN IP when
- * `NEXT_PUBLIC_SITE_URL` / `NEXT_PUBLIC_EDITOR_URL` point at http://192.168.x.x:…
+ * In dev, allow browser calls to the same machine on a LAN IP when the app's
+ * own origin (`publicAppOrigin()`) or `NEXT_PUBLIC_EDITOR_URL` point at
+ * http://192.168.x.x:…
  */
 function devHttpWsConnectSrcExtras(): string {
-  const urls = [
-    process.env.NEXT_PUBLIC_SITE_URL,
-    process.env.NEXT_PUBLIC_EDITOR_URL,
-  ];
+  const urls = [publicAppOrigin(), process.env.NEXT_PUBLIC_EDITOR_URL];
   const parts: string[] = [];
   for (const raw of urls) {
     const u = raw?.trim();
@@ -200,7 +199,7 @@ export function buildCSPHeader(nonce?: string, frameable = false): string {
     // Only upgrade insecure requests when the site is actually served over HTTPS.
     // Staging / LAN access over plain HTTP would break all sub-resource loads
     // because the browser would silently rewrite http→https.
-    !isDev && process.env.NEXT_PUBLIC_SITE_URL?.startsWith('https://')
+    !isDev && publicAppOrigin().startsWith('https://')
       ? 'upgrade-insecure-requests'
       : '',
   ].filter(Boolean);

@@ -10,6 +10,7 @@
  * detached generator that owns the job, so a flag on the job is both the
  * natural and the sufficient guard.
  */
+import { publicAppOrigin } from '@flowstarter/platform-config';
 import { sendEmail } from '@/lib/email';
 import { previewReadyEmail } from '@/lib/email-templates/client-notices';
 import { getJob, updateJob } from './live-jobs';
@@ -31,29 +32,6 @@ export type PreviewReadyOutcome =
   | 'send_failed';
 
 /**
- * The origin an emailed link has to be absolute against.
- *
- * Returns null rather than guessing a hostname: a link to somebody else's site
- * is worse than a preview the visitor reaches from the tab they already have
- * open.
- */
-function publicOrigin(): string | null {
-  const raw = process.env.NEXT_PUBLIC_SITE_URL?.trim();
-  if (!raw) return null;
-  try {
-    const url = new URL(raw);
-    const loopback =
-      url.hostname === 'localhost' || url.hostname === '127.0.0.1';
-    if (url.protocol !== 'https:' && !(loopback && url.protocol === 'http:')) {
-      return null;
-    }
-    return url.origin;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * The link to put in the email.
  *
  * Prefers the durable hosted copy on the previews host when it exists, because
@@ -71,8 +49,7 @@ export function emailablePreviewUrl(
   const forClient = previewUrlForClient(demoId, job.previewUrl);
   if (!forClient) return null;
   if (/^https?:\/\//i.test(forClient)) return forClient;
-  const origin = publicOrigin();
-  return origin ? `${origin}${forClient}` : null;
+  return `${publicAppOrigin()}${forClient}`;
 }
 
 /**
