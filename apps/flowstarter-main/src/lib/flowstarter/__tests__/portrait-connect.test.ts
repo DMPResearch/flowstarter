@@ -31,6 +31,7 @@
 import { createHmac } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { PUBLIC_APP_ORIGIN_ENV } from '@flowstarter/platform-config';
 import {
   PORTRAIT_PROVIDER_TIMEOUT_ENV_VAR,
   type EnvLike,
@@ -42,7 +43,6 @@ import {
   MAX_PROFILE_URL_CHARS,
   MAX_RETURN_TO_CHARS,
   PORTRAIT_PROVIDER_ENDPOINTS,
-  PORTRAIT_REDIRECT_BASE_ENV_VAR,
   PortraitConnectError,
   cleanAuthorizationCode,
   decodePortraitState,
@@ -184,49 +184,66 @@ afterEach(() => {
 });
 
 describe('portraitRedirectUri', () => {
+  // Delegates to `publicAppOrigin()` (platform-config) — the one rule for
+  // where the app itself is publicly served — passing the request's own
+  // origin as its last-fallback argument. These pin that the delegation is
+  // wired up correctly; the exhaustive rule cases live in
+  // packages/platform-config/test/public-origin.test.ts. The file-level
+  // `afterEach` above already unstubs every env var between tests.
+
   // Staging and production are different apps with different registered
-  // callback URLs, so the pinned base has to win over whatever host header
-  // reached us.
-  it('prefers the pinned base over the request origin', () => {
+  // callback URLs, so the pinned override has to win over whatever host
+  // header reached us.
+  it('prefers FLOWSTARTER_PUBLIC_APP_ORIGIN over the request origin', () => {
+    vi.stubEnv(PUBLIC_APP_ORIGIN_ENV, 'https://app.flowstarter.dev');
     expect(
-      portraitRedirectUri('linkedin', 'https://whatever.example.com', {
-        [PORTRAIT_REDIRECT_BASE_ENV_VAR]: 'https://app.flowstarter.dev',
-      })
+      portraitRedirectUri('linkedin', 'https://whatever.example.com')
     ).toBe('https://app.flowstarter.dev/api/connect/linkedin/callback');
   });
 
   // The URL must match the provider's registration byte for byte, and a base
   // copied out of a browser bar carries a trailing slash.
   it('strips a trailing slash rather than sending a doubled path', () => {
+    vi.stubEnv(PUBLIC_APP_ORIGIN_ENV, 'https://app.flowstarter.dev///');
     expect(
-      portraitRedirectUri('instagram', 'https://ignored.example.com', {
-        [PORTRAIT_REDIRECT_BASE_ENV_VAR]: 'https://app.flowstarter.dev///',
-      })
+      portraitRedirectUri('instagram', 'https://ignored.example.com')
     ).toBe('https://app.flowstarter.dev/api/connect/instagram/callback');
   });
 
   // A developer on a tunnel should not have to set anything to try the flow.
-  it('falls back to the request origin when nothing is pinned', () => {
-    expect(
-      portraitRedirectUri('linkedin', 'https://abc123.ngrok.app', {})
-    ).toBe('https://abc123.ngrok.app/api/connect/linkedin/callback');
-    expect(
-      portraitRedirectUri('instagram', 'https://abc123.ngrok.app/', {})
-    ).toBe('https://abc123.ngrok.app/api/connect/instagram/callback');
+  it('falls back to the request origin when nothing is configured', () => {
+    vi.stubEnv('NEXT_PUBLIC_SITE_URL', '');
+    expect(portraitRedirectUri('linkedin', 'https://abc123.ngrok.app')).toBe(
+      'https://abc123.ngrok.app/api/connect/linkedin/callback'
+    );
+    expect(portraitRedirectUri('instagram', 'https://abc123.ngrok.app/')).toBe(
+      'https://abc123.ngrok.app/api/connect/instagram/callback'
+    );
   });
 
-  // A base set to spaces is not a base, and the origin still has to work.
-  it('treats a whitespace-only pinned base as unset', () => {
-    expect(
-      portraitRedirectUri('linkedin', 'https://abc123.ngrok.app', {
-        [PORTRAIT_REDIRECT_BASE_ENV_VAR]: '   ',
-      })
-    ).toBe('https://abc123.ngrok.app/api/connect/linkedin/callback');
+  // NEXT_PUBLIC_SITE_URL, the developer's own dev-server address, still wins
+  // over the request origin in development -- same order publicAppOrigin()
+  // documents everywhere else.
+  it('prefers NEXT_PUBLIC_SITE_URL over the request origin', () => {
+    vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'http://192.168.3.119:3000');
+    expect(portraitRedirectUri('linkedin', 'https://abc123.ngrok.app')).toBe(
+      'http://192.168.3.119:3000/api/connect/linkedin/callback'
+    );
+  });
+
+  // A pinned override set to spaces is not a pin, and the origin still has
+  // to work.
+  it('treats a whitespace-only FLOWSTARTER_PUBLIC_APP_ORIGIN as unset', () => {
+    vi.stubEnv(PUBLIC_APP_ORIGIN_ENV, '   ');
+    vi.stubEnv('NEXT_PUBLIC_SITE_URL', '');
+    expect(portraitRedirectUri('linkedin', 'https://abc123.ngrok.app')).toBe(
+      'https://abc123.ngrok.app/api/connect/linkedin/callback'
+    );
   });
 
   // The route calls this with no environment argument.
   it('reads the live environment when no environment is passed', () => {
-    vi.stubEnv(PORTRAIT_REDIRECT_BASE_ENV_VAR, 'https://app.flowstarter.dev/');
+    vi.stubEnv(PUBLIC_APP_ORIGIN_ENV, 'https://app.flowstarter.dev/');
     expect(portraitRedirectUri('linkedin', 'https://ignored.example.com')).toBe(
       'https://app.flowstarter.dev/api/connect/linkedin/callback'
     );

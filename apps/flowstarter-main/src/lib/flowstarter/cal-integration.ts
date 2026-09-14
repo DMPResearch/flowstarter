@@ -53,9 +53,9 @@ export interface CalConnection {
  * string is copied into a third party's settings screen, where a relative
  * path is not a degraded link but a broken one.
  *
- * `publicCallbackOrigin()`, not `NEXT_PUBLIC_SITE_URL` directly: on a laptop
- * that env var is whatever the developer's machine answers on -- localhost or
- * a LAN address -- and Cal.com's own servers can reach neither. The rule
+ * `publicCallbackOrigin()`, not the developer's own dev-server address
+ * directly: on a laptop that is whatever the machine answers on -- localhost
+ * or a LAN address -- and Cal.com's own servers can reach neither. The rule
  * defaults to `publicAppOrigin()` (the bare domain in production, `staging.`
  * in front of it in staging) and is overridable on its own with
  * `FLOWSTARTER_PUBLIC_CALLBACK_ORIGIN` for the one case that still needs it:

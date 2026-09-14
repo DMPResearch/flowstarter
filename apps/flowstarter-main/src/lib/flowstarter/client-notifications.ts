@@ -28,6 +28,7 @@
  * deposit is in" happens once per workspace and keys on nothing.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { publicAppOrigin } from '@flowstarter/platform-config';
 import type { Database, Json } from '@/lib/database.types';
 import { sendEmail } from '@/lib/email';
 import type { RenderedEmail } from '@/lib/email-templates/client-notices';
@@ -106,19 +107,13 @@ export interface ClientRecipient {
 }
 
 /**
- * Where the client's own view of the project lives.
- *
- * Falls back to the public production origin rather than a relative path: an
- * email is read outside any browser tab we control, so a relative link is not
- * a degraded link, it is a broken one.
+ * Where the client's own view of the project lives. `publicAppOrigin()` is
+ * the one rule for where the app itself is publicly served, so this is
+ * always absolute: an email is read outside any browser tab we control, so a
+ * relative link is not a degraded link, it is a broken one.
  */
 export function clientDashboardUrl(workspaceId: string): string {
-  const base = (
-    process.env.NEXT_PUBLIC_SITE_URL?.trim() ||
-    process.env.NEXT_PUBLIC_APP_URL?.trim() ||
-    'https://flowstarter.net'
-  ).replace(/\/+$/, '');
-  return `${base}/dashboard/projects/${workspaceId}`;
+  return `${publicAppOrigin()}/dashboard/projects/${workspaceId}`;
 }
 
 /**

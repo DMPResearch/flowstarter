@@ -68,12 +68,16 @@ describe('emailablePreviewUrl', () => {
     );
   });
 
-  it('returns null for a loopback previewUrl when NEXT_PUBLIC_SITE_URL is unset', () => {
+  it('falls back to http://localhost:3000 for a loopback previewUrl when NEXT_PUBLIC_SITE_URL is unset', () => {
+    // `publicAppOrigin()` (platform-config) is the one rule now: unset in
+    // development means the generic localhost:{PORT} guess, never null.
     delete process.env.NEXT_PUBLIC_SITE_URL;
     const url = emailablePreviewUrl('demo-4', {
       previewUrl: 'http://127.0.0.1:8910',
     });
-    expect(url).toBeNull();
+    expect(url).toBe(
+      'http://localhost:3000/api/discovery/preview/live/frame/demo-4'
+    );
   });
 
   it('returns null when the job has no previewUrl at all', () => {
@@ -81,22 +85,18 @@ describe('emailablePreviewUrl', () => {
     expect(url).toBeNull();
   });
 
-  it('rejects a non-http NEXT_PUBLIC_SITE_URL, e.g. ftp, even for a loopback preview', () => {
-    process.env.NEXT_PUBLIC_SITE_URL = 'ftp://x';
-    const url = emailablePreviewUrl('demo-6', {
-      previewUrl: 'http://127.0.0.1:8910',
-    });
-    expect(url).toBeNull();
-  });
-
-  it('rejects a plain-http NEXT_PUBLIC_SITE_URL whose host is not loopback', () => {
-    // http is only trusted for localhost/127.0.0.1 (dev); a real hostname
-    // over http would put a mixed-content, spoofable link in the email.
-    process.env.NEXT_PUBLIC_SITE_URL = 'http://example.com';
+  it('uses a plain-http NEXT_PUBLIC_SITE_URL whose host is not loopback exactly as configured', () => {
+    // publicAppOrigin() does not second-guess a developer's own
+    // NEXT_PUBLIC_SITE_URL in development -- that is what let a LAN address
+    // such as http://192.168.3.119:3000 through instead of producing a dead
+    // link or a 500.
+    process.env.NEXT_PUBLIC_SITE_URL = 'http://192.168.3.119:3000';
     const url = emailablePreviewUrl('demo-7', {
       previewUrl: 'http://127.0.0.1:8910',
     });
-    expect(url).toBeNull();
+    expect(url).toBe(
+      'http://192.168.3.119:3000/api/discovery/preview/live/frame/demo-7'
+    );
   });
 });
 
@@ -146,12 +146,13 @@ describe('sendPreviewReadyEmail', () => {
     expect(sendEmailMock).not.toHaveBeenCalled();
   });
 
-  it('returns no_link when the ready site has no url that works outside the browser tab', async () => {
-    delete process.env.NEXT_PUBLIC_SITE_URL;
+  it('returns no_link when the ready job has no preview url at all', async () => {
+    // `publicAppOrigin()` always answers something now (down to the generic
+    // localhost:{PORT} guess), so the only way there is genuinely no link is
+    // a job with neither a hosted copy nor a sandbox previewUrl to rewrite.
     createJob('no-link-job');
     updateJob('no-link-job', {
       leadEmail: 'client@example.com',
-      previewUrl: 'http://127.0.0.1:8910', // loopback, and no public origin to rewrite it against
     });
 
     const outcome = await sendPreviewReadyEmail('no-link-job');

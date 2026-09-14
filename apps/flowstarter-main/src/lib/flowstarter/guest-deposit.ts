@@ -33,6 +33,7 @@
  * build that never started because Resend was down is a broken product, so mail
  * failure is recorded and swallowed, never propagated.
  */
+import { publicAppOrigin } from '@flowstarter/platform-config';
 import { IntakeChatSchema } from '@/lib/flowstarter/intake-chat-schema';
 import { readGuestIntakeChat } from '@/lib/hosting/funnel-previews';
 import type Stripe from 'stripe';
@@ -316,22 +317,9 @@ async function recordEvent(
 }
 
 /**
- * Where the email sends people. Falls back to a relative path rather than
- * guessing a hostname: a misconfigured origin should produce an obviously
- * broken link in one email, not a link to somebody else's site.
+ * Where the email sends people. `publicAppOrigin()` is the one rule for
+ * where the app itself is publicly served, so this is always absolute.
  */
 function signInUrl(): string {
-  const raw = process.env.NEXT_PUBLIC_SITE_URL?.trim();
-  if (!raw) return '/login';
-  try {
-    const url = new URL(raw);
-    const loopback =
-      url.hostname === 'localhost' || url.hostname === '127.0.0.1';
-    if (url.protocol !== 'https:' && !(loopback && url.protocol === 'http:')) {
-      return '/login';
-    }
-    return `${url.origin}/login`;
-  } catch {
-    return '/login';
-  }
+  return `${publicAppOrigin()}/login`;
 }

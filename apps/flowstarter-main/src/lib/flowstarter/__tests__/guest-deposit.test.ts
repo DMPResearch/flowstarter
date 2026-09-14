@@ -727,24 +727,26 @@ describe('the sign-in link in the welcome email', () => {
     expect(linkFrom()).toContain('http://localhost:3000/login');
   });
 
-  it('sends a relative path rather than guessing when the origin is unusable', async () => {
-    // An obviously broken link in one email beats a link to somebody else's
-    // site, so plain http to a remote host and unparseable values both fall
-    // back rather than being repaired.
-    for (const value of ['http://someone-elses-site.test', 'not a url', '']) {
-      vi.stubEnv('NEXT_PUBLIC_SITE_URL', value);
-      emailMock.mockClear();
-      for (const table of Object.keys(db)) db[table] = [];
-      clerkUsers.length = 0;
-      clearClaimablePreviews();
-      stashPreview();
+  it('allows a LAN address in development, the shape that used to 500 the signed-in route', async () => {
+    // `publicAppOrigin()` (platform-config) is the one rule now: it does not
+    // second-guess a developer's own NEXT_PUBLIC_SITE_URL, so a LAN address
+    // such as http://192.168.3.119:3000 is used exactly as configured rather
+    // than being treated as "unusable".
+    vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'http://192.168.3.119:3000');
+    stashPreview();
 
-      await provisionGuestDeposit(event(), guestIntent());
+    await provisionGuestDeposit(event(), guestIntent());
 
-      const html = linkFrom();
-      expect(html).toContain('"/login"');
-      expect(html).not.toContain('someone-elses-site');
-    }
+    expect(linkFrom()).toContain('http://192.168.3.119:3000/login');
+  });
+
+  it('falls back to http://localhost:3000 rather than a relative path when nothing is configured', async () => {
+    vi.stubEnv('NEXT_PUBLIC_SITE_URL', '');
+    stashPreview();
+
+    await provisionGuestDeposit(event(), guestIntent());
+
+    expect(linkFrom()).toContain('http://localhost:3000/login');
   });
 });
 

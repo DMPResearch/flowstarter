@@ -7,6 +7,7 @@ import 'server-only';
  */
 
 import { SignJWT, jwtVerify } from 'jose';
+import { publicAppOrigin } from '@flowstarter/platform-config';
 
 const SECRET_KEY = new TextEncoder().encode(
   process.env.INVITE_TOKEN_SECRET ||
@@ -82,6 +83,5 @@ export async function validateInviteToken(
  * Generate the full invitation URL
  */
 export function getInviteUrl(token: string): string {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://flowstarter.dev';
-  return `${baseUrl}/admin/join?token=${encodeURIComponent(token)}`;
+  return `${publicAppOrigin()}/admin/join?token=${encodeURIComponent(token)}`;
 }

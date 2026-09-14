@@ -348,14 +348,15 @@ export default clerkMiddleware(async (auth, req) => {
       const referer = req.headers.get('referer') || '';
       const siteOrigin = req.nextUrl.origin;
       const allowedOrigins = [
-        process.env.NEXT_PUBLIC_SITE_URL,
-        process.env.NEXT_PUBLIC_APP_URL,
         process.env.NEXT_PUBLIC_VERCEL_URL
           ? `https://${process.env.NEXT_PUBLIC_VERCEL_URL}`
           : undefined,
-        // editor.${domain} subdomains are included in getAllowedRedirectOrigins
-        // (see @flowstarter/platform-config). No separate EDITOR_URL needed
-        // post master-doc realignment.
+        // editor.${domain} subdomains, and every dev-server origin env var
+        // (the app's own site URL, its app URL, its editor URL), are all
+        // included in getAllowedRedirectOrigins already (see
+        // @flowstarter/platform-config, collectDevRedirectOriginsFromEnv) —
+        // reading them again here would be the second copy of the same rule
+        // this file used to carry.
         ...getAllowedRedirectOrigins(req.headers.get('host') ?? undefined),
       ].filter(Boolean) as string[];
       const isAllowedOrigin = !!origin && allowedOrigins.includes(origin);

@@ -16,6 +16,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { publicAppOrigin } from '@flowstarter/platform-config';
 import { deriveBusinessName } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/quick-defaults';
 import {
   funnelBudgetState,
@@ -223,30 +224,15 @@ function loadTemplateClassifier(): Promise<unknown> {
 }
 
 /**
- * The unlock link is injected into a site we hand to a client, so the teaser
- * refuses anything that is not HTTPS (or loopback in development). A LAN
- * address in NEXT_PUBLIC_SITE_URL is neither, and a misconfigured origin must
- * not cost a generation that has already run for minutes: return undefined and
- * the sections stay gated, just without a clickable CTA.
+ * The unlock link is injected into a site we hand to a client. Built from
+ * `publicAppOrigin()` — the one rule for where the app is publicly served —
+ * rather than a local reimplementation of it, so this never has to guess
+ * whether a configured dev-server address is "usable": in production and
+ * staging it is always the real domain, and in development it is whatever
+ * the developer's own machine answers on, LAN address included.
  */
-function previewUnlockUrl(demoId: string): string | undefined {
-  const raw =
-    process.env.NEXT_PUBLIC_SITE_URL?.trim() || 'http://localhost:3000';
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return undefined;
-  }
-  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
-  if (url.protocol !== 'https:' && !(loopback && url.protocol === 'http:')) {
-    console.warn(
-      `[Flowstarter] NEXT_PUBLIC_SITE_URL (${url.origin}) cannot be used for the ` +
-        'preview unlock link; gating the sections without a CTA'
-    );
-    return undefined;
-  }
-  return `${url.origin}/unlock/${demoId}`;
+function previewUnlockUrl(demoId: string): string {
+  return `${publicAppOrigin()}/unlock/${demoId}`;
 }
 
 /**
@@ -733,12 +719,8 @@ export async function POST(req: NextRequest) {
             minLockedSections: 2,
             revealTop: 0.35,
             label: 'Part of your full site',
-            ...(previewUnlockUrl(demoId)
-              ? {
-                  unlockUrl: previewUnlockUrl(demoId),
-                  unlockLabel: 'Unlock the full site',
-                }
-              : {}),
+            unlockUrl: previewUnlockUrl(demoId),
+            unlockLabel: 'Unlock the full site',
           },
         }
       );

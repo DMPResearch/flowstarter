@@ -27,6 +27,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { z } from 'zod';
+import { publicAppOrigin } from '@flowstarter/platform-config';
 import { IntakeChatSchema } from '@/lib/flowstarter/intake-chat-schema';
 import { stashGuestIntakeChat } from '@/lib/hosting/funnel-previews';
 import { depositAmountMinor } from '@flowstarter/agentic-codegen/src/flowstarter/state-machine';
@@ -201,7 +202,7 @@ export async function POST(
   }
   const amountMinor = depositAmountMinor(quoteMinor);
 
-  const origin = publicAppOrigin(request);
+  const origin = publicAppOrigin(undefined, request.nextUrl.origin);
   // Stripe metadata is a flat string map, so this is the entire contract
   // between the two halves of the flow. Everything the webhook needs to mint an
   // account and claim the preview is here, and nothing that is a price is.
@@ -270,35 +271,4 @@ export async function POST(
       { status: 502 }
     );
   }
-}
-
-/**
- * The configured origin when there is a usable one, the request's own otherwise.
- * Mirrors /api/discovery/deposit rather than throwing: this is the last step of
- * a funnel and a misconfigured env var must not be the thing that loses a sale.
- */
-function publicAppOrigin(request: NextRequest): string {
-  const raw = process.env.NEXT_PUBLIC_SITE_URL?.trim();
-  if (raw) {
-    try {
-      const url = new URL(raw);
-      const loopback =
-        url.hostname === 'localhost' || url.hostname === '127.0.0.1';
-      if (url.protocol === 'https:' || (loopback && url.protocol === 'http:')) {
-        return url.origin;
-      }
-    } catch {
-      /* fall through to the request's own origin */
-    }
-  }
-  const explicit = request.headers.get('origin');
-  if (explicit) return explicit.replace(/\/$/, '');
-  const proto =
-    request.headers.get('x-forwarded-proto') ??
-    (request.nextUrl.protocol || 'https').replace(':', '');
-  const host =
-    request.headers.get('x-forwarded-host') ??
-    request.headers.get('host') ??
-    request.nextUrl.host;
-  return `${proto}://${host}`;
 }

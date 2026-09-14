@@ -100,11 +100,13 @@ export function escapeHtml(value: string): string {
  * from a database column an operator can edit, and `javascript:` in a mail
  * client is somebody else's problem only until it is ours.
  *
- * A root-relative path is allowed because one caller deliberately sends one:
- * when `NEXT_PUBLIC_SITE_URL` is unusable, the guest welcome would rather mail
- * an obviously broken `/login` than a working link to somebody else's host. A
- * protocol-relative `//host` is not a path, it is that other host, so it is
- * rejected.
+ * A root-relative path is allowed on purpose: every caller here builds its
+ * href from `publicAppOrigin()` (the one rule for where the app itself is
+ * publicly served) rather than guessing a hostname of its own, so this stays
+ * permissive for whichever caller passes a bare path someday rather than
+ * quietly rewriting it into an absolute link this module would have to guess
+ * the origin for. A protocol-relative `//host` is not a path, it is that
+ * other host, so it is rejected.
  */
 export function safeHref(href: string): string {
   const trimmed = href.trim();
