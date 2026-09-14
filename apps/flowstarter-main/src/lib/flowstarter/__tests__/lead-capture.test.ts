@@ -21,19 +21,24 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFakeSupabase } from './fake-supabase';
 import {
-  LEAD_CAPTURE_TOKEN_PATTERN,
-  PREVIEW_TOKEN_PREFIX,
+  constantTimeEquals,
+  DEFAULT_LEAD_CAPTURE_LIMITS,
   detectSpam,
   ensureLeadCaptureToken,
   insertLead,
   isLeadCaptureToken,
   isPreviewLeadCaptureToken,
+  LEAD_CAPTURE_LIMIT_ENV_VARS,
+  LEAD_CAPTURE_TOKEN_PATTERN,
   leadCaptureEndpoint,
+  leadCaptureLimits,
   leadCaptureOrigins,
+  leadFingerprint,
   listWorkspaceLeads,
   mintLeadCaptureToken,
   originAllowed,
   parseLeadCaptureBody,
+  PREVIEW_TOKEN_PREFIX,
   previewLeadCaptureToken,
   requestOrigin,
   resolveCaptureTenant,
@@ -512,5 +517,94 @@ describe('listWorkspaceLeads', () => {
       includeSpam: true,
     });
     expect(leads[0]?.createdAt > leads[1]!.createdAt).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('the endpoint budget', () => {
+  it('is the documented defaults on an empty environment', () => {
+    expect(leadCaptureLimits({})).toEqual({ ...DEFAULT_LEAD_CAPTURE_LIMITS });
+  });
+
+  it('is whatever an operator set, per number', () => {
+    const limits = leadCaptureLimits({
+      [LEAD_CAPTURE_LIMIT_ENV_VARS.tokenPerMinute]: '3',
+      [LEAD_CAPTURE_LIMIT_ENV_VARS.maxBodyBytes]: '2048',
+    });
+    expect(limits.tokenPerMinute).toBe(3);
+    expect(limits.maxBodyBytes).toBe(2048);
+    expect(limits.ipPerMinute).toBe(DEFAULT_LEAD_CAPTURE_LIMITS.ipPerMinute);
+  });
+
+  it('falls back to the default rather than opening the endpoint up', () => {
+    const limits = leadCaptureLimits({
+      [LEAD_CAPTURE_LIMIT_ENV_VARS.tokenPerMinute]: 'many',
+      [LEAD_CAPTURE_LIMIT_ENV_VARS.ipPerMinute]: '0',
+    });
+    expect(limits.tokenPerMinute).toBe(
+      DEFAULT_LEAD_CAPTURE_LIMITS.tokenPerMinute
+    );
+    expect(limits.ipPerMinute).toBe(DEFAULT_LEAD_CAPTURE_LIMITS.ipPerMinute);
+  });
+});
+
+describe('constantTimeEquals', () => {
+  it('is true for the same string and false for a different one', () => {
+    expect(constantTimeEquals('a'.repeat(43), 'a'.repeat(43))).toBe(true);
+    expect(constantTimeEquals('a'.repeat(43), 'b'.repeat(43))).toBe(false);
+  });
+
+  it('is false rather than a throw when the lengths differ', () => {
+    // `timingSafeEqual` throws on a length mismatch; a comparison that threw
+    // inside a public endpoint would be a 500 an attacker could trigger at
+    // will, so the length is checked first and the answer is just `false`.
+    expect(constantTimeEquals('short', 'a'.repeat(43))).toBe(false);
+    expect(constantTimeEquals('', 'x')).toBe(false);
+  });
+
+  it('is true for two empty strings, which is what the buffers say', () => {
+    expect(constantTimeEquals('', '')).toBe(true);
+  });
+});
+
+describe('leadFingerprint', () => {
+  const body = {
+    name: 'Elena Popescu',
+    email: 'elena@salon.ro',
+    message: 'Doresc o programare',
+    phone: '+40712345678',
+    page: '/contact',
+    honeypot: false,
+  };
+
+  it('is the same digest for the same enquiry in the same workspace', () => {
+    expect(leadFingerprint('ws-1', body)).toBe(leadFingerprint('ws-1', body));
+  });
+
+  it('is a different digest in a different workspace', () => {
+    // Or one client's replay window would silence another client's enquiries.
+    expect(leadFingerprint('ws-1', body)).not.toBe(
+      leadFingerprint('ws-2', body)
+    );
+  });
+
+  it('changes when any field a client reads changes', () => {
+    const base = leadFingerprint('ws-1', body);
+    for (const change of [
+      { name: 'Elena P' },
+      { email: 'other@salon.ro' },
+      { message: 'Doresc o programare!' },
+      { phone: null },
+      { page: '/about' },
+    ]) {
+      expect(leadFingerprint('ws-1', { ...body, ...change })).not.toBe(base);
+    }
+  });
+
+  it('is a digest, so the message is not recoverable from the key', () => {
+    const digest = leadFingerprint('ws-1', body);
+    expect(digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(digest).not.toContain('programare');
   });
 });

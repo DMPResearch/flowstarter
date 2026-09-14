@@ -26,11 +26,18 @@
  *   2. Origin. The submission has to come from one of this workspace's own
  *      hostnames - the final site, the preview it was claimed from, or a custom
  *      domain on `workspace_hosts`. Somebody else's page carrying a scraped
- *      token gets a 403, and the CORS preflight never allows their origin.
- *   3. Rate. Per token and per IP.
- *   4. Content. Lengths by rule, a honeypot that is silently accepted and
- *      discarded, and the spam classifier that has always decided `new` from
- *      `spam`.
+ *      token gets the SAME refusal an unknown token gets, byte for byte, and
+ *      the CORS preflight never allows their origin. See `NOT_CONNECTED` in
+ *      the route: an endpoint that said "wrong website" for a real token and
+ *      "no such form" for an invented one is an endpoint that tells an
+ *      attacker which of the tokens they scraped are still live.
+ *   3. Rate. Per token and per IP, and once more per identical payload, which
+ *      is what turns a replayed submission into one row instead of a thousand.
+ *   4. Content. Every field through `sanitiseInbound` - NUL refused, control
+ *      and invisible characters stripped, unicode normalised, lengths from
+ *      configuration, markup refused in the fields it can only ever be an
+ *      attack in - then a honeypot that is silently accepted and discarded,
+ *      and the spam classifier that has always decided `new` from `spam`.
  *
  * PREVIEWS CANNOT SEND. A funnel preview belongs to nobody: there is no
  * workspace behind it and therefore no tenant a lead could belong to. It gets a
@@ -38,7 +45,7 @@
  * the endpoint answers it with a friendly 403 rather than a 404, so the form on
  * the preview can say why instead of looking broken.
  */
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, Json } from '@/lib/database.types';
 import {
@@ -46,6 +53,12 @@ import {
   previewHostname,
   type HostnameOptions,
 } from '@/lib/hosting/site-hostnames';
+import {
+  inboundLimits,
+  sanitiseInbound,
+  type InboundLimits,
+} from '@/lib/flowstarter/inbound-content';
+import { positiveIntFromEnv } from '@/lib/net/net-config';
 import { withTenant } from '@/lib/tenancy';
 
 type SupabaseServiceClient = SupabaseClient<Database>;
@@ -258,16 +271,30 @@ export async function resolveCaptureTenant(
 
   const { data, error } = await supabase
     .from('workspaces')
-    .select('id, slug, client_email, claimed_preview_id')
+    .select('id, slug, client_email, claimed_preview_id, lead_capture_token')
     .eq('lead_capture_token', token)
     .maybeSingle<{
       id: string;
       slug: string;
       client_email: string | null;
       claimed_preview_id: string | null;
+      lead_capture_token: string | null;
     }>();
   if (error) throw error;
   if (!data) return null;
+
+  // The row was already selected by an equality filter, so this can only fail
+  // if the database ever compared the two values by something other than their
+  // bytes - a collation, a trailing space, a case-insensitive column somebody
+  // changed. It is here to make the comparison this endpoint's answer depends
+  // on one we perform, in a time that does not depend on how many leading
+  // characters a guess got right, rather than one we inherit from an index.
+  if (
+    typeof data.lead_capture_token !== 'string' ||
+    !constantTimeEquals(data.lead_capture_token, token)
+  ) {
+    return null;
+  }
 
   // `withTenant` is what keeps the host lookup pinned to this workspace: the
   // token resolved one id and every further read is filtered by it, so a
@@ -337,7 +364,10 @@ export function leadCaptureOrigins(
   }
 
   for (const hostname of input.customHostnames ?? []) {
-    const clean = hostname.trim().toLowerCase();
+    // Through the same normalisation a request's own Origin goes through, or
+    // a custom domain stored as `Shop.Example.` would never match the
+    // `https://shop.example` a browser actually sends.
+    const clean = stripTrailingDots(hostname.trim().toLowerCase());
     if (clean) hostnames.push(clean);
   }
 
@@ -364,14 +394,39 @@ export function requestOrigin(headers: {
   return null;
 }
 
+/**
+ * An origin reduced to the only two things that identify it, lowercased.
+ *
+ * `new URL` does the work that matters: a homoglyph domain
+ * (`sаlon.example`, Cyrillic а) comes back as its punycode, which is not the
+ * ASCII hostname on the allow list, and userinfo (`https://mysite@evil.test`)
+ * comes back as `evil.test` rather than as the name in front of the `@`.
+ * Neither can be matched by accident because neither survives parsing.
+ *
+ * The trailing dot is removed because `site.example.` and `site.example` are
+ * the same host to DNS and to Caddy, so a visitor who reached the site by the
+ * fully qualified name would otherwise have their enquiry refused for a
+ * character they never typed.
+ */
 function normaliseOrigin(value: string): string | null {
   try {
     const url = new URL(value);
-    return `${url.protocol}//${url.host}`.toLowerCase();
+    const port = url.port ? `:${url.port}` : '';
+    const host = stripTrailingDots(url.hostname.toLowerCase());
+    return `${url.protocol.toLowerCase()}//${host}${port}`;
   } catch {
     return null;
   }
 }
+
+/** An index walk rather than a regex, for the reason `stripTrailingSlashes` is. */
+function stripTrailingDots(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === DOT_CHAR_CODE) end -= 1;
+  return value.slice(0, end);
+}
+
+const DOT_CHAR_CODE = '.'.charCodeAt(0);
 
 /** True when this origin is one of the workspace's own. */
 export function originAllowed(
@@ -394,14 +449,6 @@ export function originAllowed(
  */
 export const HONEYPOT_FIELD = 'company_website';
 
-export const LEAD_FIELD_LIMITS = {
-  name: 200,
-  email: 320,
-  phone: 50,
-  message: 5000,
-  page: 300,
-} as const;
-
 export interface LeadCaptureBody {
   name: string;
   email: string;
@@ -418,57 +465,214 @@ export type LeadCaptureParse =
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 /**
+ * Which rule each field of the contact form is read under.
+ *
+ * Markup is refused everywhere except the message. A name, an address, a phone
+ * number and a page path have no legitimate angle bracket in them, so one is a
+ * payload and nothing is lost by saying so; a message is prose a person wrote
+ * to a business, `a < b` included, and it is escaped at every render.
+ */
+function leadFieldRules(limits: InboundLimits) {
+  return {
+    name: { limit: limits.name, markup: 'reject' as const },
+    email: { limit: limits.email, markup: 'reject' as const },
+    phone: { limit: limits.phone, markup: 'reject' as const },
+    message: {
+      limit: limits.message,
+      markup: 'text' as const,
+      multiline: true,
+    },
+    page: {
+      limit: limits.page,
+      markup: 'reject' as const,
+      onOverflow: 'truncate' as const,
+    },
+  };
+}
+
+/**
  * The body, by rule.
  *
  * Deliberately hand-rolled rather than a Zod schema: every message here is read
  * by a visitor on somebody's small business website, in a box the template
  * renders, so they are sentences rather than validator output.
+ *
+ * Closed, not open: the object is read field by field and nothing else in it is
+ * carried anywhere. A caller that posts `{ name, email, message, status: 'x',
+ * workspace_id: '...' }` gets a lead with a name, an email and a message, and
+ * the two extra keys reach no column.
+ *
+ * A field that fails `sanitiseInbound` is refused with the same kind of
+ * sentence a missing one gets. A bot reading the refusal learns nothing about
+ * which character it was, and a person will never see it.
  */
-export function parseLeadCaptureBody(input: unknown): LeadCaptureParse {
+export function parseLeadCaptureBody(
+  input: unknown,
+  limits: InboundLimits = inboundLimits()
+): LeadCaptureParse {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     return { ok: false, message: 'Send a name, an email and a message.' };
   }
   const raw = input as Record<string, unknown>;
+  const rules = leadFieldRules(limits);
 
-  const honeypot = Boolean(text(raw[HONEYPOT_FIELD]));
+  // The trap is read for presence only, so nothing a bot puts in it is
+  // sanitised, measured or stored. It never leaves this function.
+  const honeypot =
+    typeof raw[HONEYPOT_FIELD] === 'string' &&
+    (raw[HONEYPOT_FIELD] as string).trim().length > 0;
 
-  const name = text(raw.name);
-  const email = text(raw.email);
-  const message = text(raw.message);
-  const phone = text(raw.phone);
-  const page = text(raw.page);
+  const name = sanitiseInbound(raw.name, rules.name);
+  if (!name.ok)
+    return { ok: false, message: 'That name is not one we can send.' };
+  if (!name.value) return { ok: false, message: 'Add your name.' };
 
-  if (!name) return { ok: false, message: 'Add your name.' };
-  if (name.length > LEAD_FIELD_LIMITS.name) {
-    return { ok: false, message: 'That name is too long.' };
-  }
-  if (!email) return { ok: false, message: 'Add an email address.' };
-  if (email.length > LEAD_FIELD_LIMITS.email || !EMAIL_PATTERN.test(email)) {
+  const email = sanitiseInbound(raw.email, rules.email);
+  if (!email.ok) {
     return { ok: false, message: 'That email address does not look right.' };
   }
-  if (!message) return { ok: false, message: 'Add a message.' };
-  if (message.length > LEAD_FIELD_LIMITS.message) {
-    return { ok: false, message: 'That message is too long.' };
+  if (!email.value) return { ok: false, message: 'Add an email address.' };
+  if (!EMAIL_PATTERN.test(email.value)) {
+    return { ok: false, message: 'That email address does not look right.' };
   }
-  if (phone && phone.length > LEAD_FIELD_LIMITS.phone) {
-    return { ok: false, message: 'That phone number is too long.' };
+
+  const message = sanitiseInbound(raw.message, rules.message);
+  if (!message.ok) return { ok: false, message: 'That message is too long.' };
+  if (!message.value) return { ok: false, message: 'Add a message.' };
+
+  const phone = sanitiseInbound(raw.phone, rules.phone);
+  if (!phone.ok) {
+    return { ok: false, message: 'That phone number is not one we can send.' };
   }
+
+  // Truncated rather than refused, and never allowed to fail the enquiry: the
+  // page is telemetry the form fills in, not something the visitor typed.
+  const page = sanitiseInbound(raw.page, rules.page);
 
   return {
     ok: true,
     body: {
-      name,
-      email,
-      message,
-      phone: phone || null,
-      page: page ? page.slice(0, LEAD_FIELD_LIMITS.page) : null,
+      name: name.value,
+      email: email.value,
+      message: message.value,
+      phone: phone.value || null,
+      page: (page.ok && page.value) || null,
       honeypot,
     },
   };
 }
 
-function text(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
+// ─── What the endpoint will spend on a stranger ────────────────────────────
+
+/**
+ * The four numbers the public endpoint is bounded by, in one place and out of
+ * the route, so a change to any of them is a change to a rule rather than to a
+ * handler.
+ *
+ * Each default is a statement about a small business rather than a round
+ * number that felt safe:
+ *
+ *   - Ten a minute per token, because a busy salon does not receive twenty
+ *     enquiries a minute and a form that did is a form being abused.
+ *   - Twenty a minute per address, across every token. One scraped token
+ *     hammered from a botnet is caught by the first; one host walking a list
+ *     of tokens it found in page source is caught by this.
+ *   - Ten minutes of memory for an identical payload, which is longer than
+ *     any double-click and any retry, and short enough that somebody sending
+ *     the same short message twice in an afternoon still gets two enquiries.
+ *   - Sixty-four kilobytes of body. The fields add up to under six kilobytes
+ *     at their configured maxima; the rest is the room JSON overhead and a
+ *     long page path need. A megabyte would be a megabyte an anonymous caller
+ *     can make this process hold.
+ */
+export const DEFAULT_LEAD_CAPTURE_LIMITS = {
+  tokenPerMinute: 10,
+  ipPerMinute: 20,
+  replayWindowMs: 600_000,
+  maxBodyBytes: 64 * 1024,
+} as const;
+
+export const LEAD_CAPTURE_LIMIT_ENV_VARS = {
+  tokenPerMinute: 'FLOWSTARTER_LEAD_CAPTURE_TOKEN_PER_MINUTE',
+  ipPerMinute: 'FLOWSTARTER_LEAD_CAPTURE_IP_PER_MINUTE',
+  replayWindowMs: 'FLOWSTARTER_LEAD_CAPTURE_REPLAY_WINDOW_MS',
+  maxBodyBytes: 'FLOWSTARTER_LEAD_CAPTURE_MAX_BODY_BYTES',
+} as const;
+
+export type LeadCaptureLimits = Record<
+  keyof typeof DEFAULT_LEAD_CAPTURE_LIMITS,
+  number
+>;
+
+/** The endpoint's budget, read from the environment it is handed. */
+export function leadCaptureLimits(
+  env: Record<string, string | undefined> = process.env
+): LeadCaptureLimits {
+  const out = {} as LeadCaptureLimits;
+  for (const key of Object.keys(DEFAULT_LEAD_CAPTURE_LIMITS) as Array<
+    keyof LeadCaptureLimits
+  >) {
+    out[key] = positiveIntFromEnv(
+      env[LEAD_CAPTURE_LIMIT_ENV_VARS[key]],
+      DEFAULT_LEAD_CAPTURE_LIMITS[key]
+    );
+  }
+  return out;
+}
+
+// -- Comparing without saying how far you got -------------------------------
+
+/**
+ * Two strings compared in a time that does not depend on where they differ.
+ *
+ * The lengths are compared first and that comparison is not constant time,
+ * which is deliberate: `LEAD_CAPTURE_TOKEN_PATTERN` publishes the length range
+ * a token can have, so it is not a secret, and `timingSafeEqual` throws rather
+ * than returning false when the two buffers differ in length.
+ */
+export function constantTimeEquals(a: string, b: string): boolean {
+  const left = Buffer.from(a, 'utf8');
+  const right = Buffer.from(b, 'utf8');
+  if (left.length !== right.length) return false;
+  try {
+    return timingSafeEqual(left, right);
+  } catch {
+    return false;
+  }
+}
+
+// -- Replay -----------------------------------------------------------------
+
+/**
+ * What makes two submissions the same submission.
+ *
+ * A visitor who double-clicks send, a form that retries on a flaky connection
+ * and a script replaying a captured request are indistinguishable at the
+ * endpoint, and they should be: all three want the same outcome, which is one
+ * enquiry. The digest covers the workspace and the fields a client reads, so a
+ * genuine second enquiry - anything the sender actually changed - is a
+ * different fingerprint and lands as its own row.
+ *
+ * Hashed rather than kept whole, because the value becomes a rate-limit key
+ * and a key is a thing that ends up in a Redis dump or a log line. A digest of
+ * somebody's message is not their message.
+ */
+export function leadFingerprint(
+  workspaceId: string,
+  body: LeadCaptureBody
+): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        workspaceId,
+        body.name,
+        body.email,
+        body.message,
+        body.phone,
+        body.page,
+      ])
+    )
+    .digest('hex');
 }
 
 // ─── Spam ──────────────────────────────────────────────────────────────────

@@ -3,28 +3,44 @@
  *
  * The only unauthenticated write in the product that creates a tenant row, so
  * the whole of this file is the order the refusals happen in. Every rule it
- * applies lives in `lib/flowstarter/lead-capture.ts`; what is here is which one
- * runs first and what a caller is told.
+ * applies lives in `lib/flowstarter/lead-capture.ts` and
+ * `lib/flowstarter/inbound-content.ts`; what is here is which one runs first
+ * and what a caller is told.
  *
  *   1. A preview token, refused with 403 and a sentence, before any query. A
  *      funnel preview belongs to no workspace, so there is no tenant a lead
- *      could belong to and nothing to look up.
- *   2. A token that is not base64url, refused with 404, before any query. The
- *      endpoint must not be usable to find out which tokens exist, so a
- *      malformed guess and a wrong guess get the same answer.
- *   3. Rate: per token and per IP, both, because the two abuses are different.
- *      One scraped token hammered from a botnet is caught by the token; one
- *      host walking every token it can find is caught by the IP.
- *   4. Origin: the submission has to come from one of this workspace's own
- *      hostnames. Somebody else's page carrying a scraped token gets a 403,
- *      and the preflight never hands their origin an allow.
- *   5. Body: by rule, with a honeypot that is accepted and discarded.
+ *      could belong to and nothing to look up. Safe to answer distinctly
+ *      because a preview token has a shape (`preview.`) that no minted token
+ *      can ever have, so the answer is a fact about the URL, not about us.
+ *   2. Anything that is not a token by shape, refused before any query.
+ *   3. Rate: per token and per address, both, because the two abuses are
+ *      different. One scraped token hammered from a botnet is caught by the
+ *      token; one host walking every token it can find is caught by the
+ *      address — which is `clientIp` from `lib/request-ip.ts` (#141): the
+ *      rightmost `X-Forwarded-For` entry outside a trusted-proxy range,
+ *      never the front of a header the caller writes.
+ *   4. The token resolves to a workspace, and the submission came from one of
+ *      that workspace's own hostnames.
+ *   5. Body: capped on the stream, then by rule, with a honeypot that is
+ *      accepted and discarded.
+ *   6. Replay: the same payload for the same workspace inside the window is
+ *      answered exactly like the first one and stored once.
  *
- * WHAT COMES BACK. `{ ok: true }` and nothing else, with 201. The response is
- * read by a script on a public web page, so every extra field in it is a fact
- * about a tenant published to whoever asked. The lead id is not in it, the
- * workspace is not in it, and a spam classification is not in it: telling a
- * spammer they were classified is telling them what to change.
+ * ONE REFUSAL FOR FOUR DIFFERENT FAILURES, and this is the part worth being
+ * explicit about. A token that never existed, a token that has been rotated
+ * away, a token belonging to another workspace, and a real token submitted
+ * from somebody else's page all get `NOT_CONNECTED`: same status, same body,
+ * same headers, byte for byte. The distinction is real and it is in the log,
+ * where the operator who needs it can see it. Putting it in the response would
+ * publish, to an anonymous caller, which of the tokens they scraped out of
+ * page source are still live — which is the entire question an attacker with a
+ * list of tokens is trying to answer.
+ *
+ * WHAT COMES BACK ON SUCCESS. `{ ok: true }` and nothing else, with 201. The
+ * response is read by a script on a public web page, so every extra field in
+ * it is a fact about a tenant published to whoever asked. The lead id is not
+ * in it, the workspace is not in it, and a spam classification is not in it:
+ * telling a spammer they were classified is telling them what to change.
  *
  * CORS. The allow-origin is the workspace's own origin, echoed only when it
  * matched. `Access-Control-Allow-Origin: *` would make every client's endpoint
@@ -37,6 +53,8 @@ import {
   insertLead,
   isPreviewLeadCaptureToken,
   isLeadCaptureToken,
+  leadCaptureLimits,
+  leadFingerprint,
   originAllowed,
   parseLeadCaptureBody,
   recordLeadEvent,
@@ -52,10 +70,14 @@ import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 
 export const dynamic = 'force-dynamic';
 
-/** Per token: a busy small business does not get twenty enquiries a minute. */
-const TOKEN_LIMIT = { limit: 10, windowMs: 60_000 };
-/** Per IP, across every token: the shape of somebody walking a list. */
-const IP_LIMIT = { limit: 20, windowMs: 60_000 };
+const MINUTE_MS = 60_000;
+
+/**
+ * The one sentence four different failures share. A constant rather than four
+ * string literals, because the property the tests assert - that the responses
+ * are byte-identical - is one somebody could break with a typo.
+ */
+const NOT_CONNECTED = 'This form is not connected yet.';
 
 const PREVIEW_MESSAGE =
   'This is a preview, so the form cannot send anything yet. It starts working on the live site.';
@@ -66,18 +88,25 @@ export async function POST(
 ) {
   const { token } = await params;
   const origin = requestOrigin(request.headers);
+  const limits = leadCaptureLimits();
 
   if (isPreviewLeadCaptureToken(token)) {
     return refusal(403, PREVIEW_MESSAGE, null);
   }
   if (!isLeadCaptureToken(token)) {
-    return refusal(404, 'This form is not connected yet.', null);
+    return notConnected();
   }
 
   const ip = clientIp(request.headers);
   const [tokenLimited, ipLimited] = await Promise.all([
-    consumeRateLimit(`lead-capture:token:${token}`, TOKEN_LIMIT),
-    consumeRateLimit(`lead-capture:ip:${ip}`, IP_LIMIT),
+    consumeRateLimit(`lead-capture:token:${token}`, {
+      limit: limits.tokenPerMinute,
+      windowMs: MINUTE_MS,
+    }),
+    consumeRateLimit(`lead-capture:ip:${ip}`, {
+      limit: limits.ipPerMinute,
+      windowMs: MINUTE_MS,
+    }),
   ]);
   if (tokenLimited || ipLimited) {
     return refusal(
@@ -100,17 +129,28 @@ export async function POST(
       null
     );
   }
-  // The same answer a malformed token gets. A caller must not be able to tell
-  // a token that was never real from one that has been rotated away.
-  if (!tenant) return refusal(404, 'This form is not connected yet.', null);
+
+  if (!tenant) {
+    // Which of "never existed" and "rotated away" this was is not knowable
+    // from here and does not need to be: both mean no workspace owns it.
+    console.warn('[leads] refused a submission: the token resolves to nothing');
+    return notConnected();
+  }
 
   if (!originAllowed(origin, tenant.origins)) {
-    return refusal(403, 'This form can only be used on its own website.', null);
+    // The log is where the distinction lives. An operator debugging a client's
+    // new custom domain needs to see this line; an anonymous caller holding a
+    // scraped token must not be able to tell it apart from the line above.
+    console.warn(
+      `[leads] refused a submission for workspace ${tenant.workspaceId}: ` +
+        `origin ${origin ?? 'absent'} is not one of its own`
+    );
+    return notConnected();
   }
 
   // A contact form on somebody else's website, so the body is a stranger's
   // twice over. Capped on the stream. Codex F07.
-  const read = await readJsonCapped(request);
+  const read = await readJsonCapped(request, limits.maxBodyBytes);
   if (read.status === 'too_large') {
     return refusal(413, 'That message is too long to send.', origin);
   }
@@ -126,6 +166,21 @@ export async function POST(
   // person is told, because the alternative is telling it which field to leave
   // alone next time.
   if (parsed.body.honeypot) return accepted(origin);
+
+  // The same enquiry, again. A limit of one over the replay window makes the
+  // second delivery of an identical payload a no-op, and it is answered with
+  // the same 201 the first one got: a replayer that could tell the difference
+  // would know its first attempt had landed.
+  const replayed = await consumeRateLimit(
+    `lead-capture:replay:${leadFingerprint(tenant.workspaceId, parsed.body)}`,
+    { limit: 1, windowMs: limits.replayWindowMs }
+  );
+  if (replayed) {
+    console.info(
+      `[leads] dropped a replayed submission for workspace ${tenant.workspaceId}`
+    );
+    return accepted(origin);
+  }
 
   let lead;
   try {
@@ -183,6 +238,13 @@ export async function POST(
  * The preflight. It answers for an origin only when that origin is one the
  * workspace behind the token actually owns, so a browser on anybody else's
  * page never gets past it.
+ *
+ * Rate limited on the address for the same reason the POST is: this is the
+ * cheaper half of the endpoint to call and the more useful one to a caller
+ * walking a list of tokens, because a preflight that came back with an
+ * allow-origin would confirm a token without ever sending a body. The refusal
+ * and the allowance are both a 204, so being limited is indistinguishable from
+ * being refused.
  */
 export async function OPTIONS(
   request: NextRequest,
@@ -196,6 +258,15 @@ export async function OPTIONS(
     isPreviewLeadCaptureToken(token) ||
     !isLeadCaptureToken(token)
   ) {
+    return new NextResponse(null, { status: 204, headers: baseHeaders() });
+  }
+
+  const limits = leadCaptureLimits();
+  const limited = await consumeRateLimit(
+    `lead-capture:ip:${clientIp(request.headers)}`,
+    { limit: limits.ipPerMinute, windowMs: MINUTE_MS }
+  );
+  if (limited) {
     return new NextResponse(null, { status: 204, headers: baseHeaders() });
   }
 
@@ -221,6 +292,16 @@ function accepted(origin: string | null): NextResponse {
     { ok: true },
     { status: 201, headers: baseHeaders(origin) }
   );
+}
+
+/**
+ * The one answer an unknown token, a rotated token, another workspace's token
+ * and a foreign origin all get. No allow-origin header on any of them, so the
+ * four are identical down to the bytes — which is a property the adversarial
+ * suite asserts rather than trusts.
+ */
+function notConnected(): NextResponse {
+  return refusal(404, NOT_CONNECTED, null);
 }
 
 /**

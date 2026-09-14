@@ -30,6 +30,11 @@
  * same JSON and would fail every real delivery.
  */
 import { createHmac, timingSafeEqual } from 'crypto';
+import {
+  inboundLimits,
+  sanitiseInboundOrNull,
+  type InboundLimits,
+} from '@/lib/flowstarter/inbound-content';
 
 /** The header Cal.com puts the HMAC in. */
 export const CAL_SIGNATURE_HEADER = 'x-cal-signature-256';
@@ -160,11 +165,37 @@ export type CalPayloadResult =
   | { ok: true; event: CalBookingEvent }
   | { ok: false; reason: CalPayloadRejection };
 
-function str(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed.slice(0, 500) : null;
+/**
+ * A string out of Cal.com's body, as it is allowed to be stored.
+ *
+ * Signed, so it genuinely is Cal.com — and the attendee typed their own name
+ * into Cal.com's form, so the name in it is a stranger's string that arrived
+ * by a trusted route. That is exactly the shape of the contact form's fields,
+ * so it goes through the same rule: NUL refused, control and invisible
+ * characters stripped, unicode normalised, length from configuration.
+ *
+ * TRUNCATED RATHER THAN REFUSED, and markup kept as text. A booking is a
+ * meeting somebody is expecting to attend; losing it because an attendee's
+ * name is long or contains an angle bracket would be this function choosing
+ * the worse failure. The dashboard and the email escape what they render, so
+ * `<img onerror=...>` in a name arrives on the client's screen as those
+ * characters and nothing more.
+ */
+function str(value: unknown, limit?: number): string | null {
+  return sanitiseInboundOrNull(value, {
+    limit: limit ?? CAL_LIMITS.title,
+    markup: 'text',
+    onOverflow: 'truncate',
+  });
 }
+
+/**
+ * Read once, at module load, deliberately: `parseCalBookingEvent` is a pure
+ * function of a body and every test of it would otherwise have to carry an
+ * environment. An operator changing a length restarts the process, which is
+ * what they were going to do anyway.
+ */
+const CAL_LIMITS: InboundLimits = inboundLimits();
 
 /**
  * ISO 8601 or nothing.
@@ -259,8 +290,8 @@ export function parseCalBookingEvent(
       title: str(payload.title),
       startAt: timestamp(payload.startTime),
       endAt: timestamp(payload.endTime),
-      attendeeName: str(first.name),
-      attendeeEmail: str(first.email),
+      attendeeName: str(first.name, CAL_LIMITS.name),
+      attendeeEmail: str(first.email, CAL_LIMITS.email),
       eventMarker,
     },
   };

@@ -19,11 +19,13 @@
  */
 
 import { mkdir, readFile, writeFile, rename, rm, stat } from 'node:fs/promises';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { resolvePlatformDomain } from '@flowstarter/platform-config';
 import { safeExtractTarball } from './tar-safety';
+import { artifactUrlPolicy, checkArtifactUrl } from './artifact-url';
+import { bearerAuthorized } from './bearer-auth';
 import { scanSiteCapabilities, FONT_ORIGINS } from './site-capabilities';
 import { buildSiteSecurityHeaders, type SiteHeader } from './site-csp';
 import type { SiteSecurityInput } from './docker-runtime';
@@ -278,6 +280,22 @@ const STATIC_PORT = process.env.DEPLOY_AGENT_STATIC_PORT
   ? Number(process.env.DEPLOY_AGENT_STATIC_PORT)
   : null;
 
+/**
+ * Where this agent writes, resolved from its configuration.
+ *
+ * Exported for the adversarial suite, which asserts that a refused request
+ * leaves nothing behind. Asserting that against a path a test hardcoded would
+ * be asserting about a constant; asserting it against the paths the agent
+ * actually resolved is asserting about the agent. Nothing outside a test
+ * imports it, and nothing serves it: a caller has no business knowing where
+ * on the host their site lands.
+ */
+export const AGENT_PATHS = Object.freeze({
+  sitesRoot: SITES_ROOT,
+  caddySitesDir: CADDY_SITES_DIR,
+  tempRoot: TEMP_ROOT,
+});
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -285,20 +303,39 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-const SECRET_DIGEST = createHash('sha256').update(SHARED_SECRET).digest();
-
 /**
- * Compares SHA-256 digests rather than the tokens themselves. Two digests
- * are always the same length, so there is no early return on a length
- * mismatch for a caller to time the secret's length out of, and
- * `timingSafeEqual` handles the rest.
+ * Whether this request may do anything at all — see `bearer-auth.ts`, where
+ * the rule lives and where the "no secret configured" case is tested. An
+ * agent with an empty `DEPLOY_AGENT_SHARED_SECRET` refuses every caller
+ * rather than accepting an empty bearer token, which is what it used to do.
  */
 function authorized(req: Request): boolean {
-  const header = req.headers.get('authorization') ?? '';
-  if (!header.startsWith('Bearer ')) return false;
-  const token = header.slice('Bearer '.length).trim();
-  const digest = createHash('sha256').update(token).digest();
-  return timingSafeEqual(digest, SECRET_DIGEST);
+  return bearerAuthorized(req.headers.get('authorization'), SHARED_SECRET);
+}
+
+/**
+ * The slugs this host serves, when an operator has said which.
+ *
+ * Empty by default, and empty means every slug, which is what a general
+ * purpose box is. A host dedicated to one client's sites sets
+ * `DEPLOY_AGENT_ALLOWED_SLUGS` and stops being able to serve anybody else's -
+ * so a platform bug, a confused-deputy call, or a stolen shared secret used
+ * against the wrong box cannot put one tenant's artifact on another tenant's
+ * host. Read per request rather than at module load, so an operator can widen
+ * or narrow it with a restart of the unit rather than of the fleet.
+ */
+function allowedSlugs(): Set<string> {
+  return new Set(
+    (process.env.DEPLOY_AGENT_ALLOWED_SLUGS ?? '')
+      .split(',')
+      .map((entry) => entry.trim().toLowerCase())
+      .filter((entry) => entry.length > 0),
+  );
+}
+
+function servesSlug(slug: string): boolean {
+  const allowed = allowedSlugs();
+  return allowed.size === 0 || allowed.has(slug);
 }
 
 /**
@@ -907,6 +944,18 @@ async function handleDeploy(slug: string, body: DeployBody): Promise<Response> {
       400,
     );
   }
+  // Before `ensureDirs`, and long before a socket: a URL this agent will not
+  // fetch from is the caller's mistake, so it costs nothing on this host.
+  if (!uploaded) {
+    const verdict = checkArtifactUrl(body.artifact_url, artifactUrlPolicy());
+    if (!verdict.ok) {
+      // The reason, never the URL: it may be a signed, capability-bearing
+      // link, and an error body is a thing that ends up in somebody's logs.
+      console.warn(`[deploy-agent] refused an artifact_url: ${verdict.reason}`);
+      return jsonResponse({ error: verdict.reason }, 400);
+    }
+  }
+
   await ensureDirs();
 
   let fetched;
@@ -1113,31 +1162,112 @@ async function handleRemove(slug: string): Promise<Response> {
   return jsonResponse({ ok: true, slug });
 }
 
-async function readBody(req: Request): Promise<DeployBody> {
+/**
+ * The largest JSON envelope a deploy may carry. It holds a URL, a digest and
+ * a handful of hostnames, so this is three orders of magnitude of headroom.
+ * The tarball never comes this way; it is either fetched or streamed as
+ * `application/octet-stream`, which is bounded by the artifact limit.
+ */
+const MAX_DEPLOY_JSON_BYTES = Number(
+  process.env.DEPLOY_AGENT_MAX_JSON_BYTES ?? 64 * 1024,
+);
+
+/**
+ * A request body read to the end, or abandoned at the cap.
+ *
+ * `req.arrayBuffer()` and `req.text()` both agree to hold whatever arrives
+ * before anything gets a chance to measure it, and the sender chooses how much
+ * that is. `content-length` does not help: a chunked request carries none at
+ * all, and one that does carry it is making a claim rather than a promise. So
+ * the bytes are counted as they arrive and the read stops the moment the total
+ * passes the limit - the same shape, and for the same reason, as
+ * `readBounded` does for the response to an artifact fetch.
+ *
+ * The two differ in one respect on purpose. `readBounded` reads a response
+ * this agent asked for and does abort its socket outright, because a stalled
+ * or oversized origin is a deadline this process owns. This one reads a
+ * request somebody sent us, so it abandons the stream rather than cancelling
+ * it - see the comment at the cap below.
+ */
+async function readRequestBounded(
+  req: Request,
+  maxBytes: number,
+): Promise<Uint8Array | null> {
+  const declared = Number(req.headers.get('content-length') ?? '');
+  if (Number.isFinite(declared) && declared > maxBytes) return null;
+
+  const reader = req.body?.getReader();
+  if (!reader) {
+    const buf = new Uint8Array(await req.arrayBuffer());
+    return buf.length > maxBytes ? null : buf;
+  }
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      // Released, not cancelled, and the same way for the same reason as
+      // `readStreamCapped` in the app's `lib/net/ingress.ts`: releasing the
+      // reader is what stops us pulling, which is the whole property the cap
+      // exists for, and `cancel()` on top of it only tears the transfer down
+      // a few milliseconds sooner while risking a close that lands while the
+      // stream's own pump is mid-`enqueue`. The runtime drops the socket when
+      // the 413 goes out regardless. Two readers of a stranger's body in this
+      // repository, one rule, spelled the same way in both.
+      reader.releaseLock();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+type ReadBodyResult =
+  | { readonly status: 'ok'; readonly body: DeployBody }
+  /** The caller sent more than this agent agreed to hold. */
+  | { readonly status: 'too_large' };
+
+async function readBody(req: Request): Promise<ReadBodyResult> {
   // `HttpDeployAgentClient` supports both artifact shapes. Raw bytes carry the
   // domains in headers because there is no JSON envelope to put them in.
   const contentType = req.headers.get('content-type') ?? '';
   if (contentType.startsWith('application/octet-stream')) {
-    const bytes = new Uint8Array(await req.arrayBuffer());
+    const bytes = await readRequestBounded(req, MAX_ARTIFACT_DOWNLOAD_BYTES);
+    if (!bytes) return { status: 'too_large' };
     const additional = (req.headers.get('x-site-additional-domains') ?? '')
       .split(',')
       .map((entry) => entry.trim())
       .filter((entry) => entry.length > 0);
     return {
-      artifact_url: '',
-      artifact_bytes: bytes,
-      artifact_sha256: req.headers.get('x-artifact-sha256'),
-      primary_domain: req.headers.get('x-site-primary-domain') || null,
-      additional_domains: additional,
+      status: 'ok',
+      body: {
+        artifact_url: '',
+        artifact_bytes: bytes,
+        artifact_sha256: req.headers.get('x-artifact-sha256'),
+        primary_domain: req.headers.get('x-site-primary-domain') || null,
+        additional_domains: additional,
+      },
     };
   }
 
-  const text = await req.text();
-  if (!text) return { artifact_url: '' };
+  const raw = await readRequestBounded(req, MAX_DEPLOY_JSON_BYTES);
+  if (!raw) return { status: 'too_large' };
+  const text = new TextDecoder().decode(raw);
+  if (!text) return { status: 'ok', body: { artifact_url: '' } };
   try {
-    return JSON.parse(text) as DeployBody;
+    return { status: 'ok', body: JSON.parse(text) as DeployBody };
   } catch {
-    return { artifact_url: '' };
+    return { status: 'ok', body: { artifact_url: '' } };
   }
 }
 
@@ -1297,8 +1427,20 @@ export async function routeRequest(req: Request): Promise<Response> {
     if (!slug) {
       return jsonResponse({ error: 'invalid slug' }, 400);
     }
+    // Authenticated and still not permitted: a host told which sites it
+    // serves does not serve anybody else's, whoever is asking. 403 rather
+    // than 404 on purpose - the caller holds this host's shared secret, so
+    // there is nothing left to hide from them and a great deal to be clear
+    // about.
+    if (!servesSlug(slug)) {
+      return jsonResponse({ error: 'slug not served by this host' }, 403);
+    }
     if (req.method === 'POST' && url.pathname === `/sites/${slug}/deploy`) {
-      const body = await readBody(req);
+      const read = await readBody(req);
+      if (read.status === 'too_large') {
+        return jsonResponse({ error: 'request body is too large' }, 413);
+      }
+      const body = read.body;
       let release: () => void;
       try {
         release = await deploySemaphore.acquire();

@@ -51,7 +51,8 @@ const DEPLOY_QUEUE_LIMIT = 1;
 process.env.DEPLOY_AGENT_DEPLOY_CONCURRENCY = String(DEPLOY_CONCURRENCY_LIMIT);
 process.env.DEPLOY_AGENT_DEPLOY_QUEUE_LIMIT = String(DEPLOY_QUEUE_LIMIT);
 
-const { routeRequest, runReconcile, deploySemaphore } = await import('./index');
+const { AGENT_PATHS, routeRequest, runReconcile, deploySemaphore } =
+  await import('./index');
 
 interface AgentJson {
   ok?: boolean;
@@ -85,6 +86,11 @@ const dockerAvailable =
     .exitCode === 0;
 
 afterAll(async () => {
+  // The fixture origin is module scope and several describes below reach for
+  // it, so it is stopped here rather than by whichever one happens to run
+  // first. Tearing it down inside one of them left a later case fetching a
+  // dead port and asserting on the wrong error.
+  artifactOrigin.stop(true);
   await rm(ROOT, { recursive: true, force: true });
 });
 
@@ -363,10 +369,6 @@ const originUrl = (path: string) =>
   `http://127.0.0.1:${artifactOrigin.port}${path}`;
 
 describe('artifact fetching over a URL', () => {
-  afterAll(() => {
-    artifactOrigin.stop(true);
-  });
-
   test('rejects a deploy with no artifact_sha256 at all, before fetching anything', async () => {
     const res = await routeRequest(
       authed('/sites/needs-hash/deploy', {
@@ -697,4 +699,433 @@ describe.skipIf(!dockerAvailable)('docker smoke', () => {
     expect(gone.exitCode).not.toBe(0);
     expect(await readdir(CADDY_DIR)).not.toContain(`${slug}.caddy`);
   }, 180_000);
+});
+
+
+// ---------------------------------------------------------------------------
+
+/**
+ * The agent, driven by somebody who should not be able to reach it — or who
+ * can reach it and should not be able to make it do this.
+ *
+ * Two callers are imagined. One has no credential and is scanning the port.
+ * The other holds the shared secret, because a secret that is on a box is a
+ * secret that can leave one, and the question then is how much a single stolen
+ * bearer token is worth: it should buy the sites this host was told to serve,
+ * fetched from the origins this host was told to fetch from, and nothing else
+ * on the machine.
+ *
+ * EVERY CASE ASSERTS THAT NOTHING WAS WRITTEN. A refusal that had already
+ * extracted a tarball would be a refusal in name only, so the site root and
+ * the Caddy snippet directory are compared before and after, by hand, against
+ * the paths the agent actually resolved.
+ */
+
+/** Everything under `dir`, relative, sorted. `[]` when it does not exist. */
+async function treeOf(dir: string): Promise<string[]> {
+  const out: string[] = [];
+  const walk = async (current: string, prefix: string) => {
+    let entries;
+    try {
+      entries = await readdir(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      out.push(rel);
+      if (entry.isDirectory()) await walk(join(current, entry.name), rel);
+    }
+  };
+  await walk(dir, '');
+  return out.sort();
+}
+
+async function agentFilesystem(): Promise<Record<string, string[]>> {
+  return {
+    sites: await treeOf(AGENT_PATHS.sitesRoot),
+    caddy: await treeOf(AGENT_PATHS.caddySitesDir),
+  };
+}
+
+/** Runs `work` and asserts the host's disk is exactly as it was. */
+async function withoutTouchingTheDisk(
+  work: () => Promise<Response>,
+): Promise<Response> {
+  const before = await agentFilesystem();
+  const response = await work();
+  expect(await agentFilesystem()).toEqual(before);
+  return response;
+}
+
+/** Sets an environment variable for one case and puts it back afterwards. */
+async function withEnv(
+  name: string,
+  value: string,
+  work: () => Promise<void>,
+): Promise<void> {
+  const previous = process.env[name];
+  process.env[name] = value;
+  try {
+    await work();
+  } finally {
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
+  }
+}
+
+const deployBody = (body: Record<string, unknown>) => ({
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+});
+
+describe('a hostile caller: the credential', () => {
+  test('a missing bearer reaches no handler and writes nothing', async () => {
+    const res = await withoutTouchingTheDisk(() =>
+      routeRequest(
+        new Request('http://agent.test/sites/acme/deploy', {
+          ...deployBody({
+            artifact_url: originUrl('/good.tar.gz'),
+            artifact_sha256: GOOD_SHA256,
+          }),
+        }),
+      ),
+    );
+    expect(res.status).toBe(401);
+    expect(await jsonOf(res)).toEqual({ error: 'unauthorized' });
+  });
+
+  test('a bearer with one byte changed is refused', async () => {
+    const almost = `${SECRET.slice(0, -1)}${SECRET.endsWith('e') ? 'f' : 'e'}`;
+    expect(almost.length).toBe(SECRET.length);
+    expect(almost).not.toBe(SECRET);
+
+    const res = await withoutTouchingTheDisk(() =>
+      routeRequest(
+        new Request('http://agent.test/sites/acme/deploy', {
+          ...deployBody({
+            artifact_url: originUrl('/good.tar.gz'),
+            artifact_sha256: GOOD_SHA256,
+          }),
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${almost}`,
+          },
+        }),
+      ),
+    );
+    expect(res.status).toBe(401);
+  });
+
+  test('a delete with no bearer removes nothing', async () => {
+    const res = await withoutTouchingTheDisk(() =>
+      routeRequest(
+        new Request('http://agent.test/sites/acme', { method: 'DELETE' }),
+      ),
+    );
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('a hostile caller: the slug', () => {
+  test('a slug carrying path characters never becomes a path', async () => {
+    // The traversals aim at `/etc/hostname` rather than at the obvious file
+    // on purpose: a quoted fixture naming the classic Unix account file reads
+    // to a credential scanner as a hardcoded credential and fails the pull
+    // request on a string that is not one. What is under test is that no slug
+    // becomes a path at all, so which file it was aiming at is not part of it.
+    for (const slug of [
+      '..',
+      '../..',
+      '.%2e/%2e%2e',
+      'acme/../../etc',
+      'acme%2F..%2Fetc',
+      '%2e%2e%2f%2e%2e%2fetc%2fhostname',
+      'acme/../../../var/www',
+      '/etc/hostname',
+      'acme%00',
+      'acme;rm -rf /',
+      'acme|whoami',
+      '.',
+    ]) {
+      const res = await withoutTouchingTheDisk(() =>
+        routeRequest(
+          authed(`/sites/${slug}/deploy`, {
+            ...deployBody({
+              artifact_url: originUrl('/good.tar.gz'),
+              artifact_sha256: GOOD_SHA256,
+            }),
+          }),
+        ),
+      );
+      // 400 when a slug was derived and refused by shape, 404 when `new URL`
+      // normalised the traversal away before the router ever saw one. Either
+      // way no handler ran and nothing under the site root moved.
+      expect([400, 404]).toContain(res.status);
+    }
+  });
+
+  test('a slug this host was not told to serve is refused', async () => {
+    // The confused-deputy case: a valid bearer, a well-formed slug, and a
+    // host that belongs to somebody else's sites.
+    await withEnv('DEPLOY_AGENT_ALLOWED_SLUGS', 'salon-elena,halden-roe', async () => {
+      const res = await withoutTouchingTheDisk(() =>
+        routeRequest(
+          authed('/sites/other-tenant/deploy', {
+            ...deployBody({
+              artifact_url: originUrl('/good.tar.gz'),
+              artifact_sha256: GOOD_SHA256,
+            }),
+          }),
+        ),
+      );
+      expect(res.status).toBe(403);
+      expect((await jsonOf(res)).error).toContain('not served by this host');
+    });
+  });
+
+  test('the same host refuses to delete a slug it does not serve', async () => {
+    await withEnv('DEPLOY_AGENT_ALLOWED_SLUGS', 'salon-elena', async () => {
+      const res = await withoutTouchingTheDisk(() =>
+        routeRequest(authed('/sites/halden-roe', { method: 'DELETE' })),
+      );
+      expect(res.status).toBe(403);
+    });
+  });
+
+  test('an unset allow list still means every slug, so an upgrade changes nothing', async () => {
+    // Asserted by reaching the next check rather than this one: a 400 about
+    // the artifact means the slug was accepted.
+    const res = await routeRequest(
+      authed('/sites/any-slug-at-all/deploy', { ...deployBody({}) }),
+    );
+    expect(res.status).toBe(400);
+    expect((await jsonOf(res)).error).toContain('artifact_url required');
+  });
+});
+
+describe('a hostile caller: the artifact', () => {
+  test('refuses a URL on a host this agent does not fetch from', async () => {
+    await withEnv(
+      'DEPLOY_AGENT_ARTIFACT_HOSTS',
+      'artifacts.flowstarter.net',
+      async () => {
+        const res = await withoutTouchingTheDisk(() =>
+          routeRequest(
+            authed('/sites/foreign-origin/deploy', {
+              ...deployBody({
+                artifact_url: 'https://evil.example/site.tar.gz',
+                artifact_sha256: GOOD_SHA256,
+              }),
+            }),
+          ),
+        );
+        expect(res.status).toBe(400);
+        expect((await jsonOf(res)).error).toContain(
+          'not one this agent fetches from',
+        );
+      },
+    );
+  });
+
+  test('refuses the cloud metadata service with no configuration at all', async () => {
+    const res = await withoutTouchingTheDisk(() =>
+      routeRequest(
+        authed('/sites/metadata/deploy', {
+          ...deployBody({
+            artifact_url:
+              'http://169.254.169.254/latest/meta-data/iam/security-credentials/',
+            artifact_sha256: GOOD_SHA256,
+          }),
+        }),
+      ),
+    );
+    expect(res.status).toBe(400);
+    expect((await jsonOf(res)).error).toContain('link-local or metadata');
+  });
+
+  test('refuses a file:// URL rather than tarring up the host disk', async () => {
+    const res = await withoutTouchingTheDisk(() =>
+      routeRequest(
+        authed('/sites/local-file/deploy', {
+          ...deployBody({
+            artifact_url: 'file:///etc/shadow',
+            artifact_sha256: GOOD_SHA256,
+          }),
+        }),
+      ),
+    );
+    expect(res.status).toBe(400);
+    expect((await jsonOf(res)).error).toContain('http or https');
+  });
+
+  test('refuses a fetched artifact whose digest does not match, and keeps nothing', async () => {
+    const res = await withoutTouchingTheDisk(() =>
+      routeRequest(
+        authed('/sites/hash-mismatch/deploy', {
+          ...deployBody({
+            artifact_url: originUrl('/good.tar.gz'),
+            artifact_sha256: 'd'.repeat(64),
+          }),
+        }),
+      ),
+    );
+    expect(res.status).toBe(502);
+    expect((await jsonOf(res)).error).toContain('sha256 mismatch');
+  });
+
+  test('refuses an uploaded artifact whose digest does not match', async () => {
+    const res = await withoutTouchingTheDisk(() =>
+      routeRequest(
+        authed('/sites/upload-mismatch/deploy', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'X-Artifact-Sha256': 'd'.repeat(64),
+          },
+          body: GOOD_ARTIFACT,
+        }),
+      ),
+    );
+    expect(res.status).toBe(400);
+    expect((await jsonOf(res)).error).toContain('sha256 mismatch');
+  });
+
+  test('refuses an uploaded artifact with no digest offered at all', async () => {
+    const res = await withoutTouchingTheDisk(() =>
+      routeRequest(
+        authed('/sites/upload-no-hash/deploy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: GOOD_ARTIFACT,
+        }),
+      ),
+    );
+    expect(res.status).toBe(400);
+    expect((await jsonOf(res)).error).toContain('artifact_sha256 is required');
+  });
+});
+
+describe('a hostile caller: the body', () => {
+  test('refuses an uploaded artifact past the cap, without holding it', async () => {
+    // `DEPLOY_AGENT_MAX_ARTIFACT_BYTES` is 4096 for this run. The old reader
+    // called `req.arrayBuffer()` first, which agreed to hold whatever the
+    // caller sent before anything measured it.
+    const res = await withoutTouchingTheDisk(() =>
+      routeRequest(
+        authed('/sites/too-much-upload/deploy', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'X-Artifact-Sha256': GOOD_SHA256,
+          },
+          body: new Uint8Array(64 * 1024),
+        }),
+      ),
+    );
+    expect(res.status).toBe(413);
+    expect((await jsonOf(res)).error).toContain('too large');
+  });
+
+  test('refuses an oversized upload that declares no length at all', async () => {
+    // Chunked: no `content-length` to read, so the cap has to be enforced on
+    // the bytes as they arrive or it is not enforced.
+    const chunk = new Uint8Array(2048);
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent > 64 * 1024) {
+          controller.close();
+          return;
+        }
+        sent += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+    });
+    const request = authed('/sites/too-much-chunked/deploy', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Artifact-Sha256': GOOD_SHA256,
+      },
+      body: stream,
+      // Required by the fetch spec for a streamed request body.
+      duplex: 'half',
+    } as RequestInit);
+    expect(request.headers.get('content-length')).toBeNull();
+
+    const res = await withoutTouchingTheDisk(() => routeRequest(request));
+    expect(res.status).toBe(413);
+  });
+
+  test('refuses a JSON envelope far larger than a URL and a digest', async () => {
+    const res = await withoutTouchingTheDisk(() =>
+      routeRequest(
+        authed('/sites/too-much-json/deploy', {
+          ...deployBody({
+            artifact_url: originUrl('/good.tar.gz'),
+            artifact_sha256: GOOD_SHA256,
+            padding: 'x'.repeat(128 * 1024),
+          }),
+        }),
+      ),
+    );
+    expect(res.status).toBe(413);
+  });
+});
+
+describe('the previews agent applies the same rules', () => {
+  /**
+   * A previews host is this same binary with `DEPLOY_AGENT_MODE=previews`,
+   * started by a second systemd unit from a second env file. `MODE` is read
+   * once at module load, so a suite running as `sites` cannot flip it — and
+   * spinning a second process to prove it would be running a server, which
+   * this suite does not do.
+   *
+   * What can be proved, and is the thing that actually matters, is that none
+   * of the refusals above is downstream of the mode: `routeRequest` decides
+   * authentication, the slug and the artifact URL before anything consults
+   * `MODE`, which it only reads to choose which Caddy snippet to write. If
+   * somebody later adds a mode-dependent branch in front of a gate, this
+   * fails.
+   */
+  test('every gate in routeRequest runs before the mode is ever consulted', async () => {
+    const source = await readFile(
+      join(import.meta.dir, 'index.ts'),
+      'utf8',
+    );
+    const start = source.indexOf('export async function routeRequest');
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf('\nasync function startServers', start);
+    expect(end).toBeGreaterThan(start);
+    const router = source.slice(start, end);
+
+    expect(router).toContain('if (!authorized(req))');
+    expect(router).toContain('if (!servesSlug(slug))');
+    expect(router).toContain("if (!slug) {");
+
+    // The authentication gate is in front of every mention of the mode.
+    expect(router.indexOf('if (!authorized(req))')).toBeLessThan(
+      router.indexOf('MODE'),
+    );
+
+    // And the mode is only ever reported, never branched on: the one
+    // occurrence is the `mode` field of the authenticated health response.
+    const mentions = router.match(/MODE/g) ?? [];
+    expect(mentions).toHaveLength(1);
+    expect(router).toContain('mode: MODE,');
+  });
+
+  test('the artifact URL rule is applied inside handleDeploy, which both modes share', async () => {
+    const source = await readFile(join(import.meta.dir, 'index.ts'), 'utf8');
+    const start = source.indexOf('async function handleDeploy');
+    const end = source.indexOf('\nasync function handleRemove', start);
+    const handler = source.slice(start, end);
+    expect(handler).toContain('checkArtifactUrl(body.artifact_url');
+    // And before the mode decides which snippet to build.
+    expect(handler.indexOf('checkArtifactUrl')).toBeLessThan(
+      handler.indexOf("MODE === 'previews'"),
+    );
+  });
 });
