@@ -65,7 +65,7 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
         )}
 
         <header
-          className={`ls-theme fixed top-0 left-0 right-0 z-50 border-b border-transparent bg-[var(--fs-bg-base)] shadow-none transition-opacity duration-500 ${
+          className={`ls-theme fixed top-0 left-0 right-0 z-50 border-b border-[var(--fs-rule)]/30 bg-[var(--fs-bg-base)]/75 dark:bg-[var(--fs-bg-base)]/75 backdrop-blur-2xl backdrop-saturate-[1.8] shadow-none transition-opacity duration-500 ${
             headerLoaded ? 'opacity-100' : 'opacity-0'
           }`}
         >
@@ -356,7 +356,7 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
 
   return (
     <header
-      className={`fixed top-0 left-0 right-0 z-50 border-b border-transparent bg-[var(--fs-bg-base)] shadow-none transition-opacity duration-500 ${
+      className={`fixed top-0 left-0 right-0 z-50 border-b border-[var(--fs-rule)]/30 bg-[var(--fs-bg-base)]/75 dark:bg-[var(--fs-bg-base)]/75 backdrop-blur-2xl backdrop-saturate-[1.8] shadow-none transition-opacity duration-500 ${
         headerLoaded ? 'opacity-100' : 'opacity-0'
       }`}
     >
