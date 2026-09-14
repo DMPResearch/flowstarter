@@ -32,7 +32,9 @@ const { title, buttonLabel, buttonHref, articles } = Astro.props;
         data-about-reveal
         style={`--about-reveal-delay: ${140 + index * 120}ms;`}
       >
-        <img class="about-articles-section__image" src={article.imageSrc} alt={article.imageAlt} loading="lazy" />
+        {article.imageSrc?.trim() ? (
+          <img class="about-articles-section__image" src={article.imageSrc} alt={article.imageAlt} loading="lazy" />
+        ) : null}
         <div class="about-articles-section__body">
           <h4 class="about-articles-section__card-title">{article.title}</h4>
           <p class="about-articles-section__excerpt">{article.excerpt}</p>

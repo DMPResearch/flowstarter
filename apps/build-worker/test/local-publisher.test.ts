@@ -61,13 +61,14 @@ function publisher(opts: {
   calls: Call[];
   respond?: () => Response;
   onProgress?: (message: string) => void;
+  flowstarterMainUrl?: string;
 }): LocalSitePublisher {
   return new LocalSitePublisher({
     store: new ArtifactStore({
       root: artifactsRoot,
       baseUrl: 'http://127.0.0.1:8787',
     }),
-    flowstarterMainUrl: 'http://127.0.0.1:3000',
+    flowstarterMainUrl: opts.flowstarterMainUrl ?? 'http://127.0.0.1:3000',
     sharedSecret: 's'.repeat(48),
     outputDir: 'dist',
     stagingUrlTemplate: 'http://localhost:8788/{projectId}/',
@@ -266,6 +267,131 @@ describe('LocalSitePublisher', () => {
         siteRoot,
       }),
     ).rejects.toThrow(/deploy-agent 502/);
+  });
+});
+
+/**
+ * The bug this covers: a build run from a development stack — worker
+ * environment never told `FLOWSTARTER_PUBLIC_APP_ORIGIN`, so
+ * `leadCaptureEndpointFor()` fell back to `http://localhost:3005/...` — was
+ * deployed by asking a *real* flowstarter-main (a staging or production
+ * host, never loopback) to run `deploySite`. The loopback origin baked into
+ * the contact form's `action` was dead on arrival, and the site's own
+ * Content-Security-Policy (built from the real platform's own origin)
+ * refused it anyway. `flowstarterMainUrl` loopback is what makes a local
+ * publish what it says on the tin; every other value means this artifact is
+ * headed at a real host and a loopback origin baked into it must be refused
+ * before it is ever packaged.
+ */
+describe('LocalSitePublisher refuses a loopback origin baked for a real deploy', () => {
+  it('refuses a loopback lead-capture endpoint when flowstarterMainUrl is a real host', async () => {
+    await expect(
+      publisher({
+        calls: [],
+        flowstarterMainUrl: 'https://staging.flowstarter.dev',
+      }).create({
+        projectId: PROJECT_ID,
+        branch: `client/flowstarter-${PROJECT_ID}`,
+        worktreePath: join(scratch, 'worktree'),
+        commitSha: 'a'.repeat(40),
+        siteRoot,
+        leadCaptureEndpoint:
+          'http://localhost:3005/api/leads/capture/tokentokentokentokentokentokentokentoken1',
+      }),
+    ).rejects.toThrow(/FLOWSTARTER_PUBLIC_APP_ORIGIN/);
+    await expect(
+      publisher({
+        calls: [],
+        flowstarterMainUrl: 'https://staging.flowstarter.dev',
+      }).create({
+        projectId: PROJECT_ID,
+        branch: `client/flowstarter-${PROJECT_ID}`,
+        worktreePath: join(scratch, 'worktree'),
+        commitSha: 'a'.repeat(40),
+        siteRoot,
+        leadCaptureEndpoint:
+          'http://localhost:3005/api/leads/capture/tokentokentokentokentokentokentokentoken1',
+      }),
+    ).rejects.toBeInstanceOf(LocalPublishError);
+  });
+
+  it('refuses a loopback Cal.com link when flowstarterMainUrl is a real host', async () => {
+    await expect(
+      publisher({
+        calls: [],
+        flowstarterMainUrl: 'https://staging.flowstarter.dev',
+      }).create({
+        projectId: PROJECT_ID,
+        branch: `client/flowstarter-${PROJECT_ID}`,
+        worktreePath: join(scratch, 'worktree'),
+        commitSha: 'a'.repeat(40),
+        siteRoot,
+        calComUrl: 'http://localhost:3839/acme/intro',
+      }),
+    ).rejects.toThrow(/Cal\.com/);
+    await expect(
+      publisher({
+        calls: [],
+        flowstarterMainUrl: 'https://staging.flowstarter.dev',
+      }).create({
+        projectId: PROJECT_ID,
+        branch: `client/flowstarter-${PROJECT_ID}`,
+        worktreePath: join(scratch, 'worktree'),
+        commitSha: 'a'.repeat(40),
+        siteRoot,
+        calComUrl: 'http://localhost:3839/acme/intro',
+      }),
+    ).rejects.toBeInstanceOf(LocalPublishError);
+  });
+
+  it('never posts the deploy request once a loopback origin is refused', async () => {
+    const calls: Call[] = [];
+    await publisher({
+      calls,
+      flowstarterMainUrl: 'https://staging.flowstarter.dev',
+    })
+      .create({
+        projectId: PROJECT_ID,
+        branch: `client/flowstarter-${PROJECT_ID}`,
+        worktreePath: join(scratch, 'worktree'),
+        commitSha: 'a'.repeat(40),
+        siteRoot,
+        leadCaptureEndpoint: 'http://localhost:3005/api/leads/capture/x',
+      })
+      .catch(() => undefined);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('allows a public https lead-capture endpoint against a real host', async () => {
+    const calls: Call[] = [];
+    await publisher({
+      calls,
+      flowstarterMainUrl: 'https://staging.flowstarter.dev',
+    }).create({
+      projectId: PROJECT_ID,
+      branch: `client/flowstarter-${PROJECT_ID}`,
+      worktreePath: join(scratch, 'worktree'),
+      commitSha: 'a'.repeat(40),
+      siteRoot,
+      leadCaptureEndpoint:
+        'https://staging.flowstarter.dev/api/leads/capture/tokentokentokentokentokentokentokentoken1',
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('still allows a loopback origin against a genuinely local target', async () => {
+    // The ordinary laptop path: `flowstarterMainUrl` really is loopback, so
+    // this is the "local static server" exception the rule is not for.
+    const calls: Call[] = [];
+    await publisher({ calls }).create({
+      projectId: PROJECT_ID,
+      branch: `client/flowstarter-${PROJECT_ID}`,
+      worktreePath: join(scratch, 'worktree'),
+      commitSha: 'a'.repeat(40),
+      siteRoot,
+      leadCaptureEndpoint: 'http://localhost:3005/api/leads/capture/x',
+    });
+    expect(calls).toHaveLength(1);
   });
 });
 

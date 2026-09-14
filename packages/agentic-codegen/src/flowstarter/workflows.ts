@@ -99,6 +99,11 @@ import {
   GENERATED_HTML_UNSAFE,
   type MarkupPolicy,
 } from './markup-policy';
+import {
+  describeEmptyImageIssue,
+  findEmptyImageFindings,
+  EMPTY_IMAGE_SHIPPED,
+} from './empty-image';
 import { applyIntegrationsToWorkspace } from '../integrations';
 import {
   isClientEditablePath,
@@ -2087,6 +2092,30 @@ export class FullSiteBuildFailure extends Error {
   }
 }
 
+/**
+ * The `EMPTY_IMAGE_SHIPPED` gate, run identically by a full build and by a
+ * change request — the last picture check either flow makes. Every template
+ * component that renders an `<img>` is written to skip it (or show the
+ * no-photo layout) when the client gave no photo, because the seed cleaner
+ * leaves `imageSrc: ""` behind rather than a real path — but a component is
+ * a rule an author has to remember every time a template gains a new photo
+ * slot, and this is the mechanical check that a future one did not forget.
+ * No repair pass: there is no brief text that fixes a markup bug, only a
+ * template edit, so this fails the build the same way a mechanical
+ * integrity gate does elsewhere in this file.
+ */
+function assertNoEmptyImages(
+  files: readonly { path: string; content: string }[],
+): void {
+  const emptyImages = findEmptyImageFindings(files);
+  if (emptyImages.length > 0) {
+    throw new FullSiteBuildFailure(
+      EMPTY_IMAGE_SHIPPED,
+      describeEmptyImageIssue(emptyImages),
+    );
+  }
+}
+
 /** The ledger code a build stopped under because it no longer held its job. */
 export const BUILD_LEASE_LOST = 'BUILD_LEASE_LOST';
 
@@ -2980,7 +3009,10 @@ export class FullSiteBuildWorker {
       // carry it. Only a build actually holding a portrait pays for that read.
       const imageGateFiles = async () =>
         portrait
-          ? [...(await builtSiteText()), ...(await readSiteContentFiles(siteRoot))]
+          ? [
+              ...(await builtSiteText()),
+              ...(await readSiteContentFiles(siteRoot)),
+            ]
           : await builtSiteText();
 
       let imageGateScan = await imageGateFiles();
@@ -3065,6 +3097,10 @@ export class FullSiteBuildWorker {
       if (markupIssue) {
         throw new FullSiteBuildFailure(GENERATED_HTML_UNSAFE, markupIssue);
       }
+
+      // The last picture check — see `assertNoEmptyImages`.
+      await phase('Checking for empty image elements');
+      assertNoEmptyImages(await builtSiteText());
 
       await phase('Committing the site');
       const commitSha = await this.worktrees.commit(
@@ -3466,6 +3502,13 @@ export class FullSiteBuildWorker {
       if (markupIssue) {
         throw new FullSiteBuildFailure(GENERATED_HTML_UNSAFE, markupIssue);
       }
+
+      // Same shape as the full build's own last picture check — see
+      // `assertNoEmptyImages`. A change request can touch a photo slot too.
+      await phase('Checking for empty image elements');
+      assertNoEmptyImages(
+        await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
+      );
 
       // Commit first, then save. The other order is what stranded version 5 of
       // workspace c009105e: the version was written, the commit step refused

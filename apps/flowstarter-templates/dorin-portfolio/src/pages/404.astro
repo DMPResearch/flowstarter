@@ -1,0 +1,64 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import ActionButton from '../components/design-system/ActionButton.astro';
+---
+
+<Layout title="Page not found">
+  <Header />
+  <main class="not-found container">
+    <p class="not-found__eyebrow">404</p>
+    <h1 class="not-found__title">This page does not exist</h1>
+    <p class="not-found__text">
+      The link may be broken, or the page may have moved.
+    </p>
+    <ActionButton
+      href="/"
+      label="Back to home"
+      variant="outline"
+      className="not-found__button ds-action-button--outline-dark"
+    />
+  </main>
+  <Footer />
+</Layout>
+
+<style>
+  .not-found {
+    display: grid;
+    justify-items: center;
+    gap: 20px;
+    text-align: center;
+    padding-top: 160px;
+    padding-bottom: 160px;
+  }
+
+  .not-found__eyebrow {
+    font-size: var(--fs-small);
+    font-weight: var(--fw-semibold);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .not-found__title {
+    color: var(--bg-dark);
+  }
+
+  .not-found__text {
+    max-width: 46ch;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+
+  .not-found__button {
+    margin-top: 12px;
+  }
+
+  @media (max-width: 768px) {
+    .not-found {
+      padding-top: 96px;
+      padding-bottom: 96px;
+    }
+  }
+</style>

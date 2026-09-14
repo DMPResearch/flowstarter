@@ -12,6 +12,12 @@ interface Props {
 }
 
 const { freeTime } = Astro.props;
+// The client's own photo, or nothing: an empty src resolves to the page
+// URL and paints as a broken image, so an absent or blank imageSrc (the
+// seed cleaner strips a gated placeholder to '') renders no <img> at all
+// rather than one with src="".
+const freeTimeImage =
+  typeof freeTime.imageSrc === 'string' ? freeTime.imageSrc.trim() : '';
 ---
 
 <section class="about-free-time-section container" data-zigzag-section>
@@ -24,7 +30,9 @@ const { freeTime } = Astro.props;
     </div>
   </div>
   <div class="about-free-time-section__media" data-zigzag-part="right">
-    <img src={freeTime.imageSrc} alt={freeTime.imageAlt} loading="lazy" />
+    {freeTimeImage ? (
+      <img src={freeTimeImage} alt={freeTime.imageAlt} loading="lazy" />
+    ) : null}
   </div>
 </section>
 

@@ -13,13 +13,18 @@ interface Props {
 }
 
 const { background } = Astro.props;
+// See AboutFreeTimeSection: no photo means no <img>, never src="".
+const backgroundImage =
+  typeof background.imageSrc === 'string' ? background.imageSrc.trim() : '';
 ---
 
 <>
   <section class="about-background-section container">
     <div class="about-background-section__content" data-zigzag-section>
       <div class="about-background-section__media" data-zigzag-part="left">
-        <img src={background.imageSrc} alt={background.imageAlt} loading="lazy" />
+        {backgroundImage ? (
+          <img src={backgroundImage} alt={background.imageAlt} loading="lazy" />
+        ) : null}
       </div>
       <div class="about-background-section__why-work" data-zigzag-part="right">
         <h2 class="about-background-section__meta-title">{background.whyWorkWithMeTitle}</h2>

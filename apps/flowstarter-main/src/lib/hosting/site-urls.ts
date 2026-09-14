@@ -15,6 +15,7 @@
  * `site-hostnames.ts`.
  */
 
+import { UnsafePlatformOriginError } from '@flowstarter/platform-config';
 import { finalHostname } from './site-hostnames';
 
 /** `process.env` is typed narrowly here; callers also pass plain literals. */
@@ -32,16 +33,42 @@ export function localSiteBaseUrl(env: EnvLike = process.env): string | null {
  * Prefers a custom primary domain (that is what the client paid for), then the
  * local path-served URL when running against a local deploy-agent, and falls
  * back to the site's final hostname on the platform domain.
+ *
+ * `targetIsPlatformHost` is the deploy step's own answer to "did this
+ * artifact actually reach a real, internet-facing host" — `deploySite`
+ * passes it from the `hosting_servers.deploy_agent_url` it just pushed to,
+ * which is the ground truth no env var can drift out of step with. When it
+ * is true and `FLOWSTARTER_LOCAL_SITE_BASE_URL` is nonetheless set (a
+ * leftover from a dev environment, or a stack half-configured for local
+ * serving), this refuses rather than hand back a loopback URL for a site
+ * that is actually live on the internet — the same rule
+ * `assertPublicPlatformOrigin` applies to the origins baked into the
+ * artifact itself. Every caller that only wants a URL to *display* and is
+ * not the deploy step leaves this unset, which is a no-op here exactly as it
+ * always was.
  */
 export function deployedSiteUrl(input: {
   slug: string;
   primaryDomain?: string | null;
   env?: EnvLike;
+  targetIsPlatformHost?: boolean;
 }): string {
   if (input.primaryDomain) return `https://${input.primaryDomain}`;
-  const local = localSiteBaseUrl(input.env ?? process.env);
-  if (local) return `${local}/${input.slug}/`;
-  return `https://${finalHostname(input.slug, {
-    env: input.env ?? process.env,
-  })}`;
+  const env = input.env ?? process.env;
+  const local = localSiteBaseUrl(env);
+  if (local) {
+    if (input.targetIsPlatformHost) {
+      throw new UnsafePlatformOriginError(
+        'FLOWSTARTER_LOCAL_SITE_BASE_URL',
+        `FLOWSTARTER_LOCAL_SITE_BASE_URL is set to "${local}", a local ` +
+          'static server address, but this deploy reached a real platform ' +
+          "host. Refusing to build a site URL that points at a developer's " +
+          'own machine for a site that is actually live — unset ' +
+          'FLOWSTARTER_LOCAL_SITE_BASE_URL for this environment before ' +
+          'deploying to a platform host.',
+      );
+    }
+    return `${local}/${input.slug}/`;
+  }
+  return `https://${finalHostname(input.slug, { env })}`;
 }

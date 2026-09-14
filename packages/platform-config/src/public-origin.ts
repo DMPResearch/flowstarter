@@ -161,6 +161,104 @@ export function publicAppOrigin(
 }
 
 /**
+ * Hostnames that resolve to this machine and nowhere else — never reachable
+ * from a client's browser or from Cal.com's servers once an artifact built
+ * with one of them has left the box it was built on.
+ */
+const LOOPBACK_HOSTNAMES: ReadonlySet<string> = new Set([
+  'localhost',
+  '127.0.0.1',
+  '::1',
+  '[::1]',
+  '0.0.0.0',
+]);
+
+export function isLoopbackHostname(hostname: string): boolean {
+  return LOOPBACK_HOSTNAMES.has(hostname.toLowerCase());
+}
+
+/** True for `value` parsed as a URL whose host is a loopback hostname. */
+export function isLoopbackUrl(value: string): boolean {
+  try {
+    return isLoopbackHostname(new URL(value).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True for an origin every client's browser, and Cal.com's own servers, can
+ * actually reach: `https:`, and not a loopback hostname. `http:` is refused
+ * outright here even though `publicAppOrigin()` can legitimately answer one
+ * on a laptop (`http://localhost:3000`) — that shape is exactly the one this
+ * check exists to keep off a platform deploy.
+ */
+export function isPublicHttpsOrigin(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return url.protocol === 'https:' && !isLoopbackHostname(url.hostname);
+}
+
+/**
+ * Thrown by `assertPublicPlatformOrigin`, naming the config variable a
+ * deploy was refused over — never a bare "invalid origin" a human then has
+ * to go trace back to a `.env` file.
+ */
+export class UnsafePlatformOriginError extends Error {
+  constructor(
+    public readonly variable: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'UnsafePlatformOriginError';
+  }
+}
+
+/**
+ * Refuses a platform-controlled origin that is not safe to ship on a real
+ * deploy: a loopback address, or plain `http:`, baked into a paid client's
+ * site because the process that built it was configured for a developer's
+ * laptop rather than the host the artifact is actually headed to.
+ *
+ * `targetIsPlatformHost` is never guessed here — a local static server
+ * (`FLOWSTARTER_LOCAL_SITE_BASE_URL`) is the one legitimate destination
+ * where a loopback origin is exactly correct, and only the caller (the
+ * worker's own `FLOWSTARTER_MAIN_URL`, the app's own
+ * `hosting_servers.deploy_agent_url`) knows which one this deploy is
+ * actually headed to. A caller serving a local target passes `false` and
+ * this is a no-op.
+ *
+ * A no-op on a null/absent `value` too: an unset origin is a different
+ * defect (or no defect — the feature it feeds is simply off), and this rule
+ * only ever speaks to the shape of a value that *is* being shipped.
+ */
+export function assertPublicPlatformOrigin(input: {
+  /** The env var (or field) this value came from, for the refusal message. */
+  variable: string;
+  value: string | null | undefined;
+  targetIsPlatformHost: boolean;
+}): void {
+  if (!input.targetIsPlatformHost) return;
+  const value = input.value?.trim();
+  if (!value) return;
+  if (isPublicHttpsOrigin(value)) return;
+  throw new UnsafePlatformOriginError(
+    input.variable,
+    `${input.variable} resolved to "${value}", which is not a public https ` +
+      'origin. Refusing to ship it on a deploy to a platform host: a ' +
+      "loopback or plain-http address baked into a client's site is dead on " +
+      `arrival there, and its own Content-Security-Policy would block it ` +
+      `anyway. Fix ${input.variable} (or the environment it is derived ` +
+      'from) before deploying — a local static server target is the only ' +
+      'place this address is correct.',
+  );
+}
+
+/**
  * Where a third party's servers must be able to reach this app — Cal.com's
  * webhook delivery and the self-hosted Cal provisioning webhook. Stripe is
  * deliberately not this: it is handed a URL to verify a signature against, it

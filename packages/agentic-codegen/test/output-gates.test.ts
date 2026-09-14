@@ -3,9 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  EMPTY_IMAGE_SHIPPED,
   findInventedProjectIssue,
   findPlaceholderCopyIssue,
   FullSiteBuildWorker,
+  GENERATED_HTML_UNSAFE,
   INVENTED_PROJECT,
   PAGE_BUDGET_EXCEEDED,
   PLACEHOLDER_COPY_SHIPPED,
@@ -609,6 +611,56 @@ describe('the full-site build gates its own output', () => {
     // One build pass, then exactly one repair pass carrying the verdict.
     expect(feedbacks).toHaveLength(2);
     expect(feedbacks[1]).toContain('Northwind Bank');
+  });
+
+  it('fails the job with GENERATED_HTML_UNSAFE when the built site runs a script the policy does not allow', async () => {
+    const calls: string[] = [];
+    const feedbacks: Array<string | undefined> = [];
+    const { worker } = workerFor({
+      calls,
+      feedbacks,
+      dist: () => ({
+        'index.html':
+          '<h1>Calm Path</h1><script>fetch("https://evil.example")</script>',
+        'work/index.html': '<h1>Work</h1>',
+        'about/index.html': '<h1>About</h1>',
+        'contact/index.html': '<h1>Contact</h1>',
+      }),
+    });
+
+    await expect(worker.run('job-1')).rejects.toThrow(
+      new RegExp(GENERATED_HTML_UNSAFE),
+    );
+    expect(calls).toContain(`store:failed:${GENERATED_HTML_UNSAFE}`);
+    expect(calls).not.toContain('store:human-qa');
+    // One build pass, then exactly one repair pass carrying the verdict —
+    // the same repair-then-recheck shape as every gate above it.
+    expect(feedbacks).toHaveLength(2);
+    expect(feedbacks[1]).toContain('evil.example');
+  });
+
+  it('fails the job with EMPTY_IMAGE_SHIPPED when the built site ships an img with no src', async () => {
+    const calls: string[] = [];
+    const feedbacks: Array<string | undefined> = [];
+    const { worker } = workerFor({
+      calls,
+      feedbacks,
+      dist: () => ({
+        'index.html': '<h1>Calm Path</h1>',
+        'work/index.html': '<h1>Work</h1>',
+        'about/index.html': '<h1>About</h1><img src="" alt="Founder portrait">',
+        'contact/index.html': '<h1>Contact</h1>',
+      }),
+    });
+
+    await expect(worker.run('job-1')).rejects.toThrow(
+      new RegExp(EMPTY_IMAGE_SHIPPED),
+    );
+    expect(calls).toContain(`store:failed:${EMPTY_IMAGE_SHIPPED}`);
+    expect(calls).not.toContain('store:human-qa');
+    // No repair pass for a markup bug like this one: one build pass, then
+    // straight to the gate failing the job.
+    expect(feedbacks).toHaveLength(1);
   });
 
   it('allows the booking page once the workspace carries a Cal.com link', async () => {

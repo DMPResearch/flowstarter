@@ -28,10 +28,15 @@ export async function notifySiteLive(input: {
   primaryDomain?: string | null;
   deploymentId?: string;
   env?: EnvLike;
+  /** See `deployedSiteUrl`: ground truth from the deploy that just ran, not
+   * guessed here. Passed through so a client is never emailed a loopback
+   * link for a site that is actually live on a real host. */
+  targetIsPlatformHost?: boolean;
 }): Promise<boolean> {
   const siteUrl = deployedSiteUrl({
     slug: input.slug,
     primaryDomain: input.primaryDomain ?? null,
+    targetIsPlatformHost: input.targetIsPlatformHost,
     ...(input.env ? { env: input.env } : {}),
   });
 

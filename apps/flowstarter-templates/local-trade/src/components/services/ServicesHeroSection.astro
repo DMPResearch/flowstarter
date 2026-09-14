@@ -8,6 +8,12 @@ interface Props {
 }
 
 const { heroLines, heroImages } = Astro.props;
+// Only a client's real photos ever reach the gallery: no <img> renders for
+// an item whose imageSrc is absent or blank (the seed cleaner strips a
+// gated placeholder to ''), rather than one with src="".
+const validImages = (heroImages ?? []).filter(
+  (image) => typeof image?.imageSrc === 'string' && image.imageSrc.trim() !== ''
+);
 ---
 
 <section class="services-hero-section container">
@@ -19,13 +25,15 @@ const { heroLines, heroImages } = Astro.props;
       centered={true}
       className="services-hero-section__title"
     />
-    <div class="services-hero-section__media">
-      {heroImages.map((image, index) => (
-        <figure class={`services-hero-section__media-item services-hero-section__media-item--${index === 0 ? 'left' : 'right'}`}>
-          <img src={image.imageSrc} alt={image.imageAlt} loading={index === 0 ? 'eager' : 'lazy'} />
-        </figure>
-      ))}
-    </div>
+    {validImages.length > 0 ? (
+      <div class="services-hero-section__media">
+        {validImages.map((image, index) => (
+          <figure class={`services-hero-section__media-item services-hero-section__media-item--${index === 0 ? 'left' : 'right'}`}>
+            <img src={image.imageSrc} alt={image.imageAlt} loading={index === 0 ? 'eager' : 'lazy'} />
+          </figure>
+        ))}
+      </div>
+    ) : null}
   </div>
 </section>
 

@@ -27,6 +27,7 @@ vi.mock('@/supabase-clients/server', () => ({
   },
 }));
 
+import { UnsafePlatformOriginError } from '@flowstarter/platform-config';
 import { DryRunDeployAgentClient, deploySite } from '../deploy';
 import { notifySiteLive } from '../site-live-email';
 
@@ -107,7 +108,7 @@ describe('notifySiteLive', () => {
     expect(mail.subject).toBe('Your site is live');
     expect(mail.html).toContain('https://acmedental.ie');
     expect(mail.html).toContain(
-      `https://flowstarter.dev/dashboard/projects/${WS}`
+      `https://flowstarter.dev/dashboard/projects/${WS}`,
     );
     expect(mail.html).toContain('Acme Dental');
   });
@@ -184,9 +185,50 @@ describe('notifySiteLive', () => {
         workspaceId: WS,
         version: 1,
         slug: 'acme',
-      })
+      }),
     ).resolves.toBe(false);
     expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The bug this covers: a deploy that genuinely reached a real host, with
+   * `FLOWSTARTER_LOCAL_SITE_BASE_URL` still set from a dev environment (or a
+   * stack half-configured for local serving), used to hand the client a
+   * link to a developer's own machine instead of their actual live site.
+   * `targetIsPlatformHost: true` is `deploySite`'s own ground truth — see
+   * the `deploySite tells the client` tests below for it wired through a
+   * real deploy — and refuses here rather than sending a broken address.
+   */
+  it('refuses a loopback link when the deploy reached a real host', async () => {
+    await expect(
+      notifySiteLive({
+        supabase: db.client as never,
+        workspaceId: WS,
+        version: 1,
+        slug: 'acme',
+        primaryDomain: null,
+        targetIsPlatformHost: true,
+        env: {
+          NODE_ENV: 'development',
+          FLOWSTARTER_LOCAL_SITE_BASE_URL: 'http://127.0.0.1:8842',
+        },
+      }),
+    ).rejects.toBeInstanceOf(UnsafePlatformOriginError);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('still sends the real link when the deploy reached a real host and no local override is set', async () => {
+    const sent = await notifySiteLive({
+      supabase: db.client as never,
+      workspaceId: WS,
+      version: 1,
+      slug: 'acme',
+      primaryDomain: null,
+      targetIsPlatformHost: true,
+      env: { NODE_ENV: 'production' },
+    });
+    expect(sent).toBe(true);
+    expect(sentHtml()).toContain('https://acme.flowstarter.net');
   });
 });
 
@@ -251,5 +293,36 @@ describe('deploySite tells the client', () => {
     expect(out.status).toBe('live');
     expect(out.detail).toBeNull();
     expect(db.rows('workspaces')[0]!.deploy_status).toBe('live');
+  });
+
+  /**
+   * `activeServer()`'s `deploy_agent_url` is a real, non-loopback host —
+   * ground truth that this deploy reached a platform host. With no primary
+   * domain and `FLOWSTARTER_LOCAL_SITE_BASE_URL` left over from a dev
+   * environment, `notifySiteLive` refuses to build the email's link rather
+   * than send a client a developer's own loopback address. The deploy
+   * itself already succeeded — a broken email must never turn that into a
+   * reported failure, same as the mailer-down case above.
+   */
+  it('still reports the deploy live, and sends no email, when the site-live link would be a loopback address', async () => {
+    db.reset();
+    db.seed('workspaces', [workspaceRow()]);
+    db.seed('hosting_servers', [activeServer()]);
+    // No workspace_hosts row: deployedSiteUrl falls through past
+    // primaryDomain to the FLOWSTARTER_LOCAL_SITE_BASE_URL check.
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const previous = process.env.FLOWSTARTER_LOCAL_SITE_BASE_URL;
+    process.env.FLOWSTARTER_LOCAL_SITE_BASE_URL = 'http://127.0.0.1:8842';
+    try {
+      const out = await deploySite(opts());
+      expect(out.status).toBe('live');
+      expect(sendEmail).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.FLOWSTARTER_LOCAL_SITE_BASE_URL;
+      } else {
+        process.env.FLOWSTARTER_LOCAL_SITE_BASE_URL = previous;
+      }
+    }
   });
 });
