@@ -26,9 +26,18 @@ export function assertProjectTransition(from: ProjectState, to: ProjectState): v
   }
 }
 
+/**
+ * The deposit's share of the quote, as a whole percentage. This is the one
+ * number that decides the split — `depositAmountMinor` computes off it, and
+ * every place that states the percentage in copy (the preview step, the
+ * unlock page, the deposit Checkout) reads it from here rather than writing
+ * its own figure that could drift from what the Checkout actually charges.
+ */
+export const DEPOSIT_PERCENT = 20;
+
 export function depositAmountMinor(finalValueMinor: number): number {
   assertPositiveMinorAmount(finalValueMinor, 'finalValueMinor');
-  return Math.round(finalValueMinor * 0.2);
+  return Math.round(finalValueMinor * (DEPOSIT_PERCENT / 100));
 }
 
 export function balanceAmountMinor(finalValueMinor: number): number {
