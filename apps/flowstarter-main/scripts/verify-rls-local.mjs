@@ -441,6 +441,15 @@ export const SERVER_ONLY_TABLES = [
   // policies, every grant to anon and authenticated revoked. On claim the row
   // is copied into `assets`, which IS tenant scoped and IS proved below.
   'funnel_assets',
+  // The quota session behind funnel_assets' upload cap, keyed on the preview
+  // id (Codex audit F14, funnel-upload-sessions). Same anonymous-visitor
+  // reasoning as funnel_previews and funnel_assets: there is no workspace and
+  // no membership yet, only a preview id the server minted, so a policy has
+  // no tenant to filter on. RLS on, zero policies, every grant to anon and
+  // authenticated revoked; only reserve_funnel_upload_slot(), security
+  // definer behind the service role, ever touches it. See
+  // supabase/migrations/20260913180000_funnel_upload_sessions.sql.
+  'funnel_upload_sessions',
   'discovery_leads',
   // The Stripe event ledger. Keyed on Stripe's event id, not a workspace: a
   // Stripe object maps to a workspace only through the metadata the event
