@@ -51,6 +51,13 @@ export const LLM_ACTIONS = [
   /** Natural-language intake graph (LangGraph HITL phrasing + extract). */
   'intake_graph',
   'business_naming',
+  /**
+   * The acceptable-use gate's classifier tier (`src/lib/policy/`). One small,
+   * cheap, temperature-zero call per submission, on a tight budget: it reads a
+   * capped window and answers with four fields, so a generous ceiling here
+   * would only ever hide a bug.
+   */
+  'acceptable_use',
 ] as const;
 
 export type LlmAction = (typeof LLM_ACTIONS)[number];
@@ -110,6 +117,15 @@ export const LLM_BUDGETS: Record<LlmAction, LlmActionConfig> = {
   intake_interview: { maxTokens: 8_000, maxOutputTokens: 800, model: SONNET },
   intake_graph: { maxTokens: 10_000, maxOutputTokens: 1_200, model: SONNET },
   business_naming: { maxTokens: 6_000, maxOutputTokens: 600, model: SONNET },
+  // A small fast model on purpose. This call sits in front of the live
+  // preview, the checkout and the brief save, so its latency is a visitor
+  // waiting; and it runs on every submission, so its price is a per-visitor
+  // cost rather than a per-build one.
+  acceptable_use: {
+    maxTokens: 6_000,
+    maxOutputTokens: 300,
+    model: 'openai/gpt-4o-mini',
+  },
 };
 
 function envNumber(name: string): number | undefined {

@@ -26,6 +26,12 @@ import { recordChangeRequest } from '@/lib/flowstarter/messaging';
 import { createChangeRequest } from '@/lib/flowstarter/change-requests';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import {
+  policyErrorBody,
+  policyStatusFor,
+  screenAcceptableUse,
+} from '@/lib/policy/gate';
+import { changeRequestSubject } from '@/lib/policy/subject';
+import {
   decideEditorAction,
   policyStatus,
 } from '@/lib/flowstarter/site-editor';
@@ -80,6 +86,27 @@ export async function POST(
         },
         { status: policyStatus(decision) }
       );
+    }
+
+    // The acceptable-use gate on the client's own words. A change request is
+    // the one surface where a site that passed every gate can be asked to
+    // become something else: "add a page where people can book an escort", or
+    // "put the price list for the pills on the home page". It is screened
+    // before a ticket exists, so the request never reaches a quote form.
+    //
+    // Post-deposit surface, so a refusal is held for a person rather than
+    // written by a threshold. The client is told the same sentence either way.
+    const screening = await screenAcceptableUse({
+      surface: 'change_request',
+      text: changeRequestSubject({ request: parsed.data.request }),
+      workspaceId: context.workspaceId,
+      actor: context.access.actorId,
+      refusalBecomesReview: true,
+    });
+    if (screening.blocked && screening.notice) {
+      return NextResponse.json(policyErrorBody(screening.notice), {
+        status: policyStatusFor(screening.verdict),
+      });
     }
 
     const classification = classifyChangeRequest(parsed.data.request);

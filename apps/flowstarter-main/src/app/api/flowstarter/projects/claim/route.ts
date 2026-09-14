@@ -35,6 +35,12 @@ import {
   PreviewClaimConflictError,
 } from '@/lib/flowstarter/claim';
 import { classifyRouting } from '@/lib/flowstarter/routing-rules';
+import {
+  policyErrorBody,
+  policyStatusFor,
+  screenAcceptableUse,
+} from '@/lib/policy/gate';
+import { intakeSubject } from '@/lib/policy/subject';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -185,6 +191,28 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // fallback below, so the two never disagree about what the visitor
   // answered.
   const draftData = discoveryDataFrom(spec);
+
+  // The acceptable-use gate. A claim is the step where a stranger becomes a
+  // workspace with a price attached, so a refused category must not get one:
+  // everything downstream of here (the deposit Checkout, the build, the host)
+  // reads the workspace as a customer.
+  //
+  // The claim is screened on its own answers rather than trusting the preview
+  // gate's verdict, because the two bodies are not the same. A visitor can
+  // pass the four quick questions and then type the real business into the
+  // claim form, and the classifier's cache makes the repeat free when they
+  // have not.
+  const screening = await screenAcceptableUse({
+    surface: 'claim',
+    text: intakeSubject(spec),
+    actor: auth.userId,
+  });
+  if (screening.blocked && screening.notice) {
+    return NextResponse.json(policyErrorBody(screening.notice), {
+      status: policyStatusFor(screening.verdict),
+    });
+  }
+
   // Step 6 (the tier confirmation) comes after the preview, so a quick-intake
   // claim — every claim from a visitor who has not been asked yet — arrives
   // with `spec.tier` unset. Falling back to the same deterministic

@@ -99,6 +99,12 @@ export default defineConfig({
         statements: 47,
 
         'lib/flowstarter/**': MONEY_AND_DATA,
+        // The acceptable-use gate. Not money and not tenant data, and held to
+        // the same bar for the reason `lib/net/**` is: this is the code that
+        // decides whether a stranger's business becomes a site we build and
+        // charge for, and an untested branch in it is either a refusal a
+        // lawful customer did not deserve or a drug shop on our infrastructure.
+        'lib/policy/**': MONEY_AND_DATA,
         // The outbound-fetch adapter and the ingress readers. Not money and
         // not tenant data, and held to the same bar anyway: this is the code
         // that decides whether a visitor's string becomes a request from our

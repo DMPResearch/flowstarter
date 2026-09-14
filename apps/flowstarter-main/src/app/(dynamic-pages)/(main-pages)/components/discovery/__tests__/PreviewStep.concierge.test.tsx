@@ -521,3 +521,55 @@ describe('the layout', () => {
     expect(order[0]!.className).toContain('sticky');
   });
 });
+
+describe('the acceptable-use refusal', () => {
+  it('ends the funnel instead of showing the simpler preview', async () => {
+    // The route answers 200 with `skip: true` for every reason it declines,
+    // and the generic branch reads that as "the pipeline was busy" and quietly
+    // loads the deterministic demo. A refusal must not take that branch:
+    // handing a refused business a JSON preview is building the site we just
+    // said we would not build.
+    const calls: Calls = { claim: [], guestCheckout: [], live: 0, leads: [] };
+    global.fetch = routedFetch(calls, {
+      postLive: () => ({
+        skip: true,
+        reason: 'acceptable-use',
+        policy: {
+          title: 'We cannot build this one',
+          message:
+            'Our acceptable-use policy does not allow us to build sites for prostitution and escort services, so we have stopped here and nothing has been charged.',
+          next: 'If we have read your business wrong, tell us what you do and a person will look at it.',
+          termsHref: '/terms#acceptable-use',
+          contactHref: '/contact',
+          decision: 'refuse',
+          categoryId: 'sexual_services',
+        },
+      }),
+    });
+
+    render(<PreviewStep data={DATA} t={t} />);
+
+    await screen.findByText(/acceptable-use policy does not allow us/i);
+    expect(
+      screen.getByText(/tell us what you do and a person will look at it/i)
+    ).toBeTruthy();
+
+    // The clause and a human, both reachable.
+    expect(
+      screen
+        .getByRole('link', { name: /acceptable use section of our terms/i })
+        .getAttribute('href')
+    ).toBe('/terms#acceptable-use');
+    expect(
+      screen
+        .getByRole('link', { name: /talk to a person/i })
+        .getAttribute('href')
+    ).toBe('/contact');
+
+    // No fallback preview, no stream, and no lead captured off the back of a
+    // business we refused.
+    expect(FakeEventSource.instances).toHaveLength(0);
+    expect(calls.leads).toHaveLength(0);
+    expect(nowLine().textContent).toContain('We cannot build this one');
+  });
+});

@@ -44,6 +44,8 @@ import { GET as JOB_LOG } from '../pipeline/jobs/[jobId]/log/route';
 import { POST as JOB_NOTE } from '../pipeline/jobs/[jobId]/notes/route';
 import { POST as REDISPATCH } from '../pipeline/redispatch/route';
 import { POST as OVERRIDE_STATE } from '../pipeline/state/route';
+import { GET as LIST_POLICY_REVIEWS } from '../policy/route';
+import { POST as RESOLVE_POLICY_REVIEW } from '../policy/decision/route';
 import {
   GET as LIST_PRODUCTS,
   POST as CREATE_PRODUCT,
@@ -75,6 +77,7 @@ vi.mock('server-only', () => ({}));
 const WORKSPACE = '0f4e1088-8d8f-4f18-83b1-406cc292b23c';
 const CHANGE_REQUEST = '44444444-4444-4444-8444-444444444444';
 const JOB = '55555555-5555-4555-8555-555555555555';
+const POLICY_REVIEW = '77777777-7777-4777-8777-777777777777';
 const PRODUCT = '66666666-6666-4666-8666-666666666666';
 
 // ── Clerk ──────────────────────────────────────────────────────────────────
@@ -267,6 +270,23 @@ function everyOperatorRoute(): RouteCase[] {
           project
         ),
     ],
+    // The acceptable-use review board. It reads and writes `policy_reviews`
+    // with the service role and takes the workspace id from the URL, so a
+    // client who is a member of that workspace must still be refused: an
+    // approval here is what lifts a hold and starts a build.
+    ['policy', () => LIST_POLICY_REVIEWS(get(`${base}/policy`), project)],
+    [
+      'policy/decision',
+      () =>
+        RESOLVE_POLICY_REVIEW(
+          post(`${base}/policy/decision`, {
+            reviewId: POLICY_REVIEW,
+            decision: 'approve',
+            note: 'Checked the pharmacy licence by phone.',
+          }),
+          project
+        ),
+    ],
     ['products:list', () => LIST_PRODUCTS(get(`${base}/products`), project)],
     [
       'products:create',
@@ -352,6 +372,6 @@ describe('a workspace that is not yours to operate', () => {
     // A guard on the guard: the list above is what the two cases run, so a
     // route added without an entry has to change this number too, and the
     // walker test says which file is missing.
-    expect(everyOperatorRoute()).toHaveLength(29);
+    expect(everyOperatorRoute()).toHaveLength(31);
   });
 });

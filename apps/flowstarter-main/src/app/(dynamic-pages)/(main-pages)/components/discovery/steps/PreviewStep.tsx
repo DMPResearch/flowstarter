@@ -25,6 +25,10 @@ import {
   claimIntakeChatPayload,
   describeWithIntakeAnswers,
 } from '../intake-chat.shared';
+// Type only: `copy.ts` is pure and has no server-only import, and taking the
+// shape from the module that writes the words is what stops this component
+// growing its own, slightly different, version of the refusal.
+import type { PolicyNotice } from '@/lib/policy/copy';
 import { deriveBusinessName, withQuickDefaults } from '../quick-defaults';
 import { usePreviewProgress } from '../usePreviewProgress';
 import { AgentActivityPanel } from '@/components/flowstarter/AgentActivityPanel';
@@ -263,6 +267,12 @@ export function PreviewStep({
   // the visitor's build genuinely has to be made by hand, so the intake ends
   // instead of quietly substituting the JSON demo.
   const [deferred, setDeferred] = useState(false);
+  // Set when the acceptable-use gate refused this business. It is the one
+  // outcome that must NOT fall through to the deterministic preview: the whole
+  // point of refusing is that we do not build this site, and quietly handing
+  // the visitor a JSON demo instead would be building it badly. The funnel
+  // ends here, politely, with the policy named and a way to reach a person.
+  const [refusal, setRefusal] = useState<PolicyNotice | null>(null);
   // Set when the live pipeline was never available (budget, config, skip) and
   // the deterministic preview stood in for it.
   const [steppedDown, setSteppedDown] = useState(false);
@@ -370,8 +380,16 @@ export function PreviewStep({
           demoId?: string;
           skip?: boolean;
           reason?: string;
+          policy?: PolicyNotice;
         };
         if (isCancelled()) return;
+        if (json.reason === 'acceptable-use' && json.policy) {
+          // Checked BEFORE the generic `skip` branch below, which would
+          // otherwise read a refusal as "the pipeline was busy" and show the
+          // simpler preview. No lead is captured and no fallback is loaded.
+          setRefusal(json.policy);
+          return;
+        }
         if (json.reason === 'not-configured') {
           // Not a failed build and not a "simpler preview instead" moment:
           // the pipeline never had a chance to run in this environment, so
@@ -845,16 +863,22 @@ export function PreviewStep({
   // two changes (or asked for it); the JSON fallback has no live editing to
   // show off, so its offer appears as before.
   const offerReady = mode !== 'live' || offerRevealed;
-  const elapsed = useElapsedSeconds(!finished && !buildFailure && !deferred);
+  const elapsed = useElapsedSeconds(
+    !finished && !buildFailure && !deferred && !refusal
+  );
 
-  const nowState: NowState = deferred
+  const nowState: NowState = refusal
+    ? 'failed'
+    : deferred
     ? 'done'
     : buildFailure
     ? 'failed'
     : finished
     ? 'done'
     : 'working';
-  const nowLabel = deferred
+  const nowLabel = refusal
+    ? refusal.title
+    : deferred
     ? t('landing.discovery.preview.deferredNow')
     : buildFailure
     ? 'The build stopped'
@@ -942,6 +966,27 @@ export function PreviewStep({
           </ChatBubble>
         );
       })}
+
+      {refusal && (
+        <ChatBubble tone="alert" author="Your team of agents">
+          <span className="block">{refusal.message}</span>
+          <span className="mt-2 block">{refusal.next}</span>
+          <div className="mt-2 flex flex-wrap gap-3 text-[12px] font-semibold">
+            <a
+              href={refusal.termsHref}
+              className="text-[var(--fs-ink)] underline underline-offset-2 hover:text-[var(--purple-primary)]"
+            >
+              Read the acceptable use section of our terms
+            </a>
+            <a
+              href={refusal.contactHref}
+              className="text-[var(--fs-ink)] underline underline-offset-2 hover:text-[var(--purple-primary)]"
+            >
+              Talk to a person
+            </a>
+          </div>
+        </ChatBubble>
+      )}
 
       {deferred && (
         <ChatBubble tone="alert" author="Your team of agents">

@@ -50,3 +50,27 @@ if (
     }
   }
 }
+
+// The acceptable-use gate is stubbed in tests unless a suite asks for it.
+//
+// Hundreds of suites drive a route that happens to sit behind the gate while
+// testing something else: a rate limit, a Stripe session, a teardown path.
+// Without this they would each load `@flowstarter/sigma-flowstarter` and its
+// 135 MB ONNX encoder, reach a genuine verdict on a two-word fixture, and then
+// try to write a `policy_reviews` row against whatever Supabase double that
+// suite happened to set up. Slow, and non-deterministic in tests that have no
+// opinion about policy at all.
+//
+// `stub` short-circuits the adapter to a clean allow. It is refused outright
+// when NODE_ENV is production (see `stubClassifierEnabled`), so this cannot
+// escape the test runner.
+//
+// Set here rather than per file so a route added later cannot forget it. The
+// suites that ARE about the policy opt out for themselves:
+//   classifier.test.ts, gate-fixtures.test.ts, sigma-cascade.test.ts,
+//   acceptable-use-live.test.ts
+process.env.ACCEPTABLE_USE_CLASSIFIER ??= 'stub';
+
+// Belt and braces for any suite that opts the stub out but does not want the
+// encoder either: the embedding tier stays off unless explicitly enabled.
+process.env.ACCEPTABLE_USE_SIGMA ??= 'false';

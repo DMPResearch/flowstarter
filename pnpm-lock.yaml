@@ -605,6 +605,9 @@ importers:
       '@flowstarter/platform-config':
         specifier: workspace:*
         version: link:../../packages/platform-config
+      '@flowstarter/sigma-flowstarter':
+        specifier: workspace:*
+        version: link:../../packages/sigma-flowstarter
       '@fontsource-variable/onest':
         specifier: ^5.2.11
         version: 5.2.11

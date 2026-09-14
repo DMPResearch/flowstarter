@@ -134,6 +134,14 @@ import {
   CHANGE_REQUEST_REPAIR_DAMAGED_SITE,
   type ChangeRequestIntent,
 } from './change-request-build';
+import {
+  CONTENT_POLICY_UNAVAILABLE,
+  PROHIBITED_CONTENT,
+  collectBuiltTextForScan,
+  describeProhibitedContent,
+  describeUnavailableScan,
+  type ContentPolicyScanner,
+} from './acceptable-use';
 import { BUILT_OUTPUT_DIR, resolveContainedOutputDir } from './site-export';
 import {
   findMissingLabelBlocks,
@@ -2398,6 +2406,26 @@ export interface FullSiteBuildWorkerOptions {
    * measures a site against the endpoint it was actually given.
    */
   platformOrigins?: readonly string[];
+  /**
+   * The host's acceptable-use classifier, for the `PROHIBITED_CONTENT` gate.
+   *
+   * The package holds no policy of its own: it hands the compiled site's text
+   * to whatever the host injected and reads back a verdict. `apps/build-worker`
+   * wires flowstarter-main's internal policy endpoint, so a built site is
+   * judged by the same classifier, prompt version and thresholds the intake
+   * and the brief were.
+   */
+  contentPolicy?: ContentPolicyScanner;
+  /**
+   * Fail the build when no scanner is wired.
+   *
+   * Production sets it. A laptop and CI do not, because a developer without an
+   * API key still has to be able to run the chain, and nothing they build
+   * reaches a client. Without this flag "the gate is not configured" and "the
+   * gate passed" would look identical from the ledger, which is exactly the
+   * shape of a gate that quietly stops working.
+   */
+  contentPolicyRequired?: boolean;
 }
 
 /**
@@ -2450,6 +2478,88 @@ export class FullSiteBuildWorker {
       }
     }
     return siteMarkupPolicy({ platformOrigins: origins });
+  }
+
+  /**
+   * The `PROHIBITED_CONTENT` gate.
+   *
+   * The coding agent's system prompt tells it, as a hard instruction, that it
+   * must not build a site for a business the acceptable-use policy refuses.
+   * This is the check that makes the instruction a rule: the compiled site's
+   * own text is read back and classified before anything is committed, so an
+   * agent that ignored the instruction cannot ship, and neither can a build
+   * whose brief turned prohibited after the app's own gates screened it.
+   *
+   * There is no repair pass. Every other gate in this file gives the agent one
+   * chance to fix what it did, because a page budget, a placeholder image or a
+   * stray script tag are mistakes. A site that sells a prohibited good is not a
+   * mistake to be repaired into compliance; it is work we do not do. It fails
+   * once, it fails terminally (the retry rule in `failure-policy.ts` does not
+   * re-queue a gate verdict), and the project goes to the review board.
+   */
+  private async assertAcceptableUse(
+    input: {
+      files: Array<{ path: string; content: string }>;
+      projectId: string;
+      workspaceId: string | null;
+    },
+    say: (
+      kind: 'phase' | 'log',
+      body: string,
+      payload?: Record<string, unknown>,
+    ) => Promise<void>,
+  ): Promise<void> {
+    const scanner = this.options.contentPolicy;
+    if (!scanner) {
+      if (this.options.contentPolicyRequired) {
+        throw new FullSiteBuildFailure(
+          CONTENT_POLICY_UNAVAILABLE,
+          describeUnavailableScan('no classifier is wired into this worker'),
+        );
+      }
+      await say(
+        'log',
+        'The acceptable-use scan is not configured in this environment, so ' +
+          'this build was not checked against the policy.',
+      );
+      return;
+    }
+
+    const text = collectBuiltTextForScan(input.files);
+    let verdict;
+    try {
+      verdict = await scanner({
+        text,
+        workspaceId: input.workspaceId,
+        projectId: input.projectId,
+      });
+    } catch (error) {
+      // Fail closed where it is required and open where it is not, the same
+      // rule the app's own gate applies. A classifier that cannot be reached
+      // is not a clean bill of health.
+      const detail = error instanceof Error ? error.message : 'unknown error';
+      if (this.options.contentPolicyRequired) {
+        throw new FullSiteBuildFailure(
+          CONTENT_POLICY_UNAVAILABLE,
+          describeUnavailableScan(detail),
+        );
+      }
+      await say('log', `The acceptable-use scan could not run: ${detail}`);
+      return;
+    }
+
+    if (verdict.decision === 'allow') return;
+    // The evidence hash, the category and the decision. Never the text: this
+    // line lands in the build conversation, which a client can read.
+    await say('log', 'The acceptable-use scan stopped this build.', {
+      categoryId: verdict.categoryId,
+      decision: verdict.decision,
+      evidenceHash: verdict.evidenceHash,
+    });
+    throw new FullSiteBuildFailure(
+      PROHIBITED_CONTENT,
+      describeProhibitedContent(verdict),
+    );
   }
 
   /**
@@ -3162,6 +3272,20 @@ export class FullSiteBuildWorker {
       await phase('Checking for empty image elements');
       assertNoEmptyImages(await builtSiteText());
 
+      // The last gate, and the only one with no repair pass. See
+      // `assertAcceptableUse`. It runs after every other check so that the
+      // text it reads is the text that would have shipped, and before the
+      // commit so that a refused site never becomes a revision of anything.
+      await phase('Checking the site against the acceptable-use policy');
+      await this.assertAcceptableUse(
+        {
+          files: await builtSiteText(),
+          projectId: job.projectId,
+          workspaceId: job.projectId,
+        },
+        say,
+      );
+
       await phase('Committing the site');
       const commitSha = await this.worktrees.commit(
         worktree,
@@ -3586,6 +3710,21 @@ export class FullSiteBuildWorker {
         await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
       );
 
+      // The acceptable-use gate, on the site as the change left it. A change
+      // request is the one way a site that passed every gate can be asked to
+      // become something else, and the client already paid for this one, so
+      // the check is on the result rather than only on the wording of the ask.
+      // No repair pass, same as the full build.
+      await phase('Checking the site against the acceptable-use policy');
+      await this.assertAcceptableUse(
+        {
+          files: await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
+          projectId: job.projectId,
+          workspaceId: job.projectId,
+        },
+        say,
+      );
+
       // Commit first, then save. The other order is what stranded version 5 of
       // workspace c009105e: the version was written, the commit step refused
       // the message, and the workspace was left holding a finished build with
@@ -3828,6 +3967,21 @@ export class FullSiteBuildWorker {
       builtOutput = await this.exportOf(
         this.validator.validate(siteRoot, 'full'),
         builtOutput,
+      );
+
+      // The acceptable-use gate covers this leg too, and it is the leg that
+      // needs it most plainly: a rebuild publishes the CLIENT's own edited
+      // copy, with no agent in the loop to have been instructed. A client who
+      // bought a dental site and then rewrote its home page into a price list
+      // would otherwise reach the host through the one path nothing screened.
+      await phase('Checking the site against the acceptable-use policy');
+      await this.assertAcceptableUse(
+        {
+          files: await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
+          projectId: job.projectId,
+          workspaceId: job.projectId,
+        },
+        say,
       );
 
       await phase('Committing the site');

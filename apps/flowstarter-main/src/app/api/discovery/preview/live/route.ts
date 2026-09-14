@@ -49,6 +49,8 @@ import {
   resolveTenantCalComUrl,
 } from '@/lib/flowstarter/cal-com';
 import { injectLeadCapturePreviewIntoScaffoldFiles } from '@/lib/flowstarter/lead-capture-scaffold';
+import { screenAcceptableUse } from '@/lib/policy/gate';
+import { intakeSubject } from '@/lib/policy/subject';
 import { createFunnelPreviewPublisher } from '@/lib/discovery/funnel-preview-publisher';
 import { resolvePreviewPublisher } from '@/lib/discovery/preview-publisher-rule';
 import type {
@@ -429,6 +431,34 @@ export async function POST(req: NextRequest) {
     );
     return NextResponse.json(
       { skip: true, reason: 'not-configured' },
+      { status: 200 }
+    );
+  }
+
+  // The acceptable-use gate, before a cent is reserved and before a sandbox
+  // exists. This is the first place a stranger's business description reaches
+  // our infrastructure, so it is the first place the policy is asked.
+  //
+  // It sits after the prerequisite probe deliberately: an environment that
+  // cannot generate at all should say so rather than spend a classifier call
+  // to refuse a preview it was never going to build. It sits before
+  // `reserveFunnelSpend` for the reason that matters more: a refused category
+  // must never be charged for, not even against the funnel's own budget.
+  const screening = await screenAcceptableUse({
+    surface: 'preview',
+    text: intakeSubject(parsed.data),
+  });
+  if (screening.blocked && screening.notice) {
+    // The funnel's own vocabulary: this route answers 200 with `skip` rather
+    // than an error status, because the wizard reads `reason` to decide what
+    // to show. `policy` carries the sentence, the terms anchor and the contact
+    // link, so the step can render the real refusal instead of a shrug.
+    return NextResponse.json(
+      {
+        skip: true,
+        reason: 'acceptable-use',
+        policy: screening.notice,
+      },
       { status: 200 }
     );
   }

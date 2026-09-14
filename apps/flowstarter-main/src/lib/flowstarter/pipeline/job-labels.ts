@@ -119,6 +119,15 @@ const ERROR_CODE_LABELS: Readonly<Record<string, string>> = {
     'The project was not in a state that allows this build',
   BUILD_JOB_UNCLAIMABLE: 'The job could not be picked up',
   operator_canceled: 'An operator cancelled this job',
+  // The two acceptable-use verdicts. They are spelled out rather than left to
+  // `titleCase` because they are the two an operator most needs to tell apart
+  // at a glance: one says we will not build this, the other says we could not
+  // check it. "Prohibited Content" and "Content Policy Unavailable" read as
+  // near-synonyms and they are not.
+  PROHIBITED_CONTENT:
+    'The finished site was refused under the acceptable-use policy',
+  CONTENT_POLICY_UNAVAILABLE:
+    'The acceptable-use check could not run, so nothing was published',
 };
 
 /** A code nobody has named yet still reads as words instead of an enum. */
@@ -385,6 +394,10 @@ const EVENT_KIND_LABELS: Readonly<Record<string, string>> = {
   // because the same pair labels a build's own rows wherever one is printed
   // outside the activity panel. The timeline never invents a word for it.
   activity: 'Step the agents took',
+  policy_review_opened: 'Held for acceptable-use review',
+  policy_refused: 'Refused under the acceptable-use policy',
+  policy_review_approved: 'Acceptable-use review approved by an operator',
+  policy_review_refused: 'Acceptable-use review refused by an operator',
 };
 
 /** A kind nobody has named yet still reads as words instead of an enum. */
@@ -513,6 +526,23 @@ export function eventSummary(kind: string, payload: unknown): string | null {
       if (minor === 0) return 'Paid, free of charge';
       const currency = typeof p.currency === 'string' ? p.currency : 'eur';
       return `Paid ${formatMinorAmount(minor, currency)}`;
+    }
+    // The policy events. The summary carries the category and which gate
+    // stopped, never the classifier's sentence and never the submission: the
+    // timeline is read by anyone with project access, and the evidence belongs
+    // on the review card where only an operator sees it.
+    case 'policy_review_opened':
+    case 'policy_refused': {
+      const label =
+        typeof p.categoryLabel === 'string' ? p.categoryLabel : null;
+      const surface = typeof p.surface === 'string' ? p.surface : null;
+      if (!label) return null;
+      return surface ? `${label}, at the ${titleCase(surface)}` : label;
+    }
+    case 'policy_review_approved':
+    case 'policy_review_refused': {
+      const note = typeof p.note === 'string' ? p.note.trim() : '';
+      return note.length > 0 ? note : null;
     }
     default:
       return null;
