@@ -455,6 +455,7 @@ export {
   AUTH_TRANSFER_LIBRARY_ORIGIN_ENV,
   authTransferAllowList,
   decideAuthTransferDestination,
+  decideOperatorEditorDestination,
   readAuthTransferEnvFromProcess,
 } from './auth-transfer-policy';
 export type {

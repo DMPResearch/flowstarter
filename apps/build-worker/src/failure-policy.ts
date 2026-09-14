@@ -45,8 +45,11 @@ import {
   CAL_PREVIEW_IN_PAID_BUILD,
   CHANGE_REQUEST_NOT_APPLIED,
   CHANGE_REQUEST_REPAIR_DAMAGED_SITE,
+  EMPTY_IMAGE_SHIPPED,
   GENERATED_HTML_UNSAFE,
   INVENTED_PROJECT,
+  OPERATOR_EDIT_INVALID_STATE,
+  OPERATOR_EDIT_MANIFEST_MISSING,
   PAGE_BUDGET_EXCEEDED,
   PLACEHOLDER_COPY_SHIPPED,
   PLACEHOLDER_IMAGE_SHIPPED,
@@ -76,6 +79,7 @@ export const TERMINAL_BUILD_FAILURE_CODES: ReadonlySet<string> = new Set([
   CAL_PREVIEW_IN_PAID_BUILD,
   CHANGE_REQUEST_NOT_APPLIED,
   CHANGE_REQUEST_REPAIR_DAMAGED_SITE,
+  EMPTY_IMAGE_SHIPPED,
   GENERATED_HTML_UNSAFE,
   INVENTED_PROJECT,
   PAGE_BUDGET_EXCEEDED,
@@ -87,6 +91,12 @@ export const TERMINAL_BUILD_FAILURE_CODES: ReadonlySet<string> = new Set([
   // in exactly that condition on the next attempt too.
   'INVALID_PROJECT_STATE',
   'CHANGE_REQUEST_MISSING',
+  // The same two, for an operator's editor session. A job naming a session
+  // with no manifest on it will name the same empty row on the next attempt,
+  // and the only thing that can produce the missing bytes is the operator
+  // pressing Ship again in the editor.
+  OPERATOR_EDIT_INVALID_STATE,
+  OPERATOR_EDIT_MANIFEST_MISSING,
 ]);
 
 /**
@@ -116,6 +126,7 @@ export const UNCLASSIFIED_BUILD_FAILURE_CODES: ReadonlySet<string> = new Set([
   'FULL_SITE_BUILD_FAILED',
   'CHANGE_REQUEST_BUILD_FAILED',
   'SITE_REBUILD_FAILED',
+  'OPERATOR_EDIT_BUILD_FAILED',
   'BUILD_JOB_UNCLAIMABLE',
 ]);
 

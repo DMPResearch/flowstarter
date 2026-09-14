@@ -1,0 +1,114 @@
+# The Flowstarter editor: one container, on the sites box, for the operator
+# path (docs/operations/operator-editor.md).
+#
+# ONE container, not one per client. The editor server is
+# single-project-per-process, so the image's entrypoint is the router/
+# supervisor (apps/flowstarter-editor/router), which spawns one editor
+# process per workspace slug, pinned to /workspaces/<slug>, and idle-stops
+# them. The isolation boundary is the child process plus its own cwd and
+# state directory; the auth boundary is the editor's own clerkGate, which
+# still runs per child because Caddy forwards the original Host.
+#
+# HOW A BROWSER GETS HERE. It does not, directly. The deploy-agent already
+# writes `<slug>.<domain>/editor/*  ->  reverse_proxy <editor upstream>` into
+# every client site's Caddy snippet (apps/deploy-agent/src/caddy-snippet.ts).
+# Set DEPLOY_AGENT_EDITOR_UPSTREAM=http://127.0.0.1:3773 in the deploy-agent's
+# environment and that route lands here. There is no separate vhost to add.
+#
+# HOW flowstarter-main GETS HERE. On 127.0.0.1:3773, the same port, to the
+# `/__router/*` control plane: materialise a workspace's worktree from the
+# published manifest, commit it and read it back. The app slot runs with
+# `network_mode: host`, so loopback on the box is loopback for it too. That
+# control plane is protected twice over, and both halves matter:
+#
+#   1. EDITOR_CONTROL_SECRET, compared in constant time. Without one set, the
+#      control routes answer 503 rather than defaulting open.
+#   2. It refuses any request carrying `x-forwarded-host` or `x-forwarded-for`.
+#      Caddy's `handle_path /editor/*` strips the prefix, so a browser on a
+#      client's site CAN reach `/__router/...` through the tenant vhost -- but
+#      Caddy stamps those headers on everything it forwards and an attacker
+#      cannot remove them. flowstarter-main's own loopback call carries
+#      neither.
+#
+# NOTHING HERE IS PUBLISHED TO THE INTERNET. The port binds 127.0.0.1
+# explicitly, and the compose-created network carries
+# `com.docker.network.bridge.host_binding_ipv4=127.0.0.1` for the same reason
+# the Cal stack next door does: /etc/docker/daemon.json's `{"ip":"127.0.0.1"}`
+# covers only the DEFAULT bridge, and a compose network would otherwise
+# publish on 0.0.0.0.
+#
+# IS_SANDBOX=1 IS REQUIRED and lives in the env file. The container runs as
+# root; "Full access" runtime mode makes the Claude Agent SDK pass
+# --dangerously-skip-permissions, which Claude Code refuses under root, and
+# the agent turn dies with "Claude Code process exited with code 1". Each
+# workspace is already isolated in its own process and cwd, so it genuinely is
+# a sandbox. Note `docker restart` does NOT re-read --env-file: recreate the
+# container to apply env changes.
+#
+# Install and drive with ../scripts/editor-stack.sh.
+
+name: flowstarter-editor
+
+services:
+  editor:
+    image: ${EDITOR_IMAGE:-ghcr.io/dmpresearch/flowstarter-editor:main}
+    container_name: flowstarter-editor
+    restart: unless-stopped
+    env_file:
+      - ${EDITOR_ENV_FILE:-/etc/flowstarter/editor.env}
+    environment:
+      NODE_ENV: production
+      ROUTER_PORT: '3773'
+      ROUTER_HOST: '0.0.0.0'
+      EDITOR_WORKSPACES_ROOT: /workspaces
+      EDITOR_STATE_ROOT: /state
+      # The blast-radius caps. A client's editor session is a coding agent
+      # with a filesystem; a runaway one must cost this box a container, not
+      # the box. Overridable so a bigger machine can raise them without a
+      # code change.
+      EDITOR_MAX_CHILDREN: ${EDITOR_MAX_CHILDREN:-8}
+      EDITOR_IDLE_TTL_MS: ${EDITOR_IDLE_TTL_MS:-900000}
+      EDITOR_CHILD_PORT_START: '4001'
+      EDITOR_CHILD_PORT_END: '4400'
+      # EDITOR_PUBLIC_DOMAIN, EDITOR_CONTROL_SECRET, CLERK_SECRET_KEY,
+      # ANTHROPIC_API_KEY and IS_SANDBOX all come from the env file, never
+      # from here: `environment:` wins over `env_file:`, and a secret written
+      # in a file that is in git is a secret that is in git.
+    volumes:
+      # Per-workspace source checkouts. Materialised by flowstarter-main
+      # through the control plane, from the workspace's published manifest --
+      # never a copy of /var/www/sites, which is deployed output and not
+      # editable source.
+      - editor-workspaces:/workspaces
+      # Per-workspace editor state (threads, SQLite). Survives a restart, so
+      # an operator's conversation is still there after a deploy.
+      - editor-state:/state
+    ports:
+      - '127.0.0.1:${EDITOR_HOST_PORT:-3773}:3773'
+    mem_limit: ${EDITOR_MEM_LIMIT:-3g}
+    # Every child editor process spawns a coding agent, and a coding agent
+    # spawns compilers. Without a pid cap one bad session can fork-bomb the
+    # host out from under the client sites Caddy is serving.
+    pids_limit: ${EDITOR_PIDS_LIMIT:-2048}
+    healthcheck:
+      # The router's slug-free probe. Deliberately the unauthenticated one:
+      # a healthcheck that needed the control secret would mean the secret in
+      # this file.
+      test:
+        ['CMD', 'curl', '-fsS', 'http://127.0.0.1:3773/__router/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - editor
+
+volumes:
+  editor-workspaces:
+  editor-state:
+
+networks:
+  editor:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.host_binding_ipv4: '127.0.0.1'

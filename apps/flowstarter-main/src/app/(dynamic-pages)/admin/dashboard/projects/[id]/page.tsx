@@ -12,6 +12,7 @@ import { HostingTab } from './components/HostingTab';
 import { BillingTab } from './components/BillingTab';
 import { PipelineTab } from './components/PipelineTab';
 import { ChangesTab } from './components/ChangesTab';
+import { EditorTab } from './components/EditorTab';
 import { TeamDashboardShell } from '../../components/TeamDashboardShell';
 
 export default function ProjectDetailPage({
@@ -64,11 +65,12 @@ export default function ProjectDetailPage({
         <section className="ls-card overflow-hidden !p-0">
           <Tabs defaultValue="overview" className="w-full">
             <div className="border-b border-[var(--ls-rule)] px-4 py-3 sm:px-5">
-              <TabsList className="grid h-auto w-full grid-cols-2 gap-1 sm:grid-cols-4 lg:grid-cols-8">
+              <TabsList className="grid h-auto w-full grid-cols-2 gap-1 sm:grid-cols-4 lg:grid-cols-9">
                 <TabsTrigger value="overview">Overview</TabsTrigger>
                 <TabsTrigger value="concierge">Delivery</TabsTrigger>
                 <TabsTrigger value="pipeline">Pipeline</TabsTrigger>
                 <TabsTrigger value="changes">Changes</TabsTrigger>
+                <TabsTrigger value="editor">Editor</TabsTrigger>
                 <TabsTrigger value="billing">Billing</TabsTrigger>
                 <TabsTrigger value="hosting">Hosting</TabsTrigger>
                 <TabsTrigger value="commerce">Commerce</TabsTrigger>
@@ -87,6 +89,9 @@ export default function ProjectDetailPage({
             </TabsContent>
             <TabsContent value="changes" className="m-0 p-5 sm:p-6">
               <ChangesTab project={project} />
+            </TabsContent>
+            <TabsContent value="editor" className="m-0 p-5 sm:p-6">
+              <EditorTab project={project} />
             </TabsContent>
             <TabsContent value="billing" className="m-0 p-5 sm:p-6">
               <BillingTab project={project} />

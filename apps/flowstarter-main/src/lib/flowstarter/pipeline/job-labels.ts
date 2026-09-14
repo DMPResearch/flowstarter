@@ -17,6 +17,7 @@ const KIND_LABELS: Readonly<Record<string, string>> = {
   FULL_SITE_BUILD: 'Full site build',
   SITE_REBUILD: 'Publish client edit',
   CHANGE_REQUEST_BUILD: 'Paid change request',
+  OPERATOR_EDIT_BUILD: 'Editor session by the team',
   INLINE_EDIT: 'Inline edit',
   PREVIEW_GENERATE: 'Preview generation',
   ASSET_INGEST: 'Asset ingest',
@@ -115,6 +116,12 @@ const ERROR_CODE_LABELS: Readonly<Record<string, string>> = {
   FULL_SITE_BUILD_FAILED: 'The site build failed',
   APPROVED_EDIT_DROPPED: 'The build dropped a change the client approved',
   SITE_REBUILD_FAILED: 'Publishing the client edit failed',
+  OPERATOR_EDIT_BUILD_FAILED: 'Shipping the editor session failed',
+  OPERATOR_EDIT_MANIFEST_MISSING:
+    'The editor session had nothing in it to publish',
+  OPERATOR_EDIT_INVALID_STATE:
+    'The project was not in a state that allows publishing an editor session',
+  EMPTY_IMAGE_SHIPPED: 'The build left an image element with nothing in it',
   INVALID_PROJECT_STATE:
     'The project was not in a state that allows this build',
   BUILD_JOB_UNCLAIMABLE: 'The job could not be picked up',
@@ -380,6 +387,9 @@ const EVENT_KIND_LABELS: Readonly<Record<string, string>> = {
   change_request_build_queued: 'Change request handed to the build agents',
   change_request_declined: 'Change request declined',
   change_request_done: 'Change request marked done',
+  operator_editor_opened: 'Team opened the site in the editor',
+  operator_editor_shipped: 'Team shipped an editor session',
+  operator_editor_closed: 'Team closed the editor session',
   booking_cal_updated: 'Booking link updated',
   booking_cal_connected: 'Cal.com calendar connected',
   booking_cal_disconnected: 'Cal.com calendar disconnected',

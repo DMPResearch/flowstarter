@@ -207,8 +207,12 @@ const GATE_BY_CODE: Record<string, ActivitySubject> = {
   FULL_SITE_BUILD_FAILED: 'gate.build',
   CHANGE_REQUEST_BUILD_FAILED: 'gate.build',
   SITE_REBUILD_FAILED: 'gate.build',
+  OPERATOR_EDIT_BUILD_FAILED: 'gate.build',
+  EMPTY_IMAGE_SHIPPED: 'gate.images',
   INVALID_PROJECT_STATE: 'gate.other',
   CHANGE_REQUEST_MISSING: 'gate.other',
+  OPERATOR_EDIT_MANIFEST_MISSING: 'gate.other',
+  OPERATOR_EDIT_INVALID_STATE: 'gate.other',
 };
 
 /** The subject for a gate, from the failure code the pipeline already uses. */

@@ -408,3 +408,89 @@ export function decideAuthTransferDestination(
     surface: entry.surface,
   };
 }
+
+// ---------------------------------------------------------------------------
+// The operator's editor, on a tenant host
+// ---------------------------------------------------------------------------
+
+/**
+ * A workspace slug, exactly as the editor's own `parseWorkspaceSlugFromHost`
+ * will read it back off the Host header. Anything this refuses is a slug the
+ * editor container would fail to route anyway.
+ */
+const WORKSPACE_SLUG = /^[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?$/;
+
+/**
+ * Where the editor answers on a workspace host. The deploy-agent's per-site
+ * Caddy snippet routes `/editor/*` to the editor container
+ * (`apps/deploy-agent/src/caddy-snippet.ts`), and the container's router reads
+ * the workspace out of the preserved `Host`. So this path, on this host, is
+ * the editor, and there is no second place it lives.
+ */
+const OPERATOR_EDITOR_PATH = '/editor/';
+
+/**
+ * The editor URL for one workspace, for an operator we are about to hand a
+ * sign-in ticket to.
+ *
+ * This is deliberately NOT reachable through `decideAuthTransferDestination`,
+ * and the difference is the whole point of the function.
+ *
+ * `decideAuthTransferDestination` answers "a browser handed me this URL; may I
+ * mint a credential for it?", and its answer for `{slug}.{platformDomain}` is
+ * an emphatic no -- twice over, by `isNeverOperatorOwned` and by the absence of
+ * an allow-list entry. That refusal is correct and must stay: a client site is
+ * tenant-authored output, and a page on one asking for a ticket is the exact
+ * attack the policy was written for.
+ *
+ * This function answers a different question: "the server has decided to open
+ * workspace X's editor for an operator; where is it?". The slug is not a
+ * redirect the browser proposed, it is a column the server read, and the path
+ * is a constant. Nothing a browser sends reaches this, which is a stronger
+ * guarantee than an allow-list entry would have been -- adding
+ * `{slug}.{domain}` to the allow-list would have re-opened the tenant-site hole
+ * for every caller, to serve one caller that needs no list at all.
+ *
+ * `code.{domain}` and `editor.{domain}` remain on the allow-list for the
+ * root-mounted editor deployment, which does not exist yet: the container's
+ * router derives the workspace from the Host, so an editor at `code.{domain}`
+ * would need a session-to-workspace map the router does not have. Until it
+ * does, the tenant host is where the editor is, and this is how an operator
+ * gets there.
+ *
+ * Returns the same {@link AuthTransferDecision} shape as the policy above, so
+ * a caller handles a refusal identically either way.
+ */
+export function decideOperatorEditorDestination(
+  slug: unknown,
+  env: AuthTransferEnvInput = readAuthTransferEnvFromProcess(),
+): AuthTransferDecision {
+  if (typeof slug !== 'string') {
+    return { allowed: false, reason: 'malformed', origin: null };
+  }
+  const normalized = slug.trim().toLowerCase();
+  if (!WORKSPACE_SLUG.test(normalized)) {
+    return { allowed: false, reason: 'malformed', origin: null };
+  }
+  const domain = resolvePlatformDomain({
+    override: env.platformDomain,
+    flowstarterEnv: env.flowstarterEnv,
+    nodeEnv: env.nodeEnv,
+  });
+  const hostname = `${normalized}.${domain}`;
+  // A slug that produces a `preview` or `pr-<n>` label is not a workspace we
+  // own the contents of, whatever the workspaces table says. Same predicate
+  // the policy above uses, asked for the same reason.
+  if (isNeverOperatorOwned(hostname)) {
+    return { allowed: false, reason: 'untrusted-origin', origin: `https://${hostname}` };
+  }
+  const development = isDevelopmentEnvironment(env);
+  const scheme = development ? 'http' : 'https';
+  const origin = `${scheme}://${hostname}`;
+  return {
+    allowed: true,
+    url: `${origin}${OPERATOR_EDITOR_PATH}`,
+    origin,
+    surface: 'editor',
+  };
+}

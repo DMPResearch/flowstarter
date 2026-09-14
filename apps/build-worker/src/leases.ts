@@ -39,6 +39,10 @@ export const CLAIMABLE_KINDS: ReadonlySet<string> = new Set([
   'FULL_SITE_BUILD',
   'SITE_REBUILD',
   'CHANGE_REQUEST_BUILD',
+  // An operator's editor session, shipped. Runs no agent pass of its own --
+  // the operator already did the work interactively -- but every output gate,
+  // which is what makes it this worker's job rather than a direct publish.
+  'OPERATOR_EDIT_BUILD',
 ]);
 
 /**

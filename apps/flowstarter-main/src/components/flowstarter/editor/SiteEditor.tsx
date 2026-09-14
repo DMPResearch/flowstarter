@@ -536,6 +536,7 @@ export function SiteEditor({
           <VersionHistoryPanel
             base={base}
             versions={versions}
+            viewerId={initial.viewerId ?? null}
             currentVersion={version}
             policy={contentPolicy}
             onChanged={async () => {

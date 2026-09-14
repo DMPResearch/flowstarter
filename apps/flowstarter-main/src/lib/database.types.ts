@@ -1591,6 +1591,84 @@ export type Database = {
           },
         ]
       }
+      operator_editor_sessions: {
+        Row: {
+          base_commit_sha: string | null
+          base_version: number
+          build_job_id: string | null
+          closed_at: string | null
+          container_id: string | null
+          created_at: string
+          editor_url: string | null
+          id: string
+          last_error: string | null
+          operator_id: string
+          result_commit_sha: string | null
+          result_manifest: Json | null
+          shipped_at: string | null
+          shipped_version: number | null
+          status: string
+          updated_at: string
+          worktree_path: string | null
+          workspace_id: string
+        }
+        Insert: {
+          base_commit_sha?: string | null
+          base_version?: number
+          build_job_id?: string | null
+          closed_at?: string | null
+          container_id?: string | null
+          created_at?: string
+          editor_url?: string | null
+          id?: string
+          last_error?: string | null
+          operator_id: string
+          result_commit_sha?: string | null
+          result_manifest?: Json | null
+          shipped_at?: string | null
+          shipped_version?: number | null
+          status?: string
+          updated_at?: string
+          worktree_path?: string | null
+          workspace_id: string
+        }
+        Update: {
+          base_commit_sha?: string | null
+          base_version?: number
+          build_job_id?: string | null
+          closed_at?: string | null
+          container_id?: string | null
+          created_at?: string
+          editor_url?: string | null
+          id?: string
+          last_error?: string | null
+          operator_id?: string
+          result_commit_sha?: string | null
+          result_manifest?: Json | null
+          shipped_at?: string | null
+          shipped_version?: number | null
+          status?: string
+          updated_at?: string
+          worktree_path?: string | null
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "operator_editor_sessions_build_job_id_fkey"
+            columns: ["build_job_id"]
+            isOneToOne: false
+            referencedRelation: "flowstarter_agent_jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "operator_editor_sessions_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       portrait_connections: {
         Row: {
           asset_id: string | null

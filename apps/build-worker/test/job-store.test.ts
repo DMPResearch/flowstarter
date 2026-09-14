@@ -3049,3 +3049,741 @@ describe('lease fencing', () => {
     ).rejects.toBeInstanceOf(LeaseLostError);
   });
 });
+
+/**
+ * OPERATOR_EDIT_BUILD's half of the store.
+ *
+ * Every method here writes something a client can see -- a version of their
+ * site, a published flag, a session that says the work shipped -- so each case
+ * asserts the guard as well as the happy path. The shape is deliberately the
+ * change-request suite's above: the same scripted client, the same "what was
+ * written, to which table, under which filters" assertions, because the two
+ * paths must not be allowed to drift into having different safety properties.
+ */
+describe('operator editor sessions on the store', () => {
+  const SESSION_ID = 'bb0ce0b6-2f22-4c2c-9a5a-1111aaaa2222';
+  const CREATED_BY = 'system:operator_edit_build:job-1';
+
+  function operatorPayload(overrides: Record<string, unknown> = {}) {
+    return {
+      trigger: 'operator_editor_ship',
+      operatorEdit: {
+        sessionId: SESSION_ID,
+        operatorId: 'user_operator',
+        baseVersion: 4,
+        commitSha: 'abc1234',
+        note: 'added the pricing page',
+        ...overrides,
+      },
+    };
+  }
+
+  describe('claim', () => {
+    function claimScript(session: Scripted) {
+      return {
+        flowstarter_agent_jobs: [
+          {
+            data: ledgerRow({
+              kind: 'OPERATOR_EDIT_BUILD',
+              payload: operatorPayload(),
+            }),
+          },
+          { data: { id: '4f9d5bf2-1c4a-4a2f-9d4a-4c0f0a7c2f11' } },
+        ],
+        workspaces: [
+          {
+            data: {
+              id: WORKSPACE_ID,
+              project_state: ProjectState.LIVE_SUBSCRIPTION,
+              cal_com_url: null,
+              lead_capture_token: null,
+            },
+          },
+        ],
+        flowstarter_project_artifacts: [{ data: artifacts() }],
+        operator_editor_sessions: [session],
+      };
+    }
+
+    it('builds from the session the operator shipped, not the published manifest', async () => {
+      const { client, calls } = makeScriptedClient(
+        claimScript({
+          data: {
+            id: SESSION_ID,
+            status: 'shipping',
+            result_manifest: {
+              files: [
+                { path: 'src/content/site.md', content: 'what the team wrote' },
+                { path: 'src/pages/pricing.astro', content: '<h1>Pricing</h1>' },
+              ],
+            },
+          },
+        }),
+      );
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      const job = await store.claim('4f9d5bf2-1c4a-4a2f-9d4a-4c0f0a7c2f11');
+
+      expect(job?.kind).toBe('OPERATOR_EDIT_BUILD');
+      expect(job?.operatorEdit?.sessionId).toBe(SESSION_ID);
+      expect(job?.approvedPreviewFiles.map((file) => file.path)).toEqual([
+        'src/content/site.md',
+        'src/pages/pricing.astro',
+      ]);
+      // Seeding from the artifact row would build the site as it was before
+      // the operator started and publish it as though it were their work.
+      expect(
+        job?.approvedPreviewFiles.some(
+          (file) => file.content === 'Approved preview',
+        ),
+      ).toBe(false);
+
+      // The bytes are read out of the session row, scoped to this workspace.
+      // The worker never touches the editor host's filesystem, which is what
+      // makes a failed build diagnosable after the worktree is idle-reaped.
+      const read = calls.find(
+        (call) => call.table === 'operator_editor_sessions',
+      );
+      expect(read?.op).toBe('select');
+      expect(read?.eqCalls).toContainEqual(['workspace_id', WORKSPACE_ID]);
+      expect(read?.eqCalls).toContainEqual(['id', SESSION_ID]);
+    });
+
+    it('refuses a session that is not the one shipping', async () => {
+      // `ready`, `shipped` and `closed` are all sessions this job has no
+      // business publishing, and the honest failure is here at claim time
+      // rather than after a build has run.
+      for (const status of ['ready', 'shipped', 'closed', 'failed']) {
+        const { client } = makeScriptedClient({
+          ...claimScript({
+            data: { id: SESSION_ID, status, result_manifest: { files: [] } },
+          }),
+          // `markFailed`'s own reads, after the claim path throws.
+          flowstarter_agent_jobs: [
+            {
+              data: ledgerRow({
+                kind: 'OPERATOR_EDIT_BUILD',
+                payload: operatorPayload(),
+              }),
+            },
+            { data: { id: '4f9d5bf2-1c4a-4a2f-9d4a-4c0f0a7c2f11' } },
+            { data: { payload: {} } },
+            { data: { workspace_id: WORKSPACE_ID } },
+          ],
+        });
+        const store = new SupabaseFullSiteBuildJobStore(client, {
+          maxAttempts: 3,
+        });
+
+        await expect(
+          store.claim('4f9d5bf2-1c4a-4a2f-9d4a-4c0f0a7c2f11'),
+        ).rejects.toThrow(new RegExp(`is ${status}, not shipping`));
+      }
+    });
+
+    it('refuses a job whose session does not exist for this workspace', async () => {
+      const { client } = makeScriptedClient({
+        ...claimScript({ data: null }),
+        flowstarter_agent_jobs: [
+          {
+            data: ledgerRow({
+              kind: 'OPERATOR_EDIT_BUILD',
+              payload: operatorPayload(),
+            }),
+          },
+          { data: { id: '4f9d5bf2-1c4a-4a2f-9d4a-4c0f0a7c2f11' } },
+          { data: { payload: {} } },
+          { data: { workspace_id: WORKSPACE_ID } },
+        ],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.claim('4f9d5bf2-1c4a-4a2f-9d4a-4c0f0a7c2f11'),
+      ).rejects.toThrow(/does not exist for this workspace/);
+    });
+
+    it('surfaces a read failure on the session rather than building blind', async () => {
+      const { client } = makeScriptedClient({
+        ...claimScript({ error: dbError('sessions unavailable') }),
+        flowstarter_agent_jobs: [
+          {
+            data: ledgerRow({
+              kind: 'OPERATOR_EDIT_BUILD',
+              payload: operatorPayload(),
+            }),
+          },
+          { data: { id: '4f9d5bf2-1c4a-4a2f-9d4a-4c0f0a7c2f11' } },
+          { data: { payload: {} } },
+          { data: { workspace_id: WORKSPACE_ID } },
+        ],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.claim('4f9d5bf2-1c4a-4a2f-9d4a-4c0f0a7c2f11'),
+      ).rejects.toMatchObject({ message: 'sessions unavailable' });
+    });
+  });
+
+  describe('markOperatorEditStarted', () => {
+    it('records the worktree and moves no project state', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { id: 'job-1' } }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.markOperatorEditStarted('job-1', worktree());
+
+      const update = calls.find(
+        (call) => call.table === 'flowstarter_agent_jobs',
+      );
+      expect(update?.op).toBe('update');
+      expect(update?.values).toMatchObject({
+        worktree_branch: 'client/flowstarter-test',
+        worktree_path: '/tmp/worktree',
+      });
+      // A live client whose site one of us improved has not gone back into
+      // the build pipeline.
+      expect(calls.some((call) => call.table === 'workspaces')).toBe(false);
+    });
+
+    it('refuses when this attempt no longer holds the job', async () => {
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.markOperatorEditStarted('job-1', worktree()),
+      ).rejects.toBeInstanceOf(LeaseLostError);
+    });
+  });
+
+  describe('saveOperatorEditVersion', () => {
+    it('saves the worktree as the next version, unpublished, in the team’s name', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        site_versions: [{ data: { version: 4 } }, { error: null }],
+        flowstarter_project_artifacts: [{ error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      const saved = await store.saveOperatorEditVersion('job-1', {
+        sessionId: SESSION_ID,
+        files: [
+          { path: 'src/pages/pricing.astro', content: 'x', type: 'file' },
+        ],
+      });
+
+      expect(saved).toEqual({ version: 5 });
+      const insert = calls.find(
+        (call) => call.table === 'site_versions' && call.op === 'insert',
+      );
+      expect(insert?.values).toMatchObject({
+        workspace_id: WORKSPACE_ID,
+        version: 5,
+        // The one sentence the client reads, and it names nobody.
+        summary: 'Change made by the Flowstarter team',
+        created_by: CREATED_BY,
+      });
+      expect(
+        (insert?.values as { published_at?: unknown }).published_at,
+      ).toBeUndefined();
+      expect(JSON.stringify(insert?.values)).not.toContain('user_operator');
+
+      const mirror = calls.find(
+        (call) => call.table === 'flowstarter_project_artifacts',
+      );
+      expect(mirror?.op).toBe('update');
+      expect(mirror?.eqCalls).toContainEqual(['workspace_id', WORKSPACE_ID]);
+    });
+
+    it('re-reads and retries when a client publish takes the number first', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        site_versions: [
+          { data: { version: 4 } },
+          { error: { code: '23505', message: 'duplicate key' } },
+          { data: { version: 5 } },
+          { error: null },
+        ],
+        flowstarter_project_artifacts: [{ error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.saveOperatorEditVersion('job-1', {
+          sessionId: SESSION_ID,
+          files: [{ path: 'a.md', content: 'x', type: 'file' }],
+        }),
+      ).resolves.toEqual({ version: 6 });
+
+      const inserts = calls.filter(
+        (call) => call.table === 'site_versions' && call.op === 'insert',
+      );
+      expect(inserts).toHaveLength(2);
+    });
+
+    it('gives up loudly rather than looping forever on the version number', async () => {
+      const clash = { error: { code: '23505', message: 'duplicate key' } };
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        site_versions: [
+          { data: { version: 4 } },
+          clash,
+          { data: { version: 4 } },
+          clash,
+          { data: { version: 4 } },
+          clash,
+          { data: { version: 4 } },
+          clash,
+        ],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.saveOperatorEditVersion('job-1', {
+          sessionId: SESSION_ID,
+          files: [{ path: 'a.md', content: 'x', type: 'file' }],
+        }),
+      ).rejects.toBeInstanceOf(JobArtifactError);
+    });
+
+    it('surfaces a read, insert or mirror failure', async () => {
+      const cases: Array<[string, Record<string, Scripted[]>]> = [
+        [
+          'versions unavailable',
+          { site_versions: [{ error: dbError('versions unavailable') }] },
+        ],
+        [
+          'insert refused',
+          {
+            site_versions: [
+              { data: { version: 4 } },
+              { error: dbError('insert refused') },
+            ],
+          },
+        ],
+        [
+          'artifacts unavailable',
+          {
+            site_versions: [{ data: { version: 4 } }, { error: null }],
+            flowstarter_project_artifacts: [
+              { error: dbError('artifacts unavailable') },
+            ],
+          },
+        ],
+      ];
+      for (const [message, tables] of cases) {
+        const { client } = makeScriptedClient({
+          flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+          ...tables,
+        });
+        const store = new SupabaseFullSiteBuildJobStore(client, {
+          maxAttempts: 3,
+        });
+        await expect(
+          store.saveOperatorEditVersion('job-1', {
+            sessionId: SESSION_ID,
+            files: [{ path: 'a.md', content: 'x', type: 'file' }],
+          }),
+        ).rejects.toMatchObject({ message });
+      }
+    });
+  });
+
+  describe('discardOperatorEditVersion', () => {
+    it('takes back a version this job saved and never published', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        site_versions: [
+          { data: [{ version: 5 }] },
+          { data: { manifest: { files: [{ path: 'a.md', content: '4' }] } } },
+        ],
+        flowstarter_project_artifacts: [{ error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.discardOperatorEditVersion('job-1', {
+          sessionId: SESSION_ID,
+          version: 5,
+        }),
+      ).resolves.toBe(true);
+
+      // The four-part guard is the whole design: the workspace, the version
+      // number, this job's own `created_by`, and still unpublished.
+      const removal = calls.find(
+        (call) => call.table === 'site_versions' && call.op === 'delete',
+      );
+      expect(removal?.eqCalls).toContainEqual(['workspace_id', WORKSPACE_ID]);
+      expect(removal?.eqCalls).toContainEqual(['version', 5]);
+      expect(removal?.eqCalls).toContainEqual(['created_by', CREATED_BY]);
+      expect(removal?.eqCalls).toContainEqual(['is:published_at', null]);
+
+      const mirror = calls.find(
+        (call) => call.table === 'flowstarter_project_artifacts',
+      );
+      expect(mirror?.values).toMatchObject({
+        preview_manifest: { files: [{ path: 'a.md', content: '4' }] },
+      });
+    });
+
+    it('refuses to remove a version that is not this build’s', async () => {
+      // A version an operator published in the meantime, one a client's own
+      // publish wrote, or one belonging to another job matches none of the
+      // guard and is left alone. There is no reading under which a failed
+      // build should remove a version somebody is looking at.
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        site_versions: [{ data: [] }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.discardOperatorEditVersion('job-1', {
+          sessionId: SESSION_ID,
+          version: 5,
+        }),
+      ).resolves.toBe(false);
+      expect(
+        calls.some((call) => call.table === 'flowstarter_project_artifacts'),
+      ).toBe(false);
+    });
+
+    it('leaves the mirror alone when no version remains to restore it to', async () => {
+      // A workspace whose only version was this one has a preview manifest
+      // that predates versioning, and blanking it is the worse failure.
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+        site_versions: [{ data: [{ version: 1 }] }, { data: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.discardOperatorEditVersion('job-1', {
+          sessionId: SESSION_ID,
+          version: 1,
+        }),
+      ).resolves.toBe(true);
+      expect(
+        calls.some((call) => call.table === 'flowstarter_project_artifacts'),
+      ).toBe(false);
+    });
+
+    it('surfaces a delete, read-back or mirror failure', async () => {
+      const cases: Array<[string, Scripted[], Scripted[]]> = [
+        ['delete refused', [{ error: dbError('delete refused') }], []],
+        [
+          'read-back failed',
+          [{ data: [{ version: 5 }] }, { error: dbError('read-back failed') }],
+          [],
+        ],
+        [
+          'mirror refused',
+          [{ data: [{ version: 5 }] }, { data: { manifest: { files: [] } } }],
+          [{ error: dbError('mirror refused') }],
+        ],
+      ];
+      for (const [message, versions, artifactRows] of cases) {
+        const { client } = makeScriptedClient({
+          flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+          site_versions: versions,
+          flowstarter_project_artifacts: artifactRows,
+        });
+        const store = new SupabaseFullSiteBuildJobStore(client, {
+          maxAttempts: 3,
+        });
+        await expect(
+          store.discardOperatorEditVersion('job-1', {
+            sessionId: SESSION_ID,
+            version: 5,
+          }),
+        ).rejects.toMatchObject({ message });
+      }
+    });
+  });
+
+  describe('markOperatorEditBuilt', () => {
+    function shippedScript(sessionRows: unknown) {
+      return {
+        flowstarter_agent_jobs: [
+          { data: { workspace_id: WORKSPACE_ID } },
+          { data: { payload: operatorPayload() } },
+          { data: { id: 'job-1' }, error: null },
+        ],
+        site_versions: [{ error: null }, { error: null }],
+        operator_editor_sessions: [{ data: sessionRows }],
+      };
+    }
+
+    it('publishes the version, finishes the job, then marks the session shipped', async () => {
+      const { client, calls } = makeScriptedClient(
+        shippedScript([{ id: SESSION_ID }]),
+      );
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.markOperatorEditBuilt('job-1', {
+        commitSha: '0pe4a70',
+        pullRequestUrl: 'https://example.test/deploy/44',
+        stagingUrl: 'https://acme.flowstarter.net',
+        sessionId: SESSION_ID,
+        version: 5,
+      });
+
+      // Exactly one version is live: the previous one is unpublished first.
+      const versionWrites = calls.filter(
+        (call) => call.table === 'site_versions',
+      );
+      expect(versionWrites[0]?.values).toMatchObject({ published_at: null });
+      expect(versionWrites[1]?.eqCalls).toContainEqual(['version', 5]);
+
+      const finish = calls.find(
+        (call) =>
+          call.table === 'flowstarter_agent_jobs' && call.op === 'update',
+      );
+      expect(finish?.values).toMatchObject({
+        status: 'succeeded',
+        pull_request_url: 'https://example.test/deploy/44',
+      });
+      // The enqueue payload is merged into, never replaced: it is the only
+      // provenance linking a shipped version back to the session that made it.
+      expect(
+        (finish?.values as { payload: Record<string, unknown> }).payload,
+      ).toMatchObject({
+        trigger: 'operator_editor_ship',
+        commitSha: '0pe4a70',
+        builtVersion: 5,
+      });
+
+      const shipped = calls.find(
+        (call) => call.table === 'operator_editor_sessions',
+      );
+      expect(shipped?.op).toBe('update');
+      expect(shipped?.values).toMatchObject({
+        status: 'shipped',
+        shipped_version: 5,
+        last_error: null,
+      });
+      // Compare-and-set on `shipping`: a redelivered job or a second attempt
+      // cannot produce a second completion.
+      expect(shipped?.eqCalls).toContainEqual(['status', 'shipping']);
+      expect(shipped?.eqCalls).toContainEqual(['workspace_id', WORKSPACE_ID]);
+    });
+
+    it('says so loudly when the session was not at shipping', async () => {
+      // The site is live and the session row disagrees, which is exactly the
+      // state an operator must be able to see.
+      const { client } = makeScriptedClient(shippedScript([]));
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.markOperatorEditBuilt('job-1', {
+          commitSha: '0pe4a70',
+          pullRequestUrl: 'u',
+          stagingUrl: 's',
+          sessionId: SESSION_ID,
+          version: 5,
+        }),
+      ).rejects.toThrow(/was not at shipping when its build finished/);
+    });
+
+    it('refuses to finish a job this attempt no longer holds', async () => {
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: { workspace_id: WORKSPACE_ID } },
+          { data: { payload: {} } },
+          { data: null },
+        ],
+        site_versions: [{ error: null }, { error: null }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.markOperatorEditBuilt('job-1', {
+          commitSha: 'c',
+          pullRequestUrl: 'u',
+          stagingUrl: 's',
+          sessionId: SESSION_ID,
+          version: 5,
+        }),
+      ).rejects.toBeInstanceOf(LeaseLostError);
+    });
+
+    it('surfaces a failure to stamp the version published', async () => {
+      for (const versions of [
+        [{ error: dbError('unpublish failed') }],
+        [{ error: null }, { error: dbError('publish failed') }],
+      ]) {
+        const { client } = makeScriptedClient({
+          flowstarter_agent_jobs: [{ data: { workspace_id: WORKSPACE_ID } }],
+          site_versions: versions,
+        });
+        const store = new SupabaseFullSiteBuildJobStore(client, {
+          maxAttempts: 3,
+        });
+        await expect(
+          store.markOperatorEditBuilt('job-1', {
+            commitSha: 'c',
+            pullRequestUrl: 'u',
+            stagingUrl: 's',
+            sessionId: SESSION_ID,
+            version: 5,
+          }),
+        ).rejects.toMatchObject({ message: /failed/ });
+      }
+    });
+
+    it('surfaces a failure to mark the session shipped', async () => {
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: { workspace_id: WORKSPACE_ID } },
+          { data: { payload: {} } },
+          { data: { id: 'job-1' }, error: null },
+        ],
+        site_versions: [{ error: null }, { error: null }],
+        operator_editor_sessions: [{ error: dbError('sessions unavailable') }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.markOperatorEditBuilt('job-1', {
+          commitSha: 'c',
+          pullRequestUrl: 'u',
+          stagingUrl: 's',
+          sessionId: SESSION_ID,
+          version: 5,
+        }),
+      ).rejects.toMatchObject({ message: 'sessions unavailable' });
+    });
+  });
+
+  describe('markFailed puts the gate’s words where the operator is standing', () => {
+    function failScript(job: Scripted, sessions: Scripted[] = [{ data: [] }]) {
+      return {
+        flowstarter_agent_jobs: [
+          { data: { payload: {} } },
+          { data: { workspace_id: WORKSPACE_ID } },
+          job,
+        ],
+        workspaces: [{ error: null }],
+        operator_editor_sessions: sessions,
+      };
+    }
+
+    it('returns the session to ready with the gate’s own message', async () => {
+      const { client, calls } = makeScriptedClient(
+        failScript({
+          data: {
+            kind: 'OPERATOR_EDIT_BUILD',
+            payload: operatorPayload(),
+          },
+        }),
+      );
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.markFailed('job-1', {
+        code: 'PLACEHOLDER_COPY_SHIPPED',
+        detail: 'The built site still says “Lorem ipsum” on the home page.',
+      });
+
+      const session = calls.find(
+        (call) => call.table === 'operator_editor_sessions',
+      );
+      expect(session?.op).toBe('update');
+      // `ready`, not `failed`: their worktree is untouched and still theirs to
+      // fix, and a status reading `failed` would say "this session is over"
+      // when the whole point is that it is not.
+      expect(session?.values).toMatchObject({ status: 'ready' });
+      expect(
+        (session?.values as { last_error: string }).last_error,
+      ).toContain('Lorem ipsum');
+      expect(session?.eqCalls).toContainEqual(['id', SESSION_ID]);
+      expect(session?.eqCalls).toContainEqual(['status', 'shipping']);
+      expect(session?.eqCalls).toContainEqual(['workspace_id', WORKSPACE_ID]);
+    });
+
+    it('touches no session for any other kind of job', async () => {
+      const { client, calls } = makeScriptedClient(
+        failScript({ data: { kind: 'CHANGE_REQUEST_BUILD', payload: {} } }),
+      );
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.markFailed('job-1', { code: 'X', detail: 'y' });
+
+      expect(
+        calls.some((call) => call.table === 'operator_editor_sessions'),
+      ).toBe(false);
+    });
+
+    it('touches no session when the payload names none', async () => {
+      const { client, calls } = makeScriptedClient(
+        failScript({
+          data: { kind: 'OPERATOR_EDIT_BUILD', payload: { operatorEdit: {} } },
+        }),
+      );
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.markFailed('job-1', { code: 'X', detail: 'y' });
+
+      expect(
+        calls.some((call) => call.table === 'operator_editor_sessions'),
+      ).toBe(false);
+    });
+
+    it('never lets a bookkeeping failure replace the failure an operator has to read', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { client } = makeScriptedClient(
+        failScript({ error: dbError('job row unreadable') }),
+      );
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      // The original failure is already on the row; this must not throw over
+      // a session it could not annotate.
+      await expect(
+        store.markFailed('job-1', { code: 'X', detail: 'y' }),
+      ).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+    });
+  });
+});
