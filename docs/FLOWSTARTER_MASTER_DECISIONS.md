@@ -1,406 +1,201 @@
-# Flowstarter — Master Decision Document
+# Flowstarter: Master Decision Document
 
-*Consolidated snapshot of strategic, technical, and pricing decisions from the planning session.*
+*Consolidated snapshot of strategic, technical, and pricing decisions, reconciled against shipped code.*
 
-**Date:** May 2026
-**Status:** Pre-implementation, decisions awaiting final review with Dorin
-**Authority:** This document is the **source of truth** for code agents. If a request contradicts decisions here, flag the contradiction rather than silently overriding.
+**Date:** 2026-09-14
+**Status:** Describes the live product. Superseded the May 2026 concierge draft, which described a discovery-call deposit, 50/50 founding milestones, and a Max tier that were never shipped in this form.
+**Authority:** This document is the **source of truth** for code agents. If a request contradicts a decision here, flag the contradiction rather than silently overriding it. Section 10 lists the contradictions this revision itself found and did not resolve in code.
 
 ---
 
 ## Table of Contents
 
 1. [About Flowstarter](#about-flowstarter)
-2. [Product Strategy](#product-strategy)
+2. [The Self-Serve Funnel](#the-self-serve-funnel)
 3. [Technical Stack](#technical-stack)
-4. [Editor Architecture](#editor-architecture)
-5. [Pricing Schema](#pricing-schema)
-6. [Founding Customer Model](#founding-customer-model)
-7. [Execution Pipeline](#execution-pipeline)
-8. [Open Decision Points](#open-decision-points)
-9. [Identified Anti-Patterns](#identified-anti-patterns)
+4. [Editor and Constrained Edits](#editor-and-constrained-edits)
+5. [Pricing](#pricing)
+6. [Hosting, Previews, and Cal.com](#hosting-previews-and-calcom)
+7. [Backups and Alerting](#backups-and-alerting)
+8. [Security Posture](#security-posture)
+9. [Open Decision Points](#open-decision-points)
+10. [Contradictions Flagged by This Revision](#contradictions-flagged-by-this-revision)
 
 ---
 
 ## About Flowstarter
 
-Flowstarter is a **concierge service** that builds and maintains websites and online stores for businesses needing a professional online presence without the friction of traditional development.
+Flowstarter builds and maintains websites for businesses that need a professional online presence without hiring a developer. The product is **self-serve with operator supervision**: a prospect answers four questions and gets a generated preview with no human in the loop; a human (Darius, and Dorin for design and client relationships) reviews the build before it goes live and handles anything outside the client editor's scope.
 
-The team consists of **Darius** (lead engineering — full-stack, infrastructure, AI integration) and **Dorin** (design + client relationships + business development). Revenue split is **70/30** in favor of Darius for projects involving heavy technical work.
-
-Each site/store is built by operators using high-quality templates, AI-assisted code generation, and custom design. After delivery, the client receives an **AI-powered constrained editor** for self-service modifications, while operators handle anything outside the editor's scope through a maintenance contract.
+Work that does not fit the self-serve funnel (bespoke integrations, scope a template cannot express) routes to a **DMPResearch custom-work discovery call**. That routing, plus an acceptable-use guardrail on what the funnel will build, is in progress on a separate branch as of this revision and is not yet merged to `main`.
 
 ### Two Market Segments
 
-- **Service businesses** (coaches, consultants, photographers, freelance creatives) on Astro-based sites
-- **E-commerce merchants** on Shopify Liquid stores (or Astro headless when justified)
+- **Service businesses** (coaches, consultants, photographers, freelance creatives) on Astro-based sites.
+- **E-commerce merchants**, sized by the Ecommerce/Commerce tier below.
 
-### Two Geographic Markets with Unified Pricing
+### Pricing and Invoicing
 
-- **Romania** — local approach through Dorin's network
-- **Western Europe** — approach through digital channels (Shopify Experts directory, outbound, personal brand)
-
-**All prices displayed in EUR** on the official website (English) — a single set of prices for all markets.
-
-For Romanian clients, **invoicing is done in RON** at the BNR (National Bank of Romania) exchange rate on the invoice date (Romanian legal requirement), managed through accounting software. This doesn't affect the client's experience on the site (they see EUR pricing), only back-office operations.
-
-The English website + EUR pricing signals "European agency, not local freelancer" — important for premium positioning.
+**All prices are displayed in EUR** on the marketing site, one set of prices for every market. For Romanian clients, invoicing is done in RON at the BNR (National Bank of Romania) exchange rate on the invoice date, a Romanian legal requirement handled in back-office accounting software only; it does not change what a client sees on the site.
 
 ---
 
-## Product Strategy
+## The Self-Serve Funnel
+
+This is what a client actually walks through today, in order:
+
+1. **Four quick questions.** The intake wizard (`apps/flowstarter-main/src/app/(dynamic-pages)/(main-pages)/components/discovery`) collects business name, what the business sells, tone, and optional public profile links.
+2. **A generated preview**, built by the agentic codegen pipeline and published on Flowstarter's own platform (see [Hosting, Previews, and Cal.com](#hosting-previews-and-calcom)). No payment happens before this.
+3. **Two free edits** on the preview, server-enforced (`LIVE_EDIT_CAP = 2`), before any money changes hands.
+4. **A 20% deposit** to start the full build. There is no pre-call booking deposit in this flow; see the flagged contradiction in section 10 about leftover code that still quotes one.
+5. **A brief**, filled in by the client after the deposit: the offer, real projects, photographs, and design references. The build worker will not run the paid build until the brief is ready or an operator waives it (`waiting_brief` job state, `docs/preview-environment.md`, "Deposit to build").
+6. **The build**, with gates: compilation, binary-asset checks, teaser removal, approved-edit conformance, page-budget rules derived from the brief, placeholder-copy detection, an invented-project gate, and (since PR #134) a markup-safety gate over the generated HTML.
+7. **An 80% balance**, due after human QA and the client's approval, before launch.
+8. **A care plan** (the post-launch subscription): hosting, domain renewal, maintenance, support, and a monthly editor allowance. See [Pricing](#pricing).
+9. **Cal.com bookings**, self-hosted by the platform, for the client's own site.
+10. **Lead capture** on every delivered site, into that client's own workspace.
+11. **Acceptable-use guardrail and custom-work routing** to the DMPResearch discovery call, for anything outside what the self-serve funnel can build (in progress, see "About Flowstarter" above).
 
 ### Technical Defaults
 
-- **Default Astro** for service sites and simple e-commerce with performance requirements
-- **Shopify Liquid** when client requirements force it (specific Shopify apps, FANBox-style native integrations, ecosystem familiar to client)
-- **Astro headless with Storefront API** for premium e-commerce wanting performance + custom design
-- **NOT Web Components over Liquid** — antipattern that combines disadvantages of both approaches
-
-### Per-Client Decision Framework
-
-**Forces Liquid (clear signals):**
-- Client already has a Shopify store and doesn't want migration
-- Specific requirements for Shopify apps without API equivalents
-- High transactional volume where checkout redirect would cost conversions
-- Client team already uses Shopify admin
-
-**Astro works fine (the default):**
-- New store, no Shopify history
-- Small-medium catalog (under 500 products)
-- Reasonable third-party integration requirements
-- Client prioritizes performance, design, branding over Shopify ecosystem
-
-### Product Roadmap
-
-**Phase 1 (now, first 4-8 weeks):** Editor v1 on Astro for service sites. Forking T3 Code + Claude Code backend + multi-tenant on VPS. Deliver first 2-3 clients with testimonials + case studies.
-
-**Phase 2 (2-4 months):** Add Shopify Liquid support to editor. Onboard first e-commerce clients.
-
-**Phase 3 (6+ months):** Astro headless with Storefront API as premium offer for performance-critical e-commerce.
-
-**Phase 4 (12+ months):** Self-serve tier? Open-source layer? — decision based on data.
+- **Astro** is the default and the only path the self-serve funnel generates today.
+- **Shopify Liquid** remains an option an operator can pick when creating a project by hand (`apps/flowstarter-main/src/app/(dynamic-pages)/admin/dashboard/new`), for a client who already runs Shopify and does not want to migrate. It is not part of the self-serve funnel's generation pipeline.
 
 ---
 
 ## Technical Stack
 
-### Editor (Flowstarter Editor)
-
-- **Foundation:** Fork of T3 Code (https://github.com/pingdotgg/t3code) — minimal web GUI for coding agents
-- **AI Backend:** Claude Code (validated by Darius on the lebadusul client for Liquid editing)
-- **Reviewer pattern:** Claude Code in execution + secondary reviewer for pre-validation
-- **Auth:** Clerk for login/sessions
-- **Database:** Supabase Postgres with RLS policies gated by Clerk JWTs
-- **Deployment:** Single deployment, multi-tenant via subdomain routing
-- **Per-client workspace:** linked to local Shopify theme or Astro project, sync via Shopify CLI or git
-- **Hosting:** Hetzner VPS (**CPX22** for launch, scale up when justified)
-
-### Roles and UI
-
-- **Admin role** (Darius + Dorin): full T3 Code dev UI — file tree, terminal, raw code editor, full agent access
-- **Client role:** stripped-down constrained UI — chat + operation buttons, no file tree, no terminal, no raw code editing
-- Both roles use the same codebase, role-based UI gating
-
-### Constraints Layer
-
-- Strict system prompt for Claude Code in client mode (limited to text, images, colors, fonts, section visibility, section order, content within existing sections)
-- UI with operation buttons that pre-fill structured prompts (stronger constraint than free chat)
-- Separate validator that pre-checks requests before execution (anti-prompt-injection and scope creep prevention)
-
-### Frontend Stack for Delivered Sites
-
-- **Service sites:** Astro + Tailwind (Flowstarter templates)
-- **Stores:** Shopify Liquid theme (Dawn-based or custom template)
+- **Generation:** `packages/agentic-codegen`, described in its own `package.json` as "a gretly-light orchestrator (Sonnet brain plans and critiques, an implementation model builds) over OpenRouter, in a bounded sandboxed ephemeral workspace." Reused by the free preview and the paid build.
+- **Orchestration:** `packages/build-orchestrator` is the newer, general task-graph engine (planner, dispatcher, worker waves, validator), with ideas explicitly ported from `gretly` and `ask-sage` per its own `package.json` description. See section 9 for what is and is not built on top of it.
+- **Auth:** Clerk. Production currently shares Clerk's **development** instance with every preview environment; moving production to its own Clerk production instance is an open, explicitly flagged launch blocker (`docs/preview-environment.md`, "Auth").
+- **Database:** Supabase Postgres with row-level security. Production uses the **hosted** Supabase project. Staging, every PR preview slot, and local development use a Supabase CLI stack, either on a developer's own machine or running on the Hetzner box itself over loopback; production never runs the CLI stack and the CLI stack is never pointed at from outside the host it runs on (`docs/preview-environment.md`, "Database").
+- **Payments:** Stripe. Test mode only, everywhere, until an operator deliberately switches production to live mode; see the project's security constraints.
+- **Hosting:** see [Hosting, Previews, and Cal.com](#hosting-previews-and-calcom).
 
 ---
 
-## Editor Architecture
+## Editor and Constrained Edits
 
-### Multi-Tenant Model
+After delivery, a client edits their own site through a constrained AI editor. What they can change and how much of it is metered is enforced by `apps/flowstarter-main/src/lib/flowstarter/edit-credits.ts`, not by this document:
 
-Single deployment serves multiple clients via subdomain routing:
-- `client1.flowstarter.app` → workspace 1 → theme/project 1
-- `client2.flowstarter.app` → workspace 2 → theme/project 2
-- Each client sees ONLY their own workspace
+- **Starter:** 50 edits included per UTC calendar month.
+- **Pro, Max, Ecommerce:** 150 edits included per UTC calendar month. No separate published number exists for Max or Ecommerce, so both sit at the Pro figure by design (giving a more expensive plan fewer edits than Pro would be the wrong failure mode).
+- **Admin** (internal, unmetered): no cap.
+- An unrecognised or cleared `tier_name` resolves to the Starter allowance, never to unlimited.
+- The allowance resets on the first of the UTC month. A daily burst cap in `site-editor.ts` is separate and unrelated to what a client bought.
 
-Routing happens at runtime by reading `req.headers.host`, lookup in Supabase for workspace metadata.
-
-### Workspace Data Model
-
-Each workspace contains:
-- **Type:** `"astro"` or `"shopify-liquid"`
-- **Theme path:** local folder on VPS, sync via git (Astro) or Shopify CLI (Liquid)
-- **Dev environment:** preview URL (dev server for Astro, Shopify dev store for Liquid)
-- **Production target:** live deploy URL + push credentials
-- **Client metadata:** name, billing info, role, founding status
-- **Usage tracking:** sessions used current month, tokens consumed (internal)
-
-### Sync and Publish Flow
-
-**Astro:**
-1. Editor modifies files locally on VPS
-2. Preview via dev server (separate subdomain)
-3. Client clicks "Publish" → git push to repo + automatic deploy (Cloudflare Pages or VPS)
-4. Pre-publish snapshot for one-click rollback
-
-**Shopify Liquid:**
-1. Editor modifies theme files locally on VPS
-2. Preview via Shopify dev store (sync via Shopify CLI)
-3. Client clicks "Publish" → `shopify theme push` to live store
-4. Pre-publish snapshot for one-click rollback
-
-### Operations Layer
-
-- Detailed logging per request (input, output, tokens, duration)
-- Automatic snapshots before each publish
-- One-click rollback to previous version
-- Per-client rate limiting (sessions/month enforced)
-- Soft blocks at limit with upgrade prompts
+**Add-on packs are marketing copy only; there is no purchase path.** The FAQ and the terms page both describe "EUR 15 a month for another 25 edits, up to EUR 45 a month for 100 more." `edit-credits.ts` accepts an `addOnCredits` parameter for exactly this, but its own comment states the fact plainly: "nothing sells them yet and no column holds them, so this is a number a caller may pass and every caller currently passes 0." The exhausted-credits message deliberately does not link anywhere, because there is nowhere to send a client to buy more. **Flagged for Darius:** either build the add-on purchase path, or remove the add-on copy from the FAQ and the terms page until it exists.
 
 ---
 
-## Pricing Schema
+## Pricing
 
-### Philosophy
+Prices below are read from `landing-copy.ts`, `LandingPricing.tsx`, `discovery.logic.ts`, `edit-credits.ts`, and the terms page, all in `apps/flowstarter-main/src`. This section mirrors the code; do not change the code by editing this table.
 
-- **All prices displayed in EUR** on the official website (English)
-- **Single currency** for international consistency
-- **Invoicing for Romanian clients** done in RON at BNR exchange rate on invoice date (Romanian legal requirement)
-- English website + EUR pricing signals European agency, not local freelancer
-
-> **Updated (this revision):** pricing was restructured. The build (one-time
-> setup) and the monthly plan are now **decoupled** — the client picks a build
-> package and, separately, a monthly plan sized by editor capabilities. Prices
-> were tuned down for Romanian-market reach and the storefront tier was opened
-> to everyone (no longer "coming soon"). The tables below reflect what is
-> shipped in code (`landing-copy.ts`, `discovery.logic.ts`).
-
-### Setup Fees — one-time build package
+### Setup Fees: one-time build package
 
 | Build package | From | Notes |
 |---------------|------|-------|
-| Starter (service site) | €799 | 5–7 page custom site |
-| Pro (service+) | €1,199 | More pages, integrations, Stripe for digital products |
-| Ecommerce / Commerce | €1,499 | Full Shopify-style storefront, open to everyone |
-| Custom | €2,499 | Bespoke build / integrations, scoped on the call |
+| Starter (service site) | €799 | Astro service site |
+| Pro | €1,199 | More pages, integrations |
+| Commerce / Ecommerce | €1,499 | Store build, open to everyone |
+| Custom | €2,499 (from) | Scoped on the DMPResearch discovery call |
 
-### Monthly Plan — independent of the build
+### Milestone Split: one scheme, not two
 
-The subscription is chosen separately from the build and sized by editor
-capabilities. Claude Code owns token/session management. Change or cancel
-anytime; first month free.
+**20% to start the build, 80% on approval and launch.** This is the only milestone scheme in the shipped product. There is no 50/50 founding-client split and no 4x25% standard split; that language in the May 2026 draft never shipped and should not be reintroduced without an explicit new decision. Source: the pricing section's payment-terms copy, the terms page ("Setup fees are split: 20% to start, 80% on launch"), and `depositAmountMinor`/`balanceAmountMinor` in `packages/agentic-codegen/src/flowstarter/state-machine.ts`, which both the deposit Checkout and the unlock page compute against.
 
-> **AMENDMENT (pending Dorin sign-off — explicit instruction from Darius,
-> 2026-06-03):** restructured around the autorouter + capability ladder.
-> Flowstarter no longer enforces custom token/session/cost limits in the
-> editor; Claude Code owns token management. Runtime source of truth is
-> `apps/flowstarter-editor/server/src/usage/planEntitlements.ts`
-> (`PLAN_ENTITLEMENTS`); this table mirrors it. Starter monthly raised
-> €39→€49 (2026-05-16, explicit Darius instruction); launch-discount /
-> rate-lock scaffolding dropped: one price: €799 setup + €49/mo.
-> Anthropic org access is handled by invitations; see
-> `docs/ANTHROPIC_ORG_USERS.md`.
+### Care Plan: the monthly subscription, chosen separately from the build
 
-| Plan | Price | Model access | Edit scope | Store ops |
-|------|-------|--------------|-----------|-----------|
-| Starter | €49/mo | Autorouter, locked to small models (sonnet-4.6 / gpt-5.4-mini) | Constrained | — |
-| Pro | €99/mo | Autorouter + manual model picker | Constrained | — |
-| Max | €249/mo | Pro + code experimentation (break-risk warning; paid help €20/h) | Code | — |
-| Ecommerce | €129/mo | Autorouter + manual model picker | Constrained | Products + collections |
+| Plan | Price | Edit allowance | Store ops |
+|------|-------|-----------------|-----------|
+| Starter care | from €49/mo | 50/mo | none |
+| Pro care | €99/mo (most chosen) | 150/mo | none |
+| Store care (Ecommerce) | €129/mo | 150/mo | Products + collections |
+| Custom software | custom quote | n/a | Scoped per client |
 
-The **Ecommerce** build package still auto-applies its dedicated store
-plan for Commerce builds; store editing is a capability gate, not an
-AI-edit-session pool.
+**Max is not a tier a client can buy.** It exists in code (`SubscriptionTier` in `discovery.logic.ts`, `EditTierKey` in `edit-credits.ts`) as an internal key that resolves to the same 150-edit allowance as Pro, but it is not shown on the pricing page and there is no published price for it. Treat it as reserved, not as a sellable tier, until a decision says otherwise.
 
-### Booking Deposit (pre-call)
+First month of the care plan is free.
 
-To book the discovery call the prospect pays a deposit via Stripe Checkout
-(`/api/discovery/deposit`):
+### Refund Policy: promised in copy, not yet built
 
-| Build tier | Deposit |
-|-----------|---------|
-| Starter | €79 (10% of €799) |
-| Pro | €119 (10% of €1,199) |
-| Commerce | €149 (10% of €1,499) |
-| Custom | €199 (flat — open-ended scope) |
-
-Refundable in full after the call, before any build work starts. Credited
-toward the setup fee if the client proceeds. The Stripe webhook
-(`checkout.session.completed`, `kind=booking_deposit`) emails the team;
-refunds are issued manually from the Stripe dashboard. Fails open: if Stripe
-is unconfigured the funnel proceeds straight to Calendly.
+The terms page and the landing page both promise: "If you are not happy with the result within 30 days of launch, we refund 50% of the setup fee, no questions asked." **No refund-processing code exists.** `apps/flowstarter-main/src/lib/billing/stripe.ts` only comments that "refunds [are] handled separately," meaning manually, from the Stripe dashboard. **Flagged for Darius:** build the refund path, or soften the promise until it is built. Do not remove this line silently; it is a real commitment already published.
 
 ### Billing Rules
 
-- All prices in **EUR**, single set for all markets (RO invoiced in RON at
-  BNR rate, back-office only).
-- One-time build billed 50% upfront / 50% on sign-off (the existing
-  admin-side deposit/final invoice flow in `src/lib/billing/stripe.ts`).
-- Monthly plan is a separate Stripe subscription, first month free.
-- The pre-call booking deposit is a one-off Stripe Checkout payment,
-  separate from both of the above and credited into milestone 1 on proceed.
-
-### Client Guarantees (Three Layers)
-
-#### 1. Spec-Match Guarantee (on setup)
-
-- Discovery session + detailed written spec, signed by both parties
-- Full refund on undelivered component if not delivered per spec
-
-#### 2. Milestone Payments (on setup)
-
-**Founding clients (1–10 per tier): 50/50.**
-| Milestone | % of setup | Triggered by |
-|-----------|-----------|--------------|
-| 1. Deposit | 50% | Spec signed by client |
-| 2. Final | 50% | Go-live approved |
-
-**Standard pricing (post-founding): 4×25% milestones.**
-| Milestone | % of setup | Triggered by |
-|-----------|-----------|--------------|
-| 1. Contract signing | 25% | Spec approved by client |
-| 2. Design mockup approved | 25% | Client approves Dorin's design |
-| 3. Complete build on staging | 25% | Client tests site on staging URL |
-| 4. Go-live | 25% | Client approves launch on live domain |
-
-**Why hybrid:** at founding pricing (€799 setup), each 25% chunk is €200 — invoicing overhead exceeds cash-flow benefit. At standard pricing (€1,499–€2,999), 25% chunks justify the operational complexity. Decision: ship 50/50 for v1 with `setup_payment_milestones` schema in place; switch to 4×25% when standard pricing kicks in (estimate: after the first 10 founding clients per tier).
-
-#### 3. 30-Day Editor Trial (on subscription)
-
-First 30 days of subscription are free after go-live. Auto-converts at end unless cancelled.
-
-### Consolidated Refund Policy
-
-- **On setup:** refund only if not delivered per signed spec (Spec-Match Guarantee). Otherwise final at each milestone.
-- **On subscription:** first 30 days free (Editor Trial), no refund applies.
-- **After 30 days on annual:** pro-rated refund on remaining months if cancelled.
-- **After 30 days on monthly:** cancellation stops next month, no refund on current.
-
-### Founding Lock-in
-
-- **12 months at founding price** regardless of billing interval
-- **At renewal, price moves to standard** with 30-day notice
-- Protects "limited launch offer" positioning, not permanent discount
-
-### Subscription Rules
-
-**"Session" definition:** Open editor → any activity → 30 min inactivity or close = end session. Reopening after 30 min = new session.
-
-**Behavior at limit:**
-- **Essential:** soft block + upgrade prompt to Pro (no pay-per-extra)
-- **Pro:** soft block + upgrade prompt to Commerce OR pay-per-extra at €1/session
-- **Commerce:** pay-per-extra at €1/session
-
-**Rollover:** up to 50% above monthly limit.
-
-**Backend:** internal logging of tokens per client per session. Human intervention on outliers.
-
-### Indicative Add-ons (Custom)
-
-- FANBox / pickup point integration: €500-800
-- Customer accounts with 2FA: €400-600
-- Admin-configurable homepage widget: €300-500
-- SEO audit + Yoast/meta optimization: €200-400
-- Custom cache layer: €300-500
+- All prices in EUR, one set for all markets; RON invoicing for Romanian clients is back-office only.
+- The one-time build is billed 20% to start, 80% on approval and launch (see above); this is the admin-side deposit/final-invoice flow in `src/lib/billing/stripe.ts`.
+- The care plan is a separate Stripe subscription, first month free, chosen independently of the build package.
+- Cancellation: 30 days notice by email; the site stays live through the end of the paid period.
 
 ---
 
-## Founding Customer Model
+## Hosting, Previews, and Cal.com
 
-### Eligibility
+**Hosting runs on Hetzner, not Netlify, not a hosted-Vercel-style platform.** One Hetzner box (`fs-sites-01`) runs production, staging, every open PR's preview slot, and every deployed client site, each as a Docker container behind Caddy. See `docs/release-process.md` and `docs/preview-environment.md` for the full topology; do not restate the details here, only the shape:
 
-- **First 10 clients per tier** (separate counts for service sites and stores)
-- Accepts explicit trade terms
-- Hard limit on spots, not time-based
+- **Production:** slot `prod`, `flowstarter.net` and `www.flowstarter.net`, container `flowstarter-prod`, the **hosted** Supabase project, behind Cloudflare (proxied).
+- **Staging:** slot `main`, `staging.flowstarter.dev`, redeployed on every merge to `main`, backed by the Supabase CLI stack running on the box itself.
+- **Per-PR previews:** slot `pr-<n>`, `pr-<n>.staging.flowstarter.dev`, destroyed when the PR closes, same staging database.
+- **Client sites:** `{slug}.flowstarter.net` in production (or a custom domain later), deployed through the per-host deploy-agent, which extracts the built artifact, writes the Caddy snippet, and claims the site's DNS record.
+- **Funnel previews:** `{slug}.preview.flowstarter.dev` in staging, `.net` in production, published by the same deploy-agent and hosting client the post-claim deploy uses, with teaser blur, `noindex`, and a 14-day expiry.
 
-### Explicit Trade
+**Previews publish on the platform, not Daytona.** Before PR #132, "publishing your live preview" depended on a Daytona sandbox; when its key was revoked on 2026-09-12, every preview in the funnel failed. Previews now build statically (the same `astro build` the paid build worker runs) and publish through the platform's own deploy-agent by default. Which publisher runs is a rule (`preview-publisher-rule.ts`): `platform` by default, `daytona` only if an operator explicitly sets `FLOWSTARTER_PREVIEW_PUBLISHER=daytona`, `local-static` on a developer machine with no previews host configured. Daytona is not a flat prerequisite for generation any more.
 
-In exchange for founding pricing, client commits to:
-1. **Written testimonial** within first 60 days post-launch
-2. **Permission for public case study** with their name + screenshots
-3. **Minimum 1 referral** to another potential client
-
-### Public Communication
-
-- Standard price displayed as "regular"
-- Founding price as "Limited launch offer"
-- Spots remaining visible in real-time
-- Format: "~~€1,499~~ **€799** Founding price — 7 of 10 spots left"
-
-### Transition
-
-At 8/10 spots → LinkedIn post "2 founding spots left, after that prices return to standard"
+**Cal.com is self-hosted by the platform** (PR #127): every client workspace gets a provisioned booking page, with a signed webhook and event-order handling (a later reschedule cannot be undone by a stale, out-of-order webhook delivery, fixed under Codex finding F11).
 
 ---
 
-## Execution Pipeline
+## Backups and Alerting
 
-### Week 1: Foundation
-- Fork T3 Code on GitHub
-- Spike on T3 Code + Claude Code (10 defined test cases)
-- VPS Hetzner CPX22 setup with Ubuntu 24.04
-- Pricing document review with Dorin
+Both were entirely missing before the work described here; the terms page promised "automated backups" while none existed anywhere.
 
-### Weeks 2-3: Core Editor
-- Auth integration (Clerk + Supabase RLS)
-- Role-based UI gating (admin vs client)
-- Constraints layer for Claude Code
-- Operation buttons in client UI
+**Backups** (`docs/operations/backups.md`): nightly, encrypted (`age` or `gpg`), checksummed. Two separate paths because there are two separate databases:
 
-### Weeks 4-5: Multi-Tenant + Workspace
-- Subdomain routing
-- Workspace data model in Supabase
-- Astro workspace integration (git sync)
-- First end-to-end test
+1. The box's own Supabase CLI stack (staging's database, and the box's own, if ever used), plus `/var/www/sites/` and `/etc/flowstarter/`, backed up by a systemd timer on the Hetzner host.
+2. The hosted production Supabase project, backed up by a manual, occasional logical dump (`scripts/supabase-prod-backup.mjs`) run from an operator's own machine, never from CI.
 
-### Weeks 6-8: Polish + First Delivery
-- Snapshots and rollback
-- Rate limiting and usage tracking
-- Onboarding flow for founding clients
-- Deliver first client
+**Still needs Darius:** turn on the hosted project's own dashboard backup/PITR setting, choose where the encrypted dumps live long-term (no off-box bucket is provisioned yet), distribute the encryption key somewhere that is not the box being backed up, and actually rehearse the restore drill once on a disposable host before the first paying customer.
 
-### Month 3+: Shopify Liquid Support
-- Add Shopify workspace type to editor
-- Shopify CLI integration
+**Alerting** (`docs/operations/alerts.md`): a paid build that stops, a client email that fails to send, and a failed production health check all now reach someone, through `ops_alerts` + Resend email for the first two and a GitHub issue for the third. **Still needs Darius:** real error tracking (Sentry or equivalent, for exceptions nobody anticipated) and external uptime monitoring; neither exists yet.
 
-### Month 6+: Scale and Adjustments
+---
+
+## Security Posture
+
+Two independent audits ran on 2026-09-13: `docs/security/audit-2026-09-13-claude.md` (verdict: conditional fail) and `docs/security/audit-2026-09-13-codex.md` (verdict: not ready for the first paying customer). Both rated tenant isolation in Postgres (RLS everywhere, a hardening migration, a CI-enforced tenant-table guard) and build isolation (Docker, `--network none`, read-only root, non-root user, lease fencing) as the strongest parts of the system.
+
+Both also found real gaps, and a run of follow-up PRs (#133 through #146) closed most of the Critical and High findings: the auth-transfer ticket is now scoped to origins the platform runs, generated HTML is gated and every client site now serves a real Content-Security-Policy, outbound fetches (profile images, brand signals, deploy artifacts) go through one SSRF-safe adapter with request and image size caps enforced before allocation, the build worker's output directory and package-manager configuration are now contained against symlink and hook escapes, worker leases are fenced so an overtaken build cannot publish stale output, client IP is read from a single trusted-proxy-aware module instead of sixteen spoofable copies, database backups are encrypted, the tenant-table guard now covers every column shape, and the funnel spend cap is a real database-side reservation instead of a racy, truncated sum.
+
+**What is still open** (do not treat this list as closed just because most findings are): production still shares Clerk's development instance with previews; a live-format credential (`infra/authentik/.env`) is still in the repository's git history and needs rotation plus a history purge; staging and production still share one deploy-agent bearer token; tenant sites, the platform, and Cal.com still share one registrable domain; client-site containers still get default network egress at runtime (only the build step is network-isolated); container images are pulled by mutable tag with no provenance check; and refund processing is not built even though it is promised (see [Pricing](#pricing)). The full, current list lives in `docs/next-steps.md`, sourced from both audits' own prioritised fix lists; do not duplicate it here as it will drift.
 
 ---
 
 ## Open Decision Points
 
-1. **Payments and RON Conversion** — invoicing software (SmartBill / FacturaPlus / Oblio); Stripe as primary
-2. **VAT and Cross-Border Invoicing** — needs cross-border B2B fiscal consultant before first EU client
-3. **Guarantees and Refund** — fully decided; T&C drafting required
-4. **Session UI** — how to display "8/15 sessions used"; warning thresholds
-5. **Branding** — company structure (RO SRL / UK Ltd / Estonian); LinkedIn profiles
-6. **Lead Generation Channel for EU** — Shopify Experts directory; cold outbound; personal brand
-7. **Real Pipeline with Dorin** — RO vs EU lead counts; service vs e-commerce focus
+1. **Payments and RON conversion.** Invoicing software (SmartBill / FacturaPlus / Oblio); Stripe remains primary for card payments.
+2. **VAT and cross-border invoicing.** Needs a cross-border B2B fiscal consultant before the first EU client outside Romania.
+3. **Legal copy pass.** Entity name, registration number, and address on the terms page; remove the Plausible mention if it is not actually in use; name Cal.com and remove any leftover Calendly reference; confirm or remove the DPA claim; enforce or restate the five retention periods the privacy page describes.
+4. **Custom-work discovery call and acceptable-use guardrail.** In progress on a separate branch as of this revision; reconcile this document again once it merges.
+5. **Registrable domain separation** for tenant sites versus the platform (security audit finding H1); an infrastructure decision measured in weeks, not a code change.
 
 ---
 
-## Identified Anti-Patterns
+## Contradictions Flagged by This Revision
 
-1. **Real-time Rationalization** — strategic decisions on documents, not real-time. Sleep on it.
-2. **Scope Expansion + Price Reduction** — any scope creep requires reciprocity.
-3. **"Behind the Scenes" Complexity** — before adding hidden complexity, verify the real scenario.
-4. **Drift Under Fatigue** — recognize signs (changing direction multiple times within an hour).
-5. **Self-Undervaluation as Technical Founder** — math on total 12-month value, not production cost.
-6. **Pricing Compromise for Both Markets** — single set of EUR prices, premium European positioning.
+Per this document's own instruction to flag rather than silently override:
+
+1. **The unlock page still quotes a 10% "holds the slot" booking deposit next to a 20% checkout button that actually charges 20%.** `apps/flowstarter-main/src/app/(dynamic-pages)/(main-pages)/unlock/[workspaceId]/page.tsx` imports `BOOKING_DEPOSIT_PERCENT` (10, from `discovery.logic.ts`) and renders it in one sentence ("A 10% deposit holds the slot and comes..."), while the same page's checkout button and a second sentence a few lines later both say 20%, and the actual Stripe Checkout amount is computed by `depositAmountMinor`, which is 20% everywhere else in the product. This is leftover copy from the pre-call booking-deposit model in the May 2026 draft that was never fully removed. It needs a code fix, not a document fix; tracked in `docs/next-steps.md`.
+2. **Add-on packs are sold in copy with no purchase path**, described above under [Editor and Constrained Edits](#editor-and-constrained-edits).
+3. **A 50% refund is promised with no refund-processing code**, described above under [Pricing](#pricing).
 
 ---
 
 ## Notes for AI Agents Using This Document
 
-- All architectural decisions in sections 3-4 are firm
-- All pricing in section 5 is firm; do not modify pricing logic without explicit instruction
-- Constraints in section 4 (what client role can/cannot do) are core to the product
-- If a request contradicts decisions here, flag the contradiction rather than silently overriding
-- Anti-patterns in section 9 are warning signs
+- Pricing, milestone split, and edit allowances in sections 4 and 5 are firm and match shipped code as of 2026-09-14; do not change the numbers here without changing the code they describe, or vice versa.
+- If a request contradicts a decision here, flag the contradiction rather than silently overriding it, the same way section 10 does.
+- This document describes the shipped self-serve funnel. It does not describe work that is not built; see `docs/next-steps.md` for open items and for what is deliberately not being pursued.
 
-This document represents extensive thinking and trade-off analysis. Treat it as the source of truth.
-
----
-
-*Document maintained by Darius. Send updates to Dorin for ongoing alignment.*
+*Document maintained by Darius. Reconcile against code again the next time a review finds drift.*
