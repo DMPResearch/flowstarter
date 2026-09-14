@@ -18,16 +18,24 @@ interface SiteHeaderProps {
   onOpenAppMenu?: () => void;
 }
 
+const HEADER_TRANSPARENT =
+  'border-b border-transparent bg-transparent shadow-none';
+
+const HEADER_FROSTED =
+  'border-b border-gray-200/30 dark:border-white/[0.06] bg-white/72 dark:bg-[rgba(20,22,34,0.72)] backdrop-blur-2xl backdrop-saturate-[1.8] shadow-[0_1px_2px_rgba(0,0,0,0.04)]';
+
 export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
   const openBookingModal = useBookingModal((s) => s.open);
   const { t: tLanding } = useI18n();
   const {
     isLoaded: headerLoaded,
+    scrolled,
     mobileMenuOpen,
     setMobileMenuOpen,
     activeSection,
   } = useHeaderState();
   const pathname = usePathname();
+  const showFrosted = scrolled || mobileMenuOpen;
 
   const scrollToSection =
     (sectionId: string, closeMobile = false) =>
@@ -65,9 +73,9 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
         )}
 
         <header
-          className={`ls-theme fixed top-0 left-0 right-0 z-50 border-b border-[var(--fs-rule)]/30 bg-[var(--fs-bg-base)]/75 dark:bg-[var(--fs-bg-base)]/75 backdrop-blur-2xl backdrop-saturate-[1.8] shadow-none transition-opacity duration-500 ${
-            headerLoaded ? 'opacity-100' : 'opacity-0'
-          }`}
+          className={`ls-theme fixed top-0 left-0 right-0 z-50 transition-[background-color,border-color,box-shadow,backdrop-filter,opacity] duration-500 ${
+            showFrosted ? HEADER_FROSTED : HEADER_TRANSPARENT
+          } ${headerLoaded ? 'opacity-100' : 'opacity-0'}`}
         >
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-12">
             <div className="flex items-center justify-between h-14 sm:h-16">
@@ -356,9 +364,9 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
 
   return (
     <header
-      className={`fixed top-0 left-0 right-0 z-50 border-b border-[var(--fs-rule)]/30 bg-[var(--fs-bg-base)]/75 dark:bg-[var(--fs-bg-base)]/75 backdrop-blur-2xl backdrop-saturate-[1.8] shadow-none transition-opacity duration-500 ${
-        headerLoaded ? 'opacity-100' : 'opacity-0'
-      }`}
+      className={`fixed top-0 left-0 right-0 z-50 transition-[background-color,border-color,box-shadow,backdrop-filter,opacity] duration-500 ${
+        scrolled ? HEADER_FROSTED : HEADER_TRANSPARENT
+      } ${headerLoaded ? 'opacity-100' : 'opacity-0'}`}
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-12 h-14 sm:h-16 flex items-center justify-between gap-3">
         <Link href="/" className="flex items-center shrink-0">
