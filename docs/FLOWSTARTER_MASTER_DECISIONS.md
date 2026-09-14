@@ -118,9 +118,13 @@ Prices below are read from `landing-copy.ts`, `LandingPricing.tsx`, `discovery.l
 
 First month of the care plan is free.
 
-### Refund Policy: promised in copy, not yet built
+### Refund Policy: built, and now stated in one place
 
-The terms page and the landing page both promise: "If you are not happy with the result within 30 days of launch, we refund 50% of the setup fee, no questions asked." **No refund-processing code exists.** `apps/flowstarter-main/src/lib/billing/stripe.ts` only comments that "refunds [are] handled separately," meaning manually, from the Stripe dashboard. **Flagged for Darius:** build the refund path, or soften the promise until it is built. Do not remove this line silently; it is a real commitment already published.
+**50% of the setup fee, within 30 days of launch, no questions asked.** Both numbers live in `apps/flowstarter-main/src/lib/billing/refund-policy.ts` and nowhere else: the landing hero and the terms page generate their sentence from it, and the operator's refund action reads the same values to decide what it may send. Changing the promise means changing `FLOWSTARTER_REFUND_WINDOW_DAYS` / `FLOWSTARTER_REFUND_PERCENT` (and their `NEXT_PUBLIC_` twins, which is all the browser bundle can read), not editing prose.
+
+The path exists as of this revision. "Refund setup fee" on the operator console's billing tab takes a required reason, refunds through Stripe against the balance payment intent first and the deposit second, writes a `billing_refunds` ledger row per payment intent, emails the client, and is idempotent per payment intent by a unique index. A refund outside the guarantee (before launch, after the window, or for a different amount) is allowed only with a written override reason, which is stored. The webhook's `charge.refunded` handler now writes `workspaces.refunded_amount_minor` and `refund_status`, so a refund made by hand in the Stripe dashboard is also visible in the product.
+
+**Still for Darius:** confirm that 30 days and 50% are the promise you want to keep now that keeping it is one button. They are the published defaults and nothing has changed them.
 
 ### Billing Rules
 
@@ -168,7 +172,7 @@ Two independent audits ran on 2026-09-13: `docs/security/audit-2026-09-13-claude
 
 Both also found real gaps, and a run of follow-up PRs (#133 through #146) closed most of the Critical and High findings: the auth-transfer ticket is now scoped to origins the platform runs, generated HTML is gated and every client site now serves a real Content-Security-Policy, outbound fetches (profile images, brand signals, deploy artifacts) go through one SSRF-safe adapter with request and image size caps enforced before allocation, the build worker's output directory and package-manager configuration are now contained against symlink and hook escapes, worker leases are fenced so an overtaken build cannot publish stale output, client IP is read from a single trusted-proxy-aware module instead of sixteen spoofable copies, database backups are encrypted, the tenant-table guard now covers every column shape, and the funnel spend cap is a real database-side reservation instead of a racy, truncated sum.
 
-**What is still open** (do not treat this list as closed just because most findings are): production still shares Clerk's development instance with previews; a live-format credential (`infra/authentik/.env`) is still in the repository's git history and needs rotation plus a history purge; staging and production still share one deploy-agent bearer token; tenant sites, the platform, and Cal.com still share one registrable domain; client-site containers still get default network egress at runtime (only the build step is network-isolated); container images are pulled by mutable tag with no provenance check; and refund processing is not built even though it is promised (see [Pricing](#pricing)). The full, current list lives in `docs/next-steps.md`, sourced from both audits' own prioritised fix lists; do not duplicate it here as it will drift.
+**What is still open** (do not treat this list as closed just because most findings are): production still shares Clerk's development instance with previews; a live-format credential (`infra/authentik/.env`) is still in the repository's git history and needs rotation plus a history purge; staging and production still share one deploy-agent bearer token; tenant sites, the platform, and Cal.com still share one registrable domain; client-site containers still get default network egress at runtime (only the build step is network-isolated); container images are pulled by mutable tag with no provenance check; and refund processing, which was open at the last revision, is now built (see [Pricing](#pricing)). The full, current list lives in `docs/next-steps.md`, sourced from both audits' own prioritised fix lists; do not duplicate it here as it will drift.
 
 ---
 
@@ -176,7 +180,7 @@ Both also found real gaps, and a run of follow-up PRs (#133 through #146) closed
 
 1. **Payments and RON conversion.** Invoicing software (SmartBill / FacturaPlus / Oblio); Stripe remains primary for card payments.
 2. **VAT and cross-border invoicing.** Needs a cross-border B2B fiscal consultant before the first EU client outside Romania.
-3. **Legal copy pass.** Entity name, registration number, and address on the terms page; remove the Plausible mention if it is not actually in use; name Cal.com and remove any leftover Calendly reference; confirm or remove the DPA claim; enforce or restate the five retention periods the privacy page describes.
+3. **Operator identity.** The code half is done: the terms and privacy pages read the entity name, registration number, VAT number, address, governing law and court from six `FLOWSTARTER_LEGAL_*` environment variables (`apps/flowstarter-main/src/lib/legal/company.ts`), and while any of the six is unset both pages say "Operator identity pending registration" rather than asserting a Romanian company and Cluj courts, and the draft notice stays up on all three legal pages. **What is left is not code:** decide the company structure and supply the six values. The rest of the legal copy pass is closed — Plausible and Calendly are gone, Cal.com, Arcjet, OpenRouter, GitHub and Depot are disclosed, the DPA claim is now a statement of where each vendor's terms are rather than a claim of eight signatures, the retention section publishes only the two windows a job actually enforces, and the `NEXT_PUBLIC_GA_MEASUREMENT_ID` half-wiring was removed so "we run no analytics" is true of the build.
 4. **Acceptable-use guardrail.** In progress on a separate branch as of this revision; reconcile this document again once it merges. The custom-work discovery call it sits beside merged in PR #162.
 5. **Registrable domain separation** for tenant sites versus the platform (security audit finding H1); an infrastructure decision measured in weeks, not a code change.
 
@@ -188,7 +192,6 @@ Per this document's own instruction to flag rather than silently override:
 
 1. ~~**The unlock page still quotes a 10% "holds the slot" booking deposit next to a 20% checkout button that actually charges 20%.**~~ **Resolved.** The copy was fixed in PR #156, and PR #162 removed the model behind it: `BOOKING_DEPOSIT_PERCENT`, `CUSTOM_BOOKING_DEPOSIT_EUR`, `bookingDepositAmount`, the `/api/discovery/deposit` Checkout route and the `kind=booking_deposit` Stripe handler are all gone. Nothing in the funnel had ever called that route. The only deposit in the product is the 20% build deposit, computed by `depositAmountMinor`.
 2. **Add-on packs are sold in copy with no purchase path**, described above under [Editor and Constrained Edits](#editor-and-constrained-edits).
-3. **A 50% refund is promised with no refund-processing code**, described above under [Pricing](#pricing).
 
 ---
 

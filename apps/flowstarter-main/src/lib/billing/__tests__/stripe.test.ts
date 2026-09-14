@@ -474,6 +474,258 @@ describe('StripeBilling.cancelSubscription', () => {
   });
 });
 
+describe('StripeBilling.paymentIntentForInvoice', () => {
+  it('reads the legacy `invoice.payment_intent` string', async () => {
+    const billing = new StripeBilling({
+      client: fakeStripe({
+        invoices: {
+          retrieve: vi.fn(async () => ({ payment_intent: 'pi_legacy' })),
+        },
+      }),
+    });
+    await expect(billing.paymentIntentForInvoice('in_1')).resolves.toBe(
+      'pi_legacy'
+    );
+  });
+
+  it('reads an expanded legacy payment intent object', async () => {
+    const billing = new StripeBilling({
+      client: fakeStripe({
+        invoices: {
+          retrieve: vi.fn(async () => ({
+            payment_intent: { id: 'pi_object' },
+          })),
+        },
+      }),
+    });
+    await expect(billing.paymentIntentForInvoice('in_1')).resolves.toBe(
+      'pi_object'
+    );
+  });
+
+  // Stripe moved settlement out of `payment_intent` and into `payments` in the
+  // 2025 API versions. A workspace billed before the change and one billed
+  // after it both have to resolve, or a refund silently finds nothing.
+  it('reads the modern `invoice.payments` list', async () => {
+    const billing = new StripeBilling({
+      client: fakeStripe({
+        invoices: {
+          retrieve: vi.fn(async () => ({
+            payments: {
+              data: [
+                { payment: { payment_intent: null } },
+                { payment: { payment_intent: 'pi_modern' } },
+              ],
+            },
+          })),
+        },
+      }),
+    });
+    await expect(billing.paymentIntentForInvoice('in_1')).resolves.toBe(
+      'pi_modern'
+    );
+  });
+
+  it('reads an expanded payment intent inside `payments`', async () => {
+    const billing = new StripeBilling({
+      client: fakeStripe({
+        invoices: {
+          retrieve: vi.fn(async () => ({
+            payments: {
+              data: [{ payment: { payment_intent: { id: 'pi_x' } } }],
+            },
+          })),
+        },
+      }),
+    });
+    await expect(billing.paymentIntentForInvoice('in_1')).resolves.toBe('pi_x');
+  });
+
+  it('is null for an unpaid invoice, which is not an error', async () => {
+    const billing = new StripeBilling({
+      client: fakeStripe({
+        invoices: { retrieve: vi.fn(async () => ({ payments: { data: [] } })) },
+      }),
+    });
+    await expect(billing.paymentIntentForInvoice('in_1')).resolves.toBeNull();
+  });
+
+  it('is null for no invoice id, without calling Stripe', async () => {
+    const retrieve = vi.fn();
+    const billing = new StripeBilling({
+      client: fakeStripe({ invoices: { retrieve } }),
+    });
+    await expect(billing.paymentIntentForInvoice(null)).resolves.toBeNull();
+    expect(retrieve).not.toHaveBeenCalled();
+  });
+
+  it('throws a coded error when Stripe cannot be read', async () => {
+    const billing = new StripeBilling({
+      client: fakeStripe({
+        invoices: {
+          retrieve: vi.fn(async () => {
+            throw new Error('no such invoice');
+          }),
+        },
+      }),
+    });
+    await expect(billing.paymentIntentForInvoice('in_1')).rejects.toMatchObject(
+      {
+        code: 'invoice_lookup_failed',
+      }
+    );
+  });
+});
+
+describe('StripeBilling.refundableMinor', () => {
+  it('subtracts what has already gone back, including a manual refund', async () => {
+    const billing = new StripeBilling({
+      client: fakeStripe({
+        paymentIntents: {
+          retrieve: vi.fn(async () => ({
+            amount_received: 63_920,
+            currency: 'EUR',
+            latest_charge: { amount_refunded: 20_000 },
+          })),
+        },
+      }),
+    });
+    await expect(billing.refundableMinor('pi_1')).resolves.toEqual({
+      receivedMinor: 63_920,
+      refundedMinor: 20_000,
+      remainingMinor: 43_920,
+      currency: 'eur',
+    });
+  });
+
+  it('never reports a negative remainder', async () => {
+    const billing = new StripeBilling({
+      client: fakeStripe({
+        paymentIntents: {
+          retrieve: vi.fn(async () => ({
+            amount_received: 100,
+            latest_charge: { amount_refunded: 500 },
+          })),
+        },
+      }),
+    });
+    await expect(billing.refundableMinor('pi_1')).resolves.toMatchObject({
+      remainingMinor: 0,
+    });
+  });
+
+  it('treats an unexpanded charge as nothing refunded so far', async () => {
+    const billing = new StripeBilling({
+      client: fakeStripe({
+        paymentIntents: {
+          retrieve: vi.fn(async () => ({
+            amount_received: 15_980,
+            latest_charge: 'ch_1',
+          })),
+        },
+      }),
+    });
+    await expect(billing.refundableMinor('pi_1')).resolves.toMatchObject({
+      refundedMinor: 0,
+      remainingMinor: 15_980,
+    });
+  });
+
+  it('throws a coded error when the intent cannot be read', async () => {
+    const billing = new StripeBilling({
+      client: fakeStripe({
+        paymentIntents: {
+          retrieve: vi.fn(async () => {
+            throw new Error('no such payment intent');
+          }),
+        },
+      }),
+    });
+    await expect(billing.refundableMinor('pi_1')).rejects.toMatchObject({
+      code: 'payment_intent_lookup_failed',
+    });
+  });
+});
+
+describe('StripeBilling.refundPaymentIntent', () => {
+  it('sends the idempotency key through, which is what stops a double refund', async () => {
+    const create = vi.fn(async () => ({
+      id: 're_1',
+      status: 'succeeded',
+      amount: 39_950,
+      currency: 'eur',
+    }));
+    const billing = new StripeBilling({
+      client: fakeStripe({ refunds: { create } }),
+    });
+
+    await expect(
+      billing.refundPaymentIntent({
+        paymentIntentId: 'pi_1',
+        amountMinor: 39_950,
+        idempotencyKey: 'flowstarter-refund:pi_1',
+        metadata: { workspaceId: 'ws_1' },
+      })
+    ).resolves.toEqual({
+      refundId: 're_1',
+      status: 'succeeded',
+      amountMinor: 39_950,
+      currency: 'eur',
+    });
+
+    expect(create).toHaveBeenCalledWith(
+      {
+        payment_intent: 'pi_1',
+        amount: 39_950,
+        // Never `fraudulent`: that would add the client's card to a block list
+        // for asking for a refund we promised them.
+        reason: 'requested_by_customer',
+        metadata: { workspaceId: 'ws_1' },
+      },
+      { idempotencyKey: 'flowstarter-refund:pi_1' }
+    );
+  });
+
+  it('refuses a zero, negative or fractional amount before calling Stripe', async () => {
+    const create = vi.fn();
+    const billing = new StripeBilling({
+      client: fakeStripe({ refunds: { create } }),
+    });
+    for (const amountMinor of [0, -1, 39_950.5]) {
+      await expect(
+        billing.refundPaymentIntent({
+          paymentIntentId: 'pi_1',
+          amountMinor,
+          idempotencyKey: 'k',
+        })
+      ).rejects.toMatchObject({ code: 'invalid_amount' });
+    }
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('turns a Stripe refusal into a coded error carrying its message', async () => {
+    const billing = new StripeBilling({
+      client: fakeStripe({
+        refunds: {
+          create: vi.fn(async () => {
+            throw new Error('Charge has already been refunded.');
+          }),
+        },
+      }),
+    });
+    await expect(
+      billing.refundPaymentIntent({
+        paymentIntentId: 'pi_1',
+        amountMinor: 100,
+        idempotencyKey: 'k',
+      })
+    ).rejects.toMatchObject({
+      code: 'refund_failed',
+      message: expect.stringContaining('already been refunded'),
+    });
+  });
+});
+
 describe('StripeBilling constructor', () => {
   it('throws when no api key + no client', () => {
     const original = process.env.STRIPE_SECRET_KEY;

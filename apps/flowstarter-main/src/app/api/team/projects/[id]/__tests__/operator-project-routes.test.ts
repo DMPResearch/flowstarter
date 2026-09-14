@@ -33,6 +33,7 @@ import { POST as CANCEL_SUBSCRIPTION } from '../billing/cancel-subscription/rout
 import { POST as DEPOSIT_INVOICE } from '../billing/deposit-invoice/route';
 import { POST as FINAL_INVOICE } from '../billing/final-invoice/route';
 import { POST as PORTAL_LINK } from '../billing/portal-link/route';
+import { POST as REFUND } from '../billing/refund/route';
 import { GET as LIST_CHANGES } from '../changes/route';
 import { POST as QUOTE_CHANGE } from '../changes/[changeId]/quote/route';
 import { POST as SET_CHANGE_STATUS } from '../changes/[changeId]/status/route';
@@ -200,6 +201,20 @@ function everyOperatorRoute(): RouteCase[] {
     [
       'billing/portal-link',
       () => PORTAL_LINK(post(`${base}/billing/portal-link`, {}), project),
+    ],
+    [
+      // A well-formed body on purpose, so a 403 can only be the auth check
+      // and never the reason validator firing first. This is the one route
+      // in the tree that sends money back out, so a client reaching it would
+      // be the worst leak on the list.
+      'billing/refund',
+      () =>
+        REFUND(
+          post(`${base}/billing/refund`, {
+            reason: 'Client invoked the guarantee.',
+          }),
+          project
+        ),
     ],
     ['changes', () => LIST_CHANGES(get(`${base}/changes`), project)],
     [
@@ -372,6 +387,6 @@ describe('a workspace that is not yours to operate', () => {
     // A guard on the guard: the list above is what the two cases run, so a
     // route added without an entry has to change this number too, and the
     // walker test says which file is missing.
-    expect(everyOperatorRoute()).toHaveLength(31);
+    expect(everyOperatorRoute()).toHaveLength(32);
   });
 });

@@ -48,7 +48,10 @@ import {
   orderingVerdict,
   paymentStatusAdvances,
   periodEndIsCurrent,
+  refundStatusFor,
+  refundedTotalAdvances,
 } from '@/lib/billing/money-state';
+import { quoteMinorFrom } from '@/lib/flowstarter/quote';
 import {
   casUpdateWorkspaceMoneyState,
   loadWorkspaceMoneyState,
@@ -424,6 +427,157 @@ async function handleSubscriptionEvent(
   return 'processed';
 }
 
+/**
+ * Money went back, and the workspace finds out.
+ *
+ * `charge.refunded` has been in the ledger's inventory since the ledger
+ * existed and has never been acted on: the switch fell through to `ignored`,
+ * so a refund made by hand from the Stripe dashboard left no trace anywhere
+ * this product could read. Now that an operator can issue one from the
+ * console, the event is what closes the loop for both paths — the console's
+ * refund and a dashboard refund land here identically.
+ *
+ * The workspace is found through the refund ledger first, because that row
+ * names the workspace directly and exists for every refund this product
+ * issued. A refund made by hand has no ledger row, so the two payment-intent
+ * columns on `workspaces` are the fallback, and an event that matches neither
+ * is `ignored`: it is a refund on a charge that is not ours to account for.
+ *
+ * The amount written is the charge's own `amount_refunded`, which is the
+ * running total across every refund on that charge, not the delta of this
+ * one. That is what makes a redelivery harmless and what
+ * `refundedTotalAdvances` needs in order to refuse an out-of-order delivery
+ * rather than subtract twice.
+ */
+async function handleChargeRefunded(
+  supabase: ServiceClient,
+  event: Stripe.Event,
+  incoming: Stripe.Charge
+): Promise<HandlerOutcome> {
+  const ordered = await resolveOrdered({
+    supabase,
+    event,
+    object: incoming,
+    refetch: (id) => getStripe().charges.retrieve(id),
+  });
+  if (ordered.verdict === 'stale') return 'superseded';
+  const charge = ordered.object;
+
+  const paymentIntentId =
+    typeof charge.payment_intent === 'string'
+      ? charge.payment_intent
+      : charge.payment_intent?.id ?? null;
+  if (!paymentIntentId) return 'ignored';
+
+  const workspaceId = await workspaceForRefundedIntent(
+    supabase,
+    paymentIntentId
+  );
+  if (!workspaceId) {
+    console.info(
+      `[Stripe] charge.refunded on ${paymentIntentId} belongs to no ` +
+        'workspace of ours; ignoring'
+    );
+    return 'ignored';
+  }
+
+  const workspace = await loadWorkspaceMoneyState(supabase, workspaceId);
+  if (!workspace) return 'ignored';
+
+  const refundedMinor = charge.amount_refunded ?? 0;
+  const wrote = await casUpdateWorkspaceMoneyState(
+    supabase,
+    workspaceId,
+    'refund',
+    workspace,
+    (state) => {
+      if (!refundedTotalAdvances(state.refunded_amount_minor, refundedMinor)) {
+        return null;
+      }
+      return {
+        refunded_amount_minor: refundedMinor,
+        refund_status: refundStatusFor({
+          refundedMinor,
+          quoteMinor: quoteMinorFrom(state),
+        }),
+      };
+    }
+  );
+  if (!wrote) {
+    console.info(
+      `[Stripe] charge.refunded for workspace ${workspaceId} reports ` +
+        `${refundedMinor} minor units, which is not more than what is ` +
+        'already stored; not regressing it'
+    );
+    return 'superseded';
+  }
+
+  // Best effort, and after the state: a ledger row that could not be stamped
+  // is an operator's reporting problem, and answering 500 over it would make
+  // Stripe redeliver an event whose money state has already landed.
+  const stamped = await supabase
+    .from('billing_refunds')
+    .update({ status: 'succeeded', updated_at: new Date().toISOString() })
+    .eq('payment_intent_id', paymentIntentId)
+    .eq('status', 'pending');
+  if (stamped.error) {
+    console.warn(
+      `[Stripe] could not stamp the refund ledger row for ${paymentIntentId}: ` +
+        stamped.error.message
+    );
+  }
+
+  console.warn(
+    `[Stripe] refund -- workspace ${workspaceId} has now had ${refundedMinor} ` +
+      'minor units back'
+  );
+  return 'processed';
+}
+
+/**
+ * Which workspace a refunded payment intent belongs to.
+ *
+ * The ledger first (every refund this product issued has a row there naming
+ * the workspace), then the two payment-intent columns on `workspaces`, which
+ * is the only way a refund made by hand from the Stripe dashboard can be
+ * attributed. Null when neither knows it, which the caller reads as "not
+ * ours".
+ */
+async function workspaceForRefundedIntent(
+  supabase: ServiceClient,
+  paymentIntentId: string
+): Promise<string | null> {
+  const ledger = await supabase
+    .from('billing_refunds')
+    .select('workspace_id')
+    .eq('payment_intent_id', paymentIntentId)
+    .maybeSingle();
+  if (ledger.error) {
+    throw new Error(
+      `[Stripe] could not read the refund ledger for ${paymentIntentId}: ${ledger.error.message}`
+    );
+  }
+  if (ledger.data?.workspace_id) return ledger.data.workspace_id;
+
+  for (const column of [
+    'deposit_payment_intent_id',
+    'balance_payment_intent_id',
+  ] as const) {
+    const { data, error } = await supabase
+      .from('workspaces')
+      .select('id')
+      .eq(column, paymentIntentId)
+      .maybeSingle();
+    if (error) {
+      throw new Error(
+        `[Stripe] could not match ${paymentIntentId} on ${column}: ${error.message}`
+      );
+    }
+    if (data?.id) return data.id;
+  }
+  return null;
+}
+
 /*
  * `handleBookingDepositPaid` stood here, with the `LeadsTable` accessor it
  * needed. It settled a Checkout Session carrying `metadata.kind ===
@@ -495,6 +649,12 @@ export async function processEvent(
         supabase,
         event,
         event.data.object as Stripe.Invoice
+      );
+    case 'charge.refunded':
+      return handleChargeRefunded(
+        supabase,
+        event,
+        event.data.object as Stripe.Charge
       );
     case 'customer.subscription.created':
     case 'customer.subscription.updated':

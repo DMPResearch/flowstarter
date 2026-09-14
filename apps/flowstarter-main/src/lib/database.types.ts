@@ -195,6 +195,68 @@ export type Database = {
           },
         ]
       }
+      billing_refunds: {
+        Row: {
+          amount_minor: number
+          basis: string
+          created_at: string
+          currency: string
+          failure_reason: string | null
+          id: string
+          milestone: string
+          override_reason: string | null
+          payment_intent_id: string
+          reason: string
+          requested_by: string
+          status: string
+          stripe_refund_id: string | null
+          updated_at: string
+          workspace_id: string
+        }
+        Insert: {
+          amount_minor: number
+          basis: string
+          created_at?: string
+          currency: string
+          failure_reason?: string | null
+          id?: string
+          milestone: string
+          override_reason?: string | null
+          payment_intent_id: string
+          reason: string
+          requested_by: string
+          status?: string
+          stripe_refund_id?: string | null
+          updated_at?: string
+          workspace_id: string
+        }
+        Update: {
+          amount_minor?: number
+          basis?: string
+          created_at?: string
+          currency?: string
+          failure_reason?: string | null
+          id?: string
+          milestone?: string
+          override_reason?: string | null
+          payment_intent_id?: string
+          reason?: string
+          requested_by?: string
+          status?: string
+          stripe_refund_id?: string | null
+          updated_at?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "billing_refunds_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       brand_signals: {
         Row: {
           created_at: string
@@ -2159,6 +2221,8 @@ export type Database = {
           name: string
           outstanding_payment: boolean
           project_state: string
+          refund_status: string
+          refunded_amount_minor: number
           setup_fee: number | null
           setup_go_live_at: string | null
           setup_mockup_approved_at: string | null
@@ -2236,6 +2300,8 @@ export type Database = {
           name: string
           outstanding_payment?: boolean
           project_state?: string
+          refund_status?: string
+          refunded_amount_minor?: number
           setup_fee?: number | null
           setup_go_live_at?: string | null
           setup_mockup_approved_at?: string | null
@@ -2313,6 +2379,8 @@ export type Database = {
           name?: string
           outstanding_payment?: boolean
           project_state?: string
+          refund_status?: string
+          refunded_amount_minor?: number
           setup_fee?: number | null
           setup_go_live_at?: string | null
           setup_mockup_approved_at?: string | null

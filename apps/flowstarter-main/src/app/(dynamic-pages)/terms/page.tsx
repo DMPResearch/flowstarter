@@ -1,4 +1,17 @@
-import { MarketingShell, PageHero, ProseSection } from '@/components/marketing';
+import {
+  LegalDraftNotice,
+  MarketingShell,
+  PageHero,
+  ProseSection,
+} from '@/components/marketing';
+import { guaranteeSentence } from '@/lib/billing/refund-policy';
+import {
+  controllerIdentityLines,
+  governingLawSentence,
+  legalDraftNoticeVisible,
+  OPERATOR_IDENTITY_PENDING_NOTICE,
+  readOperatorIdentity,
+} from '@/lib/legal/company';
 import { PROHIBITED_CATEGORIES } from '@/lib/policy/acceptable-use';
 
 /**
@@ -15,9 +28,16 @@ export const metadata = {
     'The agreement between you and Flowstarter for the design, build, and ongoing support of your site.',
 };
 
-const LAST_UPDATED = 'February 27, 2026';
+const LAST_UPDATED = 'September 14, 2026';
 
 export default function TermsPage() {
+  // Read here rather than written below: who we are, what law applies and
+  // which court hears a dispute are facts the environment supplies, and
+  // until it does this page says so instead of naming a country. See
+  // src/lib/legal/company.ts.
+  const identity = readOperatorIdentity();
+  const identityLines = controllerIdentityLines(identity);
+
   return (
     <MarketingShell>
       <main id="main-content" className="flex-1">
@@ -36,9 +56,36 @@ export default function TermsPage() {
         />
 
         <ProseSection>
+          {/* On terms too, now. It used to show on privacy and cookies and
+              not here, which is backwards: this page is the contract and the
+              other two are disclosures. One rule decides all three. */}
+          {legalDraftNoticeVisible(identity) && <LegalDraftNotice />}
+
+          <h2>Who you are agreeing with</h2>
+          {identity.provided ? (
+            <>
+              <p>Flowstarter is operated by {identity.identity.name}.</p>
+              <ul>
+                {identityLines.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p>
+              <strong>{OPERATOR_IDENTITY_PENDING_NOTICE}.</strong> Flowstarter
+              is run by two people, Darius and Dorin, and is not incorporated
+              yet. There is no registered company name, no registration number,
+              no VAT number and no registered address to give you, so this page
+              does not print any. All four appear here on the day there are any.
+              Until then you are contracting with the two of us, and the{' '}
+              <a href="/contact">contact page</a> reaches us.
+            </p>
+          )}
+
           <h2>What you are agreeing to</h2>
           <p>
-            By booking a discovery call, signing a scope of work, or paying an
+            By starting a project, signing a scope of work, or paying an
             invoice, you accept these terms. They cover everything we do for you
             including design, build, hosting, smart editor access, and ongoing
             support. Specific deliverables, prices, and timelines live in the
@@ -52,18 +99,20 @@ export default function TermsPage() {
               assistant.
             </li>
             <li>
-              Hosting on EU infrastructure, automated backups, SSL, and uptime
-              monitoring.
+              Hosting on EU infrastructure, with a TLS certificate kept renewed
+              for as long as we host you.
             </li>
             <li>
               Access to the smart editor. Your monthly plan covers a fixed
-              allowance of AI edits. Add-on packs are available.
+              allowance of AI edits.
             </li>
             <li>
-              Ongoing support via email and your discovery-call number, with
-              response targets defined per plan.
+              Ongoing support by email, with response targets defined per plan.
             </li>
           </ul>
+          {/* Removed, not softened: the old list promised "automated backups
+              ... and uptime monitoring". Neither exists. A contract is the
+              wrong place to describe infrastructure we have not built. */}
 
           <h2>What we expect from you</h2>
           <ul>
@@ -83,10 +132,14 @@ export default function TermsPage() {
 
           <h2 id="acceptable-use">Acceptable use</h2>
           <p>
+            {/* "in Romania" removed on the legal-pages branch: this page's
+                own identity section says there is no registered entity yet
+                and declines to name a country, so a sentence four screens
+                below it cannot assert one. The reason holds without it. */}
             There are businesses we will not build a site for. This is not a
             judgement on anyone; it is the licensing, payment and legal exposure
-            a two-person studio in Romania is not equipped to carry. We would
-            rather tell you now than after you have paid.
+            a two-person studio is not equipped to carry. We would rather tell
+            you now than after you have paid.
           </p>
           <p>We do not build sites whose purpose is any of the following.</p>
           <ul>
@@ -118,10 +171,12 @@ export default function TermsPage() {
           <p>
             Setup fees are split: 20% to start, 80% on launch. Monthly or yearly
             care fees are billed in advance and renew automatically until
-            cancelled. Your first month is free. If you are not happy with the
-            result within 30 days of launch, we refund 50% of the setup fee, no
-            questions asked.
+            cancelled. Your first month is free. {guaranteeSentence()}
           </p>
+          {/* The sentence above is generated from the same config the refund
+              action reads, so the promise on this page and the amount the
+              button is allowed to send cannot drift apart. See
+              src/lib/billing/refund-policy.ts. */}
 
           <h2>Ownership and portability</h2>
           <p>
@@ -149,19 +204,14 @@ export default function TermsPage() {
           <h2>Cancellation</h2>
           <p>
             You can cancel your monthly plan at any time with 30 days notice by
-            emailing{' '}
-            <a href="mailto:hello@flowstarter.net">hello@flowstarter.net</a>.
-            Your site stays online through the end of the paid period. If you
-            need us to keep your site live afterwards, we can quote a standalone
-            hosting fee.
+            writing to us on the <a href="/contact">contact page</a>. Your site
+            stays online through the end of the paid period. If you need us to
+            keep your site live afterwards, we can quote a standalone hosting
+            fee.
           </p>
 
           <h2>Governing law</h2>
-          <p>
-            This agreement is governed by the laws of Romania, where Flowstarter
-            is registered. Disputes are first attempted in good faith over a
-            call, and if unresolved, settled by the courts of Cluj-Napoca.
-          </p>
+          <p>{governingLawSentence(identity)}</p>
 
           <h2>Updates to these terms</h2>
           <p>
@@ -172,9 +222,9 @@ export default function TermsPage() {
 
           <div className="ls-callout">
             <p>
-              Questions about a clause? Write to{' '}
-              <a href="mailto:hello@flowstarter.net">hello@flowstarter.net</a>{' '}
-              and we will walk you through it before you sign.
+              Questions about a clause? Ask on the{' '}
+              <a href="/contact">contact page</a> and we will walk you through
+              it before you sign.
             </p>
           </div>
         </ProseSection>

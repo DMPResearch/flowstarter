@@ -14,11 +14,13 @@ import {
   RefreshCcw,
   Ban,
   PlayCircle,
+  Undo2,
 } from 'lucide-react';
 import { ShellCard } from '../../../components/TeamDashboardShell';
 import { Button } from '@/components/ui/button';
 import type { Project } from './form-helpers';
 import { formatDate } from '@/lib/format-utils';
+import { MIN_REASON_CHARS, refundGuarantee } from '@/lib/billing/refund-policy';
 
 type InvoiceState = 'pending' | 'sent' | 'paid' | 'overdue' | null | string;
 type SubscriptionState =
@@ -372,7 +374,7 @@ export function BillingTab({ project }: { project: Project }) {
                 onClick={() => {
                   if (
                     !confirm(
-                      'Cancel IMMEDIATELY? Service stops now. Refunds handled separately.'
+                      'Cancel IMMEDIATELY? Service stops now. This does not refund the unused part of the paid period; use Refund setup fee below if money should go back.'
                     )
                   )
                     return;
@@ -389,6 +391,9 @@ export function BillingTab({ project }: { project: Project }) {
           )}
         </div>
       </ShellCard>
+
+      {/* Refund — the published guarantee, issuable from here */}
+      <RefundCard projectId={project.id as string} setupFee={setupFee} />
 
       {/* Stripe references */}
       <ShellCard>
@@ -473,11 +478,204 @@ export function BillingTab({ project }: { project: Project }) {
         {stripeCustomerId && (
           <p className="mt-3 text-[0.65rem] text-[var(--fs-ink-faint)]">
             <CheckCircle2 className="inline-block w-3 h-3 mr-1" /> Open the
-            client&apos;s billing page in Stripe dashboard for manual actions
-            (refunds, payment-method updates, invoice voiding).
+            client&apos;s billing page in Stripe dashboard for payment-method
+            updates and invoice voiding. Refunds belong above, not there: one
+            issued here is recorded, emailed to the client, and readable
+            afterwards.
           </p>
         )}
       </ShellCard>
     </div>
+  );
+}
+
+/**
+ * "Refund setup fee".
+ *
+ * The guarantee has been published on the terms page and the landing hero
+ * since launch and there was no way to honour it from this console. An
+ * operator had to open Stripe, find the charge, type an amount, and leave no
+ * record anywhere this product could read.
+ *
+ * The form is deliberately two fields and a disclosure. The reason is
+ * required because it is the only record of why money went back; the amount
+ * and the override reason are behind a toggle because the common case is the
+ * published guarantee and a form that leads with "how much?" invites an
+ * operator to answer it. Leaving both blank refunds exactly the guaranteed
+ * percentage, and only inside the window.
+ *
+ * Nothing here decides anything. The window, the percentage and whether this
+ * particular refund is allowed are all settled server-side by
+ * `decideRefund`; the numbers below are read from the same config purely so
+ * the operator can see what they are about to send. A refusal comes back as
+ * a message and is shown as it was written.
+ */
+function RefundCard({
+  projectId,
+  setupFee,
+}: {
+  projectId: string;
+  setupFee: number;
+}) {
+  const qc = useQueryClient();
+  const guarantee = refundGuarantee();
+  const [reason, setReason] = useState('');
+  const [override, setOverride] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
+  const [amount, setAmount] = useState('');
+
+  const guaranteedMajor =
+    Math.round(setupFee * guarantee.percentOfSetupFee) / 100;
+
+  const refund = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(
+        `/api/admin/projects/${projectId}/billing/refund`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reason,
+            ...(override && overrideReason ? { overrideReason } : {}),
+            ...(override && amount ? { amount } : {}),
+          }),
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Refund failed');
+      return data as {
+        refund: { totalMinor: number; duplicate: boolean; basis: string };
+      };
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['team-project', projectId] });
+      qc.invalidateQueries({ queryKey: ['team-projects'] });
+      if (data.refund.duplicate) {
+        toast.success('Already refunded. Nothing was sent a second time.');
+      } else {
+        toast.success(
+          `Refunded €${(data.refund.totalMinor / 100).toFixed(2)} (${
+            data.refund.basis
+          })`
+        );
+      }
+      setReason('');
+      setOverrideReason('');
+      setAmount('');
+      setOverride(false);
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : 'Failed'),
+  });
+
+  const reasonLongEnough = reason.trim().length >= MIN_REASON_CHARS;
+  const overrideReady =
+    !override || overrideReason.trim().length >= MIN_REASON_CHARS;
+
+  return (
+    <ShellCard>
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h3 className="text-sm font-semibold text-[var(--fs-ink)] flex items-center gap-2">
+            <Undo2 className="w-4 h-4" /> Refund setup fee
+          </h3>
+          <p className="text-xs text-[var(--fs-ink-faint)]">
+            The published guarantee: {guarantee.percentOfSetupFee}% of the setup
+            fee, within {guarantee.windowDays} days of launch, no questions
+            asked.
+          </p>
+        </div>
+        {setupFee > 0 && (
+          <p className="text-sm font-bold text-[var(--fs-ink)]">
+            €{guaranteedMajor.toLocaleString()}
+          </p>
+        )}
+      </div>
+
+      <label
+        htmlFor="refund-reason"
+        className="block text-[0.65rem] uppercase tracking-wide text-[var(--fs-ink-faint)] mb-1"
+      >
+        Reason (stored with the refund)
+      </label>
+      <textarea
+        id="refund-reason"
+        rows={2}
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        placeholder="Why is this money going back?"
+        className="w-full rounded-lg border border-[var(--fs-rule)] bg-transparent p-2 text-sm text-[var(--fs-ink)]"
+      />
+
+      <label className="mt-3 flex items-center gap-2 text-xs text-[var(--fs-ink-dim)]">
+        <input
+          type="checkbox"
+          checked={override}
+          onChange={(e) => setOverride(e.target.checked)}
+        />
+        Refund outside the guarantee (different amount, before launch, or after
+        the window)
+      </label>
+
+      {override && (
+        <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label
+              htmlFor="refund-amount"
+              className="block text-[0.65rem] uppercase tracking-wide text-[var(--fs-ink-faint)] mb-1"
+            >
+              Amount in euros (blank = everything still refundable)
+            </label>
+            <input
+              id="refund-amount"
+              inputMode="decimal"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              className="w-full rounded-lg border border-[var(--fs-rule)] bg-transparent p-2 text-sm text-[var(--fs-ink)]"
+            />
+          </div>
+          <div>
+            <label
+              htmlFor="refund-override-reason"
+              className="block text-[0.65rem] uppercase tracking-wide text-[var(--fs-ink-faint)] mb-1"
+            >
+              Why outside the guarantee
+            </label>
+            <input
+              id="refund-override-reason"
+              value={overrideReason}
+              onChange={(e) => setOverrideReason(e.target.value)}
+              className="w-full rounded-lg border border-[var(--fs-rule)] bg-transparent p-2 text-sm text-[var(--fs-ink)]"
+            />
+          </div>
+        </div>
+      )}
+
+      <div className="mt-3">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!reasonLongEnough || !overrideReady || refund.isPending}
+          onClick={() => {
+            if (
+              !confirm(
+                'Send this refund? The money goes back to the client and they ' +
+                  'get an email about it. One refund per charge, so this ' +
+                  'cannot be undone from here.'
+              )
+            )
+              return;
+            refund.mutate();
+          }}
+        >
+          <Undo2 className="w-3.5 h-3.5" />
+          {refund.isPending ? 'Refunding…' : 'Refund setup fee'}
+        </Button>
+      </div>
+
+      <p className="mt-3 text-[0.65rem] text-[var(--fs-ink-faint)]">
+        One refund per Stripe charge. Pressing this twice, or two operators
+        pressing it at once, sends the money once.
+      </p>
+    </ShellCard>
   );
 }
