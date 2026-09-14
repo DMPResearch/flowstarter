@@ -124,4 +124,72 @@ describe('FlowstarterMcpTemplateLibrary reconnect after a failed connect', () =>
     expect(clientInstances[0]?.connect).toHaveBeenCalledTimes(1);
     expect(clientInstances[0]?.callTool).toHaveBeenCalledTimes(2);
   });
+
+  /**
+   * The remaining way to hit "already started!" even with the reconnect-
+   * after-failure fix above: two calls that both see `connected === false`
+   * and both call `client.connect(transport)` on the SAME transport before
+   * either has resolved. This is exactly what happens when a model issues
+   * more than one tool call in a single turn (a `search` and a `details`
+   * call, or two `search` calls) against a template library whose server is
+   * down (a dead URL — nothing answers `connect()` at all, so both calls
+   * queue up waiting on the same refusal).
+   */
+  it('shares one connect attempt across concurrent calls against a dead URL, instead of racing "already started"', async () => {
+    let connectCalls = 0;
+    let rejectConnect: (error: Error) => void = () => undefined;
+    connectImpl = () =>
+      new Promise((_, reject) => {
+        connectCalls += 1;
+        rejectConnect = reject;
+      });
+    const library = new FlowstarterMcpTemplateLibrary(OPTIONS);
+
+    const first = library.search('yoga studio');
+    const second = library.getDetails('test-template');
+    // Both calls have started and reached `ensureConnected()` by now; only
+    // one of them should have actually invoked `client.connect()`.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(connectCalls).toBe(1);
+
+    rejectConnect(new Error('connect ECONNREFUSED 127.0.0.1:4000 (dead URL)'));
+
+    await expect(first).rejects.toThrow(
+      'connect ECONNREFUSED 127.0.0.1:4000 (dead URL)',
+    );
+    await expect(second).rejects.toThrow(
+      'connect ECONNREFUSED 127.0.0.1:4000 (dead URL)',
+    );
+    // Never "StreamableHTTPClientTransport already started!" — the mock
+    // never throws that text, so any assertion above failing with a
+    // different message would already fail the test; this just makes the
+    // absence explicit.
+    expect(String((await first.catch((e: Error) => e)) as Error)).not.toContain(
+      'already started',
+    );
+  });
+
+  it('discards the transport after a tool call fails post-connect, so the next attempt starts fresh', async () => {
+    const library = new FlowstarterMcpTemplateLibrary(OPTIONS);
+    await library.search('yoga studio');
+    expect(clientInstances).toHaveLength(1);
+
+    clientInstances[0]!.callTool.mockRejectedValueOnce(
+      new Error('socket hang up'),
+    );
+    await expect(library.search('another query')).rejects.toThrow(
+      'socket hang up',
+    );
+
+    // The broken connection must not be reused: the next call gets a fresh
+    // client/transport pair and reconnects rather than retrying the same
+    // dead one forever.
+    const result = await library.search('a third query');
+    expect(result).toEqual([
+      expect.objectContaining({ slug: 'test-template' }),
+    ]);
+    expect(clientInstances).toHaveLength(2);
+    expect(clientInstances[1]?.connect).toHaveBeenCalledTimes(1);
+  });
 });

@@ -400,7 +400,10 @@ async function harness(options: {
       approvedPreviewFiles: options.approvedPreviewFiles ?? [
         {
           path: 'src/content/site-labels.md',
-          content: `heroHeadline: "${HEADLINE}"\n`,
+          // Real frontmatter: fenced, so `checkSiteLabelsIntegrity` (the
+          // 2026-09-14 `[integrity]` gate for this file) has something that
+          // opens and closes to parse, the same as every real workspace.
+          content: `---\nheroHeadline: "${HEADLINE}"\n---\n`,
           type: 'file',
         },
       ],
@@ -678,6 +681,61 @@ describe('FullSiteBuildWorker and the approved preview', () => {
         'utf8',
       ),
     ).toContain(HEADLINE);
+  });
+
+  /**
+   * The exact defect on job `7508bf52` (2026-09-14, workspace
+   * `flowstarter-dgtcyh`): 277 lines of frontmatter that opened with `---`
+   * and never closed it. The `[integrity]` gate for `site-labels.md` runs
+   * before the approved-edit check below, so a workspace shaped like that
+   * one gets its fence closed deterministically instead of shipping a page
+   * with an empty `<h1>` — and the client's approved headline is then still
+   * checked (and found) against the repaired file.
+   */
+  it('closes an unterminated site-labels.md frontmatter deterministically before checking the approved edit survived', async () => {
+    const built = await harness({
+      previewIntent: intent([headlineEdit()]),
+      agentWrites: [`<h1>${HEADLINE}</h1>`],
+      approvedPreviewFiles: [
+        {
+          path: 'src/content/site-labels.md',
+          // Opens, never closes, and the remainder is otherwise valid YAML
+          // — the one shape the gate repairs rather than fails over.
+          content: `---\nhero:\n  title: "${HEADLINE}"\n`,
+          type: 'file',
+        },
+      ],
+    });
+    await built.run();
+
+    expect(built.failures).toEqual([]);
+    const repairNote = built.events.find((event) =>
+      event.body.includes('never closed its frontmatter block'),
+    );
+    expect(repairNote).toBeDefined();
+    const onDisk = await readFile(
+      join(built.siteRoot, 'src/content/site-labels.md'),
+      'utf8',
+    );
+    expect(onDisk.trimEnd().endsWith('---')).toBe(true);
+  });
+
+  it('fails the job with LABELS_UNPARSEABLE when site-labels.md cannot be trusted at all', async () => {
+    const built = await harness({
+      previewIntent: intent([headlineEdit()]),
+      agentWrites: [`<h1>${HEADLINE}</h1>`],
+      approvedPreviewFiles: [
+        {
+          path: 'src/content/site-labels.md',
+          content: 'not frontmatter at all',
+          type: 'file',
+        },
+      ],
+    });
+
+    await expect(built.run()).rejects.toThrow(/frontmatter fence/);
+    expect(built.failures).toHaveLength(1);
+    expect(built.failures[0]?.code).toBe('LABELS_UNPARSEABLE');
   });
 });
 

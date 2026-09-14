@@ -21,6 +21,22 @@ export class FlowstarterMcpTemplateLibrary implements TemplateLibrary {
   private client: Client;
   private transport: StreamableHTTPClientTransport;
   private connected = false;
+  /**
+   * The in-flight connect attempt, shared by every concurrent caller.
+   *
+   * A caller that awaits `search()` and one that awaits `getDetails()` at
+   * the same time (a model's session can issue more than one tool call in a
+   * turn) both reach `call()` while `connected` is still false. Without
+   * this, both would call `client.connect(transport)` on the SAME
+   * transport — and the SDK marks a transport "started" the moment
+   * `connect()` is invoked, before either attempt has had a chance to
+   * succeed or fail, so the second call throws "already started!" even
+   * when nothing is actually wrong yet. Routing every concurrent caller
+   * through the one attempt already running means there is only ever one
+   * real `connect()` call per transport, and every caller sees its honest
+   * outcome (the server's own refusal, or success).
+   */
+  private connecting: Promise<void> | null = null;
 
   constructor(private readonly options: FlowstarterMcpTemplateLibraryOptions) {
     if (options.internalToken.length < 32) {
@@ -175,30 +191,65 @@ export class FlowstarterMcpTemplateLibrary implements TemplateLibrary {
     this.connected = false;
   }
 
+  /**
+   * Connects exactly once per transport, no matter how many callers ask at
+   * once. See `connecting` above for why that matters.
+   */
+  private async ensureConnected(): Promise<void> {
+    if (this.connected) return;
+    if (!this.connecting) {
+      this.connecting = this.client
+        .connect(this.transport)
+        .then(() => {
+          this.connected = true;
+        })
+        .catch((error: unknown) => {
+          // The transport is now internally "started" even though connect
+          // failed. Replace it (and the client) so the NEXT attempt —
+          // whether a caller's own retry, a fresh call on this same
+          // instance, or one of the concurrent callers that was waiting on
+          // this very attempt — hits a clean transport instead of "already
+          // started!", and re-throw the real error rather than swallowing
+          // it.
+          const fresh = this.freshConnection(new URL(this.options.endpoint));
+          this.client = fresh.client;
+          this.transport = fresh.transport;
+          throw error;
+        })
+        .finally(() => {
+          this.connecting = null;
+        });
+    }
+    await this.connecting;
+  }
+
   private async call(
     name: string,
     args: Record<string, unknown>,
   ): Promise<unknown> {
-    if (!this.connected) {
-      try {
-        await this.client.connect(this.transport);
-        this.connected = true;
-      } catch (error) {
-        // The transport is now internally "started" even though connect
-        // failed. Replace it (and the client) so the NEXT call — whether a
-        // caller's own retry or a fresh attempt on this same instance — hits
-        // a clean transport instead of "already started!", and re-throw the
-        // real error rather than swallowing it.
-        const fresh = this.freshConnection(new URL(this.options.endpoint));
-        this.client = fresh.client;
-        this.transport = fresh.transport;
-        throw error;
-      }
+    await this.ensureConnected();
+    let result: Awaited<ReturnType<Client['callTool']>>;
+    try {
+      result = await this.client.callTool({
+        name,
+        arguments: { ...args, _internalToken: this.options.internalToken },
+      });
+    } catch (error) {
+      // A tool call can fail even after a previously-successful connect —
+      // the server restarted, the connection dropped mid-session. Left
+      // alone, `connected` would stay true forever and every later call
+      // would skip `connect()` entirely and keep retrying the same dead
+      // transport, turning "the server is down" into a repeating,
+      // unrelated-looking transport error instead of ever giving the next
+      // attempt a clean transport to fail (or succeed) honestly on. So this
+      // counts as a failed attempt too: the connection is presumed broken,
+      // and the next call starts fresh.
+      this.connected = false;
+      const fresh = this.freshConnection(new URL(this.options.endpoint));
+      this.client = fresh.client;
+      this.transport = fresh.transport;
+      throw error;
     }
-    const result = await this.client.callTool({
-      name,
-      arguments: { ...args, _internalToken: this.options.internalToken },
-    });
     const blocks = Array.isArray(result.content) ? result.content : [];
     const text = blocks
       .filter(

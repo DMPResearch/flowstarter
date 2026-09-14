@@ -42,6 +42,7 @@ import {
   normalizePhrase,
   stripPreviewToolingFiles,
   usablePhrases,
+  visibleTextLines,
   MAX_PHRASE_CHARS,
   MIN_PHRASE_CHARS,
 } from '@flowstarter/agentic-codegen/src/flowstarter/preview-manifest';
@@ -59,6 +60,7 @@ export {
   normalizePhrase,
   stripPreviewToolingFiles,
   usablePhrases,
+  visibleTextLines,
   MAX_PHRASE_CHARS,
   MIN_PHRASE_CHARS,
 };
@@ -154,10 +156,15 @@ export function appliedPreviewEdit(input: {
     const content = after.get(path);
     if (content === undefined) continue;
     const previous = before.get(path);
+    // Visible text only, never a tag or an attribute — see
+    // `preview-manifest.ts` for why: a line of markup can pass every prose
+    // check here (it has letters, it is not a URL or a timestamp) while
+    // still being nothing a visitor reads, which is how the platform's own
+    // injected lead-capture slot became an "approved phrase" on 2026-09-14.
     const known = new Set(
-      (previous ?? '').split('\n').map((line) => normalizePhrase(line))
+      visibleTextLines(previous ?? '').map((line) => normalizePhrase(line))
     );
-    for (const line of content.split('\n')) {
+    for (const line of visibleTextLines(content)) {
       if (known.has(normalizePhrase(line))) continue;
       const phrase = phraseFromLine(line);
       if (!phrase || !isUsablePhrase(phrase)) continue;

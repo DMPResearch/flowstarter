@@ -19,6 +19,7 @@ import {
   previewPathRelevance,
   stripPreviewToolingFiles,
   usablePhrases,
+  visibleTextLines,
 } from '../src/flowstarter/preview-manifest';
 
 /** Verbatim, from the failed run's stored audit. */
@@ -190,6 +191,58 @@ describe('phraseFromLine', () => {
     expect(phraseFromLine('----------------')).toBeNull();
     expect(phraseFromLine('https://example.com/a/b/c')).toBeNull();
   });
+
+  /**
+   * The 2026-09-14 defect (job `7508bf52`): the old emphasis strip,
+   * `/[*_~]{1,3}/g`, matched anywhere in the line, so the `__` in the middle
+   * of a BEM class name like `contact-page__lead-capture` was removed as if
+   * it were `_emphasis_` markup, producing the corrupted
+   * `contact-pagelead-capture` that then shipped as an "approved phrase".
+   * The fix anchors the strip to the edges of the text, where markdown
+   * emphasis actually lives.
+   */
+  it('leaves an underscore in the middle of a word alone, only strips emphasis at the edges', () => {
+    expect(
+      phraseFromLine(
+        'The class name is contact-page__lead-capture on every template',
+      ),
+    ).toBe('The class name is contact-page__lead-capture on every template');
+    expect(phraseFromLine('**A confident opening line**')).toBe(
+      'A confident opening line',
+    );
+    expect(phraseFromLine('_A confident opening line_')).toBe(
+      'A confident opening line',
+    );
+  });
+});
+
+describe('visibleTextLines', () => {
+  it('reads only the text a browser would render, never a tag or an attribute', () => {
+    expect(
+      visibleTextLines('<p class="contact-page__lead-capture">Hello there</p>'),
+    ).toEqual(['Hello there']);
+  });
+
+  it('excludes a managed block by its marker attribute, script tag and all', () => {
+    const html = [
+      '<div class="contact-page__lead-capture" data-flowstarter-lead-capture-slot>',
+      '  <!-- flowstarter:lead-capture -->',
+      '  <script>fetch("/api/leads/capture/token")</script>',
+      '  Not really visible copy either',
+      '</div>',
+      '<p>But this paragraph is</p>',
+    ].join('\n');
+    const lines = visibleTextLines(html).map((line) => line.trim());
+    expect(lines).not.toContain('Not really visible copy either');
+    expect(lines.join(' ')).not.toContain('contact-page__lead-capture');
+    expect(lines.join(' ')).not.toContain('fetch(');
+    expect(lines).toContain('But this paragraph is');
+  });
+
+  it('falls back to plain lines for a file with no markup at all (YAML frontmatter, markdown)', () => {
+    const yamlish = '---\nhero:\n  title: "A headline"\n---\n';
+    expect(visibleTextLines(yamlish)).toEqual(yamlish.split('\n'));
+  });
 });
 
 describe('phrasesFromFiles', () => {
@@ -208,12 +261,13 @@ describe('phrasesFromFiles', () => {
     },
   ];
 
-  it('reads the content file before the page and never the tooling', () => {
+  it('reads the content file before the page and never the tooling, and never the markup around a page’s text', () => {
     expect(phrasesFromFiles(files, { limit: 8 })).toEqual([
       HEADLINE,
-      // Markup and all: a phrase is the source line as it stands, which is
-      // why the content collection is read before any page.
-      '<p>Reach me on Instagram any day</p>',
+      // Visible text only — the `<p>`/`</p>` around it is not a phrase, it
+      // is a wrapper. Before the 2026-09-14 fix this was the literal string
+      // '<p>Reach me on Instagram any day</p>', tags and all.
+      'Reach me on Instagram any day',
     ]);
   });
 
