@@ -18,6 +18,8 @@ import {
   DEFAULT_COMMERCE_MODE,
   DEFAULT_GOAL,
   DEFAULT_PAGE_COUNT,
+  MAX_DESCRIPTION_NAME_WORDS,
+  businessNameFromDescription,
   deriveBusinessName,
   goalFromDescription,
   guessedFields,
@@ -214,6 +216,97 @@ describe('guessedFields', () => {
   });
 });
 
+describe('businessNameFromDescription', () => {
+  it('reads the leading name before a comma', () => {
+    expect(
+      businessNameFromDescription('Arome Coffee, a specialty roastery in Cluj')
+    ).toBe('Arome Coffee');
+  });
+
+  it('reads the leading name before " is "', () => {
+    expect(
+      businessNameFromDescription('Sable Fig is a design studio in Iasi')
+    ).toBe('Sable Fig');
+  });
+
+  it('reads the leading name before the Romanian "este"', () => {
+    expect(
+      businessNameFromDescription(
+        'Cafeneaua Arome este o cafenea de specialitate din Cluj'
+      )
+    ).toBe('Cafeneaua Arome');
+  });
+
+  it('reads the leading name before a spaced hyphen', () => {
+    expect(
+      businessNameFromDescription('Arome Coffee - specialty roastery')
+    ).toBe('Arome Coffee');
+  });
+
+  it('reads the leading name before an em dash', () => {
+    expect(
+      businessNameFromDescription('Arome Coffee — specialty roastery')
+    ).toBe('Arome Coffee');
+  });
+
+  it('does not split a hyphenated word that is not a separator', () => {
+    expect(
+      businessNameFromDescription('Well-Fed Kitchen is our family restaurant')
+    ).toBe('Well-Fed Kitchen');
+  });
+
+  it('refuses "I am", which describes the speaker, not the business', () => {
+    expect(businessNameFromDescription('I am a brand designer')).toBe('');
+  });
+
+  it('refuses "We are"', () => {
+    expect(businessNameFromDescription('We are a two-person bakery')).toBe('');
+  });
+
+  it('refuses a leading bare "A", without catching a real name that starts with the same letter', () => {
+    expect(businessNameFromDescription('A cozy neighbourhood cafe')).toBe('');
+    expect(
+      businessNameFromDescription('Arome Coffee, a specialty roastery')
+    ).toBe('Arome Coffee');
+  });
+
+  it('refuses the Romanian "Sunt" and "Suntem"', () => {
+    expect(
+      businessNameFromDescription('Sunt un antrenor personal, ajut oameni')
+    ).toBe('');
+    expect(
+      businessNameFromDescription(
+        'Suntem o brutarie de cartier, deschisa zilnic'
+      )
+    ).toBe('');
+  });
+
+  it('declines a leading phrase longer than the cap, rather than truncating it into a fake name', () => {
+    expect(MAX_DESCRIPTION_NAME_WORDS).toBe(5);
+    expect(
+      businessNameFromDescription(
+        'A boutique dental clinic in Cluj doing cosmetic work'
+      )
+    ).toBe('');
+    // No delimiter at all: the whole sentence is the leading phrase, and it
+    // is not a name either.
+    expect(
+      businessNameFromDescription(
+        'We help small businesses grow their online presence'
+      )
+    ).toBe('');
+  });
+
+  it('declines when there is nothing to read', () => {
+    expect(businessNameFromDescription('')).toBe('');
+    expect(businessNameFromDescription('   ')).toBe('');
+  });
+
+  it('is case insensitive about the openers it refuses', () => {
+    expect(businessNameFromDescription('WE ARE a bakery')).toBe('');
+  });
+});
+
 describe('deriveBusinessName', () => {
   it("uses the Brief's own answer once it has one, over anything derivable", () => {
     expect(
@@ -222,18 +315,70 @@ describe('deriveBusinessName', () => {
         businessName: 'Sable Fig Studio',
         fullName: 'Ana Pop',
         websiteUrl: 'https://not-sable-fig.example',
+        websiteIsOwnSite: 'yes',
       })
     ).toBe('Sable Fig Studio');
   });
 
-  it('derives a name from the website link, stripped of www and the TLD, title-cased', () => {
+  // The real incident this rule was rewritten to close: a visitor named
+  // their business in the "what you do" answer and pasted a competitor's
+  // site as a reference, not their own. The old rule trusted every pasted
+  // website as "theirs" and named the workspace, and the generated site,
+  // after that competitor's trademark instead.
+  it('the Onyx case: derives the stated name over an unconfirmed reference website', () => {
+    expect(
+      deriveBusinessName({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Andrei Ionescu',
+        description: 'Arome Coffee, a specialty roastery in Cluj',
+        websiteUrl: 'https://onyxcoffeelab.com',
+        // No `websiteIsOwnSite` answer: the reference was never confirmed as
+        // theirs, which on its own is already enough to keep the hostname
+        // out of the name.
+      })
+    ).toBe('Arome Coffee');
+  });
+
+  it('prefers a name stated in the description over the website hostname, even when the site is confirmed as their own', () => {
+    expect(
+      deriveBusinessName({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Ana Pop',
+        description: 'Sable Fig, a design studio in Iasi',
+        websiteUrl: 'https://totally-different-domain.example',
+        websiteIsOwnSite: 'yes',
+      })
+    ).toBe('Sable Fig');
+  });
+
+  it('derives a name from the website link once it is confirmed as their own, stripped of www and the TLD, title-cased', () => {
     expect(
       deriveBusinessName({
         ...EMPTY_DISCOVERY,
         fullName: 'Ana Pop',
         websiteUrl: 'https://www.flowstarter.net',
+        websiteIsOwnSite: 'yes',
       })
     ).toBe('Flowstarter');
+  });
+
+  it('never reads the hostname when ownership was not confirmed, even with no name stated', () => {
+    expect(
+      deriveBusinessName({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Ana Pop',
+        websiteUrl: 'https://www.flowstarter.net',
+        websiteIsOwnSite: 'no',
+      })
+    ).toBe('Ana Pop');
+    expect(
+      deriveBusinessName({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Ana Pop',
+        websiteUrl: 'https://www.flowstarter.net',
+        // Unanswered — the default, and the default is "no".
+      })
+    ).toBe('Ana Pop');
   });
 
   it('splits a hyphenated domain into separate title-cased words', () => {
@@ -242,6 +387,7 @@ describe('deriveBusinessName', () => {
         ...EMPTY_DISCOVERY,
         fullName: 'Ana Pop',
         websiteUrl: 'https://sable-fig.ro',
+        websiteIsOwnSite: 'yes',
       })
     ).toBe('Sable Fig');
   });
@@ -252,6 +398,7 @@ describe('deriveBusinessName', () => {
         ...EMPTY_DISCOVERY,
         fullName: 'Ana Pop',
         websiteUrl: 'https://acmebakery.co.uk',
+        websiteIsOwnSite: 'yes',
       })
     ).toBe('Acmebakery');
   });
@@ -264,6 +411,7 @@ describe('deriveBusinessName', () => {
         ...EMPTY_DISCOVERY,
         fullName: 'Ana Pop',
         websiteUrl: 'https://this-domain-should-never-resolve-9432.example',
+        websiteIsOwnSite: 'yes',
       })
     ).toBe('This Domain Should Never Resolve 9432');
   });
@@ -274,6 +422,7 @@ describe('deriveBusinessName', () => {
         ...EMPTY_DISCOVERY,
         fullName: 'Ana Pop',
         websiteUrl: 'flowstarter.net',
+        websiteIsOwnSite: 'yes',
       })
     ).toBe('Flowstarter');
   });
@@ -297,6 +446,7 @@ describe('deriveBusinessName', () => {
         ...EMPTY_DISCOVERY,
         fullName: 'Ana Pop',
         websiteUrl: 'not a url',
+        websiteIsOwnSite: 'yes',
       })
     ).toBe('Ana Pop');
   });

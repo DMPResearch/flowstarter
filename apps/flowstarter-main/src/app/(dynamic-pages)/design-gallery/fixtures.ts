@@ -472,6 +472,7 @@ export const briefGallery = {
   brief: {
     offer:
       'I build small, sharp software products for people who are tired of bloated tools.',
+    businessName: '',
     projects: [
       {
         name: 'Ereno',

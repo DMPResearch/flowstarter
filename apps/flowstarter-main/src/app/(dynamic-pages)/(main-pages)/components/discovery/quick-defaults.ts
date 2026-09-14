@@ -227,37 +227,57 @@ export function guessedFields(data: DiscoveryData): string[] {
 }
 
 /**
- * The four quick answers `deriveBusinessName` reads. A subset of
+ * The six quick answers `deriveBusinessName` reads. A subset of
  * `DiscoveryData` rather than the whole shape, so a caller holding only a
  * partial spec (the live route's own request body) can pass it through
  * without satisfying fields this rule never looks at.
  */
 export type QuickBusinessNameAnswers = Pick<
   DiscoveryData,
-  'businessName' | 'fullName' | 'instagramUrl' | 'linkedinUrl' | 'websiteUrl'
+  | 'businessName'
+  | 'fullName'
+  | 'description'
+  | 'instagramUrl'
+  | 'linkedinUrl'
+  | 'websiteUrl'
+  | 'websiteIsOwnSite'
 >;
 
 /**
- * A business name from the four quick answers, for the one consumer that
- * cannot work without one: a generated site has to be introduced as
- * *something*. The quick intake stopped asking for a business name directly
- * (it moved to the Brief, after the deposit), so this is what stands in for
- * that answer until the client gives the real one. Checked in this order:
+ * A business name from the quick answers, for the one consumer that cannot
+ * work without one: a generated site has to be introduced as *something*. The
+ * quick intake stopped asking for a business name directly (it moved to the
+ * Brief, after the deposit), so this is what stands in for that answer until
+ * the client gives the real one. Checked in this order:
  *
  *   1. The Brief's own answer, once given. Never guessed over: an answer the
  *      visitor actually typed beats a rule every time.
- *   2. The one link, when it is the visitor's own website: the hostname,
- *      with `www.` and the TLD stripped and the rest title-cased —
- *      `flowstarter.net` reads as `Flowstarter`. Read from the string alone,
- *      the same way `industryFromDescription` reads words rather than
- *      fetching anything: a domain that does not resolve derives exactly as
- *      well as one that does, because nothing here ever asks the network.
- *   3. Otherwise the visitor's own name. An Instagram or LinkedIn profile
+ *   2. A name stated in the "what you do" answer (`businessNameFromDescription`
+ *      below) — the visitor's own words, read rather than guessed.
+ *   3. The one link, but ONLY when it is confirmed to be the visitor's OWN
+ *      website (`websiteIsOwnSite === 'yes'`) and no name was stated above:
+ *      the hostname, with `www.` and the TLD stripped and the rest
+ *      title-cased — `flowstarter.net` reads as `Flowstarter`.
+ *
+ *      This is the fix for the real incident that named a workspace after a
+ *      trademark that was not the client's: a visitor typed "Arome Coffee, a
+ *      specialty roastery in Cluj" and pasted `onyxcoffeelab.com` as a
+ *      reference, not their own site, and the old rule — which trusted every
+ *      pasted website as "theirs" — named the workspace "Onyxcoffeelab" and
+ *      the generated site "Onyx Coffee Lab". The intake has no "is this your
+ *      site" signal on its own, so the links question now asks it as a
+ *      one-tap follow-up whenever the one link is a website rather than a
+ *      social profile, defaulting to no. Read from the string alone, the same
+ *      way `industryFromDescription` reads words rather than fetching
+ *      anything: a domain that does not resolve derives exactly as well as
+ *      one that does, because nothing here ever asks the network.
+ *   4. Otherwise the visitor's own name. An Instagram or LinkedIn profile
  *      names a person, not a business — pointing this rule at a handle
  *      instead of a real domain would produce "Sablefig.Official" out of
  *      "@sablefig.official", which is worse than the honest answer: for a
  *      personal portfolio the business *is* the person, so their name is
- *      what the generated site is introduced with.
+ *      what the generated site is introduced with. The one link's hostname
+ *      falls through to here too, on any answer other than "yes".
  *
  * Never empty when `fullName` is given. Step 1 of the intake requires a
  * name at least two characters long, so in practice this only returns ''
@@ -267,10 +287,97 @@ export function deriveBusinessName(answers: QuickBusinessNameAnswers): string {
   const briefName = answers.businessName?.trim();
   if (briefName) return briefName;
 
-  const fromWebsite = businessNameFromHostname(answers.websiteUrl ?? '');
-  if (fromWebsite) return fromWebsite;
+  const fromDescription = businessNameFromDescription(
+    answers.description ?? ''
+  );
+  if (fromDescription) return fromDescription;
+
+  if (answers.websiteIsOwnSite === 'yes') {
+    const fromWebsite = businessNameFromHostname(answers.websiteUrl ?? '');
+    if (fromWebsite) return fromWebsite;
+  }
 
   return (answers.fullName ?? '').trim();
+}
+
+/**
+ * The most words a name extracted from the "what you do" answer may have
+ * before this declines rather than guesses. A real business name is a
+ * handful of words ("Arome Coffee", "The Blue Door Bakery"); a leading phrase
+ * longer than this is almost always the rest of the sentence leaking through
+ * because the visitor did not happen to use one of the delimiters below, and
+ * a rule that guesses wrong loudly is worse than one that declines. A single
+ * named constant rather than a literal inline, so the cap is one thing a
+ * reviewer can see change rather than a number buried in a condition.
+ */
+export const MAX_DESCRIPTION_NAME_WORDS = 5;
+
+/**
+ * Openers that mean the sentence is talking ABOUT the business, not naming
+ * it. Matched against the leading words only — "Arome Coffee" does not start
+ * with the word "a", even though it starts with the letter — so a real name
+ * that merely begins with one of these letters is never caught by mistake.
+ */
+const GENERIC_DESCRIPTION_OPENERS: ReadonlyArray<readonly string[]> = [
+  ['i', 'am'],
+  ['we', 'are'],
+  ['a'],
+  ['sunt'],
+  ['suntem'],
+];
+
+/**
+ * Where a stated name, if any, ends: a comma, a hyphen used as a separator
+ * (surrounded by spaces, so "co-founder" is not split), an em/en dash
+ * anywhere, or " is " / " este " (English and Romanian) as whole words.
+ */
+const DESCRIPTION_NAME_DELIMITERS = /,| - |[–—]| is | este /i;
+
+/**
+ * A business name stated in the "what you do" answer, or '' when nothing
+ * there reads as one.
+ *
+ * A pure extractor, in the same spirit as `industryFromDescription`: it reads
+ * the leading proper-noun phrase up to the first delimiter above, refuses
+ * openers that mean the sentence is describing the business rather than
+ * naming it, and refuses a phrase too long to plausibly be a name rather than
+ * truncating it — silently cutting "Arome Coffee is a specialty roastery" at
+ * five words would have produced "Arome Coffee Is A Specialty", which is not
+ * a name either. "Arome Coffee, a specialty roastery in Cluj" derives "Arome
+ * Coffee": the comma is the delimiter, and the leading phrase is short enough
+ * and starts with neither an opener nor a bare letter.
+ */
+export function businessNameFromDescription(description: string): string {
+  const text = (description ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+
+  const cut = DESCRIPTION_NAME_DELIMITERS.exec(text);
+  const leading = (cut ? text.slice(0, cut.index) : text).trim();
+  if (!leading) return '';
+
+  const words = leading.split(/\s+/);
+  if (words.length > MAX_DESCRIPTION_NAME_WORDS) return '';
+
+  const lower = words.map((word) => word.toLowerCase());
+  const isGenericOpener = GENERIC_DESCRIPTION_OPENERS.some((opener) =>
+    opener.every((word, index) => lower[index] === word)
+  );
+  if (isGenericOpener) return '';
+
+  return words.map(titleCaseWord).join(' ');
+}
+
+/**
+ * One word, title-cased — and, because a hyphenated compound like "Well-Fed"
+ * is one word by this module's own rule (only a *spaced* hyphen is a
+ * delimiter), capitalised after an internal hyphen too, the same way a
+ * proper name would be written.
+ */
+function titleCaseWord(word: string): string {
+  return word
+    .split('-')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join('-');
 }
 
 /**

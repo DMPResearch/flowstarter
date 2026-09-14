@@ -417,12 +417,15 @@ describe('guest deposit provisioning', () => {
     });
   });
 
-  it('names the workspace after its own website when the guest never answered the business-name question', async () => {
+  it('falls back to the guest’s own name, never an unconfirmed website, when the business-name question was never answered', async () => {
     // The business-name question moved behind the deposit, so a guest who
     // paid straight from the quick-intake preview has no business-name
-    // answer on the metadata either. `claimPreview` derives one from the
-    // website link (the same `deriveBusinessName` rule the quick-intake
-    // preview uses) rather than falling back to "<full name> project".
+    // answer on the metadata either. `claimPreview` still runs the same
+    // `deriveBusinessName` rule the quick-intake preview uses, and that rule
+    // reads a website's hostname only once ownership is confirmed --
+    // something this metadata contract has no field for -- so it falls
+    // through to the guest's own name rather than "<full name> project" OR
+    // an unconfirmed link's hostname.
     stashPreview();
 
     await provisionGuestDeposit(
@@ -434,7 +437,7 @@ describe('guest deposit provisioning', () => {
     );
 
     expect(db.workspaces[0]).toMatchObject({
-      name: 'Ionescu Dental',
+      name: 'Ada Baker',
       client_business_name: null,
     });
   });

@@ -51,6 +51,7 @@ function usable(overrides: Partial<UsableAsset> = {}): UsableAsset {
 function brief(overrides: Partial<BriefView> = {}): BriefView {
   return {
     offer: '  Calm, plain-language bookkeeping for founders.  ',
+    businessName: '',
     projects: [
       {
         name: ' Ereno ',

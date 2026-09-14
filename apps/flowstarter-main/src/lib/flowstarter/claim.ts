@@ -483,12 +483,30 @@ export interface ClaimPreviewInput {
   clientName?: string | null;
   businessName?: string | null;
   /**
+   * The "what you do" answer. Not stored as a claimed fact — `intakeSummary`
+   * already carries that copy — but read again here so the workspace's
+   * name/slug rule (`deriveBusinessName`) can pull a stated name out of it the
+   * same way the preview generation route already does. Without this, a claim
+   * and its own preview could derive two different names from the same
+   * conversation.
+   */
+  description?: string | null;
+  /**
    * A site they already had. Not authorization or a claimed fact — just
    * enough for the workspace's name/slug rule (`deriveBusinessName`) to name
    * the business after its own website when nobody has answered the
-   * business-name question yet. See the "workspace naming" comment below.
+   * business-name question yet, and only when `websiteIsOwnSite` says so. See
+   * the "workspace naming" comment below.
    */
   websiteUrl?: string | null;
+  /**
+   * The one-tap answer to "is this your own site?", asked only when the one
+   * link was a website. `deriveBusinessName` reads the hostname only on
+   * "yes" — this is what stops a reference site (a competitor, an old site
+   * being replaced) from naming the workspace, which is the Onyx incident
+   * this rule exists to prevent.
+   */
+  websiteIsOwnSite?: 'yes' | 'no' | null;
   /** Tier the visitor confirmed in the wizard; priced server-side. */
   tier?: Tier | '' | null;
   /** The monthly care plan the visitor confirmed at step 6, by name. */
@@ -630,16 +648,21 @@ export async function claimPreview(
   // The workspace's own name — and, through `uniqueSlug`, its slug — names
   // the BUSINESS, not whoever happened to answer for it. `deriveBusinessName`
   // is the same rule the quick-intake preview uses (an answer, once given;
-  // else the one website's hostname; else the visitor's own name for a
-  // personal portfolio), so a dental practice claimed with a website but no
-  // business-name answer yet becomes "Ionescu Dental" rather than
-  // "Andrei Ionescu project". `client_business_name` below stays the raw,
+  // else a name stated in what they do; else the one website's hostname, but
+  // only when they confirmed it is theirs; else the visitor's own name for a
+  // personal portfolio), so a dental practice claimed with a stated name and
+  // no confirmed website becomes "Ionescu Dental" rather than "Andrei Ionescu
+  // project" — and, per the Onyx incident this rule was rewritten to close, a
+  // roastery that pasted a competitor's site as a reference is never named
+  // after that competitor. `client_business_name` below stays the raw,
   // unguessed answer — this is display/slug only, never a claimed fact.
   const name =
     deriveBusinessName({
       businessName: businessName ?? '',
       fullName: input.clientName ?? '',
+      description: input.description ?? '',
       websiteUrl: input.websiteUrl ?? '',
+      websiteIsOwnSite: input.websiteIsOwnSite ?? '',
       instagramUrl: '',
       linkedinUrl: '',
     }) || `${input.clientName?.trim() || 'New'} project`;
@@ -751,6 +774,14 @@ export async function claimPreview(
           projectId: workspaceId,
           business: {
             ...preview.intake.business,
+            // The generated site's title and the workspace's own name must
+            // never disagree: both come from this same `name`, computed once
+            // above by the same `deriveBusinessName` rule. The preview's own
+            // `business.name` was derived at generation time from the same
+            // conversation and normally already matches, but this claim is
+            // the authoritative moment a workspace is named, so it wins
+            // outright rather than being trusted to already agree.
+            name,
             // The claim carries the wizard's own page-count answer even when
             // the preview was generated without it. It is the input to the
             // page-set rule the paid build is gated on, so a brief that says
@@ -1141,7 +1172,13 @@ async function recordEvent(
   }
 }
 
-function slugify(input: string): string {
+/**
+ * Exported so the Brief's own rename (the client correcting the business
+ * name after the deposit) can slug it exactly the way a claim does — one
+ * slug rule, not two that can drift apart. See
+ * `/api/client/brief/[workspaceId]`'s `applyBusinessNameToWorkspace`.
+ */
+export function slugify(input: string): string {
   return input
     .toLowerCase()
     .normalize('NFKD')
@@ -1151,7 +1188,7 @@ function slugify(input: string): string {
     .slice(0, 40);
 }
 
-function uniqueSlug(base: string): string {
+export function uniqueSlug(base: string): string {
   const root = slugify(base) || 'workspace';
   return `${root}-${Math.random().toString(36).slice(2, 8)}`;
 }

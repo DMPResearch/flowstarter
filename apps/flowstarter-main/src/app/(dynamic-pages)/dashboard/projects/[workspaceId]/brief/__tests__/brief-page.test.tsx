@@ -139,7 +139,7 @@ async function renderPage(workspaceId: string) {
 beforeEach(() => {
   state.authorizedFor = [MINE];
   state.refusalStatus = 404;
-  state.workspace = { id: MINE };
+  state.workspace = { id: MINE, name: 'A New Business' };
   state.brief = null;
   state.assets = [];
   listedFor.length = 0;
@@ -172,6 +172,21 @@ describe('ClientBriefPage', () => {
       0
     );
     expect(listedFor).toEqual([MINE]);
+  });
+
+  it("prefills the business name with the workspace's current name", async () => {
+    await renderPage(MINE);
+    expect(screen.getByTestId('brief-business-name')).toHaveValue(
+      'A New Business'
+    );
+  });
+
+  it('shows what the client already saved on the brief, over the workspace name', async () => {
+    state.brief = { offer: '', business_name: 'Arome Coffee' };
+    await renderPage(MINE);
+    expect(screen.getByTestId('brief-business-name')).toHaveValue(
+      'Arome Coffee'
+    );
   });
 
   // The page is what carries provenance down to the form: without `source`

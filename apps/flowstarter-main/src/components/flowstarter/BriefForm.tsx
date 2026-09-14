@@ -58,6 +58,8 @@ export interface BriefProjectView {
 
 export interface BriefView {
   offer: string;
+  /** The client's own business name, or '' when they have not set one here. */
+  businessName: string;
   projects: BriefProjectView[];
   noProjects: boolean;
   designReferenceAssetIds: string[];
@@ -120,6 +122,15 @@ export interface BriefFormProps {
    */
   derivedPageCount: string;
   /**
+   * What the business is called right now, computed on the server from the
+   * workspace's own `name` — the value `deriveBusinessName` produced at claim
+   * time, or whatever the client has typed here since. Shown as the input's
+   * value whenever `initialBrief.businessName` is empty, i.e. the client has
+   * never corrected it on this form. The same "guess pre-fills, client
+   * confirms or corrects it" pattern `derivedPageCount` already uses.
+   */
+  derivedBusinessName: string;
+  /**
    * The size floors, read on the server.
    *
    * `portraitSizeFloors()` reads `process.env`, which in a client component is
@@ -172,10 +183,19 @@ export function BriefForm({
   initialReadiness,
   initialAssets,
   derivedPageCount,
+  derivedBusinessName,
   portraitFloors,
 }: BriefFormProps) {
   const [offer, setOffer] = useState(initialBrief.offer);
   const [offerLeft, setOfferLeft] = useState(false);
+  // Seeded with the derived value when the brief has not set one, rather than
+  // falling back to it at render time the way the page-count radios do: a
+  // free-text input has to be an ordinary controlled field once mounted, or
+  // clearing it to type a correction only ever re-shows the fallback text
+  // underneath whatever was just typed.
+  const [businessName, setBusinessName] = useState(
+    initialBrief.businessName || derivedBusinessName
+  );
   const [projects, setProjects] = useState<BriefProjectView[]>(
     initialBrief.projects
   );
@@ -287,6 +307,7 @@ export function BriefForm({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             offer,
+            businessName,
             // Ticking "no past work" clears the list rather than hiding it: the
             // route refuses a body that says both, and a half-typed project the
             // client cannot see is not something to save on their behalf.
@@ -313,6 +334,7 @@ export function BriefForm({
         // The server's answer replaces the form, so what a client sees after a
         // save is what is stored, not what they typed.
         setOffer(payload.brief.offer);
+        setBusinessName(payload.brief.businessName);
         setProjects(payload.brief.projects);
         setNoProjects(payload.brief.noProjects);
         setReferenceIds(payload.brief.designReferenceAssetIds);
@@ -330,6 +352,7 @@ export function BriefForm({
       }
     },
     [
+      businessName,
       endpoint,
       noProjects,
       offer,
@@ -431,6 +454,28 @@ export function BriefForm({
 
   return (
     <div className="flex flex-col gap-5" data-testid="brief-form">
+      {/* ── 0. What it's called ────────────────────────────────────────── */}
+      <GlassSurface as="section" variant="card">
+        <div className="flex flex-col gap-3">
+          <SectionHeading
+            title="What it's called"
+            hint="The name we introduce your site with. We started from what you told us; change it any time and your workspace picks up the correction."
+          />
+          <input
+            type="text"
+            data-testid="brief-business-name"
+            aria-label="Business name"
+            value={businessName}
+            maxLength={200}
+            onChange={(event) => {
+              setBusinessName(event.target.value);
+              setSaved(false);
+            }}
+            className="w-full rounded-lg border border-[var(--fs-rule)] bg-[var(--fs-glass-bg)] px-4 py-2.5 text-sm font-semibold text-[var(--fs-ink)] outline-none transition-colors focus:border-[var(--purple-primary)]"
+          />
+        </div>
+      </GlassSurface>
+
       {/* ── 1. What you offer ──────────────────────────────────────────── */}
       <GlassSurface as="section" variant="card">
         <div className="flex flex-col gap-3">

@@ -31,6 +31,7 @@ export const dynamic = 'force-dynamic';
 
 interface BriefRow {
   offer: string | null;
+  business_name: string | null;
   projects: unknown;
   no_projects: boolean | null;
   design_reference_asset_ids: string[] | null;
@@ -60,15 +61,15 @@ export default async function ClientBriefPage({
   const supabase = createSupabaseServiceRoleClient();
   const { data: workspace } = await supabase
     .from('workspaces')
-    .select('id')
+    .select('id, name')
     .eq('id', workspaceId)
-    .maybeSingle();
+    .maybeSingle<{ id: string; name: string }>();
   if (!workspace) notFound();
 
   const { data: row } = await withTenant(supabase, access.workspaceId)
     .from('workspace_briefs')
     .select(
-      'offer, projects, no_projects, design_reference_asset_ids, photo_asset_ids, ready_at, override_at, page_count'
+      'offer, business_name, projects, no_projects, design_reference_asset_ids, photo_asset_ids, ready_at, override_at, page_count'
     )
     .maybeSingle<BriefRow>();
 
@@ -76,6 +77,7 @@ export default async function ClientBriefPage({
   const photoAssetIds = row?.photo_asset_ids ?? [];
   const brief = {
     offer: row?.offer ?? '',
+    businessName: row?.business_name ?? '',
     projects: storedProjects(row?.projects),
     noProjects: Boolean(row?.no_projects),
     designReferenceAssetIds: row?.design_reference_asset_ids ?? [],
@@ -141,6 +143,7 @@ export default async function ClientBriefPage({
         initialBrief={brief}
         initialReadiness={readiness}
         derivedPageCount={derivedBriefPageCount(brief)}
+        derivedBusinessName={workspace.name ?? ''}
         initialAssets={assets.map((asset) => ({
           id: asset.id,
           kind: asset.kind,

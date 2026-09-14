@@ -109,6 +109,14 @@ const SpecSchema = z.object({
    */
   websiteUrl: z.string().max(300).optional().default(''),
   /**
+   * "Is this your own site?" — the one-tap follow-up asked right after the
+   * links question, so `deriveBusinessName` never reads a reference site's
+   * hostname as the business name. Optional, defaulting to "no": a caller
+   * that predates the question gets the safe behaviour of never guessing a
+   * business name from a link nobody confirmed was theirs.
+   */
+  websiteIsOwnSite: z.enum(['yes', 'no']).optional().default('no'),
+  /**
    * What someone actually buys. Required in the conversation, optional here
    * for the same reason `description` used to be everything: a brief taken
    * before the question existed has none, and refusing it would turn a stored

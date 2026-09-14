@@ -34,6 +34,7 @@ const originalFetch = global.fetch;
 function brief(overrides: Partial<BriefView> = {}): BriefView {
   return {
     offer: '',
+    businessName: '',
     projects: [],
     noProjects: false,
     designReferenceAssetIds: [],
@@ -97,7 +98,13 @@ function mount(
    * form never derives it itself: the rule lives in the codegen package and
    * the client bundle has no business carrying it.
    */
-  derivedPageCount = 'lt-5'
+  derivedPageCount = 'lt-5',
+  /**
+   * What `workspaces.name` is right now — the value `deriveBusinessName`
+   * produced at claim time. Shown as the business-name input's value
+   * whenever the brief has not corrected it yet.
+   */
+  derivedBusinessName = 'A New Business'
 ) {
   return render(
     <BriefForm
@@ -106,6 +113,7 @@ function mount(
       initialReadiness={readiness}
       initialAssets={assets}
       derivedPageCount={derivedPageCount}
+      derivedBusinessName={derivedBusinessName}
     />
   );
 }
@@ -686,5 +694,68 @@ describe('BriefForm', () => {
         'We could not record that confirmation'
       )
     );
+  });
+});
+
+describe('BriefForm — business name', () => {
+  it("shows the workspace's current name until the client corrects it", () => {
+    mount(brief(), [], undefined, 'lt-5', 'Arome Coffee');
+    expect(screen.getByTestId('brief-business-name')).toHaveValue(
+      'Arome Coffee'
+    );
+  });
+
+  it('shows what the client already saved here, over the derived value', () => {
+    mount(
+      brief({ businessName: 'Arome Coffee Roastery' }),
+      [],
+      undefined,
+      'lt-5',
+      'Arome Coffee'
+    );
+    expect(screen.getByTestId('brief-business-name')).toHaveValue(
+      'Arome Coffee Roastery'
+    );
+  });
+
+  it('sends an edit on save, and the server has the last word on what is shown', async () => {
+    const user = userEvent.setup();
+    mount(brief(), [], undefined, 'lt-5', 'Arome Coffee');
+
+    const input = screen.getByTestId('brief-business-name');
+    await user.clear(input);
+    await user.type(input, 'Arome Coffee Roastery');
+
+    respondWith({
+      brief: brief({ businessName: 'Arome Coffee Roastery' }),
+      readiness: readinessFor(brief(), []),
+      assets: [],
+    });
+    await user.click(screen.getByTestId('brief-save'));
+
+    await waitFor(() =>
+      expect(lastPutBody().businessName).toBe('Arome Coffee Roastery')
+    );
+    expect(screen.getByTestId('brief-business-name')).toHaveValue(
+      'Arome Coffee Roastery'
+    );
+  });
+
+  it('sends the derived value unedited, which the route treats as a no-op rename', async () => {
+    // The input is seeded with the derived value so it behaves like an
+    // ordinary text field once mounted (see the seeding comment in
+    // BriefForm.tsx). Saving without touching it still sends that value, but
+    // it already matches the workspace's current name, so
+    // `applyBusinessNameToWorkspace` on the server does nothing with it.
+    const user = userEvent.setup();
+    mount(brief(), [], undefined, 'lt-5', 'Arome Coffee');
+    respondWith({
+      brief: brief({ businessName: '' }),
+      readiness: readinessFor(brief(), []),
+      assets: [],
+    });
+    await user.click(screen.getByTestId('brief-save'));
+    await waitFor(() => expect(lastPutBody().offer).toBe(''));
+    expect(lastPutBody().businessName).toBe('Arome Coffee');
   });
 });

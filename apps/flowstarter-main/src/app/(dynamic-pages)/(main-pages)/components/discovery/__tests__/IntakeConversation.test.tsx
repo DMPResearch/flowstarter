@@ -221,6 +221,10 @@ describe('the intake conversation', () => {
         websiteUrl: 'https://ionescu-dental.ro',
       })
     );
+    // The link included a website, so the one-tap "is this your own site?"
+    // follow-up is next. Answered here rather than skipped, so the assertion
+    // pins that a typed answer reaches it the same way a tapped chip would.
+    await say(user, 'No');
     // One optional turn left: the connect-photo offer, on the same stage as
     // the link it is about. Declining it is one tap and reaches the preview.
     await skipConnect(user);
