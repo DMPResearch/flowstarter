@@ -44,6 +44,13 @@ export interface BriefProjectView {
 
 export interface BriefView {
   offer: string;
+  /**
+   * The client's own business name, given on the brief. '' means they have
+   * not set one here — the form then prefills the input with the workspace's
+   * current name (which is already the value `deriveBusinessName` produced
+   * at claim time) rather than this column holding a second copy of it.
+   */
+  businessName: string;
   projects: BriefProjectView[];
   noProjects: boolean;
   designReferenceAssetIds: string[];
@@ -70,6 +77,7 @@ export interface BriefView {
 /** A first visit has no row, and that is not an error. */
 export const EMPTY_BRIEF: BriefView = {
   offer: '',
+  businessName: '',
   projects: [],
   noProjects: false,
   designReferenceAssetIds: [],
@@ -82,6 +90,7 @@ export const EMPTY_BRIEF: BriefView = {
 
 export interface BriefRow {
   offer: string | null;
+  business_name: string | null;
   projects: unknown;
   no_projects: boolean | null;
   design_reference_asset_ids: string[] | null;
@@ -92,7 +101,7 @@ export interface BriefRow {
 }
 
 export const BRIEF_ROW_COLUMNS =
-  'offer, projects, no_projects, design_reference_asset_ids, photo_asset_ids, ready_at, override_at, page_count';
+  'offer, business_name, projects, no_projects, design_reference_asset_ids, photo_asset_ids, ready_at, override_at, page_count';
 
 /**
  * `projects` is a jsonb column, so what comes back is whatever was put in.
@@ -156,6 +165,7 @@ export function briefViewFromRow(
   const photoAssetIds = row.photo_asset_ids ?? [];
   return {
     offer: row.offer ?? '',
+    businessName: row.business_name ?? '',
     projects: storedProjects(row.projects),
     noProjects: Boolean(row.no_projects),
     designReferenceAssetIds: row.design_reference_asset_ids ?? [],

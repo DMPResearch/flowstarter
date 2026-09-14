@@ -36,9 +36,29 @@ describe('previewPayload — the four-question quick intake', () => {
     expect(payload.businessName.trim().length).toBeGreaterThan(0);
   });
 
-  it('derives the business name from the one link when there is no Brief answer yet', () => {
-    const payload = previewPayload(quickIntakeDraft());
+  it('derives the business name from the one link when it is confirmed as their own and no name was stated', () => {
+    const payload = previewPayload(
+      quickIntakeDraft({ websiteIsOwnSite: 'yes' })
+    );
     expect(payload.businessName).toBe('Sablefig');
+  });
+
+  it('falls back to the full name for an unconfirmed website, even with no name stated', () => {
+    // The regression this whole rule exists to prevent: a visitor pastes a
+    // site as a reference, does not confirm it is theirs, and the hostname
+    // must not become the business name.
+    const payload = previewPayload(quickIntakeDraft());
+    expect(payload.businessName).toBe('Ana Pop');
+  });
+
+  it('prefers a name stated in "what you do" over a confirmed website hostname', () => {
+    const payload = previewPayload(
+      quickIntakeDraft({
+        description: 'Sable Fig, a small yoga studio in the neighbourhood.',
+        websiteIsOwnSite: 'yes',
+      })
+    );
+    expect(payload.businessName).toBe('Sable Fig');
   });
 
   it('falls back to the full name when the one link is a social profile, not a website', () => {

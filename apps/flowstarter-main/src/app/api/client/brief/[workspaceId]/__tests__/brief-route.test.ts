@@ -946,3 +946,76 @@ describe('PUT /api/client/brief/[workspaceId]', () => {
     ).toBeTruthy();
   });
 });
+
+describe('PUT — the business name renames the workspace', () => {
+  beforeEach(() => {
+    rows('workspaces').push({
+      id: WORKSPACE_A,
+      name: 'Andrei Ionescu project',
+      slug: 'andrei-ionescu-project-ab12cd',
+    });
+  });
+
+  it('stores it on the brief and returns it in the response', async () => {
+    const payload = await (
+      await callPut(WORKSPACE_A, body({ businessName: 'Arome Coffee' }))
+    ).json();
+    expect(payload.brief.businessName).toBe('Arome Coffee');
+    expect(savedBrief()?.business_name).toBe('Arome Coffee');
+  });
+
+  it('renames the workspace and reslugs it, when the site has never been published', async () => {
+    await callPut(WORKSPACE_A, body({ businessName: 'Arome Coffee' }));
+
+    const workspace = rows('workspaces').find((row) => row.id === WORKSPACE_A);
+    expect(workspace?.name).toBe('Arome Coffee');
+    expect(String(workspace?.slug)).toMatch(/^arome-coffee-/);
+    expect(workspace?.slug).not.toBe('andrei-ionescu-project-ab12cd');
+  });
+
+  it('renames the workspace but leaves the slug alone once the site has been published', async () => {
+    rows('site_versions').push({
+      workspace_id: WORKSPACE_A,
+      version: 1,
+      published_at: '2026-09-10T00:00:00.000Z',
+    });
+
+    await callPut(WORKSPACE_A, body({ businessName: 'Arome Coffee' }));
+
+    const workspace = rows('workspaces').find((row) => row.id === WORKSPACE_A);
+    expect(workspace?.name).toBe('Arome Coffee');
+    expect(workspace?.slug).toBe('andrei-ionescu-project-ab12cd');
+  });
+
+  it('does nothing to the workspace when the name is blank', async () => {
+    await callPut(WORKSPACE_A, body({ businessName: '' }));
+
+    const workspace = rows('workspaces').find((row) => row.id === WORKSPACE_A);
+    expect(workspace?.name).toBe('Andrei Ionescu project');
+    expect(workspace?.slug).toBe('andrei-ionescu-project-ab12cd');
+  });
+
+  it('does nothing when the name already matches', async () => {
+    const before = rows('workspaces').find((row) => row.id === WORKSPACE_A);
+    await callPut(
+      WORKSPACE_A,
+      body({ businessName: 'Andrei Ionescu project' })
+    );
+    const after = rows('workspaces').find((row) => row.id === WORKSPACE_A);
+    expect(after?.slug).toBe(before?.slug);
+  });
+
+  it('still returns 200 and saves the brief when the workspace row cannot be found', async () => {
+    // No `workspaces` row for WORKSPACE_B in this suite's fixtures.
+    authState.role = 'team';
+    const response = await callPut(
+      WORKSPACE_B,
+      body({ businessName: 'Arome Coffee' })
+    );
+    expect(response.status).toBe(200);
+    expect(
+      rows('workspace_briefs').find((row) => row.workspace_id === WORKSPACE_B)
+        ?.business_name
+    ).toBe('Arome Coffee');
+  });
+});

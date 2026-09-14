@@ -154,6 +154,7 @@ export default function DesignGalleryPage() {
               workspaceId={briefGallery.workspaceId}
               initialBrief={briefGallery.brief}
               derivedPageCount={derivedBriefPageCount(briefGallery.brief)}
+              derivedBusinessName="Ereno"
               initialReadiness={evaluateBriefReadiness({
                 offer: briefGallery.brief.offer,
                 projects: briefGallery.brief.projects,

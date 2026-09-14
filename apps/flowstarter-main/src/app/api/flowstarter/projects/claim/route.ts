@@ -64,6 +64,13 @@ const ClaimSchema = z.object({
   /** A site they already had. Read for a palette and kept as provenance. */
   websiteUrl: z.string().max(300).optional().default(''),
   /**
+   * "Is this your own site?" — the one-tap follow-up to the links question.
+   * `claimPreview`'s `deriveBusinessName` reads the website's hostname only
+   * on "yes"; a caller that predates the question gets the safe default,
+   * which is never guessing a name from an unconfirmed link.
+   */
+  websiteIsOwnSite: z.enum(['yes', 'no']).optional().default('no'),
+  /**
    * "Use my profile picture on the site", one tap on the claim page.
    *
    * A picture read off a public profile is filed without rights and is
@@ -131,6 +138,7 @@ function discoveryDataFrom(spec: z.infer<typeof ClaimSchema>): DiscoveryData {
     instagramUrl: '',
     linkedinUrl: '',
     websiteUrl: spec.websiteUrl ?? '',
+    websiteIsOwnSite: spec.websiteIsOwnSite,
     goal: spec.goal,
     secondaryGoals: [],
     brandTone: spec.brandTone,
@@ -193,7 +201,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       clientEmail: await primaryEmail(),
       clientName: spec.fullName,
       businessName: spec.businessName,
+      description: spec.description,
       websiteUrl: spec.websiteUrl,
+      websiteIsOwnSite: spec.websiteIsOwnSite,
       tier,
       ...(spec.subscription ? { subscriptionPlan: spec.subscription } : {}),
       ...(spec.billingCadence ? { billingCadence: spec.billingCadence } : {}),

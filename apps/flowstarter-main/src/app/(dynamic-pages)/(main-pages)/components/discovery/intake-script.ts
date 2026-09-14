@@ -53,6 +53,7 @@ export type IntakeQuestionId =
   | 'industry'
   | 'targetAudience'
   | 'links'
+  | 'websiteIsOwnSite'
   | 'connectPortrait'
   | 'goal'
   | 'brandTone'
@@ -310,6 +311,24 @@ const PAGE_OPTIONS: ReadonlyArray<IntakeOption & { value: PageCount }> = [
   },
 ];
 
+/**
+ * "Is this your own site?" — a whole-domain owner rather than a rule guessing
+ * from a pasted URL. Only two chips, so it is a genuine one-tap answer rather
+ * than a form field.
+ */
+const OWN_SITE_OPTIONS: ReadonlyArray<IntakeOption> = [
+  {
+    value: 'yes',
+    label: 'Yes',
+    labelKey: 'landing.discovery.options.ownSite.yes',
+  },
+  {
+    value: 'no',
+    label: 'No',
+    labelKey: 'landing.discovery.options.ownSite.no',
+  },
+];
+
 const TIMELINE_OPTIONS: ReadonlyArray<IntakeOption & { value: TimelineId }> = [
   {
     value: 'asap',
@@ -522,6 +541,30 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
       [data.instagramUrl, data.linkedinUrl, data.websiteUrl ?? '']
         .filter(Boolean)
         .join(' · '),
+  },
+  {
+    id: 'websiteIsOwnSite',
+    phase: 'quick',
+    // Shares stage 4 with the link it is asking about, for the same reason
+    // the connect offer does: a stage of its own would be a sixth thing
+    // standing between the visitor and the preview.
+    step: 4,
+    kind: 'choice',
+    promptKey: `${Q}websiteIsOwnSite.prompt`,
+    required: false,
+    options: OWN_SITE_OPTIONS,
+    // Only reachable when the one link was a website rather than a social
+    // profile: `websiteFrom` already tells the two apart, so a non-empty
+    // `websiteUrl` here means exactly that. A visitor who pasted only an
+    // Instagram or LinkedIn profile never sees this question at all.
+    when: (data) => Boolean(data.websiteUrl?.trim()),
+    validate: choiceValidator(OWN_SITE_OPTIONS),
+    // Skipped (or answered anything but "yes") means `deriveBusinessName`
+    // must not read the hostname as the business name — the whole point of
+    // asking. Defaulting to "no" needs no code here: an absent or empty
+    // `websiteIsOwnSite` already fails the `=== 'yes'` check the rule makes.
+    apply: choiceApplier('websiteIsOwnSite', OWN_SITE_OPTIONS),
+    value: (data) => data.websiteIsOwnSite ?? '',
   },
   {
     id: 'connectPortrait',

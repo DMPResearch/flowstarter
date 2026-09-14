@@ -182,6 +182,14 @@ export function previewPayload(raw: DiscoveryData) {
     // A site they already have. The brief type has carried
     // `existingWebsiteUrl` since it was written with nothing ever setting it.
     websiteUrl: data.websiteUrl ?? '',
+    // Whether that site is theirs, so the server's own `deriveBusinessName`
+    // agrees with the one this function already ran above, rather than
+    // trusting `businessName` unchecked. Omitted rather than sent as '': the
+    // route's schema is a two-value enum with its own default, the same way
+    // `pageCount`/`timeline` are omitted below rather than sent blank.
+    ...(data.websiteIsOwnSite
+      ? { websiteIsOwnSite: data.websiteIsOwnSite }
+      : {}),
     // What someone actually buys. The generator's services section is written
     // from this rather than inferred from the description.
     offer: data.offer ?? '',

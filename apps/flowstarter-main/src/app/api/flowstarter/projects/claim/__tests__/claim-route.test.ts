@@ -333,21 +333,25 @@ describe('POST /api/flowstarter/projects/claim', () => {
     expect(body.unlockUrl).toContain(`/unlock/${body.workspaceId}`);
   });
 
-  it('names the workspace after its own website, not the person claiming it, when there is no business-name answer yet', async () => {
+  it('names the workspace after its own website, not the person claiming it, when there is no business-name answer yet and the site is confirmed as theirs', async () => {
     // Regression: the business-name question moved behind the deposit, so a
     // quick-intake claim has an empty `businessName` and the workspace's own
     // name (and, through it, its slug) fell back to "<full name> project" --
     // a dental practice became "andrei-ionescu-project-<id>". `claimPreview`
     // now runs the same `deriveBusinessName` rule the quick-intake preview
-    // uses, so a real website link still names the business.
+    // uses, so a real, CONFIRMED website link still names the business.
     stashPreview();
 
     await POST(
       claimRequest({
         ...VALID_BODY,
         businessName: '',
+        // No name stated here either, so the description does not outrank
+        // the website the way the Onyx regression test proves it should.
+        description: 'Dental care for anxious patients across the county.',
         fullName: 'Andrei Ionescu',
         websiteUrl: 'https://ionescu-dental.ro',
+        websiteIsOwnSite: 'yes',
       })
     );
 
@@ -356,6 +360,28 @@ describe('POST /api/flowstarter/projects/claim', () => {
     // The raw, unguessed answer stays null -- this is display/slug only,
     // never a claimed fact about what the client actually typed.
     expect(db.workspaces[0].client_business_name).toBeNull();
+  });
+
+  it('never reads the website when ownership was not confirmed, even with no business-name answer', async () => {
+    // The Onyx incident this rule exists to prevent: an unconfirmed website
+    // -- a reference, not "theirs" -- must never name the workspace, even
+    // when nothing else was stated either.
+    stashPreview();
+
+    await POST(
+      claimRequest({
+        ...VALID_BODY,
+        businessName: '',
+        description: 'Dental care for anxious patients across the county.',
+        fullName: 'Andrei Ionescu',
+        websiteUrl: 'https://ionescu-dental.ro',
+        // No `websiteIsOwnSite` sent at all -- the honest state of a caller
+        // that never answered the one-tap follow-up.
+      })
+    );
+
+    expect(db.workspaces[0].name).toBe('Andrei Ionescu');
+    expect(db.workspaces[0].name).not.toMatch(/ionescu.dental/i);
   });
 
   it('falls back to the visitor’s own name when there is neither a business-name answer nor a link', async () => {
@@ -368,6 +394,7 @@ describe('POST /api/flowstarter/projects/claim', () => {
       claimRequest({
         ...VALID_BODY,
         businessName: '',
+        description: '',
         fullName: 'Andrei Ionescu',
         websiteUrl: '',
       })

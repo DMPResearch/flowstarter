@@ -2480,6 +2480,8 @@ const en = {
     'Anything of yours I can look at: Instagram, LinkedIn, a site you already have? Paste what you have and I will take your colours and your voice from it.',
   'landing.discovery.chat.q.links.placeholder':
     'instagram.com/yourbusiness, linkedin.com/in/you, yoursite.com',
+  'landing.discovery.chat.q.websiteIsOwnSite.prompt':
+    'Quick check: is that site yours? If it is, I will use its name for the business; if it is a reference, I will leave it out of the name.',
   'landing.discovery.chat.q.goal.prompt':
     'What should the site actually do for you? Pick as many as fit, or add your own.',
   'landing.discovery.chat.q.goal.placeholder':
@@ -2538,6 +2540,10 @@ const en = {
     "Thanks. I'll read through that before I write a word, so the site sounds like you.",
   'landing.discovery.chat.q.links.reflect.skipped':
     "No problem. I'll work from your own words instead.",
+  'landing.discovery.chat.q.websiteIsOwnSite.reflect.yes':
+    "Good to know. I'll take the business name from that site.",
+  'landing.discovery.chat.q.websiteIsOwnSite.reflect.no':
+    "Noted, that one is a reference, not yours. I'll name the business from what you told me instead.",
   'landing.discovery.chat.q.goal.reflect':
     'So its job is to {list}. That decides what goes above the fold.',
   'landing.discovery.chat.q.brandTone.reflect':
@@ -2683,6 +2689,12 @@ const en = {
   'landing.discovery.options.pages.15+.sub': 'Large site, blog, locations',
   'landing.discovery.options.pages.unsure.label': 'Not sure',
   'landing.discovery.options.pages.unsure.sub': "We'll work it out on the call",
+
+  // "Is this your own site?" — the one-tap follow-up to the links question,
+  // asked only when the one link pasted there was a website rather than a
+  // social profile.
+  'landing.discovery.options.ownSite.yes': 'Yes',
+  'landing.discovery.options.ownSite.no': 'No',
 
   // Timeline options
   'landing.discovery.options.timeline.asap': 'ASAP',

@@ -40,6 +40,7 @@ import {
   enqueueBuildOnBriefReady,
   type BriefReadyOutcome,
 } from '@/lib/flowstarter/deposit-workflow';
+import { uniqueSlug } from '@/lib/flowstarter/claim';
 import { withTenant } from '@/lib/tenancy';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import {
@@ -113,6 +114,13 @@ export async function GET(
  */
 const BodySchema = z.object({
   offer: z.string().max(2000),
+  /**
+   * The client's own business name. Optional so a caller that predates the
+   * field is not rejected; '' means "unset", not "call it nothing" —
+   * `applyBusinessNameToWorkspace` below never renames the workspace to an
+   * empty string.
+   */
+  businessName: z.string().max(200).optional().default(''),
   projects: z
     .array(
       z.object({
@@ -291,6 +299,7 @@ export async function PUT(
     const { error: writeError } = await tenant.from('workspace_briefs').upsert(
       {
         offer: body.offer,
+        business_name: body.businessName,
         projects,
         no_projects: body.noProjects,
         design_reference_asset_ids: body.designReferenceAssetIds,
@@ -303,6 +312,25 @@ export async function PUT(
       { onConflict: 'workspace_id' }
     );
     if (writeError) throw writeError;
+
+    // The name on the brief is the client's own correction, and it is
+    // allowed to rename the workspace itself: the value `deriveBusinessName`
+    // guessed at claim time is exactly that, a guess, and this is where the
+    // client gets the last word. Best effort by design -- a rename that fails
+    // must not fail a save the readiness checklist already reported as
+    // succeeded, so a query error here is logged and swallowed rather than
+    // thrown.
+    await applyBusinessNameToWorkspace(
+      supabase,
+      access.workspaceId,
+      body.businessName
+    ).catch((error) => {
+      console.error(
+        `[api/client/brief] could not rename workspace ${access.workspaceId} ` +
+          'from the brief: ' +
+          (error instanceof Error ? error.message : 'unknown error')
+      );
+    });
 
     // Counts only. The offer and the project descriptions are the client's own
     // words about their business; an audit trail does not need them and every
@@ -336,6 +364,7 @@ export async function PUT(
     return NextResponse.json({
       brief: {
         offer: body.offer,
+        businessName: body.businessName,
         projects,
         noProjects: body.noProjects,
         designReferenceAssetIds: body.designReferenceAssetIds,
@@ -427,6 +456,61 @@ async function applyPortrait(
       .eq('id', portraitAssetId);
     if (error) throw error;
   }
+}
+
+/**
+ * Renames the workspace to the brief's business name, and reslugs it too --
+ * but only while nobody has published the site yet.
+ *
+ * `workspaces` is keyed by `id`, not `workspace_id`, so this reads and writes
+ * it directly with the service-role client rather than through `withTenant`,
+ * the same way `claim.ts` does. A no-op on an empty name (nothing to rename
+ * to) and on a name that already matches (nothing changed), so an ordinary
+ * save of the offer or a photo — the vast majority of PUTs — never queries
+ * either table this touches.
+ *
+ * The slug is the published URL once a site has gone live once
+ * (`site_versions.published_at`), so reslugging after that would 404 a link
+ * somebody may already have shared. The name still updates in that case —
+ * it is what the next build's site title reads — only the slug is frozen.
+ */
+async function applyBusinessNameToWorkspace(
+  supabase: ReturnType<typeof createSupabaseServiceRoleClient>,
+  workspaceId: string,
+  businessName: string
+): Promise<void> {
+  const trimmedName = businessName.trim();
+  if (!trimmedName) return;
+
+  const { data: workspace, error: workspaceError } = await supabase
+    .from('workspaces')
+    .select('name')
+    .eq('id', workspaceId)
+    .maybeSingle<{ name: string }>();
+  if (workspaceError) throw workspaceError;
+  if (!workspace || workspace.name === trimmedName) return;
+
+  // Filtered in JS rather than with a `.not(...)` clause: a version row's
+  // `published_at` is null far more often than not (only one version is ever
+  // published at a time -- see `markVersionPublished`), so this is a small
+  // in-memory scan, not an unbounded query.
+  const { data: versionRows, error: publishedError } = await supabase
+    .from('site_versions')
+    .select('published_at')
+    .eq('workspace_id', workspaceId);
+  if (publishedError) throw publishedError;
+  const published = (versionRows ?? []).some(
+    (row: { published_at: string | null }) => row.published_at
+  );
+
+  const update: { name: string; slug?: string } = { name: trimmedName };
+  if (!published) update.slug = uniqueSlug(trimmedName);
+
+  const { error: updateError } = await supabase
+    .from('workspaces')
+    .update(update)
+    .eq('id', workspaceId);
+  if (updateError) throw updateError;
 }
 
 /**

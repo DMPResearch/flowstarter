@@ -27,6 +27,7 @@ import {
   INTAKE_SCRIPT,
   answerText,
   answeredQuestions,
+  applicableQuestions,
   conversationProgress,
   firstSentence,
   humanList,
@@ -34,7 +35,6 @@ import {
   nextQuestion,
   promptText,
   questionById,
-  questionsInPhase,
   reflectionText,
   shortcutLetter,
   stepForConversation,
@@ -245,7 +245,11 @@ describe('the required-answer gate', () => {
   it('counts progress over the questions this visitor is actually asked', () => {
     const start = conversationProgress(EMPTY_DISCOVERY, []);
     expect(start.done).toBe(0);
-    expect(start.total).toBe(questionsInPhase('quick').length);
+    // Not `questionsInPhase('quick').length`: `websiteIsOwnSite` only applies
+    // once a website has been pasted, which a blank draft has not done yet,
+    // so the total this visitor actually sees starts one short of the whole
+    // quick phase.
+    expect(start.total).toBe(applicableQuestions(EMPTY_DISCOVERY).length);
 
     const { data, asked } = walk(FULL_ANSWERS);
     const end = conversationProgress(data, asked);

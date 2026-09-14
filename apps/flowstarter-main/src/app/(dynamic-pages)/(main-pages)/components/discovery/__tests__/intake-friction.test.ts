@@ -47,41 +47,51 @@ describe('the friction budget', () => {
     expect(quickRequiredCount()).toBe(4);
   });
 
-  it('asks for who you are, where to send it, what you do, and one link, then offers the photo', () => {
+  it('asks for who you are, where to send it, what you do, and one link, then offers the own-site check and the photo', () => {
     expect(questionsInPhase('quick').map((question) => question.id)).toEqual([
       'fullName',
       'email',
       'description',
       'links',
+      'websiteIsOwnSite',
       'connectPortrait',
     ]);
   });
 
-  it('allows exactly one optional question in front of the preview, and it is the photo', () => {
-    // The ceiling that replaces "everything here is required". One skippable
-    // offer is a feature; two is the beginning of a form, and the difference
-    // between them is a number a reviewer can see change.
+  it('allows exactly two optional questions in front of the preview: the own-site check and the photo', () => {
+    // The ceiling that replaces "everything here is required". `websiteIsOwnSite`
+    // is the one addition since this ceiling was written, and it earns its
+    // place the same way the connect offer did: it is a single tap, it
+    // follows directly from an answer already given, and it closes a real
+    // incident (a pasted reference site naming the workspace after somebody
+    // else's trademark) rather than asking for more information for its own
+    // sake. A third optional question would need the same bar to clear.
     const optional = questionsInPhase('quick').filter(
       (question) => !question.required
     );
     expect(optional.map((question) => question.id)).toEqual([
+      'websiteIsOwnSite',
       'connectPortrait',
     ]);
   });
 
-  it('makes every one of the four required, and the fifth skippable', () => {
+  it('makes every one of the four required, and the other two skippable', () => {
     const quick = questionsInPhase('quick');
+    const skippable = ['websiteIsOwnSite', 'connectPortrait'];
     for (const question of quick.filter(
-      (entry) => entry.id !== 'connectPortrait'
+      (entry) => !skippable.includes(entry.id)
     )) {
       expect(question.required).toBe(true);
     }
     // A portrait is worth asking for once, at the moment the visitor is
     // already thinking about their profiles. It is not something a preview
-    // cannot be built without, so it never gates anything.
-    expect(
-      quick.find((entry) => entry.id === 'connectPortrait')?.required
-    ).toBe(false);
+    // cannot be built without, so it never gates anything. Nor does the
+    // own-site check: it only ever narrows a guess, and a visitor who skips
+    // it gets the safe default (the hostname is not used) rather than a
+    // blocked preview.
+    for (const id of skippable) {
+      expect(quick.find((entry) => entry.id === id)?.required).toBe(false);
+    }
   });
 
   it('keeps the rest of the script, behind the deposit', () => {
@@ -133,13 +143,14 @@ describe('the stages', () => {
     expect(LAST_STEP).toBe(6);
   });
 
-  it('has one quick question per quick stage, and the connect offer on the links stage', () => {
-    // Four stages, five questions, because the connect offer belongs to the
-    // links stage: it is about the same link the visitor has just pasted. A
-    // stage of its own would read as a fifth thing standing between them and
-    // the preview, which is exactly what the stage list exists to prevent.
+  it('has one quick question per quick stage, and the own-site check and the connect offer on the links stage', () => {
+    // Four stages, six questions, because the own-site check and the connect
+    // offer both belong to the links stage: they are both about the same
+    // link the visitor has just pasted. A stage of its own for either would
+    // read as one more thing standing between them and the preview, which is
+    // exactly what the stage list exists to prevent.
     const quick = questionsInPhase('quick');
-    expect(quick.map((question) => question.step)).toEqual([1, 2, 3, 4, 4]);
+    expect(quick.map((question) => question.step)).toEqual([1, 2, 3, 4, 4, 4]);
   });
 
   it('names every stage in the catalogue', () => {

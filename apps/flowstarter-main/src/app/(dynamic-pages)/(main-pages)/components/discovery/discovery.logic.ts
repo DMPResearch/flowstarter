@@ -207,6 +207,21 @@ export interface DiscoveryData {
   portraitPreviewId?: string;
   /** What came back from a connect round trip, read off the URL we returned to. */
   portraitConnect?: { provider: 'linkedin' | 'instagram'; outcome: string };
+
+  /**
+   * "Is this your own site?" — the one-tap follow-up asked right after the
+   * links question, but only when the one link pasted there was a website
+   * rather than a social profile (`websiteFrom` already tells the two apart).
+   *
+   * Without this the links question alone cannot tell "my own site" from "a
+   * competitor I like" from "the site I am replacing" — every non-social URL
+   * looked the same, and `deriveBusinessName` used to name the workspace
+   * after whichever one was pasted, trademark or not. `''` and `'no'` both
+   * mean the hostname must not be used; only `'yes'` does. Optional, and
+   * defaulted at the point of use rather than here, for the same reason the
+   * connect step's fields are: a draft saved before this existed has none.
+   */
+  websiteIsOwnSite?: 'yes' | 'no' | '';
 }
 
 /** Mirrors `PaletteColour` in `lib/flowstarter/brand-palette.ts`. */
@@ -269,6 +284,7 @@ export const EMPTY_DISCOVERY: DiscoveryData = {
   instagramUrl: '',
   linkedinUrl: '',
   websiteUrl: '',
+  websiteIsOwnSite: '',
   goal: '',
   secondaryGoals: [],
   brandTone: '',
