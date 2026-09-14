@@ -16,11 +16,6 @@ interface PreQualModalProps {
   source?: string;
   /** Pre-select a plan when opened from pricing cards */
   initialPlan?: string | null;
-  /**
-   * Reopen straight on a later step (used after the Stripe deposit redirect
-   * returns the prospect to the site — they resume at the calendar).
-   */
-  resumeStep?: 'calendar' | null;
 }
 
 const VALID_TIERS = new Set<Tier>(['starter', 'pro', 'commerce', 'custom']);
@@ -49,7 +44,6 @@ export function PreQualModal({
   onClose,
   source = 'cta',
   initialPlan,
-  resumeStep = null,
 }: PreQualModalProps) {
   const { t: tStrict } = useI18n();
   const t = tStrict as (key: string) => string;
@@ -66,8 +60,10 @@ export function PreQualModal({
       setSelectedTier(coerceInitialTier(initialPlan));
       setDiscoveryData(null);
       setWizardStage('intake');
-      // After a paid deposit we resume at the calendar; otherwise start fresh.
-      setStep(resumeStep === 'calendar' ? 'calendar' : 'discovery');
+      // Always from the top. There used to be a `resumeStep` that reopened on
+      // the calendar after the pre-call deposit's Stripe redirect; that
+      // deposit is gone and nothing else ever set it.
+      setStep('discovery');
       document.body.style.overflow = 'hidden';
     } else {
       document.body.style.overflow = '';
@@ -75,7 +71,7 @@ export function PreQualModal({
     return () => {
       document.body.style.overflow = '';
     };
-  }, [open, initialPlan, resumeStep]);
+  }, [open, initialPlan]);
 
   // Close on Escape
   useEffect(() => {

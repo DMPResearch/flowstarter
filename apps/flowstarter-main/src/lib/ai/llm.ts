@@ -40,6 +40,8 @@ export const LLM_ACTIONS = [
   'recommend_tier',
   'classify_project',
   'classify_client_request',
+  /** Standard site or custom work, before any generation budget is spent. */
+  'classify_scope',
   'extract_brief',
   'moderate',
   'site_copy',
@@ -104,6 +106,10 @@ export const LLM_BUDGETS: Record<LlmAction, LlmActionConfig> = {
     maxOutputTokens: 600,
     model: SONNET,
   },
+  // Three fields out of a few hundred words in. The output cap is the real
+  // bound here: an answer longer than this is not a classification, it is the
+  // model explaining itself into a JSON parse failure.
+  classify_scope: { maxTokens: 6_000, maxOutputTokens: 250, model: SONNET },
   extract_brief: { maxTokens: 8_000, maxOutputTokens: 700, model: SONNET },
   moderate: { maxTokens: 4_000, maxOutputTokens: 800, model: 'openai/gpt-4o' },
   site_copy: { maxTokens: 12_000, maxOutputTokens: 2_000, model: SONNET },

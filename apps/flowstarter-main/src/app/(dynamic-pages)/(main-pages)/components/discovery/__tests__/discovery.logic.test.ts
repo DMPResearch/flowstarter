@@ -6,31 +6,12 @@ import {
   LAST_STEP,
   PREVIEW_STEP,
   STEPS,
-  bookingDepositAmount,
-  bookingDepositFor,
   canProceed,
   extractCalComUrl,
   resolveDiscoveryCalComUrl,
   recommendTier,
   usesDedicatedSubscription,
 } from '../discovery.logic';
-
-describe('booking deposit amounts', () => {
-  it('is 10% of setup, floored, for standard tiers', () => {
-    expect(bookingDepositAmount('starter')).toBe(79); // 10% of 799
-    expect(bookingDepositAmount('pro')).toBe(119); // 10% of 1,199
-    expect(bookingDepositAmount('commerce')).toBe(149); // 10% of 1,499
-  });
-
-  it('is a flat €199 for custom (open-ended scope)', () => {
-    expect(bookingDepositAmount('custom')).toBe(199);
-  });
-
-  it('formats with the euro sign', () => {
-    expect(bookingDepositFor('starter')).toBe('€79');
-    expect(bookingDepositFor('custom')).toBe('€199');
-  });
-});
 
 describe('extractCalComUrl', () => {
   it('finds a bare cal.com link mentioned alongside other text', () => {

@@ -27,8 +27,10 @@ import { IntakeConversation } from './steps/IntakeConversation';
 import { IntakeGraphConversation } from './steps/IntakeGraphConversation';
 import { IntakePreviewPane } from './steps/IntakePreviewPane';
 import { useBrandSignals } from './useBrandSignals';
+import { useScopeRoute } from './useScopeRoute';
 import { IntakeStage } from './steps/IntakeStage';
 import { PreviewStep } from './steps/PreviewStep';
+import { ScopeGateStep } from './steps/ScopeGateStep';
 import { RecommendationStep } from './steps/RecommendationStep';
 import { SubscriptionStep } from './steps/SubscriptionStep';
 import { derivePreviewSkeleton } from './preview-skeleton';
@@ -322,6 +324,17 @@ export function DiscoveryWizard({
   const proceed = canProceed(step, data);
   const talking = step <= CONVERSATION_LAST_STEP;
 
+  /**
+   * Standard site, or custom work?
+   *
+   * Runs once, the moment the conversation runs dry, and `PreviewStep` does
+   * not mount until it answers `self-serve`. Everything about why is in
+   * `useScopeRoute` and in `@/lib/flowstarter/scope-route`; the only thing the
+   * wizard has to get right is that this is read before the preview renders
+   * and not after.
+   */
+  const scope = useScopeRoute({ data, active: step === PREVIEW_STEP });
+
   const handleNext = useCallback(() => {
     if (!proceed) return;
     setStep((s) => Math.min(LAST_STEP, s + 1) as Step);
@@ -456,10 +469,22 @@ export function DiscoveryWizard({
             }
           />
         )}
+        {/* The routing gate. It renders in `PreviewStep`'s place until it has
+            said `self-serve`, which is what keeps a custom work brief from
+            ever reaching `/api/discovery/preview/live`: the component that
+            starts a generation is not on the page. See `useScopeRoute`. */}
+        {step === PREVIEW_STEP && scope.state.status !== 'self-serve' && (
+          <ScopeGateStep
+            state={scope.state}
+            pending={scope.pending}
+            onClarify={scope.clarify}
+            t={t}
+          />
+        )}
         {/* The preview, and then the money. The visitor has answered four
             questions and gets a real site to look at; the build package and
             the monthly plan are asked against it rather than in front of it. */}
-        {step === PREVIEW_STEP && (
+        {step === PREVIEW_STEP && scope.state.status === 'self-serve' && (
           <PreviewStep
             data={data}
             t={t}

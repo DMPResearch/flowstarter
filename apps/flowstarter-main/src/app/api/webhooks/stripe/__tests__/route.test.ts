@@ -880,176 +880,38 @@ describe('POST /api/webhooks/stripe', () => {
       expect(ledgerOutcome()).toBe('ignored');
     });
 
-    it('routes a non-change-request checkout to the booking deposit handler and notifies the team', async () => {
+    it('ignores a checkout session that is not a change request', async () => {
+      // There used to be a pre-call booking deposit here, settled by
+      // `handleBookingDepositPaid` off this same fall-through. Both are gone
+      // (2026-09-14): the discovery call is free and is booked on the
+      // self-hosted Cal.com, so no code path mints a `booking_deposit`
+      // session any more. What matters now is that the fall-through records
+      // `ignored` rather than dropping out of the switch with nothing to say,
+      // and that it writes and mails nothing.
       constructEvent.mockReturnValue(
         stripeEvent('checkout.session.completed', {
           id: 'cs_2',
           amount_total: 15000,
-          metadata: {
-            kind: 'booking_deposit',
-            leadId: 'lead_1',
-            name: 'Jane Doe',
-            email: 'jane@example.com',
-            businessName: 'Jane Co',
-            tier: 'starter',
-          },
-        })
-      );
-      script.leadsProjectId = null;
-      const { POST } = await import('../route');
-      const res = await POST(post('{}'));
-      expect(res.status).toBe(200);
-
-      // Lead marked paid.
-      expect(captured.updates[0]).toMatchObject({
-        table: 'discovery_leads',
-        values: { deposit_status: 'paid', deposit_amount_eur: 150 },
-        eq: ['id', 'lead_1'],
-      });
-      // No existing project -> auto-creates a workspace at intake.
-      expect(captured.inserts).toContainEqual({
-        table: 'workspaces',
-        values: expect.objectContaining({
-          name: 'Jane Co',
-          site_kind: 'astro',
-          client_email: 'jane@example.com',
-          concierge_stage: 'intake',
-        }),
-      });
-      // Lead re-linked to the new workspace.
-      expect(captured.updates.at(-1)).toMatchObject({
-        table: 'discovery_leads',
-        values: { project_id: 'ws_new_1' },
-        eq: ['id', 'lead_1'],
-      });
-      expect(sendEmail).toHaveBeenCalledTimes(1);
-      const emailArgs = sendEmail.mock.calls[0][0];
-      expect(emailArgs.to).toBe('hello@flowstarter.net');
-      expect(emailArgs.subject).toContain('Jane Doe');
-    });
-
-    it('uses the commerce site kind for the commerce tier', async () => {
-      constructEvent.mockReturnValue(
-        stripeEvent('checkout.session.completed', {
-          id: 'cs_3',
-          metadata: {
-            kind: 'booking_deposit',
-            leadId: 'lead_2',
-            tier: 'commerce',
-          },
-        })
-      );
-      script.leadsProjectId = null;
-      const { POST } = await import('../route');
-      await POST(post('{}'));
-      expect(captured.inserts[0]).toMatchObject({
-        table: 'workspaces',
-        values: expect.objectContaining({ site_kind: 'shopify_liquid' }),
-      });
-    });
-
-    it('skips workspace auto-create when the lead already has a linked project', async () => {
-      constructEvent.mockReturnValue(
-        stripeEvent('checkout.session.completed', {
-          id: 'cs_4',
-          metadata: { kind: 'booking_deposit', leadId: 'lead_3' },
-        })
-      );
-      script.leadsProjectId = 'ws_existing';
-      const { POST } = await import('../route');
-      const res = await POST(post('{}'));
-      expect(res.status).toBe(200);
-      expect(captured.inserts).toHaveLength(0);
-    });
-
-    it('returns 500 when the workspace auto-create insert fails, so Stripe retries', async () => {
-      constructEvent.mockReturnValue(
-        stripeEvent('checkout.session.completed', {
-          id: 'cs_5',
-          metadata: { kind: 'booking_deposit', leadId: 'lead_4' },
-        })
-      );
-      script.leadsProjectId = null;
-      script.workspaceInsertResult = {
-        data: null,
-        error: { message: 'unique violation on slug' },
-      };
-      const { POST } = await import('../route');
-      const res = await POST(post('{}'));
-      expect(res.status).toBe(500);
-      // The team is not told a prospect is booked until the row exists.
-      expect(sendEmail).not.toHaveBeenCalled();
-      expect(ledgerOutcome()).toBe('failed');
-    });
-
-    it('skips the lead-paid block entirely when no leadId is present', async () => {
-      constructEvent.mockReturnValue(
-        stripeEvent('checkout.session.completed', {
-          id: 'cs_6',
-          metadata: { kind: 'booking_deposit', email: 'noone@example.com' },
+          metadata: { kind: 'something_else', email: 'jane@example.com' },
         })
       );
       const { POST } = await import('../route');
       const res = await POST(post('{}'));
       expect(res.status).toBe(200);
-      expect(captured.updates).toHaveLength(0);
-      expect(captured.inserts).toHaveLength(0);
-      expect(sendEmail).toHaveBeenCalledTimes(1);
-    });
-
-    it('is a no-op for a checkout session with an unrelated metadata kind', async () => {
-      constructEvent.mockReturnValue(
-        stripeEvent('checkout.session.completed', {
-          id: 'cs_7',
-          metadata: { kind: 'something_else' },
-        })
-      );
-      const { POST } = await import('../route');
-      const res = await POST(post('{}'));
-      expect(res.status).toBe(200);
-      expect(sendEmail).not.toHaveBeenCalled();
       expect(ledgerOutcome()).toBe('ignored');
-    });
-
-    it('falls back to the metadata amountEur and unknown amount when amount_total is absent', async () => {
-      constructEvent.mockReturnValue(
-        stripeEvent('checkout.session.completed', {
-          id: 'cs_8',
-          metadata: { kind: 'booking_deposit', amountEur: '99' },
-        })
-      );
-      const { POST } = await import('../route');
-      await POST(post('{}'));
-      const emailArgs = sendEmail.mock.calls[0][0];
-      expect(emailArgs.subject).toContain('€99');
-    });
-
-    it('returns 500 when the lead could not be marked paid', async () => {
-      constructEvent.mockReturnValue(
-        stripeEvent('checkout.session.completed', {
-          id: 'cs_9',
-          metadata: { kind: 'booking_deposit', leadId: 'lead_5' },
-        })
-      );
-      script.leadsUpdateError = { message: 'connection reset' };
-      const { POST } = await import('../route');
-      const res = await POST(post('{}'));
-      expect(res.status).toBe(500);
       expect(sendEmail).not.toHaveBeenCalled();
-      expect(ledgerOutcome()).toBe('failed');
+      expect(settleChangeRequestCheckout).not.toHaveBeenCalled();
     });
 
-    it('swallows a sendEmail failure without failing the webhook', async () => {
+    it('ignores a checkout session with no metadata at all', async () => {
       constructEvent.mockReturnValue(
-        stripeEvent('checkout.session.completed', {
-          id: 'cs_10',
-          metadata: { kind: 'booking_deposit' },
-        })
+        stripeEvent('checkout.session.completed', { id: 'cs_3' })
       );
-      sendEmail.mockRejectedValue(new Error('resend down'));
       const { POST } = await import('../route');
       const res = await POST(post('{}'));
       expect(res.status).toBe(200);
+      expect(ledgerOutcome()).toBe('ignored');
+      expect(sendEmail).not.toHaveBeenCalled();
     });
   });
 

@@ -38,7 +38,7 @@ export const PUBLIC_ROUTES = [
   '/api/auth/session(.*)', // Session check
   '/api/contact(.*)', // Public contact form API
   '/api/support-chat(.*)', // Public support bot LLM endpoint
-  '/api/discovery(.*)', // Public discovery wizard: lead capture + booking deposit
+  '/api/discovery(.*)', // Public discovery wizard: lead capture, brand signals, preview, scope
   // The contact form on a client's own generated site. There is no session to
   // check: the person filling it in is a visitor to somebody else's business,
   // not a Flowstarter user. What stands in for one is the workspace's public
@@ -65,6 +65,15 @@ export const PUBLIC_ROUTES = [
   '/unlock(.*)', // Preview unlock landing: reached from a generated site, viewer may be signed out
   '/welcome(.*)', // Guest deposit landing: Stripe returns here before the account exists
   '/contact(.*)',
+  // The one page the "book a call" copy on /contact, /help and /faq points at.
+  // Public because the whole point is that somebody who has never signed in
+  // can book; the Cal.com page it embeds has no session of ours either.
+  '/discovery-call(.*)',
+  // The contact form on that page, for the environments with no Cal.com. It
+  // would already be reached by `/api/discovery(.*)` above -- `(.*)` happily
+  // matches `-call/lead` -- and relying on that is the kind of accident that
+  // breaks the day somebody tightens the pattern.
+  '/api/discovery-call(.*)',
   '/help(.*)', // Public help page
   '/privacy(.*)', // Public privacy policy
   '/terms(.*)', // Public terms of service
@@ -103,6 +112,7 @@ export const KNOWN_APP_ROUTES = [
   '/assistant(.*)', // Client-facing "Flowstarter Assistant" sign-in (reached from workspace landings)
   '/sign-up(.*)',
   '/contact(.*)',
+  '/discovery-call(.*)',
   '/help(.*)',
   '/privacy(.*)',
   '/terms(.*)',

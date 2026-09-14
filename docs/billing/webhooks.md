@@ -68,9 +68,9 @@ answer 200 and are never retried.
 
 It is **not tenant scoped**, on purpose: its key is Stripe's event id, a Stripe
 object maps to a workspace only through the metadata the event carries, and
-several event types (a booking deposit from an anonymous prospect, an invoice
-for a workspace that was never created) have no workspace at all while still
-needing a row so they are not reprocessed. It is classified server-only — RLS
+several event types (a guest build deposit paid before any workspace exists,
+an invoice for a workspace that was never created) have no workspace at all
+while still needing a row so they are not reprocessed. It is classified server-only — RLS
 on, zero policies, no grant for `anon` or `authenticated` — and that
 classification is proved on every CI run by
 `apps/flowstarter-main/scripts/verify-rls-local.mjs`.

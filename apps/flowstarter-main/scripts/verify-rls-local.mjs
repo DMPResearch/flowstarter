@@ -453,8 +453,8 @@ export const SERVER_ONLY_TABLES = [
   'discovery_leads',
   // The Stripe event ledger. Keyed on Stripe's event id, not a workspace: a
   // Stripe object maps to a workspace only through the metadata the event
-  // carries, and several event types (a booking deposit from an anonymous
-  // prospect, an invoice for a workspace that was never created) have no
+  // carries, and several event types (a guest build deposit paid before any
+  // workspace exists, an invoice for a workspace that was never created) have no
   // workspace at all while still needing a row so they are not reprocessed. A
   // nullable workspace_id would put it in public.tenant_key_tables() and owe
   // the guard a membership policy that could never be written, so it is
@@ -462,6 +462,15 @@ export const SERVER_ONLY_TABLES = [
   // supabase/migrations/20260912163000_stripe_events.sql.
   'stripe_events',
   'custom_inquiries',
+  // Visitors the intake routed to a DMPResearch discovery call instead of to
+  // the generator. Keyed on nothing but their own email: the row is created
+  // precisely because no workspace will ever exist for this brief, so there is
+  // no tenant key a membership policy could filter on. `email` is what puts it
+  // in public.tenant_key_tables(), and the protection is the one funnel_previews
+  // and ops_alerts already use: RLS on, zero policies, every grant to anon and
+  // authenticated revoked, and the only readers behind the service role. See
+  // supabase/migrations/20260915100000_custom_work_leads.sql.
+  'custom_work_leads',
   'hosting_servers',
   'workspace_billing_profiles',
   'workspace_hosts',

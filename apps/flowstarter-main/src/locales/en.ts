@@ -1,4 +1,5 @@
 import { adminKeys } from './en/admin';
+import { discoveryCallKeys } from './en/discovery-call';
 
 // Locale catalog (en)
 const en = {
@@ -2753,7 +2754,6 @@ const en = {
   // Build deposit policy — charged only after generated preview approval.
   'landing.discovery.recommendation.deposit.title':
     'No payment during discovery',
-  'landing.discovery.recommendation.deposit.percentSuffix': '% of setup',
   'landing.discovery.recommendation.deposit.body':
     'We first create your tailored preview and confirm the final quote. When you approve it, a 20% deposit locks the design and starts the full build. The remaining 80% is due after final review.',
 
@@ -3045,6 +3045,7 @@ const en = {
   'agentActivity.editor.saved': 'Saved',
 
   ...adminKeys,
+  ...discoveryCallKeys,
 } as const;
 
 export default en;

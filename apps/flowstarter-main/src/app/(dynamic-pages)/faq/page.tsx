@@ -5,14 +5,13 @@ import { useI18n } from '@/lib/i18n';
 import { Button } from '@flowstarter/flow-design-system';
 import { MarketingShell, PageHero } from '@/components/marketing';
 import { useFAQAccordion } from '@/app/(dynamic-pages)/(main-pages)/components/hooks/useFAQAccordion';
-import { useBookingModal } from '@/app/(dynamic-pages)/(main-pages)/components/booking-modal-store';
+import { DISCOVERY_CALL_PATH } from '@/lib/flowstarter/discovery-call';
 import { LANDING_COPY } from '@/app/(dynamic-pages)/(main-pages)/landing-copy';
 
 export default function FAQPage() {
   const { t: tStrict } = useI18n();
   const t = tStrict as (key: string) => string;
   const { openIndex, toggle } = useFAQAccordion(0);
-  const openBookingModal = useBookingModal((s) => s.open);
   const items = LANDING_COPY.faq.items;
 
   return (
@@ -92,8 +91,8 @@ export default function FAQPage() {
                   gap: '0.8rem 1.2rem',
                 }}
               >
-                <Button variant="primary" size="sm" onClick={openBookingModal}>
-                  {t('faq.bookCall')}
+                <Button asChild variant="primary" size="sm">
+                  <Link href={DISCOVERY_CALL_PATH}>{t('faq.bookCall')}</Link>
                 </Button>
                 <Link
                   href="/contact"

@@ -424,203 +424,20 @@ async function handleSubscriptionEvent(
   return 'processed';
 }
 
-/**
- * The `discovery_leads` table is not in the generated types yet, so it is
- * reached through this narrow accessor rather than a blanket `any`. The shape
- * declared here is the shape the handler actually uses — and, now, includes
- * the `{ error }` that the previous loose type omitted, which is precisely why
- * a failed lead write used to be invisible.
- */
-interface LeadsTable {
-  update: (values: Record<string, unknown>) => {
-    eq: (
-      column: string,
-      value: string
-    ) => Promise<{ error: { message: string } | null }>;
-  };
-  select: (columns: string) => {
-    eq: (
-      column: string,
-      value: string
-    ) => {
-      maybeSingle: () => Promise<{
-        data: { project_id: string | null } | null;
-        error: { message: string } | null;
-      }>;
-    };
-  };
-}
-
-/**
- * Booking deposit paid by a prospect at the end of the discovery wizard
- * (Checkout Session, metadata.kind === 'booking_deposit'). No prospect table
- * exists — Stripe is the record of truth; we just notify the team so the
- * call can be confirmed and the deposit tracked manually.
+/*
+ * `handleBookingDepositPaid` stood here, with the `LeadsTable` accessor it
+ * needed. It settled a Checkout Session carrying `metadata.kind ===
+ * 'booking_deposit'`: the pre-call deposit that `/api/discovery/deposit`
+ * created. Both are gone (2026-09-14). The discovery call is free, it is
+ * booked on the self-hosted Cal.com through `/discovery-call`, and no code
+ * path can mint a session of that kind any more, so the handler could only
+ * ever have run for a session that cannot exist.
  *
- * The lead write and the workspace auto-create used to sit inside one
- * `try/catch` that logged and carried on, so a prospect could pay €150 and
- * appear nowhere. They now throw, the route answers 500, and Stripe retries
- * until the lead is marked paid. The notification email stays best-effort and
- * still cannot fail the webhook: it runs after the writes, so a retry that
- * gets through sends exactly one.
+ * The 20% BUILD deposit is untouched and is a different thing entirely: it
+ * arrives as `flowstarter_guest_deposit` and is settled by
+ * `provisionGuestDeposit` (`lib/flowstarter/guest-deposit.ts`), reached from
+ * `verifyDepositAndEnqueue` rather than from here.
  */
-async function handleBookingDepositPaid(
-  supabase: ServiceClient,
-  session: Stripe.Checkout.Session
-): Promise<HandlerOutcome> {
-  const m = session.metadata ?? {};
-  if (m['kind'] !== 'booking_deposit') return 'ignored';
-
-  const leadId = m['leadId'];
-  if (leadId) {
-    const leads = (
-      supabase as unknown as { from: (table: string) => LeadsTable }
-    ).from('discovery_leads');
-
-    const amountEur =
-      typeof session.amount_total === 'number'
-        ? Math.round(session.amount_total / 100)
-        : m['amountEur']
-        ? Number(m['amountEur'])
-        : null;
-
-    const paid = await leads
-      .update({
-        deposit_status: 'paid',
-        deposit_amount_eur: amountEur,
-        stripe_session_id: session.id,
-        deposit_paid_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', leadId);
-    if (paid.error) {
-      throw new Error(
-        `[Stripe] could not mark lead ${leadId} paid: ${paid.error.message}`
-      );
-    }
-
-    // Auto-create the project on deposit paid — idempotent: only if this
-    // lead has no linked workspace yet (Stripe redelivers events). Lands
-    // at concierge_stage 'intake' (pre-discovery), same as the manual
-    // team draft flow; the team advances it after the call.
-    const existing = await leads
-      .select('project_id')
-      .eq('id', leadId)
-      .maybeSingle();
-    if (existing.error) {
-      throw new Error(
-        `[Stripe] could not read lead ${leadId}: ${existing.error.message}`
-      );
-    }
-    if (!existing.data?.project_id) {
-      const tier = m['tier'] || '';
-      const businessName = m['businessName'] || '';
-      const name =
-        businessName ||
-        (m['name'] ? `${m['name']}'s Project` : 'Untitled Project');
-      const slug =
-        (name
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-+|-+$/g, '')
-          .slice(0, 40) || 'workspace') +
-        '-' +
-        Math.random().toString(36).slice(2, 8);
-
-      const { data: ws, error: wsErr } = await supabase
-        .from('workspaces')
-        .insert({
-          slug,
-          name,
-          site_kind: tier === 'commerce' ? 'shopify_liquid' : 'astro',
-          client_name: m['name'] || null,
-          client_email: m['email'] || null,
-          client_business_name: businessName || null,
-          concierge_stage: 'intake',
-        })
-        .select('id')
-        .single();
-
-      if (wsErr || !ws?.id) {
-        throw new Error(
-          `[Stripe] could not auto-create the workspace for lead ${leadId}: ` +
-            (wsErr?.message ?? 'no row returned')
-        );
-      }
-      const linked = await leads
-        .update({ project_id: ws.id, updated_at: new Date().toISOString() })
-        .eq('id', leadId);
-      if (linked.error) {
-        throw new Error(
-          `[Stripe] workspace ${ws.id} was created for lead ${leadId} but the ` +
-            `lead could not be linked to it: ${linked.error.message}`
-        );
-      }
-      console.info(
-        `[Stripe] deposit lead ${leadId} → workspace ${ws.id} (intake)`
-      );
-    }
-  }
-
-  const notifyTo =
-    process.env.DISCOVERY_LEAD_NOTIFY_EMAIL || 'hello@flowstarter.net';
-  const amount =
-    typeof session.amount_total === 'number'
-      ? `€${(session.amount_total / 100).toFixed(0)}`
-      : m['amountEur']
-      ? `€${m['amountEur']}`
-      : 'unknown';
-
-  try {
-    await sendEmail({
-      to: notifyTo,
-      subject: `Deposit paid: ${m['name'] || 'prospect'} (${
-        m['tier']
-      }) ${amount}`,
-      replyTo: m['email'] || undefined,
-      html: `
-<div style="font-family:system-ui,sans-serif;max-width:560px;margin:0 auto;padding:20px;">
-  <h2 style="font-size:17px;margin:0 0 12px;">Booking deposit paid</h2>
-  <p style="font-size:14px;color:#374151;margin:0 0 4px;">
-    <strong>${
-      m['name'] || ''
-    }</strong> paid <strong>${amount}</strong> to hold a discovery call.
-  </p>
-  <table style="border-collapse:collapse;font-size:13px;color:#111827;margin-top:12px;">
-    <tr><td style="padding:3px 10px;color:#6b7280;">Email</td><td style="padding:3px 10px;">${
-      m['email'] || ''
-    }</td></tr>
-    <tr><td style="padding:3px 10px;color:#6b7280;">Business</td><td style="padding:3px 10px;">${
-      m['businessName'] || ''
-    }</td></tr>
-    <tr><td style="padding:3px 10px;color:#6b7280;">Build tier</td><td style="padding:3px 10px;">${
-      m['tier'] || ''
-    }</td></tr>
-    <tr><td style="padding:3px 10px;color:#6b7280;">Monthly plan</td><td style="padding:3px 10px;">${
-      m['subscription'] || '–'
-    }</td></tr>
-    <tr><td style="padding:3px 10px;color:#6b7280;">Source</td><td style="padding:3px 10px;">${
-      m['source'] || ''
-    }</td></tr>
-    <tr><td style="padding:3px 10px;color:#6b7280;">Stripe session</td><td style="padding:3px 10px;">${
-      session.id
-    }</td></tr>
-  </table>
-  <p style="font-size:12px;color:#6b7280;margin-top:14px;">
-    Refundable after the call, before any build work starts. Refund from the Stripe dashboard if they don't proceed.
-  </p>
-</div>`,
-    });
-  } catch (err) {
-    console.error('[Stripe] booking-deposit notify failed', err);
-  }
-
-  console.info(
-    `[Stripe] booking deposit paid: ${m['email']} ${m['tier']} ${amount} (${session.id})`
-  );
-  return 'processed';
-}
-
 /**
  * The event switch, with every branch reporting what it did.
  *
@@ -699,7 +516,13 @@ export async function processEvent(
         // settlement that moved the row is a state write.
         return settled.outcome === 'paid' ? 'processed' : 'ignored';
       }
-      return handleBookingDepositPaid(supabase, session);
+      // Every other `checkout.session.completed` belongs to somebody else:
+      // the guest build deposit is settled by `verifyDepositAndEnqueue` off
+      // its own success redirect, not here. Recorded as ignored rather than
+      // left to fall out of the switch, so the `stripe_events` ledger says
+      // what happened instead of nothing.
+      console.info(`[Stripe] checkout session not ours: ${session.id}`);
+      return 'ignored';
     }
     default:
       return 'ignored';
