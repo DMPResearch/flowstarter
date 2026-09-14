@@ -70,11 +70,66 @@ export function LandingHero() {
 
   return (
     <section className="ls-scope ls-section ls-hero-section ls-fade-bottom">
-      {/* Texture, not colour: a hairline grid at an opacity you have to look
-          for. It is what stops the flat cream reading as blank paper without
-          bringing back the mesh Darius asked us to take out. */}
+      {/* Cool indigo wash + the brand flow lines, scoped to the hero. No warm
+          bloom: the page cream already carries warmth, and more of it reads as
+          the yellow tint we are trying not to have. Paths match FlowBackground. */}
+      <div className="ls-hero-atmosphere" aria-hidden="true">
+        <div className="ls-hero-atmosphere__wash" />
+        <div className="ls-hero-atmosphere__bloom" />
+        <div className="ls-hero-atmosphere__secondary" />
+        <svg
+          className="ls-hero-atmosphere__lines"
+          viewBox="0 0 1440 900"
+          preserveAspectRatio="xMidYMid slice"
+          fill="none"
+        >
+          <defs>
+            <linearGradient id="ls-hero-lg-a" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor="transparent" />
+              <stop
+                offset="20%"
+                stopColor="hsl(233,65%,50%)"
+                stopOpacity="0.6"
+              />
+              <stop
+                offset="60%"
+                stopColor="hsl(233,70%,58%)"
+                stopOpacity="0.8"
+              />
+              <stop offset="100%" stopColor="transparent" />
+            </linearGradient>
+            <linearGradient id="ls-hero-lg-b" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor="transparent" />
+              <stop
+                offset="30%"
+                stopColor="hsl(233,60%,52%)"
+                stopOpacity="0.55"
+              />
+              <stop
+                offset="70%"
+                stopColor="hsl(233,55%,62%)"
+                stopOpacity="0.45"
+              />
+              <stop offset="100%" stopColor="transparent" />
+            </linearGradient>
+          </defs>
+          <g stroke="url(#ls-hero-lg-a)" strokeWidth="1.0">
+            <path d="M-60,180 C200,140 420,220 720,175 S1100,135 1500,195" />
+            <path d="M-60,340 C180,300 400,380 720,330 S1060,295 1500,360" />
+            <path d="M-60,520 C220,480 440,555 720,505 S1080,470 1500,530" />
+            <path d="M-60,700 C200,665 440,730 720,685 S1100,650 1500,710" />
+          </g>
+          <g stroke="url(#ls-hero-lg-b)" strokeWidth="0.7">
+            <path d="M-60,260 C240,220 460,300 720,255 S1080,215 1500,280" />
+            <path d="M-60,430 C200,395 420,465 720,420 S1060,385 1500,445" />
+            <path d="M-60,610 C210,575 440,645 720,600 S1080,565 1500,625" />
+            <path d="M-60,800 C240,765 460,840 720,795 S1090,755 1500,815" />
+          </g>
+        </svg>
+      </div>
+      {/* Hairline grid on top of the wash — texture, not colour. */}
       <div className="ls-weave" aria-hidden="true" />
-      <div className="ls-container">
+      <div className="ls-container relative z-[1]">
         <div className="grid items-center gap-10 lg:grid-cols-[1.15fr_0.85fr] lg:gap-20">
           <div className="ls-hero-content">
             <div
