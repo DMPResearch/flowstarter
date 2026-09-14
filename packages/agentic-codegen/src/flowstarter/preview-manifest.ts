@@ -17,12 +17,108 @@
  *   3. Nothing asked whether a phrase was prose. `"pid": 97132,` is twelve
  *      characters with letters in it, which was the whole test.
  *
+ * A fourth thing, found on 2026-09-14 (job `7508bf52`): being prose was not
+ * enough either. The approved-edit gate recorded
+ * `<div class="contact-pagelead-capture" data-flowstarter-lead-capture-slot>
+ * </div>` — the platform's own injected lead-capture *markup* — as a phrase
+ * the client had approved, because the derivation read whole *source lines*,
+ * tags and attributes included, and a line of markup can satisfy every prose
+ * check `isUsablePhrase` runs (it has enough letters, it is not a URL, key or
+ * timestamp) while still not being anything a visitor reads. Worse, the class
+ * name it recorded was already corrupted — `contact-page__lead-capture` with
+ * its `__` stripped to `contact-pagelead-capture` — by `phraseFromLine`'s own
+ * markdown-emphasis strip (`/[*_~]{1,3}/g`), which matched that `__` as if it
+ * were `_emphasis_` markup anywhere it occurred in the line, not just at the
+ * edges of one. `visibleTextLines` below is the fix for the first half:
+ * derive lines from parse5's own text nodes, so a tag name or an attribute
+ * value — the class, the injector's marker — can never become a "line" in
+ * the first place, managed blocks (the lead-capture script and slot, the Cal
+ * embed) excluded outright by the same marker attributes
+ * `markup-policy.ts` already checks elements for. `phraseFromLine`'s
+ * emphasis strip is anchored to the edges of the text for the same reason
+ * the tag exclusion exists: something that resembles markup in the *middle*
+ * of a word is not formatting.
+ *
  * Everything below is pure and shared. The app uses it when it captures a
  * preview; the worker uses it when it seeds a build from one and when it
  * checks the built site. One rule, three callers, so a manifest can never be
  * clean on the way in and dirty on the way out.
  */
+import { parseFragment } from 'parse5';
 import type { TemplateScaffoldFile } from './types';
+
+/**
+ * Attribute markers on an element whose entire subtree is the platform's own
+ * injected markup, never the client's — the lead-capture script and its
+ * unfilled slot placeholder, the Cal.com embed and its blurred preview demo.
+ * None of it is prose a client wrote or approved; excluded outright rather
+ * than merely "not text", so it can never contribute a phrase via any
+ * descendant, managed script tags included.
+ */
+const MANAGED_BLOCK_MARKER_ATTRIBUTES: ReadonlySet<string> = new Set([
+  'data-flowstarter-lead-capture',
+  'data-flowstarter-lead-capture-slot',
+  'data-flowstarter-cal-embed',
+  'data-flowstarter-cal-preview',
+]);
+
+/** The slice of a parse5 node this module reads. Structurally typed, so the mock in tests needs no import from parse5's own types. */
+interface Parse5Node {
+  nodeName: string;
+  value?: string;
+  attrs?: Array<{ name: string; value: string }>;
+  childNodes?: Parse5Node[];
+}
+
+function isManagedBlockMarker(node: Parse5Node): boolean {
+  for (const attr of node.attrs ?? []) {
+    if (MANAGED_BLOCK_MARKER_ATTRIBUTES.has(attr.name.toLowerCase()))
+      return true;
+  }
+  return false;
+}
+
+function collectVisibleText(
+  node: Parse5Node,
+  insideManagedBlock: boolean,
+  out: string[],
+): void {
+  if (node.nodeName === '#text') {
+    if (!insideManagedBlock && node.value) out.push(node.value);
+    return;
+  }
+  // Neither ever visible copy: a script's own body is code, and a comment
+  // (including the injector's own `flowstarter:lead-capture` marker comment)
+  // is not content by definition.
+  if (node.nodeName === 'script' || node.nodeName === 'style') return;
+  if (node.nodeName === '#comment') return;
+  const managed = insideManagedBlock || isManagedBlockMarker(node);
+  for (const child of node.childNodes ?? []) {
+    collectVisibleText(child, managed, out);
+  }
+}
+
+/**
+ * A file's content reduced to the lines a *reader* would see, never a tag
+ * name, an attribute value, or the text inside a platform-managed block.
+ *
+ * Parsed with parse5 — the HTML parser `markup-policy.ts` already trusts to
+ * read a browser's own view of generated output — rather than scanned line
+ * by line: a `.astro`/`.html` file's markup can never become a "line" here,
+ * so a class attribute cannot be misread as prose in the first place. A file
+ * with no markup in it at all (YAML frontmatter, plain markdown) has nothing
+ * for parse5 to treat as an element, so it parses as one text run — which,
+ * split back into lines, is exactly the input `phraseFromLine` always saw
+ * for that kind of file. The one behaviour change for markup files is the
+ * fix: `<p>Reach out any day</p>` now yields the line `Reach out any day`,
+ * not the tag around it.
+ */
+export function visibleTextLines(content: string): string[] {
+  const root = parseFragment(content) as unknown as Parse5Node;
+  const collected: string[] = [];
+  collectVisibleText(root, false, collected);
+  return collected.join('').split('\n');
+}
 
 /**
  * Directory names that hold tooling or build state, never authored site
@@ -169,10 +265,18 @@ export function phraseFromLine(line: string): string | null {
   );
   if (keyed?.[2]) text = keyed[2].trim();
   text = text.replace(/^(['"`])([\s\S]*)\1$/, '$2').trim();
-  // Markdown emphasis and heading markers are formatting, not words.
+  // Markdown emphasis and heading markers are formatting, not words — but
+  // only at the edges of the text, where formatting actually lives.
+  // `/[*_~]{1,3}/g` (unanchored, matching anywhere) used to strip a `__` out
+  // of the *middle* of a line too, which is how a BEM class name like
+  // `contact-page__lead-capture` — never meant to be a phrase at all, see
+  // this file's header — came out of this function as the mangled
+  // `contact-pagelead-capture`. A run of `*`, `_` or `~` in the middle of a
+  // word is not markup; it is the word.
   text = text
     .replace(/^#{1,6}\s+/, '')
-    .replace(/[*_~]{1,3}/g, '')
+    .replace(/^[*_~]{1,3}(?=\S)/, '')
+    .replace(/(?<=\S)[*_~]{1,3}$/, '')
     .trim();
   if (text.length < MIN_PHRASE_CHARS) return null;
   if (NOT_PROSE.test(text)) return null;
@@ -289,7 +393,7 @@ export function phrasesFromFiles(
   const rest: string[] = [];
   const seen = new Set<string>();
   outer: for (const path of orderByRelevance(candidates)) {
-    for (const line of (byPath.get(path) ?? '').split('\n')) {
+    for (const line of visibleTextLines(byPath.get(path) ?? '')) {
       if (named.length + rest.length >= PHRASE_CANDIDATE_CAP) break outer;
       const phrase = phraseFromLine(line);
       if (!phrase || !isUsablePhrase(phrase)) continue;

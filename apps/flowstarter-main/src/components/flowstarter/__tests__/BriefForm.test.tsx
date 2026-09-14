@@ -492,6 +492,32 @@ describe('BriefForm', () => {
     await waitFor(() => expect(lastPutBody().pageCount).toBe('5-7'));
   });
 
+  /**
+   * The defect found on the 2026-09-14 paid build: the pre-selected option
+   * is already `checked`, so clicking it fires no native `change` event and
+   * `page_count` stayed null even though the client visibly confirmed
+   * "Under 5". Clicking the already-selected option has to be expressible as
+   * a real choice, not a no-op.
+   */
+  it('lets the client confirm the pre-selected default by clicking it', async () => {
+    const user = userEvent.setup();
+    mount(brief(), [], undefined, 'lt-5');
+
+    const options = screen.getAllByTestId('brief-page-count-option');
+    const preSelected = options.find(
+      (option) => option.querySelector('input')?.value === 'lt-5'
+    );
+    expect(preSelected?.dataset.selected).toBe('true');
+    await user.click(preSelected as HTMLElement);
+    expect(selectedPageCount()).toBe('lt-5');
+    expect(
+      screen.queryByTestId('brief-page-count-derived')
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId('brief-save'));
+    await waitFor(() => expect(lastPutBody().pageCount).toBe('lt-5'));
+  });
+
   it('sends null while the client has not chosen, so the rule keeps deriving', async () => {
     const user = userEvent.setup();
     mount(brief(), [], undefined, 'lt-5');

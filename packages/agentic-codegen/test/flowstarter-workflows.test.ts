@@ -4187,3 +4187,208 @@ contactPage:
     expect(finalContent).toContain('/contact');
   });
 });
+
+describe('the site-labels.md `[integrity]` gate — job 7508bf52, 2026-09-14', () => {
+  // Opens with `---`, never closes it, and everything after the opening
+  // fence is otherwise valid YAML — the exact shape of the 277-line file
+  // that shipped with an empty `<h1>` on every page. `[integrity]` for this
+  // file repairs it deterministically rather than failing the job.
+  const UNTERMINATED_LABELS = `---
+siteMeta:
+  title: "Calm Path Therapy"
+hero:
+  title: "I build websites with AI agents, supervised by people"
+  text: "A studio that pairs AI speed with human oversight."
+`;
+
+  const NOT_FRONTMATTER_AT_ALL =
+    'siteMeta:\n  title: "Calm Path Therapy"\nhero:\n  title: "No fence here at all"\n';
+
+  it('preview pipeline: closes the unterminated frontmatter deterministically and still publishes', async () => {
+    const intake = validIntake();
+    const phases: string[] = [];
+    const validatedContents: string[] = [];
+    let finalContent = '';
+
+    const agents = {
+      analyzeBrand: async () => validBrandConfig(),
+      selectTemplate: async () => ({
+        slug: 'wellness-therapy',
+        reason: 'Fits.',
+        matchedSignals: ['therapy'],
+        confidence: 0.9,
+      }),
+      buildPreview: async (input: { workspaceRoot: string }) => {
+        await mkdir(join(input.workspaceRoot, 'src/content'), {
+          recursive: true,
+        });
+        await writeFile(
+          join(input.workspaceRoot, 'src/content/site-labels.md'),
+          UNTERMINATED_LABELS,
+          'utf8',
+        );
+        return {
+          summary: 'done',
+          changedPaths: ['src/content/site-labels.md'],
+        };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    const library: TemplateLibrary = {
+      search: async () => [],
+      getDetails: async () => ({}),
+      scaffold: async (slug) => ({
+        template: {
+          metadata: {
+            slug,
+            displayName: 'Wellness & Therapy',
+            description: 'Trust-led service template.',
+            category: 'services',
+            useCase: ['therapy'],
+            fileCount: 1,
+            totalLOC: 1,
+          },
+          config: {},
+        },
+        files: [
+          {
+            path: 'src/content/site-labels.md',
+            content: UNTERMINATED_LABELS,
+            type: 'file',
+          },
+        ],
+      }),
+      close: async () => undefined,
+    };
+
+    const validator: SiteValidator = {
+      validate: async (workspaceRoot) => {
+        validatedContents.push(
+          await readFile(
+            join(workspaceRoot, 'src/content/site-labels.md'),
+            'utf8',
+          ),
+        );
+      },
+    };
+
+    const publisher: PreviewPublisher = {
+      publish: async (input) => {
+        finalContent = await readFile(
+          join(input.workspaceRoot, 'src/content/site-labels.md'),
+          'utf8',
+        );
+        return {
+          previewUrl: 'https://preview.flowstarter.net/x',
+          artifactUrl: 's3://x',
+          files: [],
+        };
+      },
+    };
+
+    const pipeline = new PreviewGenerationPipeline(
+      agents,
+      library,
+      validator,
+      publisher,
+    );
+    await pipeline.run({
+      intake,
+      corpus: validCorpus(intake.projectId),
+      cachedAssets: [],
+      onPhase: (phase) => phases.push(phase),
+    });
+
+    expect(
+      phases.some((phase) =>
+        phase.includes('never closed its frontmatter block'),
+      ),
+    ).toBe(true);
+    // The build/validate step ran against the already-repaired file.
+    expect(validatedContents).toHaveLength(1);
+    expect(validatedContents[0]?.trimEnd().endsWith('---')).toBe(true);
+    expect(finalContent.trimEnd().endsWith('---')).toBe(true);
+    expect(finalContent).toContain(
+      'I build websites with AI agents, supervised by people',
+    );
+  });
+
+  it('preview pipeline: fails in plain words when site-labels.md cannot be trusted at all', async () => {
+    const intake = validIntake();
+
+    const agents = {
+      analyzeBrand: async () => validBrandConfig(),
+      selectTemplate: async () => ({
+        slug: 'wellness-therapy',
+        reason: 'Fits.',
+        matchedSignals: ['therapy'],
+        confidence: 0.9,
+      }),
+      buildPreview: async (input: { workspaceRoot: string }) => {
+        await mkdir(join(input.workspaceRoot, 'src/content'), {
+          recursive: true,
+        });
+        await writeFile(
+          join(input.workspaceRoot, 'src/content/site-labels.md'),
+          NOT_FRONTMATTER_AT_ALL,
+          'utf8',
+        );
+        return {
+          summary: 'done',
+          changedPaths: ['src/content/site-labels.md'],
+        };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    const library: TemplateLibrary = {
+      search: async () => [],
+      getDetails: async () => ({}),
+      scaffold: async (slug) => ({
+        template: {
+          metadata: {
+            slug,
+            displayName: 'Wellness & Therapy',
+            description: 'Trust-led service template.',
+            category: 'services',
+            useCase: ['therapy'],
+            fileCount: 1,
+            totalLOC: 1,
+          },
+          config: {},
+        },
+        files: [
+          {
+            path: 'src/content/site-labels.md',
+            content: NOT_FRONTMATTER_AT_ALL,
+            type: 'file',
+          },
+        ],
+      }),
+      close: async () => undefined,
+    };
+
+    const validator: SiteValidator = { validate: async () => undefined };
+    const publisher: PreviewPublisher = {
+      publish: async () => ({
+        previewUrl: 'https://preview.flowstarter.net/x',
+        artifactUrl: 's3://x',
+        files: [],
+      }),
+    };
+
+    const pipeline = new PreviewGenerationPipeline(
+      agents,
+      library,
+      validator,
+      publisher,
+    );
+
+    await expect(
+      pipeline.run({
+        intake,
+        corpus: validCorpus(intake.projectId),
+        cachedAssets: [],
+      }),
+    ).rejects.toThrow(/frontmatter fence/);
+  });
+});

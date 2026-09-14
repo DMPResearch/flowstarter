@@ -548,6 +548,22 @@ export function BriefForm({
                       setPageCount(option.value);
                       setSaved(false);
                     }}
+                    // A radio's native `change` event only fires when the
+                    // checked option actually changes. The pre-selected
+                    // option is already `checked` from the derived default,
+                    // so clicking it to *confirm* that default is a click
+                    // with no checked-state change behind it, and `onChange`
+                    // alone never sees it: `pageCount` stayed null forever,
+                    // which is indistinguishable from "never looked at this"
+                    // even after the client deliberately chose it. `onClick`
+                    // fires on every click regardless, so it is what actually
+                    // makes confirming the default expressible; pairing it
+                    // with `onChange` keeps keyboard (arrow-key) selection of
+                    // a *different* option working exactly as before.
+                    onClick={() => {
+                      setPageCount(option.value);
+                      setSaved(false);
+                    }}
                     className="sr-only"
                   />
                   <span className="text-sm font-semibold text-[var(--fs-ink)]">

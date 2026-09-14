@@ -63,6 +63,38 @@ export async function findMissingLabelBlocks(
   return required.filter((key) => !present.has(key));
 }
 
+/**
+ * Which of a template's required top-level blocks are missing from an
+ * *already-parsed* `site-labels.md` — the object `checkSiteLabelsIntegrity`
+ * (`site-labels-integrity.ts`) produced from a real YAML parse, not a
+ * re-scan of the raw text.
+ *
+ * This is what the two real call sites in `workflows.ts` use now:
+ * `checkSiteLabelsIntegrity` runs first and either repairs an unterminated
+ * frontmatter block or fails the job with `LABELS_UNPARSEABLE`, so by the
+ * time this runs, `parsed` reflects exactly what Astro's own frontmatter
+ * parser would see — unlike `findMissingLabelBlocks` above, which reads the
+ * keys straight off the raw text with a line-anchored scan and reported
+ * `hero` and `contactPage` as "present" in the file that started all this,
+ * because their key lines existed even though the fence around them never
+ * closed. `findMissingLabelBlocks` stays for direct, workspace-only callers
+ * (and its own tests below); it is simply no longer what a build or preview
+ * decides against.
+ *
+ * `parsed` is `undefined` when there was no file to check at all (the same
+ * "different failure mode, handled elsewhere" case `findMissingLabelBlocks`
+ * reports as `[]`).
+ */
+export function missingRequiredLabelBlocksFromParsed(
+  parsed: Record<string, unknown> | undefined,
+  templateSlug: string,
+): string[] {
+  const required = REQUIRED_LABEL_BLOCKS[templateSlug] ?? [];
+  if (required.length === 0 || !parsed) return [];
+  const present = new Set(Object.keys(parsed));
+  return required.filter((key) => !present.has(key));
+}
+
 export interface RequiredBlockRepairInput {
   businessName: string;
   offer?: string;

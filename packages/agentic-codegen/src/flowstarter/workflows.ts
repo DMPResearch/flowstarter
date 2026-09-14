@@ -124,9 +124,14 @@ import {
 } from './change-request-build';
 import { BUILT_OUTPUT_DIR, resolveContainedOutputDir } from './site-export';
 import {
-  findMissingLabelBlocks,
+  missingRequiredLabelBlocksFromParsed,
   repairMissingLabelBlocks,
 } from './required-label-blocks';
+import {
+  checkSiteLabelsIntegrity,
+  SiteLabelsUnparseableError,
+  LABELS_UNPARSEABLE,
+} from './site-labels-integrity';
 
 /**
  * What a trusted validation leaves behind for everything downstream to read.
@@ -579,6 +584,33 @@ export class PreviewGenerationPipeline {
         }
       }
 
+      // `[integrity]` for `src/content/site-labels.md` specifically: the
+      // frontmatter has to open and close and the YAML between the fences
+      // has to parse into a map, checked with a real YAML parse rather than
+      // the line-scan the required-blocks check below used to rely on. Runs
+      // after the agent pass, before anything downstream — including the
+      // required-blocks check — trusts the file. An unterminated fence whose
+      // remainder is otherwise valid YAML is closed deterministically; a
+      // file that cannot be trusted at all fails the run in plain words
+      // instead of shipping a page with silently empty copy (see job
+      // `7508bf52`, 2026-09-14: 277 lines of frontmatter that never closed,
+      // an empty `<h1>` on every page, and #142's own guards made that
+      // silent).
+      let siteLabels: Awaited<ReturnType<typeof checkSiteLabelsIntegrity>>;
+      try {
+        siteLabels = await checkSiteLabelsIntegrity(workspace.root);
+      } catch (error) {
+        if (error instanceof SiteLabelsUnparseableError) {
+          throw new Error(error.message);
+        }
+        throw error;
+      }
+      if (siteLabels?.repaired) {
+        input.onPhase?.(
+          "The generated content's site-labels.md never closed its frontmatter block; closed it before checking what it says.",
+        );
+      }
+
       // Last-resort content gate. An agent pass that dropped a required
       // top-level block (seen in production: a `site-labels.md` with no
       // `hero` at all) leaves a page structurally empty rather than broken —
@@ -586,9 +618,11 @@ export class PreviewGenerationPipeline {
       // renders with nothing in it. Retrying the whole (expensive,
       // non-deterministic) agent pass for one missing block is not worth it;
       // filling it in from the intake is deterministic and cheap, so it
-      // happens here instead, right before the workspace is checked.
-      const missingLabelBlocks = await findMissingLabelBlocks(
-        workspace.root,
+      // happens here instead, right before the workspace is checked. Runs
+      // against the object the integrity check above already parsed, not a
+      // fresh re-scan of the raw file.
+      const missingLabelBlocks = missingRequiredLabelBlocksFromParsed(
+        siteLabels?.parsed,
         template.slug,
       );
       if (missingLabelBlocks.length > 0) {
@@ -2788,15 +2822,45 @@ export class FullSiteBuildWorker {
       if (build.changedPaths.length === 0) {
         throw new Error('Full-site agent finished without modifying any file');
       }
+      // `[integrity]` for `src/content/site-labels.md`, the defect that cost
+      // job `7508bf52` (2026-09-14): the agent pass wrote 277 lines of
+      // frontmatter that opened with `---` and never closed it, Astro parsed
+      // no labels at all, and every page shipped an empty `<h1>` — silently,
+      // because the required-blocks check below used to scan the raw text
+      // for top-level keys rather than checking the fences actually closed,
+      // and `hero:`/`contactPage:` both still read as "present" as plain
+      // lines in that file. This is a real YAML parse, run after the agent
+      // pass and before the build (`check()` below) or the required-blocks
+      // check trusts the file: an unterminated fence is closed
+      // deterministically when the remainder is otherwise valid YAML;
+      // anything else wrong with it fails the job honestly instead of
+      // shipping a page with silently empty copy.
+      let siteLabels: Awaited<ReturnType<typeof checkSiteLabelsIntegrity>>;
+      try {
+        siteLabels = await checkSiteLabelsIntegrity(siteRoot);
+      } catch (error) {
+        if (error instanceof SiteLabelsUnparseableError) {
+          throw new FullSiteBuildFailure(LABELS_UNPARSEABLE, error.message);
+        }
+        throw error;
+      }
+      if (siteLabels?.repaired) {
+        await say(
+          'log',
+          "The generated content's site-labels.md never closed its frontmatter block; closed it before checking what it says.",
+        );
+      }
+
       // Same last-resort content gate as the preview pipeline: a required
       // top-level block the agent pass dropped (e.g. no `hero` at all) is
       // filled in deterministically from the intake here rather than paying
       // for another full agent pass over one missing block. The template
       // slug travels with the preview intent the build seeded from; a build
       // with none (or an unrecognised slug) requires nothing here and this
-      // is a no-op.
-      const missingLabelBlocks = await findMissingLabelBlocks(
-        siteRoot,
+      // is a no-op. Runs against the object the integrity check above
+      // already parsed, not a fresh re-scan of the raw file.
+      const missingLabelBlocks = missingRequiredLabelBlocksFromParsed(
+        siteLabels?.parsed,
         job.previewIntent?.manifest.templateSlug ?? '',
       );
       if (missingLabelBlocks.length > 0) {
@@ -2980,7 +3044,10 @@ export class FullSiteBuildWorker {
       // carry it. Only a build actually holding a portrait pays for that read.
       const imageGateFiles = async () =>
         portrait
-          ? [...(await builtSiteText()), ...(await readSiteContentFiles(siteRoot))]
+          ? [
+              ...(await builtSiteText()),
+              ...(await readSiteContentFiles(siteRoot)),
+            ]
           : await builtSiteText();
 
       let imageGateScan = await imageGateFiles();
