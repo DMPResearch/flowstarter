@@ -17,14 +17,38 @@ export type ServeTarget =
   | { kind: 'static'; rootDir: string }
   | { kind: 'proxy'; upstream: string };
 
-function serveLines(target: ServeTarget, indent: string): string[] {
+function serveLines(
+  target: ServeTarget,
+  indent: string,
+  headers: readonly SiteHeader[],
+): string[] {
   if (target.kind === 'proxy') {
     return [`${indent}reverse_proxy ${target.upstream}`];
   }
   return [
     `${indent}root * ${target.rootDir}`,
-    `${indent}try_files {path} {path}/ /index.html`,
+    // An unknown path is a real 404, never the home page — the same rule
+    // the Docker runtime's site-runtime.Caddyfile applies to a container
+    // upstream. `try_files` only rewrites to a file, or a directory's own
+    // index, that actually exists on disk (`{path}` for a file, `{path}/`
+    // for a directory, which is what lets `/work` still resolve to
+    // `/work/index.html`); `=404` is the literal fallback: nothing on disk
+    // answered, so the request becomes a real 404 instead of silently
+    // rewriting to `/index.html`.
+    `${indent}try_files {path} {path}/ =404`,
     `${indent}file_server`,
+    ``,
+    // The template's own 404 page (every template ships `404.astro`, built
+    // to `404.html`) serves with the real 404 status and the same security
+    // headers as every other page. If a build somehow shipped no
+    // `404.html`, `file_server` here fails too and Caddy falls back to its
+    // own minimal built-in error response — still a 404, never `index.html`.
+    `${indent}handle_errors {`,
+    ...renderCaddyHeaderLines(headers, `${indent}  `),
+    `${indent}  @404 expression \`{http.error.status_code} == 404\``,
+    `${indent}  rewrite @404 /404.html`,
+    `${indent}  file_server`,
+    `${indent}}`,
   ];
 }
 
@@ -58,7 +82,7 @@ export function buildCaddySnippet(
    * different application with a policy of its own, and a site policy handed
    * to it would block it. Empty only for a caller with nothing to serve.
    */
-  headers: readonly SiteHeader[] = []
+  headers: readonly SiteHeader[] = [],
 ): string {
   const seen = new Set<string>();
   const hosts = [primary, ...additional, siteHost, previewHost].filter(
@@ -70,7 +94,7 @@ export function buildCaddySnippet(
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
-    }
+    },
   );
   if (hosts.length === 0) return '';
 
@@ -94,7 +118,7 @@ export function buildCaddySnippet(
     `  # Site content (static files, or the deployed container)`,
     `  handle {`,
     ...renderCaddyHeaderLines(headers, '    '),
-    ...serveLines(target, '    '),
+    ...serveLines(target, '    ', headers),
     `  }`,
     `}`,
     ``,
@@ -119,7 +143,7 @@ export function buildPreviewCaddySnippet(
   /** As above. A preview's policy differs in one directive: the funnel is
    * allowed to frame it, because showing the preview in an iframe is what
    * the funnel is for. */
-  headers: readonly SiteHeader[] = []
+  headers: readonly SiteHeader[] = [],
 ): string {
   const host = hostname && hostname.length > 0 ? hostname : null;
   if (!host) return '';
@@ -134,7 +158,7 @@ export function buildPreviewCaddySnippet(
     `  header X-Robots-Tag "${ROBOTS_HEADER}"`,
     ``,
     ...renderCaddyHeaderLines(headers, '  '),
-    ...serveLines(target, '  '),
+    ...serveLines(target, '  ', headers),
     `}`,
     ``,
   ].join('\n');
