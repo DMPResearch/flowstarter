@@ -10,9 +10,10 @@
  *     reads anything. An endpoint that answered differently would be a way to
  *     enumerate which tokens are real.
  *  2. A preview token gets a 403 with a sentence, before any query.
- *  3. A submission from somebody else's page gets a 403 and writes nothing,
- *     even though the token in the URL is genuine. That is the case a scraped
- *     token actually looks like.
+ *  3. A submission from somebody else's page writes nothing and gets the
+ *     same 404 an unknown token gets, even though the token in the URL is
+ *     genuine. That is the case a scraped token actually looks like, and
+ *     answering it distinctly would confirm the token.
  *  4. A honeypot submission gets the same 201 as a real one and stores
  *     nothing.
  *  5. The success response says `{ ok: true }` and no more. A lead id or a
@@ -251,12 +252,21 @@ describe('the token', () => {
 // ── Origin ─────────────────────────────────────────────────────────────────
 
 describe('the origin rule', () => {
+  // The refusal is the same one an unknown token gets, on purpose: an
+  // endpoint that said "wrong website" for a real token and "no such form"
+  // for an invented one would tell a caller holding a list of scraped tokens
+  // which of them are live. See `hostile-site.test.ts` for the assertion that
+  // the two answers are byte-identical.
   it('refuses a genuine token submitted from somebody else page', async () => {
     const response = await POST(
       post(TOKEN_A, body, { origin: 'https://evil.example' }),
       params(TOKEN_A)
     );
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      ok: false,
+      message: 'This form is not connected yet.',
+    });
     expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
     expect(db.rows('leads')).toHaveLength(0);
   });
@@ -268,13 +278,14 @@ describe('the origin rule', () => {
       }),
       params(TOKEN_A)
     );
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
     expect(db.rows('leads')).toHaveLength(0);
   });
 
   it('refuses a request with no origin and no referer', async () => {
     const response = await POST(post(TOKEN_A, body, {}), params(TOKEN_A));
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
+    expect(db.rows('leads')).toHaveLength(0);
   });
 
   it('accepts a referer when the origin header is missing', async () => {
