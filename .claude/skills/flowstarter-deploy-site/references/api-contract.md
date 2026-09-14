@@ -119,10 +119,23 @@ The flowstarter-main route only sends JSON form. The bytes form is reserved for 
 <host1>, <host2>, ... {
   encode gzip zstd
   root * <siteDir>
-  try_files {path} {path}/ /index.html
+  try_files {path} {path}/ =404
   file_server
+
+  handle_errors {
+    @404 expression `{http.error.status_code} == 404`
+    rewrite @404 /404.html
+    file_server
+  }
 }
 ```
+
+An unknown path is a real 404 — served from the artifact's own `404.html` if
+it shipped one, Caddy's built-in error page otherwise — never a silent
+fallback to the home page. (Simplified above: the actual snippet also wraps
+this in a `handle {}` alongside a `/editor/*` reverse-proxy route, and repeats
+the site's security headers, if any, on both the normal route and
+`handle_errors`. See `apps/deploy-agent/src/caddy-snippet.ts`.)
 
 Hosts include: `primary_domain`, every `additional_domains` entry, the final site host (if `DEPLOY_AGENT_SITE_DOMAIN_TEMPLATE` is set) and the preview host (if `DEPLOY_AGENT_PREVIEW_DOMAIN_TEMPLATE` is set). Duplicates are dropped, because Caddy refuses a block naming one host twice. Empty host list → no snippet written, returns success but the site has no Caddy entry (intentional for migration scenarios).
 
