@@ -311,12 +311,29 @@ root):
 | `write-env` | Reads (or mints, if the CLI reports none) the anon/service_role keys and upserts them into `/etc/flowstarter/staging.env`. |
 | `check`     | Fails unless 54321/54322 are loopback-only and the REST endpoint answers.                                                  |
 
-**What CI does on every staging deploy** (`scripts/deploy-slot.sh`, see below):
-runs `ensure` before starting the container; for slot `main` only, also runs
+**What CI does on every staging deploy of slot `main`:** first
+`scripts/sync-supabase.sh` (see below), which replaces
+`/opt/flowstarter/staging/repo/supabase` with exactly what the repo ships at
+that commit -- files the repo no longer has are removed on the host, not
+merely left alone -- and refuses, without touching the live tree, if the
+incoming migrations collide on version. Then `scripts/deploy-slot.sh`: runs
+`ensure` before starting the container; for slot `main` only, also runs
 `migrate` and `write-env`, since PR slots share the schema slot `main` last
 applied. The Caddy snippet that makes a slot reachable is written only after
 the container is healthy and its own `/api/health` reports it is talking to
 the local stack (`"target":"local"`), never a remote one.
+
+**`scripts/sync-supabase.sh`** (run as root, reads a tar stream of the
+repo's `supabase/` directory from stdin): extracts it into a throwaway
+sibling directory, refuses if two of the migrations it just received share a
+version (printing both filenames), and only then swaps it into
+`REPO_DIR/supabase` with two directory renames, preserving file modes. Never
+extracts in place on top of the live tree -- that was the previous approach
+(`tar -xf - --overwrite`) and it does not delete files the repo dropped, which
+is how a renamed migration once left two files sharing one version on the
+host and broke every deploy of slot `main` until someone removed the stale
+one by hand (see "What CI is allowed to run as root" above for why this is a
+script rather than inline shell in the workflow).
 
 **Slot `prod` runs none of this.** It talks to the hosted Supabase project, so
 `ensure`, `check`, `migrate` and `write-env` are all skipped and its health
@@ -508,16 +525,41 @@ sudo systemctl enable --now flowstarter-backup.timer
 ```
 
 `REPO_DIR` needs `supabase/config.toml` in it before `ensure`/`migrate` can
-run; CI's sync step (`staging-deploy.yml`) populates
+run; CI's sync step (`staging-deploy.yml`, via `sync-supabase.sh`) populates
 `/opt/flowstarter/staging/repo` on every deploy of slot `main`, but the very
 first run needs that directory seeded by hand (e.g. `git clone` or `rsync`
 the repo's `supabase/` directory there) or by triggering one `staging-deploy`
 run first.
 
+### What CI is allowed to run as root
+
+CI SSHes in as a `deploy` user, restricted by `/etc/sudoers.d/flowstarter-deploy`
+on the host (hand-maintained there, not tracked in this repo) to exactly the
+scripts under `/opt/flowstarter/staging/`:
+
+```
+Cmnd_Alias FLOWSTARTER_SLOTS = /opt/flowstarter/staging/*.sh
+deploy ALL=(root) NOPASSWD: FLOWSTARTER_SLOTS
+```
+
+sudoers matches literal commands, not shell logic handed to `ssh` as an
+argument -- an inline `mkdir`/`tar`/`mv` sequence run that way is not
+something this grant can name, and fails outright ("sudo: a password is
+required") the moment a workflow tries it. Anything a workflow needs to do as
+root on this box has to live in a script under `scripts/`, get copied in by
+the `cp .../scripts/*.sh` line above, and be invoked by path
+(`sudo /opt/flowstarter/staging/<script>.sh`) so this one `Cmnd_Alias`
+already covers it. `sync-supabase.sh` is why the `supabase/` sync step in
+`staging-deploy.yml` needs nothing extra granted: it used to have its own
+`Cmnd_Alias FLOWSTARTER_SYNC` for a fixed `mkdir`+`tar` pair, which is no
+longer referenced by any workflow and can be dropped from the box's sudoers
+file.
+
 ## CI
 
 - `.depot/workflows/staging-deploy.yml`: push to `main` deploys slot `main`
-  (syncs `supabase/` to the host, runs migrations, refreshes staging.env)
+  (syncs `supabase/` to the host via `sync-supabase.sh`, runs migrations,
+  refreshes staging.env)
 - `.depot/workflows/staging-pr-deploy.yml`: PR deploys slot `pr-<n>`; closed destroys it
 - `.depot/workflows/release.yml`: a release tag builds the production image and
   deploys slot `prod`. It is the only lane that touches production, and it
