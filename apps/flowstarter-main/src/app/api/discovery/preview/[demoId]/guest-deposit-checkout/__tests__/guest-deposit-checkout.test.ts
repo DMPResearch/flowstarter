@@ -14,8 +14,8 @@ import {
   clearClaimablePreviews,
   rememberClaimablePreview,
 } from '@/lib/flowstarter/claim';
-import { POST, __resetGuestDepositRateLimit } from '../route';
-import { _resetRateLimitFallbacksForTests } from '@/lib/rate-limit';
+import { POST } from '../route';
+import { __resetRouteLimitersForTest } from '@/lib/security/route-limits';
 
 vi.mock('server-only', () => ({}));
 
@@ -104,12 +104,7 @@ const VALID_BODY = {
 beforeEach(() => {
   clearClaimablePreviews();
   createSessionSpy.mockClear();
-  __resetGuestDepositRateLimit();
-  // Every test in this file reuses the same VALID_BODY email; without this,
-  // the per-email limiter added alongside the per-IP one (security audit
-  // 2026-09-13, H4/F06) would trip partway through the suite rather than in
-  // the dedicated rate-limit test below.
-  _resetRateLimitFallbacksForTests();
+  __resetRouteLimitersForTest();
   vi.stubEnv('STRIPE_SECRET_KEY', 'sk_test_fake');
   vi.stubEnv('NEXT_PUBLIC_SITE_URL', 'http://localhost:3000');
 });
@@ -276,7 +271,8 @@ describe('POST /api/discovery/preview/[demoId]/guest-deposit-checkout', () => {
     expect(blocked.status).toBe(429);
     expect(createSessionSpy).toHaveBeenCalledTimes(5);
 
-    // A different visitor (different IP, different email) is unaffected.
+    // A different visitor — different IP *and* different email, so this
+    // isolates the IP limiter from the email limiter below — is unaffected.
     const other = await POST(
       checkoutRequest(
         { ...VALID_BODY, email: 'other-visitor@example.com' },

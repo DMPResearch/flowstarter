@@ -42,7 +42,7 @@ import {
 import { GUEST_DEPOSIT_KIND } from '@/lib/flowstarter/guest-deposit';
 import { readJsonCapped } from '@/lib/net/ingress';
 import { clientIp } from '@/lib/request-ip';
-import { consumeRateLimit, namedIntEnv } from '@/lib/rate-limit';
+import { routeLimiter } from '@/lib/security/route-limits';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -93,54 +93,27 @@ const GuestDepositSchema = z.object({
 
 // Same shape as /api/discovery/deposit: this is an unauthenticated endpoint
 // that creates Stripe objects, so a single IP cannot be allowed to mint them
-// in a loop.
-const RATE_LIMIT = 5;
-const RATE_WINDOW_MS = 60_000;
-const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
-
-function isRateLimited(ip: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitMap.get(ip);
-  if (!entry || now > entry.resetAt) {
-    rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
-    return false;
-  }
-  entry.count++;
-  return entry.count > RATE_LIMIT;
-}
-
-/**
- * Security audit 2026-09-13 (Claude H4 / Codex F06): the per-IP limiter
- * above is defeated by rotating `X-Forwarded-For` (closed at the source in
- * `@/lib/request-ip`, but a second, IP-independent dimension is still worth
- * having for an endpoint that creates real Stripe Checkout sessions). A
- * per-email limiter closes the other half — same pattern and default as
- * `/api/discovery/deposit`'s, named and env-overridable rather than a bare
- * literal.
- */
-const EMAIL_RATE_LIMIT_ENV = 'DISCOVERY_GUEST_DEPOSIT_EMAIL_RATE_LIMIT';
-const EMAIL_RATE_LIMIT_DEFAULT = 3;
-const EMAIL_RATE_WINDOW_MS = 60_000;
-
-async function isEmailRateLimited(email: string): Promise<boolean> {
-  return consumeRateLimit(`guest-deposit-checkout-email:${email}`, {
-    limit: namedIntEnv(EMAIL_RATE_LIMIT_ENV, EMAIL_RATE_LIMIT_DEFAULT),
-    windowMs: EMAIL_RATE_WINDOW_MS,
-  });
-}
-
-/** Test seam: the limiter is module state and suites must be able to reset it. */
-export function __resetGuestDepositRateLimit(): void {
-  rateLimitMap.clear();
-}
+// in a loop. Backed by Arcjet (see `routeLimiter` / docs/security/rate-limits.md
+// for the backend order); an Arcjet error fails closed here in production —
+// a checkout route is one of the documented exceptions. A second limiter,
+// keyed by the email address once the body is validated, catches the case of
+// an attacker spreading the same email across many IPs. Suites reset both via
+// `__resetRouteLimitersForTest` in `@/lib/security/route-limits`.
 
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ demoId: string }> }
 ): Promise<NextResponse> {
   const ip = clientIp(request.headers);
-  if (isRateLimited(ip)) {
-    return NextResponse.json({ error: 'Too many attempts' }, { status: 429 });
+  const ipLimit = await routeLimiter('guest-deposit-checkout-ip').check(
+    request,
+    ip
+  );
+  if (!ipLimit.ok) {
+    return NextResponse.json(
+      { error: 'Too many attempts' },
+      { status: 429, headers: { 'Retry-After': String(ipLimit.retryAfter) } }
+    );
   }
 
   const { demoId } = await params;
@@ -172,8 +145,21 @@ export async function POST(
   }
   const spec = parsed.data;
   const email = spec.email.trim().toLowerCase();
-  if (await isEmailRateLimited(email)) {
-    return NextResponse.json({ error: 'Too many attempts' }, { status: 429 });
+
+  // Same email, many IPs is the other half of this abuse shape the IP
+  // limiter above cannot see on its own.
+  const emailLimit = await routeLimiter('guest-deposit-checkout-email').check(
+    request,
+    email
+  );
+  if (!emailLimit.ok) {
+    return NextResponse.json(
+      { error: 'Too many attempts' },
+      {
+        status: 429,
+        headers: { 'Retry-After': String(emailLimit.retryAfter) },
+      }
+    );
   }
 
   const secret = process.env.STRIPE_SECRET_KEY;

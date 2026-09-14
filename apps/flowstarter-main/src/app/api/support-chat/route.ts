@@ -4,8 +4,8 @@ import { isOpenRouterConfigured } from '@/lib/ai/client';
 import { funnelBudgetState } from '@/lib/ai/funnel-cost';
 import { callLlm } from '@/lib/ai/llm';
 import { readJsonCapped } from '@/lib/net/ingress';
-import { consumeRateLimit, namedIntEnv } from '@/lib/rate-limit';
 import { clientIp } from '@/lib/request-ip';
+import { routeLimiter } from '@/lib/security/route-limits';
 
 const SupportChatSchema = z.object({
   message: z.string().min(1).max(600),
@@ -64,13 +64,11 @@ const BUDGET_UNAVAILABLE_REPLY =
  * Security audit 2026-09-13 (Claude H4 / Codex F06): "Confirmed reachable
  * unauthenticated... this route reaches callLlm whenever the message
  * contains one of a short keyword list... has no route-level rate limiter
- * at all." Named, env-overridable config, same pattern as every other
- * limiter in the funnel (`capEur()` in funnel-cost.ts, etc.).
+ * at all." Named, env-overridable config (`SUPPORT_CHAT_RATE_LIMIT`,
+ * default 10/60s), now behind `routeLimiter('support-chat')` — see
+ * `src/lib/security/route-limits.ts` / docs/security/rate-limits.md for the
+ * Arcjet-first backend order this route gets like every other one.
  */
-const SUPPORT_CHAT_RATE_LIMIT_ENV = 'SUPPORT_CHAT_RATE_LIMIT';
-const SUPPORT_CHAT_RATE_LIMIT_DEFAULT = 10;
-const SUPPORT_CHAT_RATE_WINDOW_MS = 60_000;
-
 function isCommonSupportQuestion(input: string): boolean {
   const normalized = input.toLowerCase().trim();
   if (!normalized) return false;
@@ -83,16 +81,12 @@ function isCommonSupportQuestion(input: string): boolean {
 
 export async function POST(request: NextRequest) {
   const ip = clientIp(request.headers);
-  if (
-    await consumeRateLimit(`support-chat:${ip}`, {
-      limit: namedIntEnv(
-        SUPPORT_CHAT_RATE_LIMIT_ENV,
-        SUPPORT_CHAT_RATE_LIMIT_DEFAULT
-      ),
-      windowMs: SUPPORT_CHAT_RATE_WINDOW_MS,
-    })
-  ) {
-    return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+  const limit = await routeLimiter('support-chat').check(request, ip);
+  if (!limit.ok) {
+    return NextResponse.json(
+      { error: 'Too many requests' },
+      { status: 429, headers: { 'Retry-After': String(limit.retryAfter) } }
+    );
   }
 
   // Capped as it streams rather than buffered and measured afterwards: an

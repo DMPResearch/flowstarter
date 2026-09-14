@@ -18,8 +18,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import { resolveOperatorNotifyEmail, sendEmail } from '@/lib/email';
+import { routeLimiter } from '@/lib/security/route-limits';
 import { readJsonCapped } from '@/lib/net/ingress';
-import { contactRateLimiter } from '@/lib/rate-limit';
 import { clientIp } from '@/lib/request-ip';
 
 const ContactSchema = z.object({
@@ -103,13 +103,18 @@ async function notifyOperator(input: {
 }
 
 export async function POST(request: NextRequest) {
-  // Per-IP rate limit, same helper the public lead-capture and custom-inquiry
-  // routes use. Checked before any parsing, so an oversized or malformed
-  // body from an abusive client is also cheap to reject.
-  if (contactRateLimiter.check(clientIp(request.headers)).limited) {
+  // Per-IP rate limit, backed by Arcjet (see `routeLimiter` /
+  // docs/security/rate-limits.md for the backend order). Checked before any
+  // parsing, so an oversized or malformed body from an abusive client is
+  // also cheap to reject.
+  const limit = await routeLimiter('contact').check(
+    request,
+    clientIp(request.headers)
+  );
+  if (!limit.ok) {
     return NextResponse.json(
       { error: 'Too many messages. Please try again in a minute.' },
-      { status: 429 }
+      { status: 429, headers: { 'Retry-After': String(limit.retryAfter) } }
     );
   }
 

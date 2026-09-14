@@ -119,20 +119,6 @@ export class SlidingWindowRateLimiter {
   }
 }
 
-// ── Pre-configured instances ────────────────────────────────────────────────
-
-/** Rate limiter for public lead capture: 10 requests per minute per IP */
-export const leadCaptureRateLimiter = new SlidingWindowRateLimiter({
-  limit: 10,
-  windowMs: 60_000,
-});
-
-/** Rate limiter for public contact form: 5 requests per minute per IP */
-export const contactRateLimiter = new SlidingWindowRateLimiter({
-  limit: 5,
-  windowMs: 60_000,
-});
-
 /**
  * A positive integer read from a named env var, falling back to a
  * documented default — the same shape as `capEur()` in
@@ -146,23 +132,14 @@ export function namedIntEnv(envVar: string, fallback: number): number {
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
 }
 
-/**
- * MVP readiness review, "Security": `/api/discovery/preview/live` — a real
- * Pi generation run, `maxDuration = 300` — had no rate limit at all. A
- * genuine visitor calls this once per completed intake, so this stays
- * deliberately tight; env-overridable rather than a bare literal in the
- * route, same as the funnel spend cap's `DISCOVERY_FUNNEL_BUDGET_EUR`.
- */
-function discoveryPreviewLiveLimit(): number {
-  return namedIntEnv('DISCOVERY_PREVIEW_LIVE_RATE_LIMIT', 5);
-}
-
-/** Rate limiter for `POST /api/discovery/preview/live`: 5 per minute per IP
- * by default (see {@link discoveryPreviewLiveLimit}). */
-export const discoveryPreviewLiveRateLimiter = new SlidingWindowRateLimiter({
-  limit: discoveryPreviewLiveLimit(),
-  windowMs: 60_000,
-});
+// ── Route limiters ──────────────────────────────────────────────────────────
+//
+// The public lead-capture, contact, `/api/discovery/preview/live`, and both
+// Stripe checkout routes' limits — including the per-IP ones that used to be
+// bare `SlidingWindowRateLimiter` instances here — now live in
+// `src/lib/security/route-limits.ts`, behind `routeLimiter(name)`: Arcjet
+// first, Upstash second, this file's own limiter last and development-only.
+// See docs/security/rate-limits.md for the full route table.
 
 // ── Shared, when there is somewhere to share it ─────────────────────────────
 

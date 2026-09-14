@@ -1,4 +1,5 @@
 import {
+  ajMachine,
   ajWithRateLimit,
   createBlockedResponse,
   getRateLimitHeaders,
@@ -18,7 +19,11 @@ import {
   type ForcedPasswordClaims,
 } from '@/lib/auth/forced-password-change';
 import { teamRoleForEmail } from '@/lib/auth/team-role';
-import { KNOWN_APP_ROUTES, PUBLIC_ROUTES } from '@/lib/route-manifest';
+import {
+  arcjetPolicyFor,
+  KNOWN_APP_ROUTES,
+  PUBLIC_ROUTES,
+} from '@/lib/route-manifest';
 import { applySecurityHeaders } from './utils/security-headers';
 
 /**
@@ -318,7 +323,6 @@ export default clerkMiddleware(async (auth, req) => {
   try {
     const isApi = pathname.startsWith('/api');
     const isWebhook = pathname.startsWith('/api/webhooks');
-    const isHealth = pathname.startsWith('/api/health');
     /**
      * The public lead capture endpoint, which is cross-origin by design: it is
      * the contact form on a client's own site posting to the platform, from a
@@ -450,16 +454,25 @@ export default clerkMiddleware(async (auth, req) => {
 
       // No CSRF cookie needed when relying on same-origin checks
 
-      // Rate limiting and security using Arcjet (skip webhooks/health)
+      // Rate limiting and security using Arcjet. Which client runs — full
+      // protection, or shield-and-rate-limit-only for a signature/shared-secret
+      // caller — is decided once by `arcjetPolicyFor` (see
+      // `@/lib/route-manifest`), not by repeating `isWebhook`/`isHealth`-style
+      // checks here.
       const hasArcjet = !!process.env.ARCJET_KEY;
-      if (hasArcjet && !isWebhook && !isHealth) {
+      const arcjetPolicy = arcjetPolicyFor(pathname);
+      if (hasArcjet && arcjetPolicy !== 'none') {
         try {
-          const decision = await ajWithRateLimit.protect(req);
+          const client =
+            arcjetPolicy === 'machine' ? ajMachine : ajWithRateLimit;
+          const decision = await client.protect(req);
 
           // Check if request is denied
           const blockedResponse = createBlockedResponse(decision);
           if (blockedResponse) {
-            // Log security block (rate limit, bot, or shield)
+            // Log security block (rate limit, bot, or shield). `machine`
+            // routes carry no `detectBot` rule, so `isBot()` is never true
+            // for them — only shield or the rate limit can block here.
             const reason = decision.reason;
             const eventType = reason.isRateLimit()
               ? 'security.rate_limited'
