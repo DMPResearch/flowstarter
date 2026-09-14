@@ -50,10 +50,17 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
   const navLinkClass = (isActive: boolean) =>
     [
       'text-sm transition-colors cursor-pointer',
-      isActive
-        ? 'text-[var(--fs-ink)] dark:text-white font-semibold'
-        : 'text-[var(--fs-ink-faint)] dark:text-white/72 hover:text-gray-900 dark:hover:text-white',
+      showFrosted
+        ? isActive
+          ? 'text-[var(--fs-ink)] dark:text-white font-semibold'
+          : 'text-[var(--fs-ink-faint)] dark:text-white/72 hover:text-gray-900 dark:hover:text-white'
+        : isActive
+          ? 'text-[var(--fs-ink)]/55 dark:text-white/65 font-semibold'
+          : 'text-[var(--fs-ink)]/35 dark:text-white/45 hover:text-[var(--fs-ink)]/60 dark:hover:text-white/70',
     ].join(' ');
+  const chromeIconClass = showFrosted
+    ? 'text-gray-600 dark:text-white'
+    : 'text-[var(--fs-ink)]/40 dark:text-white/45';
   const mobileNavLinkClass = (isActive: boolean) =>
     [
       'ls-mobile-link group flex items-baseline gap-3 px-1 py-3.5 transition-colors cursor-pointer border-b border-[var(--ls-rule)] last:border-b-0',
@@ -80,7 +87,14 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-12">
             <div className="flex items-center justify-between h-14 sm:h-16">
               <Link href="/" className="flex items-center gap-2 sm:gap-3 group">
-                <Logo size="md" />
+                <Logo
+                  size="md"
+                  className={
+                    showFrosted
+                      ? 'transition-opacity duration-500'
+                      : 'opacity-55 transition-opacity duration-500'
+                  }
+                />
               </Link>
 
               <nav
@@ -143,7 +157,7 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
                 >
                   {mobileMenuOpen ? (
                     <svg
-                      className="w-5 h-5 text-gray-600 dark:text-white"
+                      className={`w-5 h-5 transition-colors duration-500 ${chromeIconClass}`}
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
@@ -157,7 +171,7 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
                     </svg>
                   ) : (
                     <svg
-                      className="w-5 h-5 text-gray-600 dark:text-white"
+                      className={`w-5 h-5 transition-colors duration-500 ${chromeIconClass}`}
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
@@ -370,7 +384,14 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-12 h-14 sm:h-16 flex items-center justify-between gap-3">
         <Link href="/" className="flex items-center shrink-0">
-          <Logo size="md" />
+          <Logo
+            size="md"
+            className={
+              scrolled
+                ? 'transition-opacity duration-500'
+                : 'opacity-55 transition-opacity duration-500'
+            }
+          />
         </Link>
 
         <div className="flex items-center gap-1.5 sm:gap-3">
