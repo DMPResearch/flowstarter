@@ -1,0 +1,33 @@
+{
+  "name": "@flowstarter/sigma-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Taxonomy-agnostic sigma classifier core: a local multilingual embedding encoder, a centroid tier with an explicit abstention band, a budgeted fail-open cascade with injectable tiers, a generic policy boundary, an asymmetric-cost held-out scorer with a provenance gate, and the centroid trainer/calibrator. Knows no categories of its own.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./config/encoder.json": "./config/encoder.json"
+  },
+  "files": ["src", "config", "scripts", "README.md"],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "fetch-model": "node scripts/fetch-model.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.13",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.11"
+  }
+}

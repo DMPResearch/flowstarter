@@ -1,0 +1,35 @@
+{
+  "name": "@flowstarter/sigma-flowstarter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Flowstarter's sigma heads: acceptable use (prohibited / sensitive / clean) and commercial scope (standard site / custom work / unclear), with their centroids, calibrated bands, cost tables and held-out eval sets. All the generic machinery lives in @flowstarter/sigma-core.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": ["src", "config", "models", "scripts", "README.md"],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "fetch-model": "pnpm --filter @flowstarter/sigma-core fetch-model",
+    "train": "tsx scripts/train-centroids.mjs",
+    "calibrate": "tsx scripts/calibrate.mjs",
+    "bench": "tsx scripts/bench.mjs"
+  },
+  "dependencies": {
+    "@flowstarter/sigma-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.13",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.11"
+  }
+}

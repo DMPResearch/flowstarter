@@ -1,0 +1,411 @@
+{
+  "_readme": [
+    "The labelled scope set: can Flowstarter self-serve this, or does it have to",
+    "be contracted through DMPResearch after a discovery call.",
+    "",
+    "Same two shapes as the acceptable-use set and as Ereno sigma's",
+    "tests/data/classifier_eval.json: parity_groups (one brief in six languages,",
+    "all of which must reach the same verdict) and cases (one brief, absolute",
+    "expectation).",
+    "",
+    "The rows that matter most are the boring ones: a clinic that wants patients",
+    "to book a twenty minute intro call, a restaurant with an enquiry form, a",
+    "photographer with a Calendly link. Those are STANDARD sites. A classifier",
+    "that has learned 'booking' or 'form' as a signal instead of learning what",
+    "the request is will fail exactly there, and it will fail expensively,",
+    "because every one of those is a customer sent to a sales call they did not",
+    "need.",
+    "",
+    "The other side is cheaper to get wrong in the wrong direction but worse in",
+    "practice: a marketplace or an admin panel that slips into the unattended",
+    "funnel produces a build that cannot work and a refund. Hence 40 against 15",
+    "in config/evaluation.json."
+  ],
+  "version": "2026-09-14",
+  "provenance": {
+    "calibration_authors": ["flowstarter-sigma-phrase-generator"],
+    "holdout_authors": ["flowstarter-scope-holdout-2026-09"],
+    "holdout_source": "independent_synthetic",
+    "privacy_reviewed": true,
+    "built_at": "2026-09-14"
+  },
+  "parity_groups": [
+    {
+      "id": "brochure_local_business",
+      "category": "standard-site",
+      "action": "standard",
+      "prompts": {
+        "en": "A five page site for our joinery workshop: what we make, past work, where we are, how to reach us.",
+        "ro": "Un site de cinci pagini pentru atelierul nostru de tamplarie: ce facem, lucrari anterioare, unde suntem, cum ne gasiti.",
+        "de": "Eine fuenfseitige Website fuer unsere Tischlerei: was wir machen, fruehere Arbeiten, wo wir sind, wie man uns erreicht.",
+        "fr": "Un site de cinq pages pour notre atelier de menuiserie : ce que nous faisons, nos realisations, ou nous sommes, comment nous joindre.",
+        "es": "Un sitio de cinco paginas para nuestro taller de carpinteria: que hacemos, trabajos anteriores, donde estamos, como contactarnos.",
+        "it": "Un sito di cinque pagine per la nostra falegnameria: cosa facciamo, lavori passati, dove siamo, come contattarci."
+      }
+    },
+    {
+      "id": "freelance_portfolio",
+      "category": "standard-site",
+      "action": "standard",
+      "prompts": {
+        "en": "A portfolio for my illustration work, a grid of projects and a short bio.",
+        "ro": "Un portofoliu pentru ilustratiile mele, o grila de proiecte si o scurta biografie.",
+        "de": "Ein Portfolio fuer meine Illustrationen, ein Raster mit Projekten und eine kurze Biografie.",
+        "fr": "Un portfolio pour mes illustrations, une grille de projets et une courte bio.",
+        "es": "Un portafolio para mis ilustraciones, una cuadricula de proyectos y una breve biografia.",
+        "it": "Un portfolio per le mie illustrazioni, una griglia di progetti e una breve biografia."
+      }
+    },
+    {
+      "id": "restaurant_menu_hours",
+      "category": "standard-site",
+      "action": "standard",
+      "prompts": {
+        "en": "Our bistro needs the menu, the hours, some photos of the room and a phone number.",
+        "ro": "Bistroul nostru are nevoie de meniu, program, cateva poze din sala si un numar de telefon.",
+        "de": "Unser Bistro braucht die Speisekarte, die Oeffnungszeiten, ein paar Fotos vom Raum und eine Telefonnummer.",
+        "fr": "Notre bistrot a besoin de la carte, des horaires, quelques photos de la salle et d'un numero de telephone.",
+        "es": "Nuestro bistro necesita la carta, el horario, algunas fotos del local y un numero de telefono.",
+        "it": "Il nostro bistrot ha bisogno del menu, degli orari, qualche foto della sala e di un numero di telefono."
+      }
+    },
+    {
+      "id": "clinic_intro_call_booking",
+      "category": "standard-site",
+      "action": "standard",
+      "prompts": {
+        "en": "A physiotherapy clinic site where a new patient can book a twenty minute intro call with us.",
+        "ro": "Un site de clinica de fizioterapie unde un pacient nou poate rezerva o discutie initiala de douazeci de minute.",
+        "de": "Eine Physiotherapie-Seite, auf der ein neuer Patient ein zwanzigminuetiges Erstgespraech buchen kann.",
+        "fr": "Un site de cabinet de kinesitherapie ou un nouveau patient peut reserver un appel decouverte de vingt minutes.",
+        "es": "Un sitio de clinica de fisioterapia donde un paciente nuevo puede reservar una llamada inicial de veinte minutos.",
+        "it": "Un sito di studio di fisioterapia dove un nuovo paziente puo prenotare una call conoscitiva di venti minuti."
+      }
+    },
+    {
+      "id": "coach_one_pager_form",
+      "category": "standard-site",
+      "action": "standard",
+      "prompts": {
+        "en": "One page for my coaching practice, what I do, who it is for, and a contact form at the bottom.",
+        "ro": "O pagina pentru practica mea de coaching, ce fac, pentru cine este si un formular de contact jos.",
+        "de": "Eine Seite fuer meine Coaching-Praxis, was ich mache, fuer wen, und unten ein Kontaktformular.",
+        "fr": "Une page pour mon activite de coaching, ce que je fais, pour qui, et un formulaire de contact en bas.",
+        "es": "Una pagina para mi practica de coaching, que hago, para quien es, y un formulario de contacto abajo.",
+        "it": "Una pagina per la mia attivita di coaching, cosa faccio, per chi e, e un modulo di contatto in fondo."
+      }
+    },
+    {
+      "id": "small_shop_simple_catalogue",
+      "category": "standard-site",
+      "action": "standard",
+      "prompts": {
+        "en": "A small ceramics shop, about a dozen pieces, each with photos and a price, and a simple checkout.",
+        "ro": "Un magazin mic de ceramica, vreo douasprezece piese, fiecare cu poze si pret, si o plata simpla.",
+        "de": "Ein kleiner Keramikladen, etwa ein Dutzend Stuecke, jeweils mit Fotos und Preis, und eine einfache Kasse.",
+        "fr": "Une petite boutique de ceramique, une douzaine de pieces, chacune avec photos et prix, et un paiement simple.",
+        "es": "Una pequena tienda de ceramica, una docena de piezas, cada una con fotos y precio, y un pago sencillo.",
+        "it": "Un piccolo negozio di ceramiche, una dozzina di pezzi, ciascuno con foto e prezzo, e un pagamento semplice."
+      }
+    },
+    {
+      "id": "barber_gallery",
+      "category": "standard-site",
+      "action": "standard",
+      "prompts": {
+        "en": "A barber shop page with a gallery of cuts, the price list and where to find us.",
+        "ro": "O pagina de frizerie cu o galerie de tunsori, lista de preturi si unde ne gasiti.",
+        "de": "Eine Friseurseite mit einer Galerie von Schnitten, der Preisliste und wo man uns findet.",
+        "fr": "Une page de salon de coiffure avec une galerie de coupes, les tarifs et ou nous trouver.",
+        "es": "Una pagina de barberia con una galeria de cortes, la lista de precios y donde encontrarnos.",
+        "it": "Una pagina di barbiere con una galleria di tagli, il listino prezzi e dove trovarci."
+      }
+    },
+    {
+      "id": "law_firm_services",
+      "category": "standard-site",
+      "action": "standard",
+      "prompts": {
+        "en": "A small law firm, four practice areas, partner profiles and an enquiry page.",
+        "ro": "Un cabinet de avocatura mic, patru arii de practica, profilurile partenerilor si o pagina de solicitari.",
+        "de": "Eine kleine Anwaltskanzlei, vier Taetigkeitsfelder, Partnerprofile und eine Anfrageseite.",
+        "fr": "Un petit cabinet d'avocats, quatre domaines de pratique, les profils des associes et une page de contact.",
+        "es": "Un pequeno despacho de abogados, cuatro areas de practica, perfiles de los socios y una pagina de consultas.",
+        "it": "Un piccolo studio legale, quattro aree di attivita, i profili dei soci e una pagina per le richieste."
+      }
+    },
+    {
+      "id": "two_sided_marketplace",
+      "category": "custom-work",
+      "action": "custom",
+      "prompts": {
+        "en": "A marketplace where sellers list items, buyers order, and we take a commission on each sale.",
+        "ro": "O piata unde vanzatorii listeaza produse, cumparatorii comanda si noi luam comision la fiecare vanzare.",
+        "de": "Ein Marktplatz, auf dem Verkaeufer Artikel einstellen, Kaeufer bestellen und wir pro Verkauf Provision nehmen.",
+        "fr": "Une place de marche ou les vendeurs listent des articles, les acheteurs commandent, et nous prenons une commission.",
+        "es": "Un marketplace donde los vendedores publican articulos, los compradores piden y nosotros cobramos comision.",
+        "it": "Un marketplace dove i venditori pubblicano articoli, i compratori ordinano e noi prendiamo una commissione."
+      }
+    },
+    {
+      "id": "saas_subscription_admin",
+      "category": "custom-work",
+      "action": "custom",
+      "prompts": {
+        "en": "A SaaS product with monthly plans, an admin panel for our team and usage limits per account.",
+        "ro": "Un produs SaaS cu planuri lunare, un panou de administrare pentru echipa noastra si limite de utilizare pe cont.",
+        "de": "Ein SaaS-Produkt mit Monatsplaenen, einem Adminbereich fuer unser Team und Nutzungslimits pro Konto.",
+        "fr": "Un produit SaaS avec des forfaits mensuels, un panneau d'administration pour notre equipe et des limites par compte.",
+        "es": "Un producto SaaS con planes mensuales, un panel de administracion para nuestro equipo y limites de uso por cuenta.",
+        "it": "Un prodotto SaaS con piani mensili, un pannello di amministrazione per il team e limiti di utilizzo per account."
+      }
+    },
+    {
+      "id": "mobile_app_signup_push",
+      "category": "custom-work",
+      "action": "custom",
+      "prompts": {
+        "en": "An iPhone and Android app where users sign up, save favourites and get push notifications.",
+        "ro": "O aplicatie iPhone si Android unde utilizatorii se inregistreaza, salveaza favorite si primesc notificari push.",
+        "de": "Eine iPhone- und Android-App, in der sich Nutzer registrieren, Favoriten speichern und Push-Nachrichten bekommen.",
+        "fr": "Une application iPhone et Android ou les utilisateurs s'inscrivent, enregistrent des favoris et recoivent des notifications push.",
+        "es": "Una app para iPhone y Android donde los usuarios se registran, guardan favoritos y reciben notificaciones push.",
+        "it": "Un'app per iPhone e Android dove gli utenti si registrano, salvano preferiti e ricevono notifiche push."
+      }
+    },
+    {
+      "id": "customer_portal_erp",
+      "category": "custom-work",
+      "action": "custom",
+      "prompts": {
+        "en": "A customer portal that pulls live stock and order status from our ERP every night over an API.",
+        "ro": "Un portal pentru clienti care preia stocul si statusul comenzilor din ERP-ul nostru in fiecare noapte prin API.",
+        "de": "Ein Kundenportal, das jede Nacht per API Lagerbestand und Auftragsstatus aus unserem ERP zieht.",
+        "fr": "Un portail client qui recupere chaque nuit le stock et le statut des commandes depuis notre ERP via une API.",
+        "es": "Un portal de clientes que trae cada noche el stock y el estado de los pedidos de nuestro ERP por API.",
+        "it": "Un portale clienti che ogni notte preleva giacenze e stato ordini dal nostro ERP tramite API."
+      }
+    },
+    {
+      "id": "booking_payments_rotas",
+      "category": "custom-work",
+      "action": "custom",
+      "prompts": {
+        "en": "A booking and payment system for eleven salons, with staff rotas, deposits, refunds and reminders.",
+        "ro": "Un sistem de rezervari si plati pentru unsprezece saloane, cu ture de personal, avansuri, rambursari si mementouri.",
+        "de": "Ein Buchungs- und Zahlungssystem fuer elf Salons, mit Dienstplaenen, Anzahlungen, Erstattungen und Erinnerungen.",
+        "fr": "Un systeme de reservation et de paiement pour onze salons, avec plannings, acomptes, remboursements et rappels.",
+        "es": "Un sistema de reservas y pagos para once salones, con turnos, senales, reembolsos y recordatorios.",
+        "it": "Un sistema di prenotazioni e pagamenti per undici saloni, con turni, acconti, rimborsi e promemoria."
+      }
+    },
+    {
+      "id": "multi_tenant_enterprise",
+      "category": "custom-work",
+      "action": "custom",
+      "prompts": {
+        "en": "A multi-tenant portal for our enterprise clients, each with their own branding, in four languages.",
+        "ro": "Un portal multi-tenant pentru clientii nostri enterprise, fiecare cu propriul brand, in patru limbi.",
+        "de": "Ein mandantenfaehiges Portal fuer unsere Firmenkunden, jeder mit eigenem Branding, in vier Sprachen.",
+        "fr": "Un portail multi-tenant pour nos grands comptes, chacun avec sa propre identite, en quatre langues.",
+        "es": "Un portal multiinquilino para nuestros clientes corporativos, cada uno con su marca, en cuatro idiomas.",
+        "it": "Un portale multi-tenant per i nostri clienti enterprise, ognuno con il proprio brand, in quattro lingue."
+      }
+    },
+    {
+      "id": "legacy_migration",
+      "category": "custom-work",
+      "action": "custom",
+      "prompts": {
+        "en": "We need to move a fifteen year old intranet with forty thousand documents onto something modern.",
+        "ro": "Trebuie sa mutam un intranet vechi de cincisprezece ani cu patruzeci de mii de documente pe ceva modern.",
+        "de": "Wir muessen ein fuenfzehn Jahre altes Intranet mit vierzigtausend Dokumenten auf etwas Modernes umziehen.",
+        "fr": "Nous devons migrer un intranet vieux de quinze ans avec quarante mille documents vers quelque chose de moderne.",
+        "es": "Necesitamos migrar una intranet de quince anos con cuarenta mil documentos a algo moderno.",
+        "it": "Dobbiamo migrare una intranet di quindici anni con quarantamila documenti su qualcosa di moderno."
+      }
+    },
+    {
+      "id": "crm_warehouse_integration",
+      "category": "custom-work",
+      "action": "custom",
+      "prompts": {
+        "en": "A custom integration so our CRM and our warehouse system stop disagreeing about what is in stock.",
+        "ro": "O integrare personalizata astfel incat CRM-ul si sistemul de depozit sa nu mai difere la stocuri.",
+        "de": "Eine individuelle Integration, damit unser CRM und unser Lagersystem sich beim Bestand nicht mehr widersprechen.",
+        "fr": "Une integration sur mesure pour que notre CRM et notre systeme d'entrepot cessent de se contredire sur le stock.",
+        "es": "Una integracion a medida para que nuestro CRM y el sistema de almacen dejen de contradecirse con el stock.",
+        "it": "Un'integrazione su misura perche il nostro CRM e il sistema di magazzino smettano di contraddirsi sulle giacenze."
+      }
+    },
+    {
+      "id": "vague_digital_presence",
+      "category": "unclear",
+      "action": "unclear",
+      "prompts": {
+        "en": "We need some kind of digital presence, we are not sure what that looks like yet.",
+        "ro": "Avem nevoie de un fel de prezenta digitala, inca nu stim cum arata asta.",
+        "de": "Wir brauchen irgendeine digitale Praesenz, wir wissen noch nicht, wie die aussieht.",
+        "fr": "Nous avons besoin d'une presence numerique, nous ne savons pas encore a quoi cela ressemble.",
+        "es": "Necesitamos algun tipo de presencia digital, todavia no sabemos como se ve eso.",
+        "it": "Abbiamo bisogno di una qualche presenza digitale, non sappiamo ancora come debba essere."
+      }
+    },
+    {
+      "id": "vague_not_sure_yet",
+      "category": "unclear",
+      "action": "unclear",
+      "prompts": {
+        "en": "A website of some sort, I have not decided what it should do yet.",
+        "ro": "Un site de un fel oarecare, inca nu am decis ce ar trebui sa faca.",
+        "de": "Irgendeine Website, ich habe noch nicht entschieden, was sie koennen soll.",
+        "fr": "Un site quelconque, je n'ai pas encore decide ce qu'il doit faire.",
+        "es": "Una web de algun tipo, todavia no he decidido que deberia hacer.",
+        "it": "Un sito di qualche tipo, non ho ancora deciso cosa debba fare."
+      }
+    }
+  ],
+  "cases": [
+    {
+      "id": "standard_dentist_appointment_form",
+      "prompt": "A dentist site with opening hours and a form to request an appointment, we call people back.",
+      "category": "standard-site",
+      "action": "standard",
+      "note": "a form is part of a standard site"
+    },
+    {
+      "id": "standard_photographer_calendly",
+      "prompt": "A photographer portfolio with an enquiry form and a Calendly link for a fifteen minute chat.",
+      "category": "standard-site",
+      "action": "standard",
+      "note": "an intro-call widget is part of a standard site"
+    },
+    {
+      "id": "standard_restaurant_large_party_form",
+      "prompt": "A restaurant page with a contact form for large party enquiries and Christmas bookings.",
+      "category": "standard-site",
+      "action": "standard",
+      "note": "the word booking without a booking system"
+    },
+    {
+      "id": "standard_yoga_timetable_form",
+      "prompt": "A yoga studio site with the weekly timetable and a form to ask about the beginner course.",
+      "category": "standard-site",
+      "action": "standard"
+    },
+    {
+      "id": "standard_accountant_quote_form",
+      "prompt": "An accountancy site with our services, our fees and a short form to request a quote.",
+      "category": "standard-site",
+      "action": "standard"
+    },
+    {
+      "id": "standard_charity_donate_button",
+      "prompt": "A small charity site telling our story, with a donate button that goes to our existing payment page.",
+      "category": "standard-site",
+      "action": "standard",
+      "note": "payments elsewhere, not a payment system here"
+    },
+    {
+      "id": "standard_hotel_link_out",
+      "prompt": "A guesthouse site with rooms and photos; bookings go out to our existing channel manager.",
+      "category": "standard-site",
+      "action": "standard"
+    },
+    {
+      "id": "standard_florist_catalogue",
+      "prompt": "A florist with twenty arrangements, prices, and delivery areas. No accounts, people just order.",
+      "category": "standard-site",
+      "action": "standard"
+    },
+    {
+      "id": "custom_customer_login_invoices",
+      "prompt": "Customers log in to see their order history and download past invoices as PDFs.",
+      "category": "custom-work",
+      "action": "custom",
+      "note": "users can sign up"
+    },
+    {
+      "id": "custom_admin_panel_stock",
+      "prompt": "An admin panel where our warehouse staff update stock levels and mark orders as shipped.",
+      "category": "custom-work",
+      "action": "custom"
+    },
+    {
+      "id": "custom_user_profiles",
+      "prompt": "Users can sign up, build their own profile page and follow each other.",
+      "category": "custom-work",
+      "action": "custom"
+    },
+    {
+      "id": "custom_tutor_matching_platform",
+      "prompt": "A platform where tutors and students match, message each other and pay for lessons in the app.",
+      "category": "custom-work",
+      "action": "custom"
+    },
+    {
+      "id": "custom_erp_sync",
+      "prompt": "It has to sync with our ERP so the prices on the site are never more than an hour out of date.",
+      "category": "custom-work",
+      "action": "custom"
+    },
+    {
+      "id": "custom_dashboard_analytics",
+      "prompt": "A dashboard where each franchise sees their own numbers, with role based permissions.",
+      "category": "custom-work",
+      "action": "custom"
+    },
+    {
+      "id": "custom_delivery_driver_app",
+      "prompt": "A driver app with live location, route assignment and proof of delivery photos.",
+      "category": "custom-work",
+      "action": "custom"
+    },
+    {
+      "id": "custom_subscription_box_billing",
+      "prompt": "A subscription box service: customers pick a plan, pause it, skip a month and change their card.",
+      "category": "custom-work",
+      "action": "custom",
+      "note": "recurring billing with account self-service"
+    },
+    {
+      "id": "unclear_maybe_shop_maybe_app",
+      "prompt": "Not sure yet, maybe a shop, maybe an app, we want to see what is possible.",
+      "category": "unclear",
+      "action": "unclear"
+    },
+    {
+      "id": "unclear_something_online",
+      "prompt": "Something online for the business, we just know we need to be findable.",
+      "category": "unclear",
+      "action": "unclear"
+    },
+    {
+      "id": "unclear_help_us_decide",
+      "prompt": "Help us work out what we actually need, we have been arguing about it for a month.",
+      "category": "unclear",
+      "action": "unclear"
+    },
+    {
+      "id": "custom_multilingual_enterprise_ro",
+      "prompt": "Un portal intern pentru trei filiale, cu conturi de angajati, drepturi diferite si rapoarte lunare.",
+      "language": "ro",
+      "category": "custom-work",
+      "action": "custom"
+    },
+    {
+      "id": "standard_local_bakery_de",
+      "prompt": "Eine Seite fuer unsere Baeckerei mit Sortiment, Oeffnungszeiten und einem Kontaktformular.",
+      "language": "de",
+      "category": "standard-site",
+      "action": "standard"
+    },
+    {
+      "id": "custom_booking_engine_fr",
+      "prompt": "Un moteur de reservation avec paiement en ligne, annulations et plannings pour quinze praticiens.",
+      "language": "fr",
+      "category": "custom-work",
+      "action": "custom"
+    }
+  ]
+}

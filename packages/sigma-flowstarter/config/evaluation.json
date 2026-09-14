@@ -1,0 +1,66 @@
+{
+  "_comment": [
+    "Asymmetric costs. Accuracy is the wrong number for a guardrail: these",
+    "mistakes are not interchangeable, and a scorer that averages them tells you",
+    "nothing about whether you can ship.",
+    "",
+    "acceptableUse:",
+    "  prohibited_miss            100  a prohibited business got ALLOW. Not",
+    "                                  tradeable; the suite gates on zero of",
+    "                                  these regardless of the total.",
+    "  refuse_clean_business       25  a dental clinic got REFUSE. The worst",
+    "                                  thing we can do to a paying customer.",
+    "  review_instead_of_refuse    10  we caught it but made a human confirm.",
+    "  review_instead_of_allow      5  friction on a clean business. Cheap, and",
+    "                                  deliberately non-zero so a band that",
+    "                                  abstains on everything does not win.",
+    "  category_confusion           8  right action, wrong category. Matters",
+    "                                  because the reviewer reads the category.",
+    "  abstention                   2  the price of not guessing.",
+    "",
+    "scope:",
+    "  custom_missed_as_standard   40  a marketplace entered the unattended",
+    "                                  funnel. The build fails and we refund.",
+    "  standard_sent_to_a_call     15  a brochure site cost the customer a",
+    "                                  discovery call they did not need.",
+    "  scope_abstention             2",
+    "",
+    "calibration.minCoverage is a CONSTRAINT on the sweep, not a target. An",
+    "abstention is the cheapest line in any sensible cost table, so an",
+    "unconstrained sweep buys safety with abstention until the classifier is",
+    "technically excellent and commercially useless. How often we are willing",
+    "to ask a person is a product decision, so it binds the search rather than",
+    "competing inside it.",
+    "",
+    "gates are the release thresholds the suite enforces. They are ceilings",
+    "chosen from the measured held-out numbers with headroom, not aspirations:",
+    "raise one only with the eval run that justifies it in the PR. As measured",
+    "on 2026-09-14: acceptable use cost 142 over 156 scored rows (4 xfail),",
+    "coverage 0.949, zero prohibited misses; scope cost 2 over 130 rows,",
+    "coverage 0.992, zero custom-work missed as standard."
+  ],
+  "version": "2026-09-14",
+  "acceptableUse": {
+    "prohibited_miss": 100,
+    "refuse_clean_business": 25,
+    "review_instead_of_refuse": 10,
+    "review_instead_of_allow": 5,
+    "category_confusion": 8,
+    "abstention": 2
+  },
+  "scope": {
+    "custom_missed_as_standard": 40,
+    "standard_sent_to_a_call": 15,
+    "scope_abstention": 2
+  },
+  "calibration": {
+    "minCoverage": 0.93,
+    "scopeMinCoverage": 0.93
+  },
+  "gates": {
+    "acceptableUseMaxWeightedCost": 200,
+    "scopeMaxWeightedCost": 40,
+    "minCoverage": 0.85,
+    "scopeMinCoverage": 0.85
+  }
+}
