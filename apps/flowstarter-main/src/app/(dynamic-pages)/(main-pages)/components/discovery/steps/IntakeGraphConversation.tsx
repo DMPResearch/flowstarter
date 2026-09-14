@@ -51,12 +51,12 @@ import type {
   IntakeGraphTurnResult,
 } from '@/lib/flowstarter/intake-graph/types';
 
-/** See `IntakeConversation`'s own copy of this constant for why `min-h-11`. */
+/** See `IntakeConversation`'s own copy of this constant for why `min-h-12`. */
 const composerClass =
-  'min-h-11 w-full flex-1 resize-none rounded-xl border border-[var(--fs-rule)] bg-white px-3.5 py-2.5 text-sm text-[var(--fs-ink)] outline-none transition-[box-shadow,border-color] duration-150 placeholder:text-[var(--fs-ink-faint)] hover:border-[var(--purple-primary)]/30 focus:border-[var(--purple-primary)]/40 focus:shadow-[0_0_0_4px_var(--purple-primary-lightest)] dark:bg-white/[0.03]';
+  'min-h-12 w-full flex-1 resize-none rounded-xl border border-[var(--fs-rule)] bg-white px-5 py-3.5 text-sm text-[var(--fs-ink)] outline-none transition-[box-shadow,border-color] duration-150 placeholder:text-[var(--fs-ink-faint)] hover:border-[var(--purple-primary)]/30 focus:border-[var(--purple-primary)]/40 focus:shadow-[0_0_0_4px_var(--purple-primary-lightest)] dark:bg-white/[0.03]';
 
 /** Send shares the field's height, radius and horizontal padding — see `composerClass`. */
-const composerSendClass = 'h-11 shrink-0 rounded-xl px-3.5';
+const composerSendClass = 'h-12 shrink-0 rounded-xl px-5';
 
 const chipClass =
   'rounded-full border px-3 py-1.5 text-sm font-semibold transition-all border-[var(--fs-rule)] text-[var(--fs-ink)] hover:border-[var(--purple-primary)]/50 hover:bg-[var(--purple-primary)]/[0.06]';

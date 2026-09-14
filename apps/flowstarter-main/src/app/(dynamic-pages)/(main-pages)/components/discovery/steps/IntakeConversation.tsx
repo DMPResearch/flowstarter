@@ -93,17 +93,17 @@ export const DEFAULT_PACE_MS = 550;
 const MAX_LETTERED = 6;
 
 /**
- * `min-h-11` (44px) is the composer's one height token: the field rests at
+ * `min-h-12` (48px) is the composer's one height token: the field rests at
  * exactly that height (an auto-growing textarea's own `rows={1}` renders a
  * hair short of it, so the floor is what actually sets the resting height),
- * and `Composer` below passes the same `h-11` to the Send button so neither
+ * and `Composer` below passes the same `h-12` to the Send button so neither
  * control looks like it wandered in from a different row.
  */
 const composerClass =
-  'min-h-11 w-full flex-1 resize-none rounded-xl border border-[var(--fs-rule)] bg-white px-3.5 py-2.5 text-sm text-[var(--fs-ink)] outline-none transition-[box-shadow,border-color] duration-150 placeholder:text-[var(--fs-ink-faint)] hover:border-[var(--purple-primary)]/30 focus:border-[var(--purple-primary)]/40 focus:shadow-[0_0_0_4px_var(--purple-primary-lightest)] dark:bg-white/[0.03]';
+  'min-h-12 w-full flex-1 resize-none rounded-xl border border-[var(--fs-rule)] bg-white px-5 py-3.5 text-sm text-[var(--fs-ink)] outline-none transition-[box-shadow,border-color] duration-150 placeholder:text-[var(--fs-ink-faint)] hover:border-[var(--purple-primary)]/30 focus:border-[var(--purple-primary)]/40 focus:shadow-[0_0_0_4px_var(--purple-primary-lightest)] dark:bg-white/[0.03]';
 
 /** Send shares the field's height, radius and horizontal padding — see `composerClass`. */
-const composerSendClass = 'h-11 shrink-0 rounded-xl px-3.5';
+const composerSendClass = 'h-12 shrink-0 rounded-xl px-5';
 
 const rowClass =
   'flex w-full items-center gap-2.5 rounded-lg border px-2.5 py-2 text-left text-[13px] font-medium transition-colors';
