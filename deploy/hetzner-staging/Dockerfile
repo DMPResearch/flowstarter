@@ -155,6 +155,41 @@ COPY apps/flowstarter-templates/local-trade ./apps/flowstarter-templates/local-t
 COPY apps/flowstarter-templates/professional-services ./apps/flowstarter-templates/professional-services
 COPY apps/flowstarter-templates/wellness-therapy ./apps/flowstarter-templates/wellness-therapy
 
+# ── Sigma model ──────────────────────────────────────────────────────────
+# The sigma classifier (@flowstarter/sigma-flowstarter, warmed once at
+# startup by src/instrumentation.ts, see src/lib/sigma/warm.ts) needs the
+# pinned multilingual-e5-small ONNX encoder on disk before that warm-up can
+# succeed. packages/sigma-core/src/encoder.ts sets `allowRemoteModels=false`
+# at runtime on purpose, so a cache miss there is a startup warning and a
+# `sigma: missing` health field, never an outbound request made from inside
+# a visitor's request — which means the fetch has to happen here, at build
+# time, or not at all.
+#
+# fetch-model.mjs depends on nothing but Node's own fetch/crypto/fs/path, so
+# this stage needs neither `pnpm install` nor the `deps` stage's
+# node_modules — only the script and the config it reads. It verifies every
+# file's sha256 against packages/sigma-core/config/encoder.json itself (see
+# that file's `_comment`) and exits non-zero on a mismatch, so a mirror
+# serving different weights fails this stage rather than silently shipping
+# an encoder every calibrated cosine in packages/sigma-flowstarter/models
+# was never built against. The `test -s` after it is a second, cheaper
+# tripwire against the one failure mode sha256 checking can't catch on its
+# own: fetch-model.mjs succeeding having fetched nothing at all because
+# config/encoder.json's file list came in empty.
+#
+# Cached at a fixed path outside /app (not under the `deps`/`builder`
+# node_modules tree) so it survives independently of however `next build`'s
+# output-file-tracing lays out `.next/standalone`'s own node_modules, and so
+# the runner stage and a developer's own Mac dev stack
+# (apps/flowstarter-main/README.md) can agree on one env var,
+# SIGMA_MODEL_CACHE_DIR, pointing at it.
+FROM base AS sigma-model
+COPY packages/sigma-core/scripts ./packages/sigma-core/scripts
+COPY packages/sigma-core/config ./packages/sigma-core/config
+ENV SIGMA_MODEL_CACHE_DIR=/opt/flowstarter/sigma-model-cache
+RUN node packages/sigma-core/scripts/fetch-model.mjs && \
+    test -s /opt/flowstarter/sigma-model-cache/Xenova/multilingual-e5-small/onnx/model_quantized.onnx
+
 FROM base AS builder
 COPY --from=deps /app /app
 COPY apps/flowstarter-main ./apps/flowstarter-main
@@ -182,7 +217,40 @@ ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
 ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
 ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
+# apps/flowstarter-main depends on @flowstarter/sigma-flowstarter, whose
+# package.json points main/types/exports at dist/ (#167) — that dist/ has
+# to exist before `next build` can resolve it at all. This one command
+# builds both: sigma-flowstarter's own `build` script carries a `prebuild`
+# hook that builds @flowstarter/sigma-core first.
+RUN pnpm --filter @flowstarter/sigma-flowstarter build
 RUN pnpm --filter flowstarter build
+
+# ── Sigma runtime dependency closure ────────────────────────────────────
+# Despite the dist/ build above making both sigma packages ordinary,
+# untranspiled, serverExternalPackages-listed external packages,
+# `.next/standalone` still does not reliably carry them (or
+# @huggingface/transformers, onnxruntime-node/-common, sharp) into a form
+# the running container can actually use — two independent gaps, both
+# reproduced and explained in full in deploy/hetzner-staging/README.md,
+# "Shipping the sigma model": the packages are sometimes simply absent
+# (tracing never follows the edge that reaches them), and even when their
+# files ARE present, Turbopack's production "external module" loader
+# resolves some of their own native dependencies against a pnpm
+# virtual-store path baked in AT BUILD TIME rather than wherever the files
+# land at runtime.
+#
+# deploy/hetzner-staging/scripts/stage-sigma-runtime.mjs does not trust
+# tracing for any of this: it copies the real, complete files for the whole
+# chain to a flat top-level location AND, for every leaf npm package, a
+# second copy mirrored at the exact pnpm-store-shaped path Turbopack's
+# baked-in resolution actually reads — see that script's own doc comment
+# for the mechanics, and the README section above for how each failure
+# mode was found.
+FROM builder AS sigma-runtime-deps
+COPY deploy/hetzner-staging/scripts/stage-sigma-runtime.mjs ./deploy/hetzner-staging/scripts/stage-sigma-runtime.mjs
+RUN node deploy/hetzner-staging/scripts/stage-sigma-runtime.mjs \
+      apps/flowstarter-main/package.json \
+      /opt/flowstarter/sigma-runtime-deps
 
 FROM node:${NODE_VERSION} AS runner
 ENV NODE_ENV=production
@@ -208,6 +276,49 @@ WORKDIR /app
 COPY --from=builder /app/apps/flowstarter-main/.next/standalone ./
 COPY --from=builder /app/apps/flowstarter-main/.next/static ./apps/flowstarter-main/.next/static
 COPY --from=builder /app/apps/flowstarter-main/public ./apps/flowstarter-main/public
+
+# The sigma model, fetched and sha256-verified at build time by the
+# `sigma-model` stage above (see its comment). `--chown=node:node` so the
+# `node` user this stage runs as (below) can read it; nothing here ever
+# needs to write to it. SIGMA_MODEL_CACHE_DIR matches what
+# packages/sigma-core/src/artifacts.ts reads, so `warmSigma()`
+# (src/instrumentation.ts, via src/lib/sigma/warm.ts) finds it with no
+# network call and no dependence on where `next build` happened to put
+# `.next/standalone`'s own node_modules.
+COPY --from=sigma-model --chown=node:node /opt/flowstarter/sigma-model-cache /opt/flowstarter/sigma-model-cache
+ENV SIGMA_MODEL_CACHE_DIR=/opt/flowstarter/sigma-model-cache
+
+# The sigma classifier's runtime dependency chain (@flowstarter/sigma-
+# flowstarter, @flowstarter/sigma-core, @huggingface/transformers,
+# onnxruntime-node/onnxruntime-common), flattened at build time by the
+# `sigma-runtime-deps` stage above — see its comment and
+# deploy/hetzner-staging/scripts/stage-sigma-runtime.mjs for why tracing
+# alone cannot be trusted for this edge. The trailing `/.` on the source
+# merges into this stage's existing (Next-traced) node_modules rather than
+# replacing it, the same merge semantics the templates COPY below relies
+# on.
+COPY --from=sigma-runtime-deps --chown=node:node /opt/flowstarter/sigma-runtime-deps/node_modules/. ./node_modules/
+
+# Both sigma packages compute their own asset roots (config/, models/) from
+# `import.meta.url` at module-load time (packages/sigma-core/src/
+# artifacts.ts's CORE_ROOT, packages/sigma-flowstarter/src/config.ts's
+# PACKAGE_ROOT) — ordinarily fine, except Turbopack's production chunk for
+# an "external" package apparently still inlines that computation against
+# wherever the package sat AT BUILD TIME (`/app/packages/sigma-flowstarter`
+# in the `builder` stage), not wherever its files actually end up at
+# runtime. Verified 2026-09-15 with process.stdout.write diagnostics added
+# temporarily to warmSigmaOrWarn() (console.log/.warn are stripped in
+# production — see src/lib/sigma/warm.ts's own doc comment): the real error
+# was `ENOENT ... /app/packages/sigma-flowstarter/models/centroids.json` —
+# a path that only ever existed in the `builder` stage, never in this one.
+# Both root
+# computations already support an env override for exactly this kind of
+# case; pointing them at where the `sigma-runtime-deps` stage staged the
+# real package content (COPY above) sidesteps the baked-in path entirely,
+# the same way SIGMA_MODEL_CACHE_DIR sidesteps trusting `next build`'s
+# tracing for the model cache.
+ENV SIGMA_CORE_ROOT=/app/node_modules/@flowstarter/sigma-core
+ENV SIGMA_FLOWSTARTER_ROOT=/app/node_modules/@flowstarter/sigma-flowstarter
 
 # The templates stage's own WORKDIR, copied in at the identical absolute
 # path it was installed at (see that stage's comment for why the path must

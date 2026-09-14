@@ -250,14 +250,24 @@ export default {
     // on a module that only exists inside a Workers runtime.
     'pg',
     'playwright',
-    // The sigma classifier's encoder. `onnxruntime-node` is a native addon and
-    // `@huggingface/transformers` reaches for it; a bundler that follows either
-    // breaks the build on a `.node` binary. Both come in through
-    // `@flowstarter/sigma-flowstarter`, which is dynamically imported behind
-    // `FLOWSTARTER_SIGMA_SCOPE` (see src/lib/ai/classify-scope-sigma.ts) and so
-    // is never loaded at all on a deployment that has not opted in.
-    '@flowstarter/sigma-core',
+    // @flowstarter/sigma-flowstarter and @flowstarter/sigma-core (#167,
+    // built to dist/) are the sigma classifier — see
+    // deploy/hetzner-staging/README.md, "Shipping the sigma model". Without
+    // this, Turbopack's dynamic `import('@flowstarter/sigma-flowstarter')`
+    // in src/lib/sigma/warm.ts never resolves NOR rejects at runtime
+    // (verified 2026-09-15: the container logs nothing and `/api/health`
+    // reports `sigma: "missing"` forever, even once the package is
+    // genuinely on disk at the expected path) — Turbopack's own runtime
+    // module loader apparently needs a package to be marked external to
+    // treat a dynamic import of it as a real Node `import()` rather than a
+    // lookup into its own build-time module manifest, which never learned
+    // about this package because tracing did not find it either (see
+    // deploy/hetzner-staging/scripts/stage-sigma-runtime.mjs).
+    // `onnxruntime-node` is a native addon and `@huggingface/transformers`
+    // reaches for it; a bundler that follows either breaks the build on a
+    // `.node` binary, so both stay external too.
     '@flowstarter/sigma-flowstarter',
+    '@flowstarter/sigma-core',
     'onnxruntime-node',
     '@huggingface/transformers',
   ],

@@ -53,6 +53,23 @@ pnpm nx run flowstarter-main:e2e            # playwright
 pnpm nx run flowstarter-main:build
 ```
 
+One more one-off, before `src/instrumentation.ts`'s startup warm-up of the
+sigma classifier (`@flowstarter/sigma-flowstarter`, PR #160) can find
+anything — not part of `pnpm install`, since it fetches a ~135 MB pinned ONNX
+encoder rather than an npm package:
+
+```bash
+pnpm --filter @flowstarter/sigma-core fetch-model
+```
+
+Safe to skip: without it, warm-up logs a warning and every acceptable-use /
+scope check fails open to human review, nothing else here breaks. Safe to
+re-run: every file is sha256-verified against
+`packages/sigma-core/config/encoder.json`, and a file already present with
+the right hash is left alone. See `.env.example`, "SIGMA CLASSIFIER MODEL",
+for `SIGMA_MODEL_CACHE_DIR` if the default `~/.cache/flowstarter/sigma-core`
+isn't where you want ~135 MB to land.
+
 ## Environment
 
 Required:

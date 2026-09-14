@@ -10,6 +10,13 @@
  * Idempotent: a file already present with the right hash is left alone, so
  * this is cheap to wire into a build step.
  *
+ * Each file's fetch retries on a transient failure (connection reset
+ * mid-download, a common way for a ~120MB file to die on a slow or
+ * resource-constrained network) with exponential backoff — see
+ * `fetchWithRetry`. A retry re-verifies size and sha256 exactly like a first
+ * attempt; it cannot turn a genuinely bad response into a false pass.
+ *
+
  *   node scripts/fetch-model.mjs            # fetch what is missing
  *   node scripts/fetch-model.mjs --force    # re-fetch everything
  *   node scripts/fetch-model.mjs --print    # print hashes, write nothing new
@@ -48,6 +55,42 @@ async function existingHash(path) {
   }
 }
 
+const FETCH_RETRIES = 4;
+const FETCH_RETRY_BASE_MS = 1000;
+
+/**
+ * A ~120MB file dying mid-download to "TypeError: terminated" (undici's
+ * generic error for a connection closed early) is a transient network blip,
+ * not a reason to fail a whole CI build over — observed in practice building
+ * this inside a resource-constrained Docker VM. Retries the WHOLE fetch (a
+ * half-received body can't be resumed) with exponential backoff; the caller
+ * still verifies size and sha256 on whatever comes back, so a retry that
+ * lands on a genuinely bad response is caught the same way a first try would
+ * be.
+ */
+async function fetchWithRetry(url, attempts = FETCH_RETRIES) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`${url}: HTTP ${response.status}`);
+      }
+      return Buffer.from(await response.arrayBuffer());
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) {
+        const delayMs = FETCH_RETRY_BASE_MS * 2 ** (attempt - 1);
+        console.log(
+          `  retry ${url} (attempt ${attempt}/${attempts} failed: ${error.message}, waiting ${delayMs}ms)`,
+        );
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, delayMs));
+      }
+    }
+  }
+  throw lastError;
+}
+
 async function main() {
   const config = JSON.parse(await readFile(CONFIG_PATH, 'utf8'));
   const cacheDir = expand(process.env.SIGMA_MODEL_CACHE_DIR ?? config.cacheDir);
@@ -77,11 +120,7 @@ async function main() {
     }
 
     const url = `${base}/${entry.path}`;
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`${url}: HTTP ${response.status}`);
-    }
-    const buffer = Buffer.from(await response.arrayBuffer());
+    const buffer = await fetchWithRetry(url);
     const hash = sha256(buffer);
     if (entry.sha256 && hash !== entry.sha256) {
       // A mirror that serves different weights would shift every calibrated
