@@ -60,6 +60,7 @@ import { readProfileSignals } from '@/lib/flowstarter/profile-fetch';
 import { captureProfilePicture } from '@/lib/flowstarter/profile-picture';
 import { parseProfileLinks } from '@/lib/flowstarter/profile-signals';
 import { readJsonCapped } from '@/lib/net/ingress';
+import { clientIp } from '@/lib/request-ip';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -114,15 +115,6 @@ function isRateLimited(ip: string): boolean {
   }
   entry.count += 1;
   return entry.count > RATE_LIMIT;
-}
-
-function clientIp(request: NextRequest): string {
-  const forwarded = request.headers.get('x-forwarded-for');
-  return (
-    forwarded?.split(',')[0]?.trim() ||
-    request.headers.get('x-real-ip') ||
-    'unknown'
-  );
 }
 
 /** The most pictures we will decode for one palette. */
@@ -314,7 +306,7 @@ async function readPortrait(input: {
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  if (isRateLimited(clientIp(request))) {
+  if (isRateLimited(clientIp(request.headers))) {
     return NextResponse.json(
       { error: 'Too many requests', code: 'RATE_LIMITED' },
       { status: 429 }

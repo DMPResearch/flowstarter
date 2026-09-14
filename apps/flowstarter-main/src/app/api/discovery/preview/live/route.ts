@@ -17,12 +17,19 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { deriveBusinessName } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/quick-defaults';
-import { funnelBudgetState, recordGenerationCost } from '@/lib/ai/funnel-cost';
+import {
+  funnelBudgetState,
+  previewLiveEstimatedCostEur,
+  releaseFunnelReservation,
+  reserveFunnelSpend,
+  settleFunnelReservation,
+} from '@/lib/ai/funnel-cost';
 import { discoveryPreviewLiveRateLimiter } from '@/lib/rate-limit';
 import { llmActionConfig, recordLlmUsage } from '@/lib/ai/llm';
 import { missingGenerationPrerequisites } from '@/lib/discovery/generation-availability';
 import { createJob, getJob, updateJob } from '@/lib/discovery/live-jobs';
 import { isTransientPipelineFailure } from '@/lib/discovery/preview-failure';
+import { clientIp } from '@/lib/request-ip';
 import { previewUrlForClient } from '@/lib/discovery/local-preview-frame';
 import { sendPreviewReadyEmail } from '@/lib/discovery/preview-ready-email';
 import { readPreviewWorkspaceFiles } from '@/lib/discovery/preview-workspace';
@@ -244,14 +251,6 @@ const GLM_53_FLASH = {
   thinkingLevelMap: { xhigh: 'xhigh' },
 } as const;
 
-function clientIp(req: NextRequest): string {
-  return (
-    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    req.headers.get('x-real-ip') ||
-    'unknown'
-  );
-}
-
 function buildPiEvidence(
   demoId: string,
   spec: z.infer<typeof SpecSchema>
@@ -374,7 +373,7 @@ export async function POST(req: NextRequest) {
   // Pi generation run, `maxDuration = 300`), and until now had no limit at
   // all — see the MVP readiness review, "Security". Computed once and reused
   // below for the job's own `ip` field.
-  const ip = clientIp(req);
+  const ip = clientIp(req.headers);
   if (discoveryPreviewLiveRateLimiter.check(ip).limited) {
     return NextResponse.json(
       { skip: true, reason: 'rate-limited' },
@@ -420,16 +419,31 @@ export async function POST(req: NextRequest) {
   // Sonnet brain) to keep spending bounded. `reason` tells the two blocked
   // cases apart from each other and from `not-configured` above —
   // `funnelBudgetState` itself never throws, so there is nothing left for
-  // this call site to fail open on.
-  let budgetState: 'ok' | 'degrade' | 'blocked' = 'ok';
+  // this call site to fail open on. This read-only check still decides the
+  // 'degrade' signal (a soft threshold has no reservation to make).
   const budget = await funnelBudgetState();
-  if (budget.state === 'blocked') {
+  const budgetState: 'ok' | 'degrade' | 'blocked' =
+    budget.state === 'blocked' ? 'blocked' : budget.state;
+
+  // Security audit 2026-09-13 (Claude H4; Codex F06): this used to be
+  // check-then-act on the read above alone — N concurrent requests could
+  // all observe "under the cap" and all launch a real, multi-minute run
+  // before any of their costs were ever written back. This route is
+  // exactly the endpoint the audit named (maxDuration=300, no fine-grained
+  // token accounting of its own), so it reserves an estimated cost against
+  // both the global and the per-caller cap atomically, before the run
+  // starts, and settles or releases it in the run's own `finally` below.
+  const reservation = await reserveFunnelSpend({
+    estimateEur: previewLiveEstimatedCostEur(),
+    kind: 'codegen',
+    ip,
+  });
+  if (!reservation.allowed) {
     return NextResponse.json(
-      { skip: true, reason: budget.reason ?? 'over-cap' },
+      { skip: true, reason: reservation.reason },
       { status: 200 }
     );
   }
-  budgetState = budget.state;
 
   const demoId = randomUUID();
   createJob(demoId);
@@ -495,6 +509,13 @@ export async function POST(req: NextRequest) {
   // workspace, validates it, and publishes the result to Daytona.
   void (async () => {
     let closeLibrary: (() => Promise<void>) | undefined;
+    // Flipped true the moment the reservation above is reconciled (settled
+    // to an actual/estimated cost) on the success path below. The `finally`
+    // at the bottom of this IIFE releases it on every OTHER exit — a thrown
+    // exception, an early return for missing infra, anything — so a
+    // reservation can never outlive this run without being accounted for
+    // one way or the other.
+    let reservationSettled = false;
     try {
       const {
         FlowstarterMcpTemplateLibrary,
@@ -825,17 +846,18 @@ export async function POST(req: NextRequest) {
         tokensUsed: agents.tokensUsed,
         template: result.template?.slug,
       });
-      await recordGenerationCost({
-        kind: 'codegen',
+      await settleFunnelReservation(reservation.reservationId, {
         model: process.env.PI_MODEL?.trim() || 'z-ai/glm-5.2',
-        demoId,
-        ip,
-        // Brief-generated imagery is the one spend the Pi usage sink does not
-        // see; without this the funnel cap never learns about it.
+        // Brief-generated imagery is the one spend the Pi usage sink does
+        // not see; without this the reservation would settle back down to
+        // its own estimate even though real extra spend happened. With no
+        // reported cost at all, settleFunnelReservation keeps the reserved
+        // estimate rather than zeroing it out — see its own doc comment.
         ...(result.generatedAssetsCostUsd > 0
           ? { costUsd: result.generatedAssetsCostUsd }
           : {}),
       }).catch(() => {});
+      reservationSettled = true;
     } catch (e) {
       // A failed job has no further use for a sandbox or local `astro dev`
       // child it already provisioned — tear it down now rather than leaving
@@ -859,6 +881,11 @@ export async function POST(req: NextRequest) {
     } finally {
       clearTimeout(watchdog);
       await closeLibrary?.().catch(() => {});
+      if (!reservationSettled) {
+        await releaseFunnelReservation(reservation.reservationId).catch(
+          () => {}
+        );
+      }
     }
   })();
 

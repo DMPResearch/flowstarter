@@ -17,6 +17,7 @@ import {
   forcedPasswordChangeRedirect,
   type ForcedPasswordClaims,
 } from '@/lib/auth/forced-password-change';
+import { teamRoleForEmail } from '@/lib/auth/team-role';
 import { KNOWN_APP_ROUTES, PUBLIC_ROUTES } from '@/lib/route-manifest';
 import { applySecurityHeaders } from './utils/security-headers';
 
@@ -71,23 +72,6 @@ async function _timingSafeCompare(a: string, b: string): Promise<boolean> {
  * Full database logging happens in API routes, not middleware
  */
 /**
- * @flowstarter.* primary emails auto-resolve to admin so internal hires
- * don't need a manual Clerk metadata edit before they can use /admin/*.
- */
-const TEAM_EMAIL_DOMAINS = new Set([
-  'flowstarter.net',
-  'flowstarter.app',
-  'flowstarter.dev',
-  'flowstarter.com',
-]);
-
-function emailDomainRole(email: string | undefined): string | undefined {
-  if (!email) return undefined;
-  const domain = email.split('@')[1]?.toLowerCase();
-  return domain && TEAM_EMAIL_DOMAINS.has(domain) ? 'admin' : undefined;
-}
-
-/**
  * Short-lived in-memory cache for resolved user roles.
  * Prevents a Clerk Backend API roundtrip (`users.getUser`) on every
  * middleware invocation when the role is absent from session claims.
@@ -99,8 +83,10 @@ const ROLE_CACHE_MAX = 500;
 
 /**
  * Resolve the effective role for a Clerk user. Used by middleware to gate
- * /admin/* routes. Mirrors `resolveUserRole` in src/lib/api-auth.ts —
- * keep them in sync.
+ * /admin/* routes. Shares its flowstarter-domain fallback rule with
+ * `resolveUserRole` in src/lib/api-auth.ts via `teamRoleForEmail` (see
+ * `src/lib/auth/team-role.ts`) — there is exactly one copy of the rule, so
+ * there is nothing left for the two to drift out of sync with.
  */
 async function resolveRoleEdge(
   userId: string,
@@ -127,8 +113,15 @@ async function resolveRoleEdge(
     if (!resolved) {
       const primaryEmail = user.emailAddresses.find(
         (e) => e.id === user.primaryEmailAddressId
-      )?.emailAddress;
-      resolved = emailDomainRole(primaryEmail);
+      );
+      resolved = teamRoleForEmail(
+        primaryEmail
+          ? {
+              address: primaryEmail.emailAddress,
+              verified: primaryEmail.verification?.status === 'verified',
+            }
+          : undefined
+      );
     }
 
     // Evict oldest entry when cache is full.

@@ -9,6 +9,7 @@
 
 import { auth, clerkClient, currentUser } from '@clerk/nextjs/server';
 import { NextResponse } from 'next/server';
+import { teamRoleForEmail } from '@/lib/auth/team-role';
 import type { createSupabaseServerClient } from '@/supabase-clients/server';
 
 /**
@@ -183,60 +184,12 @@ export async function requireAuthWithSupabase(request?: Request): Promise<
 }
 
 /**
- * Domains whose primary verified email auto-resolves to the `admin` role.
- * Lets new internal hires hit /admin/* without a manual Clerk metadata edit.
- */
-const TEAM_EMAIL_DOMAINS = new Set([
-  'flowstarter.net',
-  'flowstarter.app',
-  'flowstarter.dev',
-  'flowstarter.com',
-]);
-
-/**
- * Minimal shape of the fields we read off a Clerk user's primary email
- * address. Kept narrow (rather than importing Clerk's full type) so this
- * rule is trivial to unit test with a plain object.
- */
-type PrimaryEmailAddress = {
-  emailAddress: string;
-  verification?: { status?: string | null } | null;
-};
-
-/**
- * Whether a primary email address earns the automatic flowstarter-domain
- * operator role.
- *
- * Rule: the domain must be one of the internal team domains AND Clerk must
- * have verified that address (verification.status === 'verified'). An
- * unverified address on a team domain does NOT elevate — anyone can type
- * `you@flowstarter.dev` into a sign-up form; only Clerk's verification proves
- * the person actually controls that mailbox. `publicMetadata.role` (checked
- * before this ever runs) always stays authoritative over this fallback.
- */
-function emailDomainRole(
-  email: PrimaryEmailAddress | undefined
-): string | undefined {
-  if (!email?.emailAddress) return undefined;
-  const domain = email.emailAddress.split('@')[1]?.toLowerCase();
-  if (!domain || !TEAM_EMAIL_DOMAINS.has(domain)) return undefined;
-
-  if (email.verification?.status !== 'verified') {
-    console.warn(
-      '[API Auth] Refused domain-based admin elevation: primary email on a team domain is not verified',
-      { domain }
-    );
-    return undefined;
-  }
-
-  return 'admin';
-}
-
-/**
  * Resolve a Clerk user's effective role.
  *
  * Order: session-claim metadata → publicMetadata.role → flowstarter-domain
- * email fallback (verified primary email only). Returns undefined when the
+ * email fallback (verified primary email only, via the shared
+ * `teamRoleForEmail` — see `src/lib/auth/team-role.ts`, which
+ * `middleware.ts` imports the same rule from). Returns undefined when the
  * user has no team-level role.
  */
 export async function resolveUserRole(
@@ -258,7 +211,14 @@ export async function resolveUserRole(
   const primaryEmail = user.emailAddresses.find(
     (e) => e.id === user.primaryEmailAddressId
   );
-  return emailDomainRole(primaryEmail);
+  return teamRoleForEmail(
+    primaryEmail
+      ? {
+          address: primaryEmail.emailAddress,
+          verified: primaryEmail.verification?.status === 'verified',
+        }
+      : undefined
+  );
 }
 
 /**

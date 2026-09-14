@@ -19,6 +19,7 @@ import { funnelBudgetState } from '@/lib/ai/funnel-cost';
 import { llmActionConfig, recordLlmUsage } from '@/lib/ai/llm';
 import { aiModerateContent } from '@/lib/ai/moderate';
 import { readJsonCapped } from '@/lib/net/ingress';
+import { clientIp } from '@/lib/request-ip';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -55,16 +56,8 @@ function isRateLimited(ip: string): boolean {
   return entry.count > RATE_LIMIT;
 }
 
-function clientIp(request: NextRequest): string {
-  return (
-    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    request.headers.get('x-real-ip') ||
-    'unknown'
-  );
-}
-
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  if (isRateLimited(clientIp(request))) {
+  if (isRateLimited(clientIp(request.headers))) {
     return NextResponse.json({ error: 'Too many attempts' }, { status: 429 });
   }
 

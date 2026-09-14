@@ -47,6 +47,7 @@ import {
 import { notifyClientOnce } from '@/lib/flowstarter/client-notifications';
 import { readJsonCapped } from '@/lib/net/ingress';
 import { consumeRateLimit } from '@/lib/rate-limit';
+import { clientIp } from '@/lib/request-ip';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 
 export const dynamic = 'force-dynamic';
@@ -73,7 +74,7 @@ export async function POST(
     return refusal(404, 'This form is not connected yet.', null);
   }
 
-  const ip = clientIp(request);
+  const ip = clientIp(request.headers);
   const [tokenLimited, ipLimited] = await Promise.all([
     consumeRateLimit(`lead-capture:token:${token}`, TOKEN_LIMIT),
     consumeRateLimit(`lead-capture:ip:${ip}`, IP_LIMIT),
@@ -247,12 +248,4 @@ function baseHeaders(origin: string | null = null): Record<string, string> {
     'Access-Control-Max-Age': '86400',
     'Cache-Control': 'no-store',
   };
-}
-
-function clientIp(request: NextRequest): string {
-  return (
-    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    request.headers.get('x-real-ip')?.trim() ||
-    'unknown'
-  );
 }

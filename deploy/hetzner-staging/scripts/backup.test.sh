@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unit-style tests for backup.sh and restore.sh.
+# Unit-style tests for backup.sh, restore.sh and the shared backup-crypto.sh.
 #
 #   bash deploy/hetzner-staging/scripts/backup.test.sh
 #
@@ -9,11 +9,16 @@
 # `sha256sum`/`shasum` are used for real: hashing a local file touches
 # nothing external, the same reasoning deploy-slot.test.sh applies to
 # leaving `grep`/`awk` unstubbed. What this proves is the part a backup or a
-# restore gets wrong quietly: which containers get dumped, whether the
-# secrets tarball actually gets encrypted (with whichever tool is really on
-# PATH), whether retention keeps the right dated directories, whether an S3
-# upload is attempted only when configured, and whether a restore ever
-# touches anything before its manifest checksum has been verified.
+# restore gets wrong quietly: which containers get dumped, whether every
+# artifact — including the database dumps, security audit 2026-09-13
+# M2/F15 — is actually encrypted (with whichever tool is really on PATH),
+# whether the gpg passphrase file is excluded from the /etc tarball it would
+# otherwise ship inside of, whether every artifact and directory ends up
+# mode 600/700, whether a mid-run failure cleans up its partial artifact
+# rather than leaving one that looks finished, whether retention keeps the
+# right dated directories, whether an S3 upload is attempted only when
+# configured, and whether a restore decrypts a dump before ever touching
+# anything, and only after its manifest checksum has been verified.
 
 set -uo pipefail
 
@@ -53,6 +58,24 @@ assert_not_contains() {
   fi
 }
 
+# GNU stat uses -c; BSD stat (macOS, where this suite runs) uses -f. Mirrors
+# file_mode() in backup-crypto.sh so the test checks the same thing the
+# script itself checks.
+file_mode() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
+}
+
+assert_mode() {
+  local path="$1" expected="$2" label="$3"
+  local actual
+  actual="$(file_mode "$path" 2>/dev/null)"
+  if [ "$actual" = "$expected" ]; then
+    ok "$label"
+  else
+    no "$label" "expected mode ${expected}, got '${actual}' for ${path}"
+  fi
+}
+
 # ── A throwaway host ─────────────────────────────────────────────────────
 # One temp dir stands in for /var/backups/flowstarter, /var/www/sites and
 # /etc/flowstarter.
@@ -78,7 +101,8 @@ STUB
 # fixed container list (newline separated) so container discovery is
 # exercised without a daemon. `docker exec CONTAINER pg_dump ...` writes
 # fake dump bytes to stdout; `docker exec -i CONTAINER pg_restore ...`
-# consumes stdin and records what it would have restored.
+# consumes stdin (whatever decrypt_stream handed it) and records what it
+# would have restored.
 #
 # `docker exec CONTAINER printenv KEY` answers from a per-container stub
 # variable (STUB_PRINTENV_<CONTAINER>_<KEY>, the container name upper-cased
@@ -101,8 +125,8 @@ if [ "$1" = "exec" ]; then
     shift
     container="$1"
     shift
-    cat >/dev/null
-    echo "RESTORED ${container}: $*" >>"${STUB_LOG}.restore"
+    input="$(cat)"
+    echo "RESTORED ${container}: $* (stdin=${input})" >>"${STUB_LOG}.restore"
     exit "${DOCKER_RESTORE_EXIT:-0}"
   else
     container="$1"
@@ -115,41 +139,62 @@ if [ "$1" = "exec" ]; then
       exit 0
     fi
     echo "FAKE-DUMP-CONTENT-for-${container}"
-    exit 0
+    exit "${DOCKER_DUMP_EXIT:-0}"
   fi
 fi
 exit 0
 STUB
 
-# tar, logging every call. `-czf DEST ...` writes a small marker file at DEST
-# so sha256sum has real bytes to hash. `-xzf SRC -C DIR ENTRY` records the
-# extraction instead of needing a real archive layout.
+# tar, logging every call. Parses flags order-independently so it can stand
+# in for both backup.sh's non-streaming `-czf DEST -C DIR ENTRY` (the sites
+# tarball, never encrypted) and its streaming `[--exclude=X] -cz -C DIR
+# ENTRY` (piped into encrypt_stream — the /etc tarball, security audit
+# 2026-09-13 M2/F15) and restore.sh's `-xzf SRC -C DIR ENTRY`.
 cat >"$ROOT/bin/tar" <<'STUB'
 #!/usr/bin/env bash
 echo "tar $*" >>"$STUB_LOG"
-mode="$1"
+mode=""
+outfile=""
+infile=""
+target_dir="."
+entry=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --exclude=*)
+      shift
+      ;;
+    -czf)
+      mode="createfile"
+      outfile="$2"
+      shift 2
+      ;;
+    -cz)
+      mode="createstream"
+      shift 1
+      ;;
+    -xzf)
+      mode="extract"
+      infile="$2"
+      shift 2
+      ;;
+    -C)
+      target_dir="$2"
+      shift 2
+      ;;
+    *)
+      entry="$1"
+      shift
+      ;;
+  esac
+done
 case "$mode" in
-  -czf)
-    outfile="$2"
+  createfile)
     echo "FAKE-TAR-CONTENT-for-$(basename "$outfile")" >"$outfile"
     ;;
-  -xzf)
-    infile="$2"
-    shift 2
-    target_dir="."
-    entry=""
-    while [ $# -gt 0 ]; do
-      case "$1" in
-        -C)
-          target_dir="$2"
-          shift 2
-          ;;
-        *)
-          entry="$1"
-          shift
-          ;;
-      esac
-    done
+  createstream)
+    echo "FAKE-TAR-STREAM-CONTENT-for-${entry}"
+    ;;
+  extract)
     mkdir -p "${target_dir}/$(dirname "$entry")"
     echo "EXTRACTED ${infile} -> ${target_dir}/${entry}" >>"${STUB_LOG}.extract"
     mkdir -p "${target_dir}/${entry}"
@@ -158,33 +203,40 @@ esac
 exit 0
 STUB
 
-# age, only ever placed on PATH for the scenarios that test the age branch.
+# age and gpg, standing in for the real thing. Both now run in streaming
+# mode only (backup.sh/backup-crypto.sh never pass `-o`): read plaintext (or
+# ciphertext, for `--decrypt`) on stdin, write the other on stdout. Detected
+# by whether `--decrypt` appears anywhere in argv, so one stub covers both
+# backup.sh's encrypt_stream and restore.sh's decrypt_stream.
 cat >"$ROOT/bin/age" <<'STUB'
 #!/usr/bin/env bash
 echo "age $*" >>"$STUB_LOG"
-outfile=""
-prev=""
-for a in "$@"; do
-  [ "$prev" = "-o" ] && outfile="$a"
-  prev="$a"
-done
-[ -n "$outfile" ] && echo "FAKE-AGE-CIPHERTEXT" >"$outfile"
+input="$(cat)"
+[ -n "${AGE_EXIT:-}" ] && exit "$AGE_EXIT"
+case " $* " in
+  *" --decrypt "*|*" --decrypt")
+    echo "DECRYPTED-AGE(${input})"
+    ;;
+  *)
+    echo "FAKE-AGE-CIPHERTEXT(${input})"
+    ;;
+esac
 exit 0
 STUB
 
-# gpg, standing in for the real thing so the age-absent branch does not
-# depend on a real gpg binary or a real passphrase round trip, only on
-# backup.sh's own choice of tool and its passphrase-file mode check.
 cat >"$ROOT/bin/gpg" <<'STUB'
 #!/usr/bin/env bash
 echo "gpg $*" >>"$STUB_LOG"
-outfile=""
-prev=""
-for a in "$@"; do
-  [ "$prev" = "-o" ] && outfile="$a"
-  prev="$a"
-done
-[ -n "$outfile" ] && echo "FAKE-GPG-CIPHERTEXT" >"$outfile"
+input="$(cat)"
+[ -n "${GPG_EXIT:-}" ] && exit "$GPG_EXIT"
+case " $* " in
+  *" --decrypt "*)
+    echo "DECRYPTED-GPG(${input})"
+    ;;
+  *)
+    echo "FAKE-GPG-CIPHERTEXT(${input})"
+    ;;
+esac
 exit 0
 STUB
 
@@ -249,16 +301,37 @@ export BACKUP_KEEP_DAILY=7
 export BACKUP_KEEP_WEEKLY=4
 export BACKUP_AGE_RECIPIENT="age1notarealkeyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 out="$(run_backup)"
+rc=$?
 log="$(cat "$STUB_LOG")"
 assert_contains "$log" "docker ps --format {{.Names}}" "backup.sh lists containers with docker ps"
 assert_contains "$log" "docker exec supabase_db_flowstarter pg_dump" "the real stack container is dumped"
 assert_not_contains "$log" "docker exec supabase_kong_flowstarter pg_dump" "a decoy container name is not dumped"
 assert_not_contains "$log" "docker exec some_other_container pg_dump" "an unrelated container is not dumped"
-if [ -f "$ROOT/backups/$(date -u +%Y-%m-%d)/db-supabase_db_flowstarter.dump" ]; then
-  ok "the dump lands under today's dated directory"
+if [ "$rc" -eq 0 ]; then
+  ok "backup.sh exits 0 on a clean run"
 else
-  no "the dump lands under today's dated directory"
+  no "backup.sh exits 0 on a clean run" "$out"
 fi
+today_dir="$ROOT/backups/$(date -u +%Y-%m-%d)"
+if [ -f "${today_dir}/db-supabase_db_flowstarter.dump.age" ]; then
+  ok "the dump lands under today's dated directory, encrypted (.age)"
+else
+  no "the dump lands under today's dated directory, encrypted (.age)"
+fi
+if [ ! -e "${today_dir}/db-supabase_db_flowstarter.dump" ]; then
+  ok "no plaintext database dump ever touches disk"
+else
+  no "no plaintext database dump ever touches disk"
+fi
+
+# ── Permissions: 0700 directories, 0600 files ────────────────────────────
+echo "backup.sh: restrictive permissions by construction"
+assert_mode "$ROOT/backups" "700" "BACKUP_ROOT is mode 700"
+assert_mode "$today_dir" "700" "the dated directory is mode 700"
+assert_mode "${today_dir}/db-supabase_db_flowstarter.dump.age" "600" "the encrypted dump is mode 600"
+assert_mode "${today_dir}/sites.tar.gz" "600" "the (unencrypted, non-secret) sites tarball is still mode 600"
+assert_mode "${today_dir}/etc-flowstarter.tar.gz.age" "600" "the encrypted /etc tarball is mode 600"
+assert_mode "${today_dir}/manifest.sha256" "600" "the manifest is mode 600"
 
 # ── The Cal database ─────────────────────────────────────────────────────
 # It holds every client's booking page and their bookings, exists nowhere else,
@@ -276,10 +349,10 @@ assert_contains "$log" "docker exec supabase_db_flowstarter pg_dump -w -U postgr
 assert_not_contains "$log" "pg_dump -w -U supabase_admin" "the Supabase container own POSTGRES_USER is deliberately not believed"
 assert_contains "$log" "pg_dump -w " "every dump passes -w so a nightly run can never sit on a password prompt"
 assert_contains "$out" "Dumping flowstarter-cal-db (user: calcom, database: calcom)" "the log line names the user and database it used"
-if [ -f "$ROOT/backups/$(date -u +%Y-%m-%d)/db-flowstarter-cal-db.dump" ]; then
-  ok "the Cal dump lands under today's dated directory, named the same way as every other dump"
+if [ -f "$ROOT/backups/$(date -u +%Y-%m-%d)/db-flowstarter-cal-db.dump.age" ]; then
+  ok "the Cal dump lands under today's dated directory, encrypted, named the same way as every other dump"
 else
-  no "the Cal dump lands under today's dated directory, named the same way as every other dump"
+  no "the Cal dump lands under today's dated directory, encrypted, named the same way as every other dump"
 fi
 
 echo "backup.sh: BACKUP_DB_CONTAINER_PATTERN is what decides"
@@ -299,7 +372,6 @@ rm -rf "$ALT_ROOT"
 
 # ── Manifest ─────────────────────────────────────────────────────────────
 echo "backup.sh: manifest"
-today_dir="$ROOT/backups/$(date -u +%Y-%m-%d)"
 manifest="${today_dir}/manifest.sha256"
 if [ -f "$manifest" ]; then
   ok "manifest.sha256 was written"
@@ -307,15 +379,15 @@ else
   no "manifest.sha256 was written"
 fi
 manifest_body="$(cat "$manifest" 2>/dev/null)"
-assert_contains "$manifest_body" "db-supabase_db_flowstarter.dump" "the manifest lists the database dump"
-assert_contains "$manifest_body" "db-flowstarter-cal-db.dump" "the manifest lists the Cal database dump"
+assert_contains "$manifest_body" "db-supabase_db_flowstarter.dump.age" "the manifest lists the encrypted database dump"
+assert_contains "$manifest_body" "db-flowstarter-cal-db.dump.age" "the manifest lists the encrypted Cal database dump"
 assert_contains "$manifest_body" "sites.tar.gz" "the manifest lists the sites tarball"
 assert_contains "$manifest_body" "etc-flowstarter.tar.gz.age" "the manifest lists the encrypted secrets tarball"
 # Recompute one entry's hash independently and compare, proving the manifest
 # is not just present but correct.
-expected_hash="$(cd "$today_dir" && sha256sum db-supabase_db_flowstarter.dump 2>/dev/null | awk '{print $1}')"
-[ -z "$expected_hash" ] && expected_hash="$(cd "$today_dir" && shasum -a 256 db-supabase_db_flowstarter.dump | awk '{print $1}')"
-manifest_hash="$(awk '$2=="db-supabase_db_flowstarter.dump" {print $1}' "$manifest")"
+expected_hash="$(cd "$today_dir" && sha256sum db-supabase_db_flowstarter.dump.age 2>/dev/null | awk '{print $1}')"
+[ -z "$expected_hash" ] && expected_hash="$(cd "$today_dir" && shasum -a 256 db-supabase_db_flowstarter.dump.age | awk '{print $1}')"
+manifest_hash="$(awk '$2=="db-supabase_db_flowstarter.dump.age" {print $1}' "$manifest")"
 if [ -n "$expected_hash" ] && [ "$expected_hash" = "$manifest_hash" ]; then
   ok "the manifest's sha256 for the dump matches an independent recomputation"
 else
@@ -323,20 +395,34 @@ else
 fi
 
 # ── Encryption: age branch ───────────────────────────────────────────────
-echo "backup.sh: encrypts /etc/flowstarter with age when age is on PATH"
+echo "backup.sh: encrypts the database dump AND /etc/flowstarter with age when age is on PATH"
 log="$(cat "$STUB_LOG")"
 assert_contains "$log" "age -r age1notarealkeyxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" "age is invoked with the configured recipient"
 assert_not_contains "$log" "gpg " "gpg is not invoked when age is available"
-if [ -f "${today_dir}/etc-flowstarter.tar.gz.age" ]; then
-  ok "the .age ciphertext file exists"
-else
-  no "the .age ciphertext file exists"
-fi
 if [ ! -f "${today_dir}/etc-flowstarter.tar.gz" ]; then
-  ok "the plaintext secrets tarball does not survive the run"
+  ok "the plaintext secrets tarball never exists, even momentarily"
 else
-  no "the plaintext secrets tarball does not survive the run"
+  no "the plaintext secrets tarball never exists, even momentarily"
 fi
+if ! find "$today_dir" -name '*.partial' | grep -q .; then
+  ok "no .partial artifact is left behind after a clean run"
+else
+  no "no .partial artifact is left behind after a clean run"
+fi
+
+# ── The gpg passphrase file is never shipped inside the /etc tarball ────
+echo "backup.sh: excludes the gpg passphrase file from the /etc tarball it would otherwise ship inside of"
+PASS_IN_ETC="$ROOT/etc/backup-gpg-passphrase"
+echo 'not-a-real-passphrase' >"$PASS_IN_ETC"
+chmod 600 "$PASS_IN_ETC"
+rm -rf "$ROOT/backups/$(date -u +%Y-%m-%d)"
+out="$(BACKUP_ROOT="$ROOT/backups" SITES_DIR="$ROOT/sites" FLOWSTARTER_ETC_DIR="$ROOT/etc" \
+  BACKUP_GPG_PASSPHRASE_FILE="$PASS_IN_ETC" DOCKER_PS_NAMES="$DOCKER_PS_NAMES" \
+  BACKUP_AGE_RECIPIENT="$BACKUP_AGE_RECIPIENT" \
+  bash "$BACKUP" 2>&1)"
+log="$(cat "$STUB_LOG")"
+assert_contains "$log" "--exclude=etc/backup-gpg-passphrase" "tar is invoked with the passphrase file excluded"
+rm -f "$PASS_IN_ETC"
 
 # ── Encryption: gpg fallback branch ──────────────────────────────────────
 echo "backup.sh: falls back to gpg with a mode-600 passphrase file when age is absent"
@@ -365,10 +451,16 @@ if [ -f "${today_dir}/etc-flowstarter.tar.gz.gpg" ]; then
 else
   no "the .gpg ciphertext file exists"
 fi
+if [ -f "${today_dir}/db-supabase_db_flowstarter.dump.gpg" ]; then
+  ok "the database dump is also gpg-encrypted in the fallback branch"
+else
+  no "the database dump is also gpg-encrypted in the fallback branch"
+fi
 
-echo "backup.sh: refuses gpg fallback when the passphrase file mode is wrong"
+echo "backup.sh: refuses gpg fallback when the passphrase file mode is wrong, BEFORE dumping anything"
 chmod 644 "$PASS_FILE"
 rm -rf "$ROOT/backups/$(date -u +%Y-%m-%d)"
+: >"$STUB_LOG"
 out="$(PATH="$NOAGE_BIN:$SYSTEM_PATH" BACKUP_ROOT="$ROOT/backups" SITES_DIR="$ROOT/sites" \
   FLOWSTARTER_ETC_DIR="$ROOT/etc" BACKUP_GPG_PASSPHRASE_FILE="$PASS_FILE" \
   DOCKER_PS_NAMES="$DOCKER_PS_NAMES" bash "$BACKUP" 2>&1)"
@@ -379,7 +471,48 @@ else
   no "backup.sh refuses when the gpg passphrase file is not mode 600" "exited 0"
 fi
 assert_contains "$out" "must be 600" "the refusal names the mode problem"
+log="$(cat "$STUB_LOG")"
+assert_not_contains "$log" "docker exec" "no database was dumped before the passphrase check ran"
+assert_not_contains "$log" "tar " "nothing was archived before the passphrase check ran"
+if [ ! -d "$ROOT/backups/$(date -u +%Y-%m-%d)" ]; then
+  ok "no dated directory work product is left behind by the refused run"
+else
+  # mkdir happens before the check in main(); an empty dated dir is fine,
+  # what matters is nothing inside it.
+  remaining="$(find "$ROOT/backups/$(date -u +%Y-%m-%d)" -mindepth 1)"
+  if [ -z "$remaining" ]; then
+    ok "the dated directory the refused run created is empty"
+  else
+    no "the dated directory the refused run created is empty" "$remaining"
+  fi
+fi
 chmod 600 "$PASS_FILE"
+
+# ── Cleanup on failure ───────────────────────────────────────────────────
+echo "backup.sh: cleans up a partial artifact when encryption fails mid-run"
+rm -rf "$ROOT/backups/$(date -u +%Y-%m-%d)"
+: >"$STUB_LOG"
+out="$(PATH="$NOAGE_BIN:$SYSTEM_PATH" GPG_EXIT=1 \
+  BACKUP_ROOT="$ROOT/backups" SITES_DIR="$ROOT/sites" FLOWSTARTER_ETC_DIR="$ROOT/etc" \
+  BACKUP_GPG_PASSPHRASE_FILE="$PASS_FILE" DOCKER_PS_NAMES="$DOCKER_PS_NAMES" \
+  bash "$BACKUP" 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  ok "backup.sh exits non-zero when the encryptor fails"
+else
+  no "backup.sh exits non-zero when the encryptor fails" "exited 0"
+fi
+today_dir="$ROOT/backups/$(date -u +%Y-%m-%d)"
+if ! find "$today_dir" -name '*.partial' 2>/dev/null | grep -q .; then
+  ok "no .partial artifact is left behind after a failed encryption"
+else
+  no "no .partial artifact is left behind after a failed encryption" "$(find "$today_dir" -name '*.partial')"
+fi
+if [ ! -e "${today_dir}/db-supabase_db_flowstarter.dump.gpg" ]; then
+  ok "no finished-looking dump file exists after the encryptor failed partway through it"
+else
+  no "no finished-looking dump file exists after the encryptor failed partway through it"
+fi
 
 # ── Retention ────────────────────────────────────────────────────────────
 echo "backup.sh: retention keeps the daily window and the weekly survivors"
@@ -489,6 +622,7 @@ out="$(run_restore --date "$DATE_STR" --database flowstarter --dry-run)"
 log="$(cat "${STUB_LOG}.restore" 2>/dev/null || true)"
 assert_contains "$out" "[dry-run]" "the dry-run plan is printed"
 assert_contains "$out" "pg_restore" "the dry-run plan names the restore command"
+assert_contains "$out" "decrypted with age" "the dry-run plan names the decryption step for an encrypted dump"
 if [ -z "$log" ]; then
   ok "no destructive docker exec -i (pg_restore) call happened"
 else
@@ -508,7 +642,7 @@ fi
 # ── restore.sh: manifest verification ────────────────────────────────────
 echo "restore.sh: refuses a real restore when the manifest sha256 does not match"
 today_dir="$ROOT/backups/${DATE_STR}"
-echo 'tampered bytes' >"${today_dir}/db-supabase_db_flowstarter.dump"
+echo 'tampered bytes' >"${today_dir}/db-supabase_db_flowstarter.dump.age"
 out="$(run_restore --date "$DATE_STR" --database flowstarter)"
 rc=$?
 if [ "$rc" -ne 0 ]; then
@@ -525,7 +659,7 @@ else
 fi
 
 # ── restore.sh: a real database restore, once verified ───────────────────
-echo "restore.sh: a real --database restore runs pg_restore once verified"
+echo "restore.sh: a real --database restore decrypts and runs pg_restore once verified"
 rm -rf "$ROOT/backups/$DATE_STR"
 run_backup >/dev/null 2>&1
 out="$(run_restore --date "$DATE_STR" --database flowstarter)"
@@ -538,12 +672,16 @@ fi
 restore_log="$(cat "${STUB_LOG}.restore" 2>/dev/null || true)"
 assert_contains "$restore_log" "RESTORED supabase_db_flowstarter:" "pg_restore ran against the right container"
 assert_contains "$restore_log" "pg_restore -w -U postgres -d postgres --clean --if-exists" "pg_restore ran with the expected flags"
+assert_contains "$restore_log" "stdin=DECRYPTED-AGE" "pg_restore received the DECRYPTED stream, not the ciphertext"
+full_log="$(cat "$STUB_LOG")"
+assert_contains "$full_log" "age --decrypt" "restore.sh invoked age in decrypt mode"
 
 # ── restore.sh: the Cal database, which is not a Supabase stack ──────────
 # A dump nobody can restore is not a backup. Cal's container is not called
 # `supabase_db_<anything>` and its role is not `postgres`, so both halves of
 # the resolution are asserted here rather than assumed to have stayed in step
-# with backup.sh.
+# with backup.sh. It is also encrypted like every other dump now, so the
+# decrypted-stdin assertion applies here too, not only to the Supabase case.
 echo "restore.sh: restores the Cal database by container name"
 out="$(run_restore --date "$DATE_STR" --database flowstarter-cal-db)"
 rc=$?
@@ -555,6 +693,7 @@ fi
 restore_log="$(cat "${STUB_LOG}.restore" 2>/dev/null || true)"
 assert_contains "$restore_log" "RESTORED flowstarter-cal-db:" "an exact container name is accepted, not just a Supabase project id"
 assert_contains "$restore_log" "pg_restore -w -U calcom -d calcom" "the Cal restore runs as calcom against the calcom database"
+assert_contains "$restore_log" "stdin=DECRYPTED-AGE" "the Cal restore also decrypts before piping into pg_restore"
 
 # ── restore.sh: site restore requires --force to overwrite ──────────────
 echo "restore.sh: refuses to overwrite an existing site directory without --force"

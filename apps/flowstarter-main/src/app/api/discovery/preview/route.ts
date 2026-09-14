@@ -24,6 +24,7 @@ import {
 import { funnelBudgetState, recordGenerationCost } from '@/lib/ai/funnel-cost';
 import { readJsonCapped } from '@/lib/net/ingress';
 import { buildDemoSite } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/discovery.logic';
+import { clientIp } from '@/lib/request-ip';
 
 /** Service client — demo_edit_counters/discovery_leads aren't in gen types. */
 function store() {
@@ -89,10 +90,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const ip =
-    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    request.headers.get('x-real-ip') ||
-    'unknown';
+  const ip = clientIp(request.headers);
   if (isRateLimited(ip)) {
     return NextResponse.json({ error: 'Too many attempts' }, { status: 429 });
   }

@@ -25,6 +25,7 @@ import {
 } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/discovery.logic';
 import { classifyRouting } from '@/lib/flowstarter/routing-rules';
 import { readJsonCapped } from '@/lib/net/ingress';
+import { clientIp } from '@/lib/request-ip';
 
 const Schema = z.object({
   businessName: z.string().max(200).optional().default(''),
@@ -70,10 +71,7 @@ function isRateLimited(ip: string): boolean {
 }
 
 export async function POST(request: NextRequest) {
-  const ip =
-    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    request.headers.get('x-real-ip') ||
-    'unknown';
+  const ip = clientIp(request.headers);
   if (isRateLimited(ip)) {
     return NextResponse.json({ error: 'Too many attempts' }, { status: 429 });
   }

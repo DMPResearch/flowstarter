@@ -62,6 +62,15 @@ export const env = createEnv({
     UPSTASH_REDIS_REST_URL: z.string().url().optional(),
     UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
 
+    // Arcjet (global middleware rate limit + bot shield). Security audit
+    // 2026-09-13, Claude H2: this was read directly off `process.env` with
+    // no entry here at all, so a missing key was an untyped `undefined`
+    // behind a `!==` check rather than a validated absence. See
+    // src/lib/security/protection-posture.ts, which — together with the
+    // Upstash pair above — decides whether `staging`/`production` may boot
+    // at all without at least one of them configured.
+    ARCJET_KEY: z.string().optional(),
+
     // Google OAuth & Analytics
     GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
     GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
@@ -183,6 +192,7 @@ export const env = createEnv({
     UPLOADTHING_APP_ID: process.env.UPLOADTHING_APP_ID,
     UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL,
     UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN,
+    ARCJET_KEY: process.env.ARCJET_KEY,
     GOOGLE_OAUTH_CLIENT_ID: process.env.GOOGLE_OAUTH_CLIENT_ID,
     GOOGLE_OAUTH_CLIENT_SECRET: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
     GOOGLE_ANALYTICS_CREDENTIALS: process.env.GOOGLE_ANALYTICS_CREDENTIALS,

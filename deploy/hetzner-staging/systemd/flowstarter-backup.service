@@ -8,6 +8,12 @@ After=docker.service
 
 [Service]
 Type=oneshot
+# backup.sh already sets `umask 0077` itself (belt and suspenders — see the
+# security audit 2026-09-13, M2/F15 fix in backup.sh's own header), but the
+# unit sets it too so every artifact this service ever produces is
+# owner-only by construction at the systemd level, independent of whatever
+# a future revision of the script does or does not do.
+UMask=0077
 # backup.env holds every BACKUP_* override this host needs (retention
 # counts, encryption recipient/passphrase file, S3 upload target), the same
 # EnvironmentFile pattern flowstarter-deploy-agent.service uses in

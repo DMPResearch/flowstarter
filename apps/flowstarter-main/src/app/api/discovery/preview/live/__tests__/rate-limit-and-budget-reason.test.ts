@@ -55,8 +55,13 @@ vi.mock('@flowstarter/agentic-codegen', async () => ({
 }));
 
 const funnelBudgetState = vi.fn();
+const reserveFunnelSpend = vi.fn();
 vi.mock('@/lib/ai/funnel-cost', () => ({
   funnelBudgetState: (...args: unknown[]) => funnelBudgetState(...args),
+  reserveFunnelSpend: (...args: unknown[]) => reserveFunnelSpend(...args),
+  settleFunnelReservation: vi.fn(async () => undefined),
+  releaseFunnelReservation: vi.fn(async () => undefined),
+  previewLiveEstimatedCostEur: vi.fn(() => 0.5),
   recordGenerationCost: vi.fn(async () => undefined),
 }));
 
@@ -91,7 +96,13 @@ describe('POST /api/discovery/preview/live — per-IP rate limit', () => {
     vi.stubEnv('DAYTONA_API_KEY', 'daytona-test');
     vi.resetModules();
     funnelBudgetState.mockClear();
+    reserveFunnelSpend.mockClear();
     funnelBudgetState.mockResolvedValue({ state: 'ok' as const });
+    reserveFunnelSpend.mockResolvedValue({
+      allowed: true,
+      reservationId: 'res-test',
+      spentEur: 0,
+    });
   });
 
   it('limits a single IP to the configured number of requests per minute', async () => {
@@ -116,6 +127,8 @@ describe('POST /api/discovery/preview/live — budget-blocked reason', () => {
   beforeEach(() => {
     vi.resetModules();
     funnelBudgetState.mockClear();
+    reserveFunnelSpend.mockClear();
+    funnelBudgetState.mockResolvedValue({ state: 'ok' as const });
     // Past the `missingGenerationPrerequisites` "not-configured" skip, so
     // the request actually reaches the budget check this suite is testing.
     vi.stubEnv('OPENROUTER_API_KEY', 'test-key');
@@ -128,12 +141,16 @@ describe('POST /api/discovery/preview/live — budget-blocked reason', () => {
     vi.unstubAllEnvs();
   });
 
+  // Security audit 2026-09-13 (Claude H4; Codex F06): the blocking decision
+  // moved from a read-only funnelBudgetState() check to the atomic
+  // reserveFunnelSpend() reservation, so these now exercise that gate
+  // instead. funnelBudgetState() still runs (for the 'degrade' signal) but
+  // no longer decides whether the request is skipped.
   it('forwards the accounting-error reason distinctly from over-cap', async () => {
-    funnelBudgetState.mockResolvedValue({
-      state: 'blocked' as const,
-      spentEur: 0,
-      capEur: 50,
+    reserveFunnelSpend.mockResolvedValue({
+      allowed: false,
       reason: 'accounting-error' as const,
+      spentEur: 0,
     });
     const { POST } = await import('../route');
 
@@ -149,11 +166,11 @@ describe('POST /api/discovery/preview/live — budget-blocked reason', () => {
     expect(body).toEqual({ skip: true, reason: 'accounting-error' });
   });
 
-  it('falls back to over-cap when the budget module gives no reason', async () => {
-    funnelBudgetState.mockResolvedValue({
-      state: 'blocked' as const,
+  it('reports over-cap when the reservation is refused for exceeding the global cap', async () => {
+    reserveFunnelSpend.mockResolvedValue({
+      allowed: false,
+      reason: 'over-cap' as const,
       spentEur: 60,
-      capEur: 50,
     });
     const { POST } = await import('../route');
 
@@ -167,5 +184,25 @@ describe('POST /api/discovery/preview/live — budget-blocked reason', () => {
     const body = await res.json();
 
     expect(body).toEqual({ skip: true, reason: 'over-cap' });
+  });
+
+  it('reports over-caller-cap distinctly when one caller alone is refused', async () => {
+    reserveFunnelSpend.mockResolvedValue({
+      allowed: false,
+      reason: 'over-caller-cap' as const,
+      spentEur: 1,
+    });
+    const { POST } = await import('../route');
+
+    const res = await POST(
+      liveRequest({
+        businessName: 'Acme Yoga',
+        fullName: 'Ada Lovelace',
+        description: 'A small yoga studio in the neighbourhood.',
+      })
+    );
+    const body = await res.json();
+
+    expect(body).toEqual({ skip: true, reason: 'over-caller-cap' });
   });
 });

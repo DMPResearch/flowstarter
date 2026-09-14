@@ -30,12 +30,25 @@ Nightly, via `flowstarter-backup.timer` (see "Installation" below), as root:
   rather than one hardcoded name, so a host running more than one stack still
   gets all of them. Each is dumped with `pg_dump -U postgres -Fc` run
   **inside** its own container (custom format, already compressed; nothing
-  reaches into the container's filesystem or port).
+  reaches into the container's filesystem or port) and streamed straight
+  into encryption (see "Encryption" below) — this is every client's booking
+  page, availability and appointment data, so it is encrypted the same as
+  the host's own secrets, not left plaintext next to them.
 - **`/var/www/sites/`**, the client sites tree deploy-agent writes to, tarred
   and gzipped. Not secret, not encrypted.
-- **`/etc/flowstarter/`**, the host's env files and TLS keys, tarred, gzipped,
-  and then encrypted (see "Encryption" below). This is the one artifact that
-  matters if the backup itself leaks.
+- **`/etc/flowstarter/`**, the host's env files and TLS keys, tarred and
+  streamed straight into encryption (see "Encryption" below) — excluding the
+  gpg passphrase file itself when it lives inside this directory, so the
+  passphrase never ships inside the tarball it protects.
+
+Every artifact is written first to disk in ciphertext or, for the one
+artifact that carries nothing secret (the sites tree), plaintext — nothing
+is ever written to disk unencrypted and then encrypted in a second pass. The
+whole tree runs under `umask 0077`, so every directory lands `0700` and
+every file `0600` by construction, and a mid-run failure (a dead Docker
+daemon, a full disk, an interrupted `age`/`gpg` process) cleans up its own
+partially-written artifact rather than leaving one that looks finished but
+is not.
 
 Everything lands under `/var/backups/flowstarter/<UTC date>/`, alongside a
 `manifest.sha256` of every artifact in that directory, so `restore.sh` (and a
@@ -68,6 +81,20 @@ Chosen at runtime, never hardcoded to one tool:
   wrong: a nightly timer failing loudly beats it silently encrypting with
   something nobody meant to use.
 
+The tool is chosen once, up front — before a single database is dumped or
+directory archived — so a misconfigured passphrase file fails the whole run
+immediately rather than after already doing (and discarding) real work. The
+selection logic and the actual encrypt/decrypt streaming live in
+`deploy/hetzner-staging/scripts/backup-crypto.sh`, sourced by both
+`backup.sh` and `restore.sh`, so the two can never disagree about which tool
+won a given run.
+
+The database dumps and the `/etc` tarball get `.age` or `.gpg` appended to
+their filename depending on which tool encrypted them (e.g.
+`db-supabase_db_flowstarter.dump.age`); `restore.sh` reads that extension
+back to know how to decrypt automatically (see "Restoring" below) rather
+than needing to be told.
+
 ### Off-box copy (optional)
 
 Set `BACKUP_S3_BUCKET` (plus optionally `BACKUP_S3_ENDPOINT` for an
@@ -98,13 +125,18 @@ restore.sh --date 2026-09-10 --site acme-widgets --force
 
 `<project_id>` after `--database` is the same value `supabase/config.toml`'s
 `project_id` uses for the stack being restored — `backup.sh` names the dump
-file after the container it came from, `supabase_db_<project_id>`. There is
-no default and none is guessed.
+file after the container it came from, `supabase_db_<project_id>`, plus
+`.age` or `.gpg`. There is no default and none is guessed.
 
-Every real (non-`--dry-run`) restore first verifies the artifact's sha256
-against `manifest.sha256` and refuses if it does not match — a backup that
-fails its own checksum is not something to restore from blind. A site
-directory that already exists on disk is never overwritten without `--force`.
+Every real (non-`--dry-run`) restore first verifies the artifact's sha256 —
+against `manifest.sha256`, computed over the ciphertext on disk, before any
+decryption is attempted — and refuses if it does not match: a backup that
+fails its own checksum is not something to restore from blind, encrypted or
+not. A database restore is then decrypted automatically (same
+`BACKUP_AGE_RECIPIENT`/`BACKUP_GPG_PASSPHRASE_FILE`-style configuration as
+the backup that produced it — see `backup-crypto.sh`) and piped straight
+into `pg_restore`; a site directory that already exists on disk is never
+overwritten without `--force`.
 
 `/etc/flowstarter` is never restored by this script. Putting secrets back
 onto a box is rare and dangerous enough to stay a deliberate, by-hand
@@ -112,14 +144,20 @@ operation: decrypt with `age --decrypt` or `gpg --decrypt` (whichever
 `backup.sh` used, by the same recipient/passphrase), then `tar -xzf` it
 yourself.
 
-Database restore shape, for reference:
+Database restore shape, for reference (the dump is encrypted, so a by-hand
+restore decrypts first):
 
 ```sh
-docker exec -i supabase_db_<project_id> pg_restore -U postgres -d postgres --clean --if-exists <dump-file>
+age --decrypt db-supabase_db_<project_id>.dump.age | \
+  docker exec -i supabase_db_<project_id> pg_restore -U postgres -d postgres --clean --if-exists
+# or, for a gpg-encrypted dump:
+gpg --batch --yes --decrypt --passphrase-file <passphrase-file> db-supabase_db_<project_id>.dump.gpg | \
+  docker exec -i supabase_db_<project_id> pg_restore -U postgres -d postgres --clean --if-exists
 ```
 
-(`restore.sh` does this for you once the checksum passes; shown here so the
-shape is not a mystery if you ever need to do it by hand.)
+(`restore.sh` does this for you — decrypt then pipe into `pg_restore` — once
+the checksum passes; shown here so the shape is not a mystery if you ever
+need to do it by hand.)
 
 ### The drill
 
@@ -214,7 +252,12 @@ the script's own header comment.
   is run from).
 - **Choosing and distributing the age key pair or the gpg passphrase**, and
   storing the private half somewhere that is not the box being backed up —
-  an encrypted backup an operator cannot decrypt is not a backup.
+  an encrypted backup an operator cannot decrypt is not a backup. The
+  passphrase file is now excluded from the `/etc/flowstarter` tarball
+  whenever it lives inside that directory (so it no longer ships an
+  encrypted copy of itself inside the artifact it protects), but that is a
+  narrower fix than moving it off the host entirely, which is still this
+  bullet's job.
 - **Actually running the drill above once**, on a real (disposable) host,
   before relying on any of this for the first paying customer.
 

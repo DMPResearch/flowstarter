@@ -41,6 +41,8 @@ import {
 } from '@/lib/flowstarter/claim';
 import { GUEST_DEPOSIT_KIND } from '@/lib/flowstarter/guest-deposit';
 import { readJsonCapped } from '@/lib/net/ingress';
+import { clientIp } from '@/lib/request-ip';
+import { consumeRateLimit, namedIntEnv } from '@/lib/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -107,6 +109,26 @@ function isRateLimited(ip: string): boolean {
   return entry.count > RATE_LIMIT;
 }
 
+/**
+ * Security audit 2026-09-13 (Claude H4 / Codex F06): the per-IP limiter
+ * above is defeated by rotating `X-Forwarded-For` (closed at the source in
+ * `@/lib/request-ip`, but a second, IP-independent dimension is still worth
+ * having for an endpoint that creates real Stripe Checkout sessions). A
+ * per-email limiter closes the other half — same pattern and default as
+ * `/api/discovery/deposit`'s, named and env-overridable rather than a bare
+ * literal.
+ */
+const EMAIL_RATE_LIMIT_ENV = 'DISCOVERY_GUEST_DEPOSIT_EMAIL_RATE_LIMIT';
+const EMAIL_RATE_LIMIT_DEFAULT = 3;
+const EMAIL_RATE_WINDOW_MS = 60_000;
+
+async function isEmailRateLimited(email: string): Promise<boolean> {
+  return consumeRateLimit(`guest-deposit-checkout-email:${email}`, {
+    limit: namedIntEnv(EMAIL_RATE_LIMIT_ENV, EMAIL_RATE_LIMIT_DEFAULT),
+    windowMs: EMAIL_RATE_WINDOW_MS,
+  });
+}
+
 /** Test seam: the limiter is module state and suites must be able to reset it. */
 export function __resetGuestDepositRateLimit(): void {
   rateLimitMap.clear();
@@ -116,10 +138,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ demoId: string }> }
 ): Promise<NextResponse> {
-  const ip =
-    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    request.headers.get('x-real-ip') ||
-    'unknown';
+  const ip = clientIp(request.headers);
   if (isRateLimited(ip)) {
     return NextResponse.json({ error: 'Too many attempts' }, { status: 429 });
   }
@@ -153,6 +172,9 @@ export async function POST(
   }
   const spec = parsed.data;
   const email = spec.email.trim().toLowerCase();
+  if (await isEmailRateLimited(email)) {
+    return NextResponse.json({ error: 'Too many attempts' }, { status: 429 });
+  }
 
   const secret = process.env.STRIPE_SECRET_KEY;
   if (!secret) {

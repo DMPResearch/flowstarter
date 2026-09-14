@@ -33,6 +33,10 @@ import 'server-only';
 import { createHash } from 'node:crypto';
 import { assertSafeUploadedImage } from '@flowstarter/agentic-codegen/src/flowstarter/site-media';
 import { probeImageSize } from '@flowstarter/agentic-codegen/src/flowstarter/preview-assets';
+import {
+  clientIp as resolveClientIp,
+  NO_FORWARDED_HEADER,
+} from '@/lib/request-ip';
 import { assertTenantPath, assetObjectPath } from '@/lib/storage-paths';
 import { withTenant } from '@/lib/tenancy';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
@@ -531,11 +535,14 @@ export async function readinessAfterUpload(
   }
 }
 
-/** The caller's IP, as far as the proxy chain is willing to say. */
+/**
+ * The caller's IP, as far as the proxy chain is willing to say. Delegates to
+ * the single trusted-proxy-aware implementation in `@/lib/request-ip` (see
+ * docs/security/audit-2026-09-13-claude.md, H3) rather than re-reading
+ * `x-forwarded-for` here; this wrapper only preserves this module's existing
+ * `string | null` contract for its callers.
+ */
 export function clientIp(request: Request): string | null {
-  return (
-    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    request.headers.get('x-real-ip')?.trim() ||
-    null
-  );
+  const ip = resolveClientIp(request.headers);
+  return ip === NO_FORWARDED_HEADER ? null : ip;
 }

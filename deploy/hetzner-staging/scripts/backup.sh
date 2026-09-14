@@ -2,7 +2,8 @@
 # Nightly backup of everything on this Hetzner host that is not reproducible
 # from git: every Supabase CLI stack's Postgres database, the self-hosted
 # Cal.com database, the client sites tree, and /etc/flowstarter (env files,
-# TLS keys, and now this script's own gpg passphrase file, see below).
+# TLS keys, and this script's own gpg passphrase file — which is excluded
+# from the tarball it protects, see below).
 #
 # WHY Cal is in that list. `flowstarter-cal-db` holds every client's booking
 # page — their event types, their availability, their connected calendars —
@@ -12,7 +13,8 @@
 # empty booking pages and lose the appointments. Losing this volume means
 # telling clients their bookings are gone. It is dumped exactly like the
 # Supabase databases, into the same dated directory and the same manifest, so
-# one restore drill covers both.
+# one restore drill covers both -- and, like every other database dump, it is
+# now encrypted (see below), where before this fix only the /etc tarball was.
 #
 # This backs up the STAGING/PROD BOX's local state. The hosted production
 # Supabase project is a separate thing, backed up by
@@ -26,8 +28,34 @@
 # and ../systemd/flowstarter-backup.timer. Run as root: it reads
 # /etc/flowstarter and talks to the Docker socket.
 #
-# Encryption of the /etc/flowstarter tarball (never the site files tarball,
-# which carries nothing secret):
+# Security audit 2026-09-13 (Claude M2; Codex F15) found three problems with
+# the backup tree: the database dumps were the one artifact that carried real
+# tenant data and were the one artifact NOT encrypted (mode 644, plaintext,
+# right next to the encrypted-but-secret-free-anyway /etc tarball); the gpg
+# passphrase file lived inside the very directory (/etc/flowstarter) that got
+# tarred and encrypted with it, so a copy of the passphrase-derived ciphertext
+# of the passphrase itself shipped inside the artifact it protects; and there
+# was no restrictive umask, so a fresh dated directory or dump could inherit
+# a permissive one from the environment instead of getting 0600/0700 by
+# construction. All three are fixed here:
+#
+#   - every database dump is now streamed straight into encryption (see
+#     backup-crypto.sh, sourced below) — never written to disk in plaintext —
+#     with the same age-else-gpg tool selection the /etc tarball already used.
+#   - the /etc tarball is itself streamed straight into encryption too (tar
+#     piped into the encryptor, never a plaintext tarball on disk even
+#     momentarily), and BACKUP_GPG_PASSPHRASE_FILE is excluded from what tar
+#     reads whenever it lives inside FLOWSTARTER_ETC_DIR.
+#   - `umask 0077` at the top of main(), plus an explicit `chmod 0700` on
+#     $BACKUP_ROOT and the dated directory and `chmod 0600` on every artifact
+#     right after it is produced, so the permission is correct even if this
+#     script ever runs with a looser inherited umask.
+#   - a cleanup-on-failure trap removes any partially-written artifact
+#     (`*.partial`) so a mid-run failure — a dead docker daemon, a full disk,
+#     an interrupted encrypt — never leaves a file that looks finished but
+#     is not, encrypted or otherwise.
+#
+# Decisions inherited unchanged from before this fix, still accurate:
 #   - age, if `age` is on PATH. The recipient (public key) comes from
 #     BACKUP_AGE_RECIPIENT_FILE (a file holding one age public key, the
 #     format `age -R` expects) or, if that is unset, BACKUP_AGE_RECIPIENT
@@ -36,11 +64,11 @@
 #   - gpg --symmetric, if age is not on PATH. The passphrase comes from a
 #     file named by BACKUP_GPG_PASSPHRASE_FILE, which must exist and be mode
 #     600. The script refuses to run rather than fall back to an interactive
-#     prompt or a weaker default; a passphrase file that is readable by
-#     anyone but root defeats the point of encrypting the tarball at all.
+#     prompt or a weaker default.
 # The choice between the two is made at runtime by checking `command -v
 # age`, never hardcoded, so a box that later installs age switches over with
-# no script change.
+# no script change. See backup-crypto.sh for the shared implementation
+# restore.sh also uses.
 #
 # Env overrides (documented defaults, never bare numbers or paths in the
 # logic below, the same idea as capEur() in
@@ -92,13 +120,15 @@
 
 set -euo pipefail
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./backup-crypto.sh
+source "${HERE}/backup-crypto.sh"
+
 # ── Env overrides ────────────────────────────────────────────────────────
 BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/flowstarter}"
 SITES_DIR="${SITES_DIR:-/var/www/sites}"
 ETC_DIR="${FLOWSTARTER_ETC_DIR:-/etc/flowstarter}"
 PG_DUMP_ARGS="${PG_DUMP_ARGS:-}"
-BACKUP_AGE_RECIPIENT_FILE="${BACKUP_AGE_RECIPIENT_FILE:-}"
-BACKUP_AGE_RECIPIENT="${BACKUP_AGE_RECIPIENT:-}"
 BACKUP_GPG_PASSPHRASE_FILE="${BACKUP_GPG_PASSPHRASE_FILE:-/etc/flowstarter/backup-gpg-passphrase}"
 BACKUP_S3_BUCKET="${BACKUP_S3_BUCKET:-}"
 BACKUP_S3_ENDPOINT="${BACKUP_S3_ENDPOINT:-}"
@@ -145,10 +175,11 @@ usage() {
 Usage: backup.sh
 
   Dumps every Supabase CLI stack's Postgres database and the self-hosted
-  Cal.com database, tars /var/www/sites and /etc/flowstarter (the latter
-  encrypted), writes a sha256 manifest, and applies retention, all under
-  $BACKUP_ROOT/<UTC date>/. See the header comment in this file for every env
-  var it reads.
+  Cal.com database (both encrypted), tars $SITES_DIR (plaintext — it carries
+  nothing secret) and $FLOWSTARTER_ETC_DIR (encrypted, excluding the gpg
+  passphrase file itself), writes a sha256 manifest, and applies retention,
+  all under $BACKUP_ROOT/<UTC date>/. See the header comment in this file for
+  every env var it reads.
 EOF
 }
 
@@ -161,14 +192,52 @@ require_root() {
   fi
 }
 
-# ── Small portable helpers ──────────────────────────────────────────────────
+# ── Cleanup on failure ──────────────────────────────────────────────────────
+#
+# Every artifact is first written to "${dest}.partial" and only renamed to
+# its final name once the producer (a pipeline, under `set -o pipefail`) has
+# exited zero. CLEANUP_PATHS collects every ".partial" path in use during
+# this run; on any non-zero exit, whatever is still there — because the run
+# died before the rename — is removed, so a failed run never leaves a file
+# indistinguishable from a finished one.
+CLEANUP_PATHS=""
 
-# GNU stat (Linux, the real host) uses -c; BSD stat (macOS, where this
-# script's tests run) uses -f. Both are tried so the mode check works in
-# both places without picking a platform to fail on.
-file_mode() {
-  local path="$1"
-  stat -c '%a' "$path" 2>/dev/null || stat -f '%Lp' "$path" 2>/dev/null
+register_cleanup() {
+  CLEANUP_PATHS="${CLEANUP_PATHS}${1}"$'\n'
+}
+
+cleanup_on_exit() {
+  local rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    local p
+    while IFS= read -r p; do
+      [[ -z "$p" ]] && continue
+      if [[ -e "$p" ]]; then
+        echo "Cleaning up incomplete artifact: ${p}" >&2
+        rm -f "$p"
+      fi
+    done <<<"$CLEANUP_PATHS"
+  fi
+  return "$rc"
+}
+trap cleanup_on_exit EXIT
+
+keep_daily_count() {
+  local raw="${BACKUP_KEEP_DAILY:-}"
+  if [[ "$raw" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$raw"
+  else
+    printf '%s' "$DEFAULT_KEEP_DAILY"
+  fi
+}
+
+keep_weekly_count() {
+  local raw="${BACKUP_KEEP_WEEKLY:-}"
+  if [[ "$raw" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$raw"
+  else
+    printf '%s' "$DEFAULT_KEEP_WEEKLY"
+  fi
 }
 
 sha256_cmd() {
@@ -188,24 +257,6 @@ manifest_line_for() {
   dir="$(dirname "$path")"
   name="$(basename "$path")"
   (cd "$dir" && sha256_cmd "$name")
-}
-
-keep_daily_count() {
-  local raw="${BACKUP_KEEP_DAILY:-}"
-  if [[ "$raw" =~ ^[0-9]+$ ]]; then
-    printf '%s' "$raw"
-  else
-    printf '%s' "$DEFAULT_KEEP_DAILY"
-  fi
-}
-
-keep_weekly_count() {
-  local raw="${BACKUP_KEEP_WEEKLY:-}"
-  if [[ "$raw" =~ ^[0-9]+$ ]]; then
-    printf '%s' "$raw"
-  else
-    printf '%s' "$DEFAULT_KEEP_WEEKLY"
-  fi
 }
 
 # ── Database dumps ───────────────────────────────────────────────────────
@@ -232,18 +283,28 @@ container_env_value() {
 
 # Dumps one container's application database with `pg_dump` run INSIDE the
 # container, custom format (-Fc, already compressed, so this is not gzipped
-# again), streamed out over the container's own stdout into a host file.
+# again), and streams the dump straight through encrypt_stream into its
+# final file — no plaintext dump ever touches this host's disk (security
+# audit 2026-09-13, M2/F15).
 #
-# The user and the database are discovered per container rather than assumed:
-# the Supabase CLI stack uses `postgres` for both, Cal uses `calcom` for both,
-# and a dump that guessed wrong would fail with "role does not exist" — after
-# the redirection had already created the output file, leaving a zero-byte
-# "backup" in the dated directory that nobody notices until a restore.
+# The user and the database are discovered per container rather than
+# assumed: the Supabase CLI stack uses `postgres` for both, Cal uses
+# `calcom` for both, and a dump that guessed wrong would fail with "role
+# does not exist". See BACKUP_TRUSTED_ROLE_CONTAINER_PATTERN above for why
+# the Supabase container's own POSTGRES_USER is deliberately not believed.
+#
+# Written first to "${out_file}.partial" and renamed only once the whole
+# pipeline (dump AND encryption) has succeeded, per the cleanup contract
+# above — this is also what keeps a failed dump from ever leaving a
+# zero-byte or half-written "backup" that looks finished; there is no
+# separate `rm -f "$out_file"` on failure the way an unencrypted, direct
+# `>"$out_file"` redirect would need, because `$out_file` itself is never
+# opened for writing until the `mv` below.
 #
 # PG_DUMP_ARGS is deliberately word-split (shellcheck disabled below) so an
 # operator can add flags such as --exclude-table without this script needing to
 # know about every possible pg_dump option.
-dump_database() {
+dump_database_encrypted() {
   local container="$1" out_file="$2" user db
   if printf '%s\n' "$container" | grep -qE "$BACKUP_TRUSTED_ROLE_CONTAINER_PATTERN"; then
     # See BACKUP_TRUSTED_ROLE_CONTAINER_PATTERN: this container's own
@@ -257,65 +318,46 @@ dump_database() {
     user="${user:-$DEFAULT_POSTGRES_USER}"
     db="${db:-$DEFAULT_POSTGRES_DB}"
   fi
-  echo "Dumping ${container} (user: ${user}, database: ${db}) -> ${out_file}"
+
+  local partial="${out_file}.partial"
+  register_cleanup "$partial"
+  echo "Dumping ${container} (user: ${user}, database: ${db}) -> ${out_file} (encrypted with ${ENC_TOOL})"
   # `-w` because this runs from a nightly timer with no terminal: without it a
   # role that needs a password makes pg_dump sit on a prompt nobody will ever
   # answer, and the unit hangs instead of failing.
   # shellcheck disable=SC2086
-  if ! docker exec "$container" pg_dump -w -U "$user" -Fc $PG_DUMP_ARGS "$db" >"$out_file"; then
-    # The redirection has already created the file. A zero-byte "backup" that
-    # sits in the dated directory looking like the others is worse than no
-    # backup at all, because it is only discovered during a restore.
-    rm -f "$out_file"
-    echo "BACKUP FAILED: pg_dump of ${container} (user: ${user}, database: ${db}) did not succeed; the empty output file was removed." >&2
+  if ! docker exec "$container" pg_dump -w -U "$user" -Fc $PG_DUMP_ARGS "$db" |
+    encrypt_stream >"$partial"; then
+    echo "BACKUP FAILED: pg_dump of ${container} (user: ${user}, database: ${db}) did not succeed." >&2
     return 1
   fi
+  chmod 0600 "$partial"
+  mv "$partial" "$out_file"
 }
 
-# ── Encryption ───────────────────────────────────────────────────────────
+# ── Encrypted tar archive ────────────────────────────────────────────────
 
-# Decides age vs gpg at runtime and never prints the recipient or passphrase.
-encrypt_secrets_tarball() {
-  local src="$1" dest="$2"
-
-  # Bash arrays are deliberately avoided throughout this script (matching
-  # deploy-slot.sh and supabase-stack.sh, neither of which use one): an
-  # empty array expanded under `set -u` behaves inconsistently across bash
-  # versions, and plain conditionals are just as clear here.
-  if command -v age >/dev/null 2>&1; then
-    if [[ -n "$BACKUP_AGE_RECIPIENT_FILE" ]]; then
-      if [[ ! -f "$BACKUP_AGE_RECIPIENT_FILE" ]]; then
-        echo "BACKUP_AGE_RECIPIENT_FILE (${BACKUP_AGE_RECIPIENT_FILE}) does not exist." >&2
-        exit 1
-      fi
-      age -R "$BACKUP_AGE_RECIPIENT_FILE" -o "$dest" "$src"
-    elif [[ -n "$BACKUP_AGE_RECIPIENT" ]]; then
-      age -r "$BACKUP_AGE_RECIPIENT" -o "$dest" "$src"
-    else
-      echo "age is on PATH but neither BACKUP_AGE_RECIPIENT_FILE nor BACKUP_AGE_RECIPIENT is set." >&2
-      exit 1
-    fi
-    return 0
+# Tars $src_dir and streams it straight through encrypt_stream into
+# $out_file — never a plaintext tarball on disk, not even momentarily.
+# $exclude_name, if non-empty, is excluded from the tar by name relative to
+# $src_dir (used to keep the gpg passphrase file out of the /etc tarball it
+# would otherwise be encrypted inside of).
+tar_encrypted() {
+  local src_dir="$1" out_file="$2" exclude_name="${3:-}"
+  local partial="${out_file}.partial"
+  register_cleanup "$partial"
+  local parent base
+  parent="$(dirname "$src_dir")"
+  base="$(basename "$src_dir")"
+  echo "Archiving ${src_dir} -> ${out_file} (encrypted with ${ENC_TOOL})"
+  if [[ -n "$exclude_name" ]]; then
+    tar --exclude="${base}/${exclude_name}" -cz -C "$parent" "$base" |
+      encrypt_stream >"$partial"
+  else
+    tar -cz -C "$parent" "$base" | encrypt_stream >"$partial"
   fi
-
-  # age is not installed: fall back to gpg symmetric encryption, but only
-  # with a passphrase file that already has the mode a secret deserves.
-  # Refusing here is deliberate: a missing or world-readable passphrase file
-  # means either this backup or the passphrase itself is unprotected, and a
-  # nightly timer should fail loudly rather than encrypt with something an
-  # operator never meant to use.
-  if [[ ! -f "$BACKUP_GPG_PASSPHRASE_FILE" ]]; then
-    echo "age is not installed and BACKUP_GPG_PASSPHRASE_FILE (${BACKUP_GPG_PASSPHRASE_FILE}) does not exist." >&2
-    exit 1
-  fi
-  local mode
-  mode="$(file_mode "$BACKUP_GPG_PASSPHRASE_FILE")"
-  if [[ "$mode" != "600" ]]; then
-    echo "Refusing to use ${BACKUP_GPG_PASSPHRASE_FILE} as a gpg passphrase file: mode is ${mode}, must be 600." >&2
-    exit 1
-  fi
-  gpg --batch --yes --symmetric --cipher-algo AES256 \
-    --passphrase-file "$BACKUP_GPG_PASSPHRASE_FILE" -o "$dest" "$src"
+  chmod 0600 "$partial"
+  mv "$partial" "$out_file"
 }
 
 # ── Retention ────────────────────────────────────────────────────────────
@@ -447,12 +489,27 @@ main() {
   fi
 
   require_root
+
+  # Restrictive by construction: every file and directory this script
+  # creates from here on defaults to owner-only (0600 files, 0700 dirs)
+  # regardless of whatever umask the environment (systemd, a login shell,
+  # cron) handed it. Explicit chmods below are defence in depth for
+  # directories/files that might pre-date this fix.
+  umask 0077
+
+  # Fail fast, before dumping a single byte: pick the encryption tool and
+  # validate its configuration (in particular, the gpg passphrase file's
+  # mode) up front rather than partway through the run.
+  select_encryption_tool
+
   mkdir -p "$BACKUP_ROOT"
+  chmod 0700 "$BACKUP_ROOT"
 
   local date_str dest_dir
   date_str="$(date -u +%Y-%m-%d)"
   dest_dir="${BACKUP_ROOT}/${date_str}"
   mkdir -p "$dest_dir"
+  chmod 0700 "$dest_dir"
   echo "Starting backup into ${dest_dir}"
 
   # A newline-separated list rather than a bash array, same reasoning as
@@ -467,39 +524,40 @@ main() {
   fi
   while IFS= read -r container; do
     [[ -z "$container" ]] && continue
-    out_file="${dest_dir}/db-${container}.dump"
-    dump_database "$container" "$out_file"
+    out_file="${dest_dir}/db-${container}.dump.${ENC_EXT}"
+    dump_database_encrypted "$container" "$out_file"
     artifacts="${artifacts}${out_file}"$'\n'
   done <<<"$containers"
 
   if [[ -d "$SITES_DIR" ]]; then
     local sites_tar="${dest_dir}/sites.tar.gz"
+    local sites_partial="${sites_tar}.partial"
+    register_cleanup "$sites_partial"
     echo "Archiving ${SITES_DIR} -> ${sites_tar}"
-    tar -czf "$sites_tar" -C "$(dirname "$SITES_DIR")" "$(basename "$SITES_DIR")"
+    tar -czf "$sites_partial" -C "$(dirname "$SITES_DIR")" "$(basename "$SITES_DIR")"
+    chmod 0600 "$sites_partial"
+    mv "$sites_partial" "$sites_tar"
     artifacts="${artifacts}${sites_tar}"$'\n'
   else
     echo "SITES_DIR (${SITES_DIR}) does not exist; skipping site archive."
   fi
 
   if [[ -d "$ETC_DIR" ]]; then
-    local plain_etc_tar enc_tool enc_ext encrypted_etc_tar
-    plain_etc_tar="${dest_dir}/etc-flowstarter.tar.gz"
-    echo "Archiving ${ETC_DIR} -> ${plain_etc_tar}"
-    tar -czf "$plain_etc_tar" -C "$(dirname "$ETC_DIR")" "$(basename "$ETC_DIR")"
-
-    if command -v age >/dev/null 2>&1; then
-      enc_tool="age"
-      enc_ext="age"
-    else
-      enc_tool="gpg"
-      enc_ext="gpg"
-    fi
-    encrypted_etc_tar="${plain_etc_tar}.${enc_ext}"
-    echo "Encrypting ${ETC_DIR} tarball with ${enc_tool} -> ${encrypted_etc_tar}"
-    encrypt_secrets_tarball "$plain_etc_tar" "$encrypted_etc_tar"
-    # The plaintext tarball held secrets; it must not survive the run.
-    rm -f "$plain_etc_tar"
-    artifacts="${artifacts}${encrypted_etc_tar}"$'\n'
+    local etc_tar="${dest_dir}/etc-flowstarter.tar.gz.${ENC_EXT}"
+    # Never ship the gpg passphrase inside the very tarball it (or a
+    # sibling artifact) is encrypted with — see the module doc comment
+    # (security audit M2/F15). Only excluded when the passphrase file is
+    # actually inside ETC_DIR; a passphrase file kept elsewhere (the
+    # recommended long-term fix — see the audit's "move the passphrase off
+    # this host") needs no special-casing here at all.
+    local exclude_name=""
+    case "$BACKUP_GPG_PASSPHRASE_FILE" in
+      "${ETC_DIR}"/*)
+        exclude_name="${BACKUP_GPG_PASSPHRASE_FILE#"${ETC_DIR}"/}"
+        ;;
+    esac
+    tar_encrypted "$ETC_DIR" "$etc_tar" "$exclude_name"
+    artifacts="${artifacts}${etc_tar}"$'\n'
   else
     echo "ETC_DIR (${ETC_DIR}) does not exist; skipping secrets archive."
   fi
@@ -507,6 +565,7 @@ main() {
   echo "Writing manifest.sha256 ..."
   local manifest="${dest_dir}/manifest.sha256"
   : >"$manifest"
+  chmod 0600 "$manifest"
   local artifact
   while IFS= read -r artifact; do
     [[ -z "$artifact" ]] && continue

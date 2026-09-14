@@ -89,6 +89,14 @@ vi.mock('@flowstarter/agentic-codegen', async () => ({
 
 vi.mock('@/lib/ai/funnel-cost', () => ({
   funnelBudgetState: vi.fn(async () => ({ state: 'ok' as const })),
+  reserveFunnelSpend: vi.fn(async () => ({
+    allowed: true as const,
+    reservationId: 'res-test',
+    spentEur: 0,
+  })),
+  settleFunnelReservation: vi.fn(async () => undefined),
+  releaseFunnelReservation: vi.fn(async () => undefined),
+  previewLiveEstimatedCostEur: vi.fn(() => 0.5),
   recordGenerationCost: vi.fn(async () => undefined),
 }));
 

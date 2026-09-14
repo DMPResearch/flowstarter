@@ -14,6 +14,7 @@ import { recordGenerationCost } from '@/lib/ai/funnel-cost';
 import { getJob, updateJob, LIVE_EDIT_CAP } from '@/lib/discovery/live-jobs';
 import { readPreviewWorkspaceFiles } from '@/lib/discovery/preview-workspace';
 import { recordClaimablePreviewEdit } from '@/lib/flowstarter/claim';
+import { clientIp } from '@/lib/request-ip';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -23,14 +24,6 @@ const EditSchema = z.object({
   demoId: z.string().min(1),
   instruction: z.string().min(1).max(2000),
 });
-
-function clientIp(req: NextRequest): string {
-  return (
-    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    req.headers.get('x-real-ip') ||
-    'unknown'
-  );
-}
 
 /**
  * Re-capture the edited preview workspace as the manifest of record.
@@ -102,7 +95,7 @@ export async function POST(req: NextRequest) {
     editPhase: 'Reading your request',
     editError: undefined,
   });
-  const ip = clientIp(req);
+  const ip = clientIp(req.headers);
 
   // Detached — wizard polls GET while the agent edits in the sandbox.
   void (async () => {
