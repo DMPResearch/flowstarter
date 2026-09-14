@@ -70,6 +70,9 @@ const DEFAULT_USABLE_ASSETS: UsableAsset[] = [
     originalName: 'workshops-room.jpg',
     createdAt: '2026-09-01T00:00:00.000Z',
     kind: null,
+    // A file the client sent. A sourced portrait carries the network instead.
+    source: 'upload',
+    sourceUrl: null,
   },
 ];
 const loadUsableAssets =
@@ -239,6 +242,9 @@ describe('listing what the client asked for', () => {
         originalName: 'front-of-shop.jpg',
         createdAt: '2026-09-12T08:00:00.000Z',
         kind: null,
+        // A file the client sent. A sourced portrait carries the network instead.
+        source: 'upload',
+        sourceUrl: null,
       },
     ]);
 

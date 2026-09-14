@@ -53,6 +53,7 @@ export type IntakeQuestionId =
   | 'industry'
   | 'targetAudience'
   | 'links'
+  | 'connectPortrait'
   | 'goal'
   | 'brandTone'
   | 'pageCount'
@@ -72,6 +73,10 @@ export type IntakeQuestionId =
  *                   plan). They keep their existing cards, shown inside the
  *                   conversation as the agent's own message, because a price
  *                   comparison is not something a chat bubble does well.
+ *
+ * A panel is now anything answered by a component rather than by words, which
+ * is why the connect-photo offer is one: a pair of buttons that leave the page
+ * is not something a composer can express either.
  */
 export type IntakeQuestionKind =
   | 'text'
@@ -519,6 +524,36 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
         .join(' · '),
   },
   {
+    id: 'connectPortrait',
+    phase: 'quick',
+    // Step 4, the links stage, because it is about the same link the visitor
+    // has just pasted: they told us where they are, and this offers to take
+    // the photograph from there rather than from a stock library. A stage of
+    // its own would read as a fifth thing standing between them and the
+    // preview, which is exactly what this script exists to prevent.
+    step: 4,
+    kind: 'panel',
+    promptKey: `${Q}connectPortrait.prompt`,
+    // THE ONLY OPTIONAL QUESTION IN THE QUICK PHASE, and deliberately so. A
+    // face is worth asking for once, at the moment the visitor is already
+    // thinking about their own profiles, but a portrait is not something a
+    // preview cannot be built without, so it never gates anything.
+    // `quickRequiredCount` is still four: the number the product decision is
+    // about is how many questions somebody MUST answer, not how many appear on
+    // screen, and `intake-friction.test.ts` asserts both halves of that.
+    required: false,
+    // A no-op passthrough. The panel writes `portraitPreviewId` and
+    // `portraitConnect` through the wizard's `update` rather than through a
+    // typed answer, because the answer arrives from a redirect back into the
+    // page and not from anything the visitor typed. Confirming the panel only
+    // files the question away.
+    apply: (data) => data,
+    value: (data) =>
+      data.portraitConnect?.outcome === 'connected'
+        ? data.portraitConnect.provider
+        : '',
+  },
+  {
     id: 'goal',
     phase: 'brief',
     step: 6,
@@ -677,6 +712,11 @@ export function applicableQuestions(data: DiscoveryData): IntakeQuestion[] {
  * are, where to send it, what you do, and one link. Everything a site needs
  * beyond that is asked once the client has a preview in front of them and a
  * reason to care.
+ *
+ * Counted over `required`, not over the phase, which is why the connect-photo
+ * offer can sit in the quick phase without moving this number. What the
+ * product decision is about is how many questions somebody must answer to get
+ * a preview, and a question with a Skip on it is not one of them.
  */
 export function quickRequiredCount(): number {
   return questionsInPhase('quick').filter((question) => question.required)

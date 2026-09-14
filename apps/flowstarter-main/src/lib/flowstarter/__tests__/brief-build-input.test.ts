@@ -40,6 +40,10 @@ function usable(overrides: Partial<UsableAsset> = {}): UsableAsset {
     originalName: null,
     createdAt: null,
     kind: 'portrait',
+    // A file the client sent, which is what every fixture here means. A
+    // sourced portrait carries the network it came from instead.
+    source: 'upload',
+    sourceUrl: null,
     ...overrides,
   };
 }

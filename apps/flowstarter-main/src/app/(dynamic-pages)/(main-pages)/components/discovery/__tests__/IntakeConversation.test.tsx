@@ -13,7 +13,8 @@
  * is answered with a refusal, which is the case the deterministic
  * recommendation is supposed to survive.
  *
- * The conversation is four questions long now. Everything that used to be
+ * The conversation is four questions long, plus one skippable offer of a
+ * photograph, which is why the walks below end in a skip. Everything that used to be
  * driven through it with a chip or a panel — the industry, the page count, the
  * commerce answer, the two commercial cards — is asked after the deposit and
  * is covered in `intake-brief-questions.test.ts` against the question objects.
@@ -75,6 +76,21 @@ async function say(user: User, text: string) {
   await user.type(composer, text);
   await user.click(
     screen.getByRole('button', { name: t('landing.discovery.chat.send') })
+  );
+}
+
+/**
+ * Declines the connect-photo offer, which is the fifth and only optional turn
+ * of the quick conversation and the last thing between the visitor and the
+ * preview. A panel, so there is no composer to type into: the way past it is
+ * the skip, and that it is one tap is the point of the question being
+ * optional at all. `ConnectPortrait.test.tsx` covers the panel itself.
+ */
+async function skipConnect(user: User) {
+  await user.click(
+    await screen.findByRole('button', {
+      name: t('landing.discovery.chat.skip'),
+    })
   );
 }
 
@@ -205,6 +221,9 @@ describe('the intake conversation', () => {
         websiteUrl: 'https://ionescu-dental.ro',
       })
     );
+    // One optional turn left: the connect-photo offer, on the same stage as
+    // the link it is about. Declining it is one tap and reaches the preview.
+    await skipConnect(user);
     expect(await screen.findByTestId('preview-stub')).toBeInTheDocument();
   });
 
@@ -475,13 +494,19 @@ describe('no way past the required questions', () => {
  * not changed is that `canProceed` is the gate, not the screen.
  */
 describe('the deposit, once there is a preview to price', () => {
-  it('reaches the preview in four answers and gates the deposit behind a plan', async () => {
+  it('reaches the preview in four answers and one declined offer, and gates the deposit behind a plan', async () => {
     const { user } = renderWizard();
 
     await say(user, 'Maria Ionescu');
     await say(user, 'maria@example.com');
     await say(user, 'A dental clinic in Cluj doing cosmetic work.');
     await say(user, 'instagram.com/ionescudental');
+    // Four answers, then the one thing the visitor is allowed to decline. The
+    // budget did not move: `quickRequiredCount` is still four, and a question
+    // with a skip on it is not one somebody has to answer. The declining is
+    // asserted here rather than assumed because it is the only way past a
+    // panel, and a panel with no way past it would be a dead end.
+    await skipConnect(user);
 
     // The script is spent, so the preview is what comes next — not a
     // seventeenth question, and not a price.

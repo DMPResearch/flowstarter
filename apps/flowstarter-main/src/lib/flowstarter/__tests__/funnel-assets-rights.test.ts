@@ -94,7 +94,12 @@ describe('confirmFetchedPictureRights', () => {
       userAgent: null,
       supabase: client as never,
     });
-    expect(calls['in:source']).toEqual(['instagram', 'linkedin', 'og']);
+    expect(calls['in:source']).toEqual([
+      'instagram',
+      'linkedin',
+      'github',
+      'og',
+    ]);
     expect(calls['in:source']).not.toContain('upload');
   });
 

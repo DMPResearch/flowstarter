@@ -113,6 +113,7 @@ export type Database = {
           caption: string | null
           created_at: string
           dominant_colors: string[] | null
+          fetched_at: string | null
           has_transparency: boolean | null
           height: number | null
           id: string
@@ -138,6 +139,7 @@ export type Database = {
           caption?: string | null
           created_at?: string
           dominant_colors?: string[] | null
+          fetched_at?: string | null
           has_transparency?: boolean | null
           height?: number | null
           id?: string
@@ -163,6 +165,7 @@ export type Database = {
           caption?: string | null
           created_at?: string
           dominant_colors?: string[] | null
+          fetched_at?: string | null
           has_transparency?: boolean | null
           height?: number | null
           id?: string
@@ -1141,6 +1144,7 @@ export type Database = {
           claimed_workspace_id: string | null
           created_at: string
           dominant_colors: string[] | null
+          fetched_at: string | null
           height: number | null
           id: string
           kind: string | null
@@ -1152,6 +1156,7 @@ export type Database = {
           rights_user_agent: string | null
           sha256: string | null
           source: string
+          source_url: string | null
           storage_path: string | null
           usable_for: string[]
           width: number | null
@@ -1161,6 +1166,7 @@ export type Database = {
           claimed_workspace_id?: string | null
           created_at?: string
           dominant_colors?: string[] | null
+          fetched_at?: string | null
           height?: number | null
           id?: string
           kind?: string | null
@@ -1172,6 +1178,7 @@ export type Database = {
           rights_user_agent?: string | null
           sha256?: string | null
           source?: string
+          source_url?: string | null
           storage_path?: string | null
           usable_for?: string[]
           width?: number | null
@@ -1181,6 +1188,7 @@ export type Database = {
           claimed_workspace_id?: string | null
           created_at?: string
           dominant_colors?: string[] | null
+          fetched_at?: string | null
           height?: number | null
           id?: string
           kind?: string | null
@@ -1192,6 +1200,7 @@ export type Database = {
           rights_user_agent?: string | null
           sha256?: string | null
           source?: string
+          source_url?: string | null
           storage_path?: string | null
           usable_for?: string[]
           width?: number | null
@@ -1438,6 +1447,74 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "ops_alerts_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      portrait_connections: {
+        Row: {
+          asset_id: string | null
+          created_at: string
+          display_name: string | null
+          fetched_at: string | null
+          funnel_asset_id: string | null
+          headline: string | null
+          id: string
+          picture_height: number | null
+          picture_url: string | null
+          picture_width: number | null
+          preview_id: string | null
+          provider: string
+          provider_account_id: string
+          rights_confirmed_at: string | null
+          rights_statement_version: string | null
+          updated_at: string
+          workspace_id: string | null
+        }
+        Insert: {
+          asset_id?: string | null
+          created_at?: string
+          display_name?: string | null
+          fetched_at?: string | null
+          funnel_asset_id?: string | null
+          headline?: string | null
+          id?: string
+          picture_height?: number | null
+          picture_url?: string | null
+          picture_width?: number | null
+          preview_id?: string | null
+          provider: string
+          provider_account_id: string
+          rights_confirmed_at?: string | null
+          rights_statement_version?: string | null
+          updated_at?: string
+          workspace_id?: string | null
+        }
+        Update: {
+          asset_id?: string | null
+          created_at?: string
+          display_name?: string | null
+          fetched_at?: string | null
+          funnel_asset_id?: string | null
+          headline?: string | null
+          id?: string
+          picture_height?: number | null
+          picture_url?: string | null
+          picture_width?: number | null
+          preview_id?: string | null
+          provider?: string
+          provider_account_id?: string
+          rights_confirmed_at?: string | null
+          rights_statement_version?: string | null
+          updated_at?: string
+          workspace_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "portrait_connections_workspace_id_fkey"
             columns: ["workspace_id"]
             isOneToOne: false
             referencedRelation: "workspaces"

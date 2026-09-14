@@ -41,6 +41,17 @@ export interface UsableAsset {
    * and a guess would put a stranger's face on it.
    */
   kind: string | null;
+  /**
+   * Where the bytes came from: `upload` for a file the client sent us, or the
+   * network we downloaded it from (`linkedin`, `instagram`, `github`, `og`).
+   *
+   * Read rather than assumed. A portrait sourced from somebody's own LinkedIn
+   * is not a file they uploaded, and the first question anybody asks when a
+   * rights complaint arrives is which of the two it was.
+   */
+  source: string;
+  /** The provider URL we downloaded it from, or null for an upload. */
+  sourceUrl: string | null;
 }
 
 /** The columns this module reads; `withTenant` is deliberately loosely typed. */
@@ -55,6 +66,8 @@ interface AssetRow {
   original_name: string | null;
   created_at: string | null;
   kind: string | null;
+  source: string | null;
+  source_url: string | null;
   rights_confirmed_at: string | null;
 }
 
@@ -65,7 +78,7 @@ export async function loadUsableAssets(
   const { data, error } = await withTenant(supabase, workspaceId)
     .from('assets')
     .select(
-      'id, storage_path, mime, width, height, usable_for, caption, original_name, created_at, kind, rights_confirmed_at'
+      'id, storage_path, mime, width, height, usable_for, caption, original_name, created_at, kind, source, source_url, rights_confirmed_at'
     )
     .not('rights_confirmed_at', 'is', null);
   if (error) throw error;
@@ -84,5 +97,7 @@ export async function loadUsableAssets(
       originalName: row.original_name,
       createdAt: row.created_at,
       kind: row.kind,
+      source: row.source ?? 'upload',
+      sourceUrl: row.source_url,
     }));
 }

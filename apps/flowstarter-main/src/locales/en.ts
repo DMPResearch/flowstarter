@@ -2316,6 +2316,77 @@ const en = {
   'landing.discovery.brand.consent.alt': 'Your profile picture',
   'landing.discovery.brand.pictureDone':
     'Got it. Your colours now come from your own picture.',
+
+  // ─── The portrait, from the client's own accounts ─────────────────────────
+  //
+  // Measured on 2026-09-13: LinkedIn and Instagram show an anonymous reader
+  // almost nothing, so the only way to a full size photograph is the person
+  // pressing a button themselves. This block is the copy for that offer, for
+  // the three automatic sources we try alongside it, and for the size verdict
+  // the rule reaches. The keys mirror the helpers in
+  // src/lib/flowstarter/portrait-source.ts so the rule and the sentence cannot
+  // drift apart: one rule, one string, looked up by the rule's own key.
+  'landing.discovery.chat.q.connectPortrait.prompt':
+    'One more, and it is optional. Connect LinkedIn or Instagram so the preview can use your photo, and I will put your face on the site instead of a placeholder.',
+  'landing.discovery.connect.title': 'Connect an account for your photo',
+  'landing.discovery.connect.note':
+    'We take your picture, your name and your headline, and nothing else. You can skip this and send us a photo later.',
+  'landing.discovery.connect.linkedin': 'Connect LinkedIn',
+  'landing.discovery.connect.instagram': 'Connect Instagram',
+  'landing.discovery.connect.unavailable': 'Not available yet',
+  'landing.discovery.connect.unavailableNote':
+    'This connection is not switched on yet. Skip it and we will ask you for a photo instead.',
+  'landing.discovery.connect.busy': 'Taking you there',
+  'landing.discovery.connect.connected':
+    'Got it. Your photo is on the preview.',
+  'landing.discovery.connect.cancelled':
+    'No problem. We will ask you for a photo instead.',
+  'landing.discovery.connect.failed':
+    'That did not come back to us. Skip it and we will ask you for a photo instead.',
+  'landing.discovery.connect.instagramPersonal':
+    'Instagram only opens this up for creator and business accounts. A personal account cannot be read at all, so LinkedIn or a photo is the way in.',
+  'landing.discovery.connect.skip': 'Skip this',
+
+  // What each source did, keyed by `portraitReasonCopyKey`. Every one of these
+  // is a sentence somebody reads, so each reason means one distinguishable
+  // thing and none of them says "something went wrong".
+  'portrait.reason.usable': 'we have your photo from here',
+  'portrait.reason.not_offered': 'you did not give us this one',
+  'portrait.reason.not_configured': 'this connection is not switched on yet',
+  'portrait.reason.not_connected': 'you have not connected this one',
+  'portrait.reason.no_picture': 'the account has no picture on it',
+  'portrait.reason.personal_account':
+    'Instagram only opens this up for creator and business accounts',
+  'portrait.reason.no_github_handle': 'nobody gave us a GitHub profile',
+  'portrait.reason.not_a_person':
+    'we found a picture, but nothing on the page says it is you',
+  'portrait.reason.not_public_url': 'that picture is not one we can fetch',
+  'portrait.reason.below_avatar_floor':
+    'that picture is too small to use anywhere',
+  'portrait.reason.size_unknown': 'we could not measure that picture',
+
+  // The size verdict, in plain words. This is what the brief shows next to the
+  // picture so the client can see what it is good for before they choose it.
+  'portrait.verdict.portrait': 'Big enough for the main photo on your site.',
+  'portrait.verdict.avatar':
+    'Small. We can use it as a round avatar next to your name, and we will not stretch it to fill anything bigger.',
+  'portrait.verdict.too_small': 'Too small to use anywhere on the site.',
+  'portrait.verdict.unknown': 'We could not measure this one.',
+
+  // The sources, named the way the client would name them.
+  'portrait.source.linkedin-openid': 'LinkedIn',
+  'portrait.source.instagram-login': 'Instagram',
+  'portrait.source.github-avatar': 'GitHub',
+  'portrait.source.website-about': 'your own site',
+  'portrait.source.instagram-public-og': 'your public Instagram page',
+
+  // The brief's Photos section, where the sourced portrait is offered.
+  'portrait.brief.found': 'We found a photo of you on',
+  'portrait.brief.use': 'Use this',
+  'portrait.brief.replace': 'Replace',
+  'portrait.brief.pending':
+    'We will not put this on your site until you tap Use this.',
+  'portrait.brief.inUse': 'This is the photo we will use.',
   'landing.discovery.preview.pane.section.hero': 'Opening',
   'landing.discovery.preview.pane.section.services': 'What you offer',
   'landing.discovery.preview.pane.section.menu': 'Menu',

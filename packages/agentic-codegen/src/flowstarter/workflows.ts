@@ -22,7 +22,7 @@ import {
   generateSiteAssets,
   type GeneratedAssetEntry,
 } from './generated-assets';
-import { listSiteImageSlots } from './site-media';
+import { CONTENT_FILES, listSiteImageSlots } from './site-media';
 import { assertSafeBusinessIntake } from './intake-guard';
 import type { TemplateLibrary } from './template-library-mcp';
 import {
@@ -77,6 +77,14 @@ import {
   describeBriefInput,
   type BriefInput,
 } from './brief-input';
+import {
+  buildPortraitFrom,
+  DEFAULT_PORTRAIT_EDGE,
+  describePortraitSlotIssue,
+  describePortraitSlotRepair,
+  findPortraitSlotFindings,
+  PORTRAIT_MISPLACED,
+} from './portrait-slot';
 import {
   stripPreviewTeaserFromFiles,
   TEASER_IN_PAID_BUILD,
@@ -2198,6 +2206,33 @@ export async function collectBuiltSiteText(
   return collectSiteTextFiles(siteRoot);
 }
 
+/**
+ * The template's own content files, read straight from the workspace.
+ *
+ * `collectBuiltSiteText` above prefers `dist/` as soon as a build has emitted
+ * one, and `dist/` is compiled HTML: it carries the image path but not the
+ * slot the path came from. The portrait rule is about slots (which section,
+ * which key), so when a build is holding a client photograph these two files
+ * join the scan. Missing files are an ordinary outcome: a template may ship
+ * only one of the two.
+ */
+async function readSiteContentFiles(
+  siteRoot: string,
+): Promise<Array<{ path: string; content: string }>> {
+  const files: Array<{ path: string; content: string }> = [];
+  for (const file of CONTENT_FILES) {
+    try {
+      files.push({
+        path: file,
+        content: await readFile(join(siteRoot, file), 'utf8'),
+      });
+    } catch {
+      /* a template may keep only one of the two files */
+    }
+  }
+  return files;
+}
+
 /** The most notes folded into one pass; a longer backlog waits for the next. */
 export const OPERATOR_NOTES_PER_PASS = 8;
 
@@ -2925,24 +2960,83 @@ export class FullSiteBuildWorker {
       // because the defect it catches is a specific stock image, not an
       // invented name.
       await phase('Checking for placeholder images');
-      let placeholderImages = findGatedPlaceholderImageFindings(
-        await builtSiteText(),
-      );
-      if (placeholderImages.length > 0) {
-        await say('log', describePlaceholderImageIssue(placeholderImages));
+      // The photograph this build was given, off the brief the job carries.
+      // With no portrait on the job every line below behaves exactly as it did
+      // before portraits existed; with one, the same phase also asks where the
+      // picture ended up, because "there may be no client photograph" stops
+      // being a defence the moment there is one. The floor mirrors
+      // `FLOWSTARTER_PORTRAIT_MIN_EDGE`, and the app is the source of truth.
+      const portrait = buildPortraitFrom(job.briefInput ?? null, {
+        portraitEdge: DEFAULT_PORTRAIT_EDGE,
+      });
+      // `builtSiteText()` rather than `collectBuiltSiteText(siteRoot)`: #136
+      // gave the build a contained output directory and that helper is what
+      // knows where it is. Reading the site root directly would scan the wrong
+      // place and find nothing, which is a gate that passes because it looked
+      // somewhere empty.
+      //
+      // The content files are added on top, because the placement rule reads
+      // the YAML the template renders from and the compiled output does not
+      // carry it. Only a build actually holding a portrait pays for that read.
+      const imageGateFiles = async () =>
+        portrait
+          ? [...(await builtSiteText()), ...(await readSiteContentFiles(siteRoot))]
+          : await builtSiteText();
+
+      let imageGateScan = await imageGateFiles();
+      let placeholderImages = findGatedPlaceholderImageFindings(imageGateScan);
+      let portraitSlots = findPortraitSlotFindings(imageGateScan, portrait);
+      if (placeholderImages.length > 0 || portraitSlots.length > 0) {
+        // Two defects, one timeline line each and one repair pass between
+        // them. Separate sentences because the remedies are opposites: #128's
+        // is "this picture is the template's, take it out", and this one is
+        // "this picture is the client's, it is in the wrong slot". One pass
+        // rather than two because a pass is an agent run, and a paid build
+        // should not pay twice for one round of corrections.
+        if (placeholderImages.length > 0) {
+          await say('log', describePlaceholderImageIssue(placeholderImages));
+        }
+        if (portrait && portraitSlots.length > 0) {
+          await say('log', describePortraitSlotIssue(portraitSlots, portrait));
+        }
+        const repairBrief = [
+          placeholderImages.length > 0
+            ? describePlaceholderImageRepair(placeholderImages)
+            : '',
+          portrait && portraitSlots.length > 0
+            ? describePortraitSlotRepair(portraitSlots, portrait)
+            : '',
+        ]
+          .filter(Boolean)
+          .join(' ');
+        // #128's label when #128's defect is present, so the timeline of a
+        // build with no portrait reads exactly as it did.
         await pass(
-          'Removing placeholder images',
-          withApproved(describePlaceholderImageRepair(placeholderImages)),
+          placeholderImages.length > 0
+            ? 'Removing placeholder images'
+            : 'Putting the client photograph in the right slot',
+          withApproved(repairBrief),
         );
         await check();
-        placeholderImages = findGatedPlaceholderImageFindings(
-          await builtSiteText(),
-        );
+        imageGateScan = await imageGateFiles();
+        placeholderImages = findGatedPlaceholderImageFindings(imageGateScan);
+        portraitSlots = findPortraitSlotFindings(imageGateScan, portrait);
       }
       if (placeholderImages.length > 0) {
         throw new FullSiteBuildFailure(
           PLACEHOLDER_IMAGE_SHIPPED,
           describePlaceholderImageIssue(placeholderImages),
+        );
+      }
+      if (portrait && portraitSlots.length > 0) {
+        // Its own failure code, because it is its own defect. The site is not
+        // wearing somebody else's stand-in; it is wearing the client's own
+        // face in a slot that will stretch it, or hiding that face behind
+        // template art while holding it. A cleaner cannot fix either one, so
+        // this fails the build rather than being swept out of the seed.
+        throw new FullSiteBuildFailure(
+          PORTRAIT_MISPLACED,
+          describePortraitSlotIssue(portraitSlots, portrait),
         );
       }
 

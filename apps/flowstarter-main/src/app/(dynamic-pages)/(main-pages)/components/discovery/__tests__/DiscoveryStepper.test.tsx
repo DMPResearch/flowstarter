@@ -100,7 +100,7 @@ describe('DiscoveryStepper', () => {
   it(
     'reads the same denominator as the questions-answered line while the ' +
       "scripted conversation runs, instead of the wizard's own 6 stages " +
-      '(readiness review: "Step 1 of 6" next to "0 of 4 questions answered")',
+      '(readiness review: "Step 1 of 6" next to a four-question line)',
     () => {
       render(
         <DiscoveryStepper
@@ -112,14 +112,26 @@ describe('DiscoveryStepper', () => {
         />
       );
 
+      // The bug this pins is the mismatch, not a particular number. The
+      // denominator has to be whatever `conversationProgress` says, because
+      // that is what the questions-answered line beside it says, and a visitor
+      // reading two different totals about the same conversation is the defect
+      // the readiness review found.
+      //
+      // Deliberately derived rather than hardcoded. The count moved from four
+      // to five when the optional connect-a-photo offer joined the quick
+      // phase, and a literal here would have failed for a change that is not a
+      // regression. The number that must not move is how many questions a
+      // visitor MUST answer, which is still four and is pinned by
+      // `quickRequiredCount` in intake-friction.test.ts.
       const { total } = conversationProgress(EMPTY_DISCOVERY, []);
-      expect(total).toBe(4);
+      expect(total).toBeGreaterThan(0);
       expect(STEPS.length).not.toBe(total);
 
       expect(
         screen.getByText(`Step 1 of ${total}: Your name`)
       ).toBeInTheDocument();
-      expect(screen.queryByText(/Step 1 of 6/)).toBeNull();
+      expect(screen.queryByText(`Step 1 of ${STEPS.length}`)).toBeNull();
     }
   );
 

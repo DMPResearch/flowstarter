@@ -570,6 +570,15 @@ export function PreviewStep({
           // confirm rights over something else: the server defaults the field
           // to false and confirms nothing without it.
           ...(data.brandPicture ? { useProfilePicture } : {}),
+          // A portrait the visitor connected at the links question sits under
+          // a namespace the wizard minted, because generation had not started
+          // yet and there was no preview id to file it against. Without this
+          // the claim carries every other funnel picture and leaves their face
+          // behind. No consent question rides on it: the connect action wrote
+          // the rights confirmation when they approved it at the provider.
+          ...(data.portraitPreviewId
+            ? { portraitPreviewId: data.portraitPreviewId }
+            : {}),
         }),
       });
       const json = (await res.json().catch(() => ({}))) as {

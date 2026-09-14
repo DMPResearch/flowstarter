@@ -170,6 +170,10 @@ const EVERY_QUESTION_ANSWERED = [
   ...ESSENTIALS_ANSWERED,
   'targetAudience',
   'links',
+  // The connect-photo offer, which is optional but still a question the
+  // script hands out, so "every question answered" has to include it or the
+  // graph is right to say the intake is not finished.
+  'connectPortrait',
   'brandTone',
   'pageCount',
   'timeline',
@@ -295,9 +299,13 @@ describe('resuming a conversation the server no longer remembers', () => {
  * intake. They are the wizard's deposit step now, asked against a finished
  * preview, because a price shown before there is anything to price is a number
  * the visitor has no way to judge. The graph walks the script's applicable
- * questions, which are scoped to the quick phase, so it cannot reach a panel
- * at all -- enforced by construction rather than by the graph remembering to
+ * questions, which are scoped to the quick phase, so it cannot reach either of
+ * them -- enforced by construction rather than by the graph remembering to
  * stop at one.
+ *
+ * It can reach a panel, though, which it could not when this suite was
+ * written: the connect-photo offer is a panel in the quick phase. So what is
+ * asserted below is which panel, not whether there is one.
  *
  * That the two are still panels, still carry their cards and are still never
  * phrased by a model is pinned in `script-bridge.test.ts` (`scriptedAsk`) and,
@@ -328,9 +336,10 @@ describe('the pricing panel', () => {
     });
 
     const asked: string[] = [];
+    const panels: string[] = [];
     for (let step = 0; step < 8 && turn.status !== 'complete'; step += 1) {
       asked.push(turn.ask!.questionId);
-      expect(turn.ask!.type).toBe('ask');
+      if (turn.ask!.type === 'panel') panels.push(turn.ask!.questionId);
       turn = await resumeIntakeGraph({
         threadId: turn.threadId,
         resume: { kind: 'text', text: 'instagram.com/ionescudental' },
@@ -340,6 +349,11 @@ describe('the pricing panel', () => {
     expect(turn.status).toBe('complete');
     expect(asked).not.toContain('selectedTier');
     expect(asked).not.toContain('subscription');
+    // The quick phase holds one panel now -- the connect-photo offer -- so
+    // "no panel ever appears" is no longer the right guard and would pass for
+    // the wrong reason if the two prices moved back. The guard is that the
+    // only panel the pre-preview conversation can reach is that one.
+    expect(panels).toEqual(['connectPortrait']);
   }, 60_000);
 });
 

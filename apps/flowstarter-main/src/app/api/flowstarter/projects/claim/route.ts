@@ -73,6 +73,16 @@ const ClaimSchema = z.object({
    * a missing key.
    */
   useProfilePicture: z.boolean().optional().default(false),
+  /**
+   * The namespace a connected LinkedIn or Instagram portrait was filed under.
+   *
+   * Minted by the wizard, because the connect round trip happens at the links
+   * question and there is no server-issued preview id yet. It is a lookup key
+   * and not a capability: the picture behind it already carries its own rights
+   * confirmation, written by the connect action, and the worst a wrong id can
+   * do is carry nothing.
+   */
+  portraitPreviewId: z.string().uuid().optional(),
   goal: z.string().max(400).optional().default(''),
   brandTone: z.string().max(400).optional().default(''),
   // Scope answers. These exist here only so the routing classifier can be
@@ -188,6 +198,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       ...(spec.subscription ? { subscriptionPlan: spec.subscription } : {}),
       ...(spec.billingCadence ? { billingCadence: spec.billingCadence } : {}),
       useProfilePicture: spec.useProfilePicture,
+      ...(spec.portraitPreviewId
+        ? { portraitPreviewId: spec.portraitPreviewId }
+        : {}),
       rightsStatementVersion: CURRENT_RIGHTS_STATEMENT_VERSION,
       clientIp: clientIp(request),
       clientUserAgent: request.headers.get('user-agent'),
