@@ -21,7 +21,7 @@ import 'server-only';
 import { publicAppOrigin } from '@flowstarter/platform-config';
 import { resolveOperatorNotifyEmail, sendEmail } from '@/lib/email';
 import { screenAcceptableUse } from '@/lib/policy/gate';
-import type { PolicyLocale } from '@/lib/policy/copy';
+import type { PolicyLocale, PolicyNotice } from '@/lib/policy/copy';
 import { intakeSubject } from '@/lib/policy/subject';
 import {
   customWorkEnquiryEmail,
@@ -44,13 +44,20 @@ import {
 import {
   decideRoute,
   scopeOfferCopy,
+  HOLD_COPY,
   type AcceptableUse,
   type Scope,
   type ScopeAnswer,
   type ScopeOfferCopy,
   type ScopeRoute,
 } from './scope-route';
-import { CLEAN_CATEGORY, type PolicyRule } from '@/lib/policy/acceptable-use';
+import {
+  CLEAN_CATEGORY,
+  classifierUnavailable,
+  reviewNamesCategory,
+  type PolicyRule,
+  type PolicyVerdict,
+} from '@/lib/policy/acceptable-use';
 import { recordPolicyOutcome } from '@/lib/policy/review';
 import { createHash } from 'node:crypto';
 
@@ -128,6 +135,14 @@ export interface ScopeGateResult {
   bookingUrl?: string | null;
   /** The filed lead, when one was filed. */
   leadId?: string | null;
+  /**
+   * The policy notice, on `refused` and `hold` only.
+   *
+   * Carried so the funnel can say the true sentence at the point it stops,
+   * rather than routing the visitor onward to a step that would screen again
+   * to rediscover it. `@/lib/policy/copy` still writes every word of it.
+   */
+  notice?: PolicyNotice | null;
 }
 
 /**
@@ -186,7 +201,7 @@ export async function readLinkTitle(
 async function screenedVerdict(
   input: ScopeGateInput,
   linkTitle: string
-): Promise<AcceptableUse> {
+): Promise<{ acceptableUse: AcceptableUse; notice: PolicyNotice | null }> {
   const screening = await screenAcceptableUse({
     surface: 'preview',
     text: intakeSubject({
@@ -198,9 +213,33 @@ async function screenedVerdict(
     }),
     locale: input.locale,
   });
-  if (screening.verdict.decision === 'refuse') return 'blocked';
-  if (screening.verdict.decision === 'review') return 'review';
-  return 'allowed';
+  // The notice travels with the verdict so a `refused` or `hold` route can
+  // show the visitor the real sentence here, instead of routing them to the
+  // preview step and having it screen again to rediscover the same answer.
+  // `@/lib/policy/copy` is still the only place that WRITES it.
+  return {
+    acceptableUse: acceptableUseFrom(screening.verdict),
+    notice: screening.notice ?? null,
+  };
+}
+
+/**
+ * One `PolicyVerdict`, narrowed onto the four things the routing table needs.
+ *
+ * The one place the policy's vocabulary and the funnel's meet, exported so
+ * the table-driven test can replay a verdict through both halves without a
+ * classifier. The narrowing is where the 2026-09-15 defect lived: `review`
+ * collapsed three unrelated facts into one value, and the route table could
+ * only act on the word.
+ */
+export function acceptableUseFrom(verdict: PolicyVerdict): AcceptableUse {
+  if (verdict.decision === 'refuse') return 'blocked';
+  if (verdict.decision !== 'review') return 'allowed';
+  // Order matters: a classifier that never answered has no category either,
+  // so the unavailable check has to come first or every hold would be read as
+  // a merely-unsure review and fall through to the scope rules.
+  if (classifierUnavailable(verdict)) return 'hold';
+  return reviewNamesCategory(verdict) ? 'review' : 'unsettled';
 }
 
 function boardUrl(): string {
@@ -342,8 +381,10 @@ export async function runScopeGate(
    * `screenAcceptableUse` never throws and its classifier is cached by content
    * hash, so the second screen the preview route runs is free.
    */
-  const acceptableUse =
-    input.acceptableUse ?? (await screenedVerdict(input, linkTitle));
+  const screened = input.acceptableUse
+    ? { acceptableUse: input.acceptableUse, notice: null }
+    : await screenedVerdict(input, linkTitle);
+  const acceptableUse = screened.acceptableUse;
 
   const classifierText = scopeClassifierText({
     fullName: input.fullName,
@@ -393,6 +434,24 @@ export async function runScopeGate(
   }
   if (decision.route === 'self-serve') {
     return base;
+  }
+  if (decision.route === 'hold') {
+    // Deliberately before the booking branch below, and returning with no
+    // `bookingUrl` and no `leadId`. A held brief has been read by nobody, so
+    // there is nothing to sell against and nobody to email: `fileCustomWorkLead`
+    // would put a stranger's name and address in a lead row and a prefilled
+    // calendar link in their inbox on the strength of a classifier timeout.
+    //
+    // No `policy_reviews` row is written here either, because one already
+    // exists: `screenAcceptableUse` above writes it for every blocking
+    // verdict, and `classifier_unavailable` is one.
+    return { ...base, offerCopy: HOLD_COPY, notice: screened.notice };
+  }
+  if (decision.route === 'refused') {
+    // Same shape, different sentence, and the same two absences that matter:
+    // no `bookingUrl` and no lead row. The notice is the one `@/lib/policy`
+    // already wrote for this verdict, in the visitor's own language.
+    return { ...base, notice: screened.notice };
   }
 
   const bookingUrl = discoveryCallBookingUrl({

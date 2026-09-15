@@ -9,7 +9,18 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  CLEAN_CATEGORY,
+  categoryById,
+  type PolicyCategory,
+  type PolicyRule,
+} from '@/lib/policy/acceptable-use';
+
 vi.mock('server-only', () => ({}));
+
+/** A real sensitive-but-lawful category, so a `review` stub means something. */
+const LEGAL_CANNABIS: PolicyCategory =
+  categoryById('legal_cannabis') ?? CLEAN_CATEGORY;
 
 interface SentEmail {
   to: string;
@@ -34,13 +45,32 @@ vi.mock('@/lib/email', () => ({
  * what the scope gate does with each answer.
  */
 const policyDecision = { value: 'allow' as 'allow' | 'review' | 'refuse' };
+/**
+ * The category and rule the stubbed verdict carries.
+ *
+ * Both matter as of 2026-09-15, and a stub that omitted them was hiding the
+ * distinction this gate now turns on. `review` is three different facts --
+ * a tier named a sensitive category, a tier named nothing, or no tier
+ * answered at all -- and the routing table sends them three different ways.
+ * A mock that answers `{ decision: 'review' }` and nothing else is asking
+ * this suite to assert on a case the product cannot actually produce.
+ *
+ * Defaults to the realistic shape for a sensitive-but-lawful review, which
+ * is what most of the `review` cases below mean.
+ */
+const policyCategory = { value: LEGAL_CANNABIS };
+const policyRule = { value: 'sensitive_lawful' as PolicyRule };
 interface ScreenCall {
   surface: string;
   text: string;
   locale?: string;
 }
 const screenAcceptableUse = vi.fn(async (_input: ScreenCall) => ({
-  verdict: { decision: policyDecision.value },
+  verdict: {
+    decision: policyDecision.value,
+    category: policyCategory.value,
+    rule: policyRule.value,
+  },
   blocked: policyDecision.value !== 'allow',
   notice: null,
   reviewId: null,
@@ -152,6 +182,8 @@ beforeEach(() => {
   noNetwork.read.mockClear();
   screenAcceptableUse.mockClear();
   policyDecision.value = 'allow';
+  policyCategory.value = LEGAL_CANNABIS;
+  policyRule.value = 'sensitive_lawful';
   process.env.CAL_BASE_URL = 'https://cal.flowstarter.dev';
 });
 
@@ -275,8 +307,10 @@ describe('the acceptable-use gate, ahead of the scope classification', () => {
     policyDecision.value = 'refuse';
     const result = await runScopeGate(BRIEF, noNetwork);
     // Not the discovery call: a business we will not build for must not be
-    // invited to a sales call. The preview route writes the actual refusal.
-    expect(result.route).toBe('self-serve');
+    // invited to a sales call. And not `self-serve` either, which would hand
+    // it to the step that starts a generation and trust a second, differently
+    // composed classifier call to stop it.
+    expect(result.route).toBe('refused');
     expect(result.rule).toBe('acceptableUseRefused');
     expect(insertedRows).toHaveLength(0);
     expect(sendEmail).not.toHaveBeenCalled();

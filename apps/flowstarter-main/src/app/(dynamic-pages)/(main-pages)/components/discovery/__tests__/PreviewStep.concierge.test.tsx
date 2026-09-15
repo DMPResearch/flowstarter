@@ -541,6 +541,10 @@ describe('the acceptable-use refusal', () => {
           next: 'If we have read your business wrong, tell us what you do and a person will look at it.',
           termsHref: '/terms#acceptable-use',
           contactHref: '/contact',
+          // The link words come from the notice too, so a Romanian refusal
+          // is not read under two English links. See `PolicyNotice`.
+          termsLabel: 'Read the acceptable use section of our terms',
+          contactLabel: 'Talk to a person',
           decision: 'refuse',
           categoryId: 'sexual_services',
         },

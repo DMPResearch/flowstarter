@@ -120,6 +120,11 @@ export async function screenAcceptableUse(
     notice: noticeFor({
       decision: verdict.decision,
       category: verdict.category,
+      // So a hold reads as a hold. Without the rule, a visitor whose
+      // classification timed out is told their business sits close to the
+      // acceptable-use policy, which is a sentence about a business nothing
+      // managed to read.
+      rule: verdict.rule,
       locale: input.locale,
     }),
     reviewId,

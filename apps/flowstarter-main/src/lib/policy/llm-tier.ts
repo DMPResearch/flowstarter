@@ -66,7 +66,10 @@ function tidyEvidence(raw: string): string {
  * A failed tier, as a classification. It carries `failed` so the rule layer
  * applies the fail-closed rule rather than reading a fabricated `none`.
  */
-export function unavailableClassification(evidence: string): LlmTierResult {
+export function unavailableClassification(
+  evidence: string,
+  failureReason = evidence
+): LlmTierResult {
   return {
     categoryId: CLEAN_CATEGORY_ID,
     confidence: 0,
@@ -74,6 +77,7 @@ export function unavailableClassification(evidence: string): LlmTierResult {
     needsHuman: true,
     tier: 'unavailable',
     failed: true,
+    failureReason,
     promptVersion: ACCEPTABLE_USE_PROMPT_VERSION,
     costEstimateUsd: null,
     model: null,
@@ -147,7 +151,6 @@ export async function classifyWithLlm(
 
     const answer = result.object;
     const known = categoryById(answer.category);
-    noteClassifierSuccess(ACCEPTABLE_USE_CLASSIFIER_HEALTH_KEY);
     return {
       // An id outside the policy's own list is passed through verbatim. The
       // rule layer recognises it as unknown and routes to review; rewriting it
@@ -164,14 +167,27 @@ export async function classifyWithLlm(
   } catch (error) {
     // The submission itself is never logged. The caller logs the evidence
     // hash; this line says only that the tier could not answer.
-    const reason = error instanceof Error ? error.message : 'unknown error';
+    //
+    // `signal.reason` first: when this call is the sigma cascade's injected
+    // tier, the thing that killed it is usually that cascade's own budget,
+    // and `@flowstarter/sigma-core` now aborts with a
+    // `TierBudgetExpiredError` naming the head and the budget. A bare
+    // "This operation was aborted" -- which is all staging's log line said on
+    // 2026-09-15 -- does not tell an operator whose budget expired.
+    const cause = signal.reason;
+    const reason =
+      cause instanceof Error
+        ? `${cause.name}: ${cause.message}`
+        : error instanceof Error
+        ? error.message
+        : 'unknown error';
     console.warn(
       `[policy] acceptable-use classifier unavailable (surface=${input.surface})`,
       reason
     );
-    await alertIfDown(reason);
     return unavailableClassification(
-      'The classifier could not be reached for this submission.'
+      'The classifier could not be reached for this submission.',
+      reason
     );
   }
 }
@@ -182,6 +198,11 @@ export async function classifyWithLlm(
  * classifier's count (`SCOPE_CLASSIFIER_HEALTH_KEY`), or the other way round.
  */
 export const ACCEPTABLE_USE_CLASSIFIER_HEALTH_KEY = 'acceptable_use';
+
+/** A classification really landed. The run of failures, if any, is over. */
+export function noteAcceptableUseClassifierSuccess(): void {
+  noteClassifierSuccess(ACCEPTABLE_USE_CLASSIFIER_HEALTH_KEY);
+}
 
 /**
  * Tell an operator once the failures stop looking like a blip.
@@ -194,14 +215,31 @@ export const ACCEPTABLE_USE_CLASSIFIER_HEALTH_KEY = 'acceptable_use';
  * failure. `[policy] acceptable-use classifier unavailable` in a log nobody
  * is tailing is not an alert.
  *
- * Awaited rather than fired and forgotten, unlike the scope head's: this call
- * is already inside the failure path of a request that is about to return a
- * review, the counter has to be incremented before the next classification
- * reads it, and `sendOpsAlert` does not throw. The try/catch is here because
- * the dynamic import itself can fail where Supabase is not configured, and an
- * alert failing is never a reason for a classification to fail differently.
+ * Awaited rather than fired and forgotten, unlike the scope head's: the
+ * counter has to be incremented before the next classification reads it, and
+ * `sendOpsAlert` does not throw. The try/catch is here because the dynamic
+ * import itself can fail where Supabase is not configured, and an alert
+ * failing is never a reason for a classification to fail differently.
+ *
+ * ── Why the caller counts, and not this module ───────────────────────────
+ * This used to be called from `classifyWithLlm`'s own catch block, which is
+ * the wrong altitude for two reasons, both of which cost us on 2026-09-15.
+ *
+ * First, the count was wrong. `classifyWithLlm` runs BOTH as the cascade's
+ * injected tier and as the standalone fallback, so one submission could
+ * report two failures, and a failure the cascade had already abandoned still
+ * incremented a counter nothing was reading.
+ *
+ * Second and worse, a run of failures is per SUBMISSION, not per model call.
+ * `classifyAcceptableUse` is the only layer that sees whether the submission
+ * as a whole ended up classified, and it is the only layer that can see a
+ * cascade whose deciding tier died without the model call itself throwing.
+ * So the accounting moved up there, where success and failure are one
+ * decision instead of two.
  */
-async function alertIfDown(reason: string): Promise<void> {
+export async function noteAcceptableUseClassifierFailure(
+  reason: string
+): Promise<void> {
   const { consecutiveFailures, shouldAlert } = noteClassifierFailure(
     ACCEPTABLE_USE_CLASSIFIER_HEALTH_KEY
   );

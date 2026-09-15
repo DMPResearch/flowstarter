@@ -195,7 +195,7 @@ describe('decide: a broken classifier', () => {
       classification({ tier: 'unavailable', failed: true, confidence: 0 })
     );
     expect(verdict.decision).toBe('review');
-    expect(verdict.rule).toBe('classifier_failed_closed');
+    expect(verdict.rule).toBe('classifier_unavailable');
     expect(verdict.needsHuman).toBe(true);
   });
 

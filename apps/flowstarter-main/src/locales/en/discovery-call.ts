@@ -58,6 +58,25 @@ export const discoveryCallKeys = {
   'landing.discovery.scope.review.body':
     'We could not tell from your answers whether this is a site that presents your business or software built for it, and the two are different pieces of work with different prices. Rather than guess and build you the wrong one, we would rather ask.',
 
+  /**
+   * ── The hold ─────────────────────────────────────────────────────────────
+   * Shown when nothing could classify the brief: the acceptable-use tier
+   * timed out, threw, or is down and we fail closed.
+   *
+   * Deliberately NOT the review copy above. That copy tells a visitor we
+   * could not settle what they described, which is a statement about their
+   * brief; this situation is a statement about US, and saying otherwise
+   * would blame a florist for our own timeout. It also names no category and
+   * makes no accusation, because no classifier reached one.
+   *
+   * There is no CTA. The next move is ours.
+   */
+  'landing.discovery.scope.hold.title': 'We are still checking this one',
+  'landing.discovery.scope.hold.body':
+    'Our automatic check did not finish on your brief, so rather than guess we have passed it to a person to read. Nothing has been charged and nothing has been built yet.',
+  'landing.discovery.scope.hold.next':
+    'We usually come back the same working day, to the email address you gave us.',
+
   'landing.discovery.scope.offer.cta': 'Pick a time',
   'landing.discovery.scope.offer.prefilled':
     'Your name and email are already filled in.',

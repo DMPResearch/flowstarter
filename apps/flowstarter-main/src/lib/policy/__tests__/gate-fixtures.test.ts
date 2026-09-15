@@ -373,7 +373,7 @@ describe('a classifier outage', () => {
     });
 
     expect(screening.verdict.decision).toBe('review');
-    expect(screening.verdict.rule).toBe('classifier_failed_closed');
+    expect(screening.verdict.rule).toBe('classifier_unavailable');
     expect(screening.blocked).toBe(true);
   });
 });

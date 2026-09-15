@@ -335,6 +335,52 @@ export interface PolicyLimits {
   /** Wall-clock ceiling for one classifier call. A timeout is a failure. */
   timeoutMs: number;
   /**
+   * Wall-clock ceiling for the LLM tier when it runs INSIDE the sigma
+   * cascade, as that cascade's injected second tier.
+   *
+   * It needs its own number, and giving it one is the fix for the
+   * 2026-09-15 defect. `@flowstarter/sigma-core`'s cascade applies
+   * `DEFAULT_TIER_BUDGET_MS` (3 s) to any injected tier whose caller does not
+   * say otherwise, and that default is sized for a LOCAL tier. We inject a
+   * paid `openai/gpt-4o-mini` call and said nothing, so switching the
+   * embedding tier on silently replaced {@link PolicyLimits.timeoutMs} (15 s)
+   * with 3 s for the same call — a 5x cut with nothing in either diff to show
+   * it.
+   *
+   * ── Why 12 s ──────────────────────────────────────────────────────────
+   * Measured 2026-09-15 against OpenRouter with the real system prompt, at
+   * temperature 0 and the real 300-token output cap, 25 samples per brief:
+   *
+   *                              min /  p50 / p50b /  max
+   *   the drugs/firearms brief   706 /  802 / 1953 / 2237 ms
+   *   the Romanian adult brief   680 /  748 /  805 /  872 ms
+   *
+   *   (p50b is the median of a second run an hour earlier; the model's
+   *    latency on this prompt is bimodal, which is the whole story below.)
+   *
+   * The model call alone therefore reaches 2.2 s, or roughly 75% of the old
+   * 3 s budget, and that is before `callLlmObject` spends any of the same
+   * budget on the work it wraps the call in: a `prepare()` workspace-cap read
+   * and a `settle()` insert, both against `llm_usage`, both real round trips,
+   * and both against a HOSTED Supabase on staging rather than a local one.
+   * Two 300 ms round trips on top of a 2.2 s call is 2.8 s, and the next slow
+   * moment at the provider crosses the line.
+   *
+   * That is the asymmetry staging recorded and it is not a coincidence: the
+   * drugs brief measured 2.4x the adult brief's median latency and 2.6x its
+   * maximum, so the budget bit on the one and held on the other. The adult
+   * brief was refused correctly at `refuse|adult_content|0.900|llm`. The
+   * drugs brief timed out and reached `self-serve` three times.
+   *
+   * 12 s is ~5x the measured worst case, leaves the two ledger round trips
+   * ample room, and still sits 3 s INSIDE `timeoutMs`, so when a call really
+   * is hung it is the cascade's budget that fires first. That ordering
+   * matters: the cascade is the layer that now records `tier:*:timeout` in
+   * the trace, and a verdict that dies on the outer signal instead would
+   * leave nothing behind to alert on.
+   */
+  llmTierBudgetMs: number;
+  /**
    * The ceiling on how much of a built site the post-build scan reads. A site
    * is far larger than any submission, so the scan reads a bounded, ordered
    * sample rather than the whole tree.
@@ -350,6 +396,7 @@ export const DEFAULT_LIMITS: PolicyLimits = {
   spendWindowMs: 6 * 60 * 60 * 1000,
   cacheMaxEntries: 500,
   timeoutMs: 15_000,
+  llmTierBudgetMs: 12_000,
   scanMaxChars: 60_000,
 };
 
@@ -390,6 +437,10 @@ export function policyLimits(): PolicyLimits {
     timeoutMs: envInteger(
       'ACCEPTABLE_USE_TIMEOUT_MS',
       DEFAULT_LIMITS.timeoutMs
+    ),
+    llmTierBudgetMs: envInteger(
+      'ACCEPTABLE_USE_LLM_TIER_BUDGET_MS',
+      DEFAULT_LIMITS.llmTierBudgetMs
     ),
     scanMaxChars: envInteger(
       'ACCEPTABLE_USE_SCAN_MAX_CHARS',
@@ -433,6 +484,22 @@ export interface PolicyClassification {
   /** True when no tier could answer at all (error, timeout, no key). */
   failed?: boolean;
   /**
+   * Why, in the machine's words, when `failed` is set.
+   *
+   * Separate from `evidence` because the two have different readers and
+   * different rules. `evidence` is a sentence an operator reads on a review
+   * card, and for a failure it says the same bland thing every time. This is
+   * the provider's own message -- a 429, a connection reset, a
+   * `TierBudgetExpiredError` naming the head and the budget -- and it is what
+   * goes in the outage alert, where "the classifier could not be reached" is
+   * useless and "TierBudgetExpiredError: tier for acceptable_use exceeded its
+   * 12000ms budget" tells an operator what to change.
+   *
+   * Never contains the submission: it is built from error names and messages
+   * only, the same discipline the sigma trace follows.
+   */
+  failureReason?: string;
+  /**
    * An action a tier has ALREADY decided, on its own calibrated bands.
    *
    * Set only by the sigma tier, and only when one of its tiers really produced
@@ -460,7 +527,18 @@ export type PolicyRule =
   | 'prohibited_below_floor'
   | 'sensitive_lawful'
   | 'sensitive_below_floor'
-  | 'classifier_failed_closed'
+  /**
+   * No tier could answer, and we fail closed.
+   *
+   * Named for what happened rather than for the branch that caught it (it
+   * was `classifier_failed_closed` until 2026-09-15). The old name described
+   * our own reaction; an operator reading the board needs the fact, which is
+   * that nothing classified this brief. The rename also makes the row
+   * greppable against the one thing that must never be true of it: a brief
+   * filed under this rule has NOT been read by any classifier, so nothing
+   * downstream may treat its `review` as evidence about the text.
+   */
+  | 'classifier_unavailable'
   | 'classifier_failed_open'
   | 'unknown_category'
   /**
@@ -535,7 +613,7 @@ export function decide(
       decision: closed ? 'review' : 'allow',
       category: CLEAN_CATEGORY,
       confidence: 0,
-      rule: closed ? 'classifier_failed_closed' : 'classifier_failed_open',
+      rule: closed ? 'classifier_unavailable' : 'classifier_failed_open',
       tier,
       needsHuman: true,
     };
@@ -667,4 +745,55 @@ export function decide(
 /** True when the verdict stops the flow. Read at every enforcement point. */
 export function blocks(verdict: PolicyVerdict): boolean {
   return verdict.decision !== 'allow';
+}
+
+/**
+ * True when this verdict is "we could not classify this", not "we classified
+ * it and a person should look".
+ *
+ * ── Why this is a function and not a comparison at each call site ─────────
+ * Three layers have to agree on the answer: the routing rule (which must send
+ * these to a hold rather than to a preview), the copy layer (which must not
+ * tell a visitor their business "sits close to our acceptable-use policy"
+ * when no classifier ever read it), and the operator board. Three copies of
+ * `rule === 'classifier_unavailable'` is three chances for one of them to
+ * miss the next rule that belongs in this set.
+ *
+ * The distinction it draws is the whole of the 2026-09-15 fix. A `review`
+ * from `sensitive_lawful` is a verdict: a tier read the brief, named
+ * `licensed_pharmacy`, and a person checks the licence. A `review` from this
+ * set is the absence of a verdict, and the two must not share a destination
+ * just because they share a word.
+ */
+export function classifierUnavailable(verdict: PolicyVerdict): boolean {
+  return verdict.rule === 'classifier_unavailable';
+}
+
+/**
+ * True when a `review` verdict names a real acceptable-use category.
+ *
+ * A review WITH a category (`sensitive_lawful`, `prohibited_uncertain`) is a
+ * statement about the business, and #180's routing stands: the visitor
+ * carries on to a self-serve preview and an operator reads the row.
+ *
+ * A review WITHOUT one (`needs_human_flag`, `clean_but_abstained`,
+ * `unknown_category`) says only that the classifier was not sure enough to
+ * call it clean. That is not a statement about the business at all, and it
+ * must not be allowed to override what the SCOPE head decided — which is why
+ * "I need a website for my business." still gets its one clarifying question
+ * rather than being swallowed by the acceptable-use branch.
+ */
+export function reviewNamesCategory(verdict: PolicyVerdict): boolean {
+  // `category` is optional-chained on purpose. This predicate is read by the
+  // routing layer, which is reached from six enforcement points and from
+  // tests that build a verdict by hand; a missing category must answer the
+  // question ("does this review name one?") with `false` rather than throw
+  // inside a gate. No category present is, precisely, no category named.
+  const category = verdict.category as PolicyCategory | undefined;
+  return (
+    verdict.decision === 'review' &&
+    !!category &&
+    category.disposition !== 'clean' &&
+    category.id !== CLEAN_CATEGORY_ID
+  );
 }

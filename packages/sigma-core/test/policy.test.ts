@@ -42,6 +42,7 @@ function trace(head: Partial<HeadTrace<Label>>): DecisionTrace {
         semanticAbstained: false,
         injectedAttempted: false,
         injectedAbstained: false,
+        injectedOutcome: null,
         evidence: null,
         timings: { semanticMs: 1, injectedMs: 0 },
         ...head,
