@@ -52,9 +52,29 @@ async function loadFixtures() {
     target: 'node20',
     outfile: tmp,
     logLevel: 'error',
+    // The fixtures reach for the six personas in `src/test/fixtures`, the
+    // same people the rest of the suite uses, and those are imported through
+    // the app's `@` alias. Vitest resolves it from `vitest.config.mts`;
+    // esbuild has to be told. Nothing heavy comes with them: the persona file
+    // imports one leaf logic module and one type.
+    alias: { '@': path.join(appRoot, 'src') },
   });
   return import(pathToFileURL(tmp).href);
 }
+
+/**
+ * Two widths, because they are two different designs.
+ *
+ * 640 is the desktop reading pane: the shell sits at its full 600 and the
+ * card keeps its 36px padding. 390 is an iPhone, which is under the 620px
+ * breakpoint, so the shell goes fluid, the card's padding comes in, and the
+ * letterhead's queue line has to survive being squeezed against the
+ * wordmark. A design checked only at 640 has not been checked.
+ */
+const WIDTHS = [
+  { label: '600', viewport: 640 },
+  { label: '390', viewport: 390 },
+];
 
 async function screenshot(entries) {
   const { chromium } = await import('playwright');
@@ -62,22 +82,24 @@ async function screenshot(entries) {
   // Chrome is what the design gallery screenshots use too.
   const browser = await chromium.launch({ channel: 'chrome' });
   try {
-    for (const scheme of ['light', 'dark']) {
-      const context = await browser.newContext({
-        viewport: { width: 640, height: 1200 },
-        deviceScaleFactor: 2,
-        colorScheme: scheme,
-      });
-      const page = await context.newPage();
-      for (const { name } of entries) {
-        const file = path.join(outDir, `${name}.html`);
-        await page.goto(pathToFileURL(file).href, { waitUntil: 'load' });
-        await page.screenshot({
-          path: path.join(shotDir, `${name}.${scheme}.png`),
-          fullPage: true,
+    for (const { label, viewport } of WIDTHS) {
+      for (const scheme of ['light', 'dark']) {
+        const context = await browser.newContext({
+          viewport: { width: viewport, height: 1200 },
+          deviceScaleFactor: 2,
+          colorScheme: scheme,
         });
+        const page = await context.newPage();
+        for (const { name } of entries) {
+          const file = path.join(outDir, `${name}.html`);
+          await page.goto(pathToFileURL(file).href, { waitUntil: 'load' });
+          await page.screenshot({
+            path: path.join(shotDir, `${name}.${label}.${scheme}.png`),
+            fullPage: true,
+          });
+        }
+        await context.close();
       }
-      await context.close();
     }
   } finally {
     await browser.close();

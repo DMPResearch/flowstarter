@@ -12,11 +12,20 @@
  * is plain HTML unless `EMAIL_ASSET_BASE_URL` is explicitly set. See
  * `wordmarkHtml` below.
  *
- * What the design system contributes is the palette and the restraint, not the
- * CSS. Cream page, white card, ink text, and indigo used exactly once per
- * email, on the button. No gradients, no second accent, no decorative images:
- * the same rulings that govern the product's surfaces, applied to the one
- * surface we cannot style twice.
+ * What the design contributes is the palette, the type and the restraint, not
+ * the CSS. Every colour, size and measurement comes from `./design`, so the
+ * tests can read the same values the renderer does and fail on a literal
+ * typed into a style attribute. Cream field, white card, ink text, indigo as
+ * an accent rather than a wash. No gradients, no second accent, no
+ * decorative images: the same rulings that govern the product's surfaces,
+ * applied to the one surface we cannot style twice.
+ *
+ * The one thing that is not inherited from the product is the display face.
+ * A transactional message is correspondence, so headings, the standfirst and
+ * anything quoted back to the reader are set in a text serif and the body is
+ * set in the platform's own humanist sans. The serif costs no request: see
+ * `emailFontFace` in `./design` for why there is a single `@font-face` in
+ * this system and why it fetches nothing.
  *
  * Templates never write HTML. They describe an email as a list of blocks and
  * this module renders both halves of it, the HTML and the plain-text
@@ -26,42 +35,20 @@
  * Escaping happens here too, for the same reason, so no template can forget
  * it.
  */
+import {
+  EMAIL_COLORS,
+  EMAIL_FONTS,
+  EMAIL_LAYOUT,
+  EMAIL_TYPE,
+  emailFontFace,
+} from './design';
 
-/** Light and dark are the same design with different ink. Both pass AA. */
-export const EMAIL_COLORS = {
-  light: {
-    page: '#fbf7ef',
-    card: '#ffffff',
-    ink: '#120a22',
-    inkDim: '#565073',
-    rule: '#e8e1d3',
-    panel: '#f7f3ea',
-    quoteRule: '#c9c0ad',
-    accent: '#2d40d2',
-    accentInk: '#ffffff',
-  },
-  dark: {
-    page: '#040308',
-    card: '#100e1c',
-    ink: '#f4eee4',
-    inkDim: '#b4afac',
-    rule: '#241f38',
-    panel: '#191527',
-    quoteRule: '#494068',
-    accent: '#8e99eb',
-    accentInk: '#ffffff',
-    button: '#4e5fda',
-  },
-} as const;
+export { EMAIL_COLORS, EMAIL_LAYOUT, EMAIL_TYPE, EMAIL_FONTS } from './design';
 
-/**
- * Onest is the product's face and no mail client has it. Asking for a webfont
- * would cost a network request, leak a read, and be ignored by Outlook
- * anyway, so the stack is the one every platform already has.
- */
-const FONT_STACK =
-  "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
-const MONO_STACK = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+/** Short names, because every string below is built from these. */
+const C = EMAIL_COLORS.light;
+const T = EMAIL_TYPE;
+const L = EMAIL_LAYOUT;
 
 /**
  * Where the wordmark PNG would be fetched from, if anything asked for it.
@@ -125,6 +112,12 @@ export type Inline =
 export type Block =
   /** The one h1. Every email has exactly one, first. */
   | { kind: 'heading'; text: string }
+  /**
+   * The standfirst: the single sentence that says why this email exists, set
+   * in the display face above a hairline. One per email, directly under the
+   * heading, and never used for a sentence that is merely next.
+   */
+  | { kind: 'lede'; content: Inline[] | string }
   | { kind: 'paragraph'; content: Inline[] | string }
   /** Small print: still readable, never the point. */
   | { kind: 'note'; content: Inline[] | string }
@@ -161,21 +154,21 @@ function inlineHtml(content: Inline[] | string): string {
     .map((node) => {
       if (typeof node === 'string') return escapeHtml(node);
       if ('strong' in node) {
-        return `<strong style="font-weight:600;">${escapeHtml(
+        return `<strong style="font-weight:${T.micro.weight};">${escapeHtml(
           node.strong
         )}</strong>`;
       }
       if ('mono' in node) {
-        return `<span style="font-family:${MONO_STACK};font-size:14px;">${escapeHtml(
-          node.mono
-        )}</span>`;
+        return `<span style="font-family:${EMAIL_FONTS.mono};font-size:${
+          T.note.size
+        }px;">${escapeHtml(node.mono)}</span>`;
       }
       const label = node.link.label ?? node.link.href;
       return `<a class="fs-link" href="${safeHref(
         node.link.href
-      )}" style="color:${
-        EMAIL_COLORS.light.accent
-      };text-decoration:underline;">${escapeHtml(label)}</a>`;
+      )}" style="color:${C.accent};text-decoration:underline;">${escapeHtml(
+        label
+      )}</a>`;
     })
     .join('');
 }
@@ -199,8 +192,27 @@ function tidy(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
-const P_STYLE = `margin:0 0 18px;font-size:16px;line-height:1.6;color:${EMAIL_COLORS.light.ink};`;
-const NOTE_STYLE = `margin:0 0 18px;font-size:14px;line-height:1.6;color:${EMAIL_COLORS.light.inkDim};`;
+/**
+ * A block that needs a table (a fill, a border or a column) plus the space
+ * under it.
+ *
+ * The space is a spacer row rather than a margin because Word-rendered
+ * Outlook drops margins on tables, and a stack of blocks with no space
+ * between them is the failure mode that is invisible in every other client.
+ */
+function blockTable(cell: string, gap: number = L.blockGap): string {
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;">
+  <tr>${cell}</tr>
+  <tr><td style="height:${gap}px;line-height:${gap}px;font-size:1px;">&nbsp;</td></tr>
+</table>`;
+}
+
+const DISPLAY = `font-family:${EMAIL_FONTS.display};`;
+const BODY_FACE = `font-family:${EMAIL_FONTS.body};`;
+const P_STYLE = `margin:0 0 ${L.blockGap}px;${BODY_FACE}font-size:${T.body.size}px;line-height:${T.body.leading};color:${C.ink};`;
+const NOTE_STYLE = `margin:0 0 ${L.blockGap}px;${BODY_FACE}font-size:${T.note.size}px;line-height:${T.note.leading};color:${C.inkDim};`;
+/** The letterhead's queue line and every label above a value. */
+const MICRO_STYLE = `${BODY_FACE}font-size:${T.micro.size}px;line-height:${T.micro.leading};font-weight:${T.micro.weight};letter-spacing:${T.micro.tracking};text-transform:uppercase;color:${C.inkDim};`;
 
 /**
  * Outlook ignores padding and border-radius on a link, so the button is drawn
@@ -212,29 +224,53 @@ function buttonHtml(label: string, href: string): string {
   const safeLabel = escapeHtml(label);
   // Word needs the box in points before it can centre the text in it, and it
   // cannot measure a string, so the width is estimated from the label.
-  const width = Math.min(420, Math.max(180, label.length * 10 + 64));
-  return `
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 22px;">
-  <tr><td align="left">
+  const width = Math.min(
+    L.button.maxWidth,
+    Math.max(
+      L.button.minWidth,
+      label.length * L.button.perChar + L.button.padding
+    )
+  );
+  const cell = `<td align="left" style="padding:${L.buttonGap.top}px 0 0;">
     <!--[if mso]>
-    <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="${url}" style="height:48px;v-text-anchor:middle;width:${width}px;" arcsize="20%" stroke="f" fillcolor="${EMAIL_COLORS.light.accent}">
+    <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="${url}" style="height:${L.button.height}px;v-text-anchor:middle;width:${width}px;" arcsize="20%" stroke="f" fillcolor="${C.accent}">
       <w:anchorlock/>
-      <center style="color:${EMAIL_COLORS.light.accentInk};font-family:Arial,sans-serif;font-size:16px;font-weight:bold;">${safeLabel}</center>
+      <center style="color:${C.accentInk};font-family:Arial,sans-serif;font-size:${T.button.size}px;font-weight:bold;">${safeLabel}</center>
     </v:roundrect>
     <![endif]-->
     <!--[if !mso]><!-->
-    <a class="fs-button" href="${url}" style="display:inline-block;padding:14px 30px;background-color:${EMAIL_COLORS.light.accent};color:${EMAIL_COLORS.light.accentInk};font-size:16px;font-weight:600;line-height:20px;text-decoration:none;border-radius:10px;font-family:${FONT_STACK};">${safeLabel}</a>
+    <a class="fs-button" href="${url}" style="display:inline-block;padding:${L.buttonPadding};background-color:${C.accent};color:${C.accentInk};font-size:${T.button.size}px;font-weight:${T.button.weight};line-height:${T.button.leading}px;text-decoration:none;border-radius:${L.radius.button}px;${BODY_FACE}">${safeLabel}</a>
     <!--<![endif]-->
-  </td></tr>
-</table>`;
+  </td>`;
+  return blockTable(cell, L.buttonGap.bottom);
 }
 
 function blockHtml(block: Block): string {
   switch (block.kind) {
     case 'heading':
-      return `<h1 class="fs-ink" style="margin:0 0 18px;font-size:24px;line-height:1.25;font-weight:600;letter-spacing:-0.02em;color:${
-        EMAIL_COLORS.light.ink
-      };">${escapeHtml(block.text)}</h1>`;
+      return `<h1 class="fs-ink" style="margin:0 0 ${
+        L.blockGap
+      }px;${DISPLAY}font-size:${T.heading.size}px;line-height:${
+        T.heading.leading
+      };font-weight:${T.heading.weight};letter-spacing:${
+        T.heading.tracking
+      };color:${C.ink};">${escapeHtml(block.text)}</h1>`;
+    case 'lede': {
+      // The one sentence an operator reads before deciding whether to open
+      // anything, set apart the way a standfirst is: the display face, a step
+      // up from body, and a hairline under it that ends the summary and
+      // starts the detail.
+      const cell = `<td class="fs-rule" style="padding:0 0 ${
+        L.ledeGap
+      }px;border-bottom:${L.hairline}px solid ${
+        C.rule
+      };"><p class="fs-ink" style="margin:0;${DISPLAY}font-size:${
+        T.lede.size
+      }px;line-height:${T.lede.leading};font-weight:${T.lede.weight};color:${
+        C.ink
+      };">${inlineHtml(block.content)}</p></td>`;
+      return blockTable(cell, L.ledeGap);
+    }
     case 'paragraph':
       return `<p class="fs-ink" style="${P_STYLE}">${inlineHtml(
         block.content
@@ -247,40 +283,73 @@ function blockHtml(block: Block): string {
       return buttonHtml(block.label, block.href);
     case 'hero': {
       const label = block.label ?? block.href;
-      return `<p style="margin:0 0 18px;font-size:19px;line-height:1.4;font-weight:600;word-break:break-all;"><a class="fs-link" href="${safeHref(
+      return `<p style="margin:0 0 ${L.blockGap}px;${BODY_FACE}font-size:${
+        T.hero.size
+      }px;line-height:${T.hero.leading};font-weight:${
+        T.hero.weight
+      };word-break:break-all;"><a class="fs-link" href="${safeHref(
         block.href
-      )}" style="color:${
-        EMAIL_COLORS.light.accent
-      };text-decoration:none;">${escapeHtml(label)}</a></p>`;
+      )}" style="color:${C.accent};text-decoration:none;">${escapeHtml(
+        label
+      )}</a></p>`;
     }
-    case 'quote':
-      return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 18px;"><tr><td class="fs-quote" style="border-left:3px solid ${
-        EMAIL_COLORS.light.quoteRule
-      };padding:2px 0 2px 16px;"><p class="fs-ink" style="margin:0;font-size:16px;line-height:1.6;color:${
-        EMAIL_COLORS.light.ink
-      };">${escapeHtml(block.text)}</p></td></tr></table>`;
+    case 'quote': {
+      // Their words, not ours: the display face on the panel tone, behind a
+      // rule. It reads as a thing lifted from somewhere else, which is what
+      // it is, without needing a quotation mark we would then have to escape.
+      const cell = `<td class="fs-quote fs-panel" style="background-color:${
+        C.panel
+      };border-left:${L.quoteRuleWidth}px solid ${
+        C.quoteRule
+      };border-radius:0 ${L.radius.panel}px ${L.radius.panel}px 0;padding:${
+        L.quotePadding
+      };"><p class="fs-ink" style="margin:0;${DISPLAY}font-size:${
+        T.quote.size
+      }px;line-height:${T.quote.leading};color:${C.ink};">${escapeHtml(
+        block.text
+      )}</p></td>`;
+      return blockTable(cell);
+    }
     case 'list': {
       if (block.items.length === 0) return '';
       const items = block.items
-        .map((item) => `<li style="margin:0 0 8px;">${escapeHtml(item)}</li>`)
+        .map(
+          (item) =>
+            `<li style="margin:0 0 ${L.listItemGap}px;">${escapeHtml(
+              item
+            )}</li>`
+        )
         .join('');
-      return `<ul class="fs-ink" style="margin:0 0 18px;padding-left:22px;font-size:16px;line-height:1.6;color:${EMAIL_COLORS.light.ink};">${items}</ul>`;
+      return `<ul class="fs-ink" style="margin:0 0 ${L.blockGap}px;padding-left:${L.listIndent}px;${BODY_FACE}font-size:${T.body.size}px;line-height:${T.body.leading};color:${C.ink};">${items}</ul>`;
     }
     case 'facts': {
+      // A label column and a value column under one hairline, the way a
+      // delivery note sets them. The label is the micro style the panel uses,
+      // so the two blocks read as the same family of object.
       const rows = block.rows
         .filter((row) => row.value.trim().length > 0)
         .map(
           (row) =>
-            `<tr><td class="fs-dim" style="padding:0 12px 8px 0;font-size:14px;line-height:1.5;color:${
-              EMAIL_COLORS.light.inkDim
-            };vertical-align:top;white-space:nowrap;">${escapeHtml(
+            `<tr><td class="fs-dim" style="padding:0 12px ${
+              L.factRowGap
+            }px 0;${MICRO_STYLE}line-height:${
+              L.factLineHeight
+            }px;vertical-align:top;width:${L.factLabelWidth}px;">${escapeHtml(
               row.label
-            )}</td><td class="fs-ink" style="padding:0 0 8px;font-size:15px;line-height:1.5;color:${
-              EMAIL_COLORS.light.ink
-            };vertical-align:top;">${escapeHtml(row.value)}</td></tr>`
+            )}</td><td class="fs-ink" style="padding:0 0 ${
+              L.factRowGap
+            }px;${BODY_FACE}font-size:${T.fact.size}px;line-height:${
+              L.factLineHeight
+            }px;color:${
+              C.ink
+            };vertical-align:top;word-break:break-word;">${escapeHtml(
+              row.value
+            )}</td></tr>`
         )
         .join('');
-      return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 18px;">${rows}</table>`;
+      if (!rows) return '';
+      const cell = `<td class="fs-rule" style="padding:${L.factRowGap}px 0 0;border-top:${L.hairline}px solid ${C.rule};"><table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;">${rows}</table></td>`;
+      return blockTable(cell);
     }
     case 'panel': {
       const rows = block.rows
@@ -288,29 +357,40 @@ function blockHtml(block: Block): string {
           (row, index) =>
             `<p class="fs-dim" style="margin:${
               index === 0 ? '0' : '14px'
-            } 0 2px;font-size:12px;line-height:1.4;letter-spacing:0.06em;text-transform:uppercase;color:${
-              EMAIL_COLORS.light.inkDim
-            };">${escapeHtml(
+            } 0 3px;${MICRO_STYLE}">${escapeHtml(
               row.label
-            )}</p><p class="fs-ink" style="margin:0;font-family:${MONO_STACK};font-size:15px;line-height:1.5;font-weight:600;word-break:break-all;color:${
-              EMAIL_COLORS.light.ink
+            )}</p><p class="fs-ink" style="margin:0;font-family:${
+              EMAIL_FONTS.mono
+            };font-size:${T.fact.size}px;line-height:${
+              T.fact.leading
+            };font-weight:${T.micro.weight};word-break:break-all;color:${
+              C.ink
             };">${escapeHtml(row.value)}</p>`
         )
         .join('');
-      return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 20px;"><tr><td class="fs-panel fs-rule" style="background-color:${EMAIL_COLORS.light.panel};border:1px solid ${EMAIL_COLORS.light.rule};border-radius:12px;padding:16px 18px;">${rows}</td></tr></table>`;
+      const cell = `<td class="fs-panel fs-rule" style="background-color:${C.panel};border:${L.hairline}px solid ${C.rule};border-radius:${L.radius.panel}px;padding:${L.panelPadding};">${rows}</td>`;
+      return blockTable(cell, L.ledeGap);
     }
-    case 'callout':
-      return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 18px;"><tr><td class="fs-panel fs-rule" style="background-color:${
-        EMAIL_COLORS.light.panel
-      };border:1px solid ${
-        EMAIL_COLORS.light.rule
-      };border-radius:12px;padding:16px 18px;"><p class="fs-ink" style="margin:0 0 6px;font-size:14px;font-weight:600;line-height:1.4;color:${
-        EMAIL_COLORS.light.ink
+    case 'callout': {
+      const cell = `<td class="fs-panel fs-rule" style="background-color:${
+        C.panel
+      };border:${L.hairline}px solid ${C.rule};border-radius:${
+        L.radius.panel
+      }px;padding:${
+        L.panelPadding
+      };"><p class="fs-ink" style="margin:0 0 6px;${DISPLAY}font-size:${
+        T.note.size + 3
+      }px;font-weight:${T.button.weight};line-height:${T.micro.leading};color:${
+        C.ink
       };">${escapeHtml(
         block.title
-      )}</p><p class="fs-ink" style="margin:0;font-size:15px;line-height:1.6;color:${
-        EMAIL_COLORS.light.ink
-      };">${inlineHtml(block.content)}</p></td></tr></table>`;
+      )}</p><p class="fs-ink" style="margin:0;${BODY_FACE}font-size:${
+        T.fact.size
+      }px;line-height:${T.body.leading};color:${C.ink};">${inlineHtml(
+        block.content
+      )}</p></td>`;
+      return blockTable(cell);
+    }
   }
 }
 
@@ -318,6 +398,7 @@ function blockText(block: Block): string {
   switch (block.kind) {
     case 'heading':
       return block.text;
+    case 'lede':
     case 'paragraph':
     case 'note':
       return tidy(inlineText(block.content));
@@ -362,17 +443,16 @@ const FOOTER_TRANSACTIONAL =
 const FOOTER_EMAIL = 'hello@flowstarter.net';
 
 function footerHtml(): string {
+  const footerStyle = `margin:0;${BODY_FACE}font-size:${T.footer.size}px;line-height:${T.footer.leading};color:${C.inkDim};`;
   return `
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
-  <tr><td class="fs-pad" style="padding:24px 8px 0;">
-    <p class="fs-dim" style="margin:0 0 6px;font-size:13px;line-height:1.6;color:${
-      EMAIL_COLORS.light.inkDim
-    };">${FOOTER_LOCATION} &nbsp;&middot;&nbsp; <a class="fs-link" href="mailto:${FOOTER_EMAIL}" style="color:${
-    EMAIL_COLORS.light.accent
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;">
+  <tr><td class="fs-pad" style="padding:${L.footerGap}px ${L.gutter}px 0;">
+    <p class="fs-dim" style="${footerStyle}margin-bottom:6px;">${FOOTER_LOCATION} &nbsp;&middot;&nbsp; <a class="fs-link" href="mailto:${FOOTER_EMAIL}" style="color:${
+    C.accent
   };text-decoration:underline;">${FOOTER_EMAIL}</a></p>
-    <p class="fs-dim" style="margin:0;font-size:13px;line-height:1.6;color:${
-      EMAIL_COLORS.light.inkDim
-    };">${escapeHtml(FOOTER_TRANSACTIONAL)}</p>
+    <p class="fs-dim" style="${footerStyle}">${escapeHtml(
+    FOOTER_TRANSACTIONAL
+  )}</p>
   </td></tr>
 </table>`;
 }
@@ -399,39 +479,68 @@ function footerText(): string {
  */
 function markHtml(): string {
   const assetBaseConfigured = Boolean(process.env.EMAIL_ASSET_BASE_URL?.trim());
+  const size = L.mark.size;
   if (assetBaseConfigured) {
-    return `<img src="${emailAssetBase()}/email/flowstarter-mark.png" width="34" height="34" alt="" style="display:block;width:34px;height:34px;border:0;border-radius:10px;" />`;
+    return `<img src="${emailAssetBase()}/email/flowstarter-mark.png" width="${size}" height="${size}" alt="" style="display:block;width:${size}px;height:${size}px;border:0;border-radius:${
+      L.radius.mark
+    }px;" />`;
   }
-  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="34" height="34" style="width:34px;height:34px;">
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="${size}" height="${size}" style="width:${size}px;height:${size}px;">
         <tr>
-          <td class="fs-mark" width="34" height="34" align="center" valign="middle" bgcolor="${EMAIL_COLORS.light.accent}" style="width:34px;height:34px;background-color:${EMAIL_COLORS.light.accent};border-radius:10px;font-family:${FONT_STACK};font-size:17px;font-weight:700;line-height:34px;color:#ffffff;text-align:center;">F</td>
+          <td class="fs-mark" width="${size}" height="${size}" align="center" valign="middle" bgcolor="${C.accent}" style="width:${size}px;height:${size}px;background-color:${C.accent};border-radius:${L.radius.mark}px;${BODY_FACE}font-size:17px;font-weight:${T.wordmark.weight};line-height:${size}px;color:${C.accentInk};text-align:center;">F</td>
         </tr>
       </table>`;
 }
 
 /**
- * The wordmark: the mark tile plus live text, never inline SVG.
+ * The letterhead: the mark tile, the wordmark, an optional queue line on the
+ * right, and a rule under all three.
  *
- * Gmail removes `<svg>` entirely and Outlook has never rendered it, which is
- * most of the inboxes we send to, so an SVG-first header would be a blank
- * header for the majority. The word itself is text: if images are blocked,
- * the brand is still legible and still the right colour.
+ * It is a letterhead rather than a logo because these messages are
+ * correspondence. The queue line is the one piece of routing an operator
+ * cannot get from the card below without reading it, and it is the reason
+ * the whole row is worth the space: two of these emails land in the same
+ * inbox from the same address, and "Custom work" against "Policy review" in
+ * the top right says which one this is before the eye reaches the heading.
+ * Client emails pass no label and get the wordmark alone.
+ *
+ * Never inline SVG. Gmail removes `<svg>` entirely and Outlook has never
+ * rendered it, which is most of the inboxes we send to, so an SVG-first
+ * header would be a blank header for the majority. The word itself is text:
+ * if images are blocked, the brand is still legible and still the right
+ * colour.
  */
-function wordmarkHtml(): string {
+function letterheadHtml(label?: string): string {
+  const columns = label ? 3 : 2;
+  const queue = label
+    ? `<td class="fs-dim" align="right" style="vertical-align:middle;${MICRO_STYLE}">${escapeHtml(
+        label
+      )}</td>`
+    : '';
   return `
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 18px;">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;">
   <tr>
-    <td style="padding:0 10px 0 0;vertical-align:middle;">
-      ${markHtml()}
-    </td>
+    <td style="padding:0 ${L.mark.gap}px 0 0;vertical-align:middle;width:${
+    L.mark.size
+  }px;">${markHtml()}</td>
     <td style="vertical-align:middle;">
-      <span class="fs-ink" style="font-family:${FONT_STACK};font-size:21px;font-weight:700;letter-spacing:-0.025em;color:${
-    EMAIL_COLORS.light.ink
-  };"><span class="fs-link" style="color:${
-    EMAIL_COLORS.light.accent
+      <span class="fs-ink" style="${BODY_FACE}font-size:${
+    T.wordmark.size
+  }px;font-weight:${T.wordmark.weight};letter-spacing:${
+    T.wordmark.tracking
+  };color:${C.ink};"><span class="fs-link" style="color:${
+    C.accent
   };">Flow</span>starter</span>
-    </td>
+    </td>${queue}
   </tr>
+  <tr><td colspan="${columns}" class="fs-rule" style="height:${
+    L.letterheadPadding
+  }px;line-height:${L.letterheadPadding}px;font-size:1px;border-bottom:${
+    L.hairline
+  }px solid ${C.rule};">&nbsp;</td></tr>
+  <tr><td colspan="${columns}" style="height:${L.letterheadGap}px;line-height:${
+    L.letterheadGap
+  }px;font-size:1px;">&nbsp;</td></tr>
 </table>`;
 }
 
@@ -439,28 +548,69 @@ function wordmarkHtml(): string {
  * The inbox preview line.
  *
  * Padded with zero-width joiners so the client does not follow it with the
- * first words of the card, which in this layout would be the wordmark's alt
- * text and then the heading again.
+ * first words of the card, which in this layout would be the letterhead and
+ * then the heading again.
  */
 function preheaderHtml(preheader: string): string {
   return `<div style="display:none;max-height:0;max-width:0;overflow:hidden;opacity:0;font-size:1px;line-height:1px;color:${
-    EMAIL_COLORS.light.page
-  };">${escapeHtml(preheader)}${'&#8204;&nbsp;'.repeat(60)}</div>`;
+    C.page
+  };">${escapeHtml(preheader)}${'&#8204;&nbsp;'.repeat(
+    L.preheaderPadRepeat
+  )}</div>`;
 }
 
-const DARK_CSS = `
-@media (prefers-color-scheme: dark) {
-  .fs-body { background-color: ${EMAIL_COLORS.dark.page} !important; }
-  .fs-card { background-color: ${EMAIL_COLORS.dark.card} !important; border-color: ${EMAIL_COLORS.dark.rule} !important; }
-  .fs-ink, .fs-ink h1, .fs-ink p { color: ${EMAIL_COLORS.dark.ink} !important; }
-  .fs-dim { color: ${EMAIL_COLORS.dark.inkDim} !important; }
-  .fs-link { color: ${EMAIL_COLORS.dark.accent} !important; }
-  .fs-rule { border-color: ${EMAIL_COLORS.dark.rule} !important; }
-  .fs-quote { border-color: ${EMAIL_COLORS.dark.quoteRule} !important; }
-  .fs-panel { background-color: ${EMAIL_COLORS.dark.panel} !important; }
-  .fs-mark { background-color: ${EMAIL_COLORS.dark.button} !important; }
-  .fs-button { background-color: ${EMAIL_COLORS.dark.button} !important; color: ${EMAIL_COLORS.dark.accentInk} !important; }
-}`;
+const D = EMAIL_COLORS.dark;
+
+/**
+ * The dark variant, written once and emitted twice.
+ *
+ * Once inside `prefers-color-scheme: dark`, which Apple Mail, iOS Mail and
+ * Outlook for Mac honour. Once more behind `[data-ogsc]` and `[data-ogsb]`,
+ * the attributes Outlook.com and the Outlook mobile apps stamp onto elements
+ * whose colours their own dark mode has rewritten: without these the
+ * rewrite wins and the ink lands somewhere we never measured.
+ *
+ * Gmail's Android app is the one client neither form reaches. It inverts a
+ * light message wholesale and ignores both the media query and the meta, so
+ * the defence there is structural rather than declared: a `bgcolor`
+ * attribute on every filled cell, no text whose only contrast comes from a
+ * background image, and no colour pairing that stops working when its
+ * lightness is flipped. See `docs/operations/email-design.md`.
+ */
+const DARK_RULES = [
+  ['.fs-body', `background-color: ${D.page} !important;`],
+  [
+    '.fs-card',
+    `background-color: ${D.card} !important; border-color: ${D.rule} !important;`,
+  ],
+  ['.fs-ink, .fs-ink h1, .fs-ink p', `color: ${D.ink} !important;`],
+  ['.fs-dim', `color: ${D.inkDim} !important;`],
+  ['.fs-link', `color: ${D.accent} !important;`],
+  ['.fs-rule', `border-color: ${D.rule} !important;`],
+  ['.fs-quote', `border-left-color: ${D.quoteRule} !important;`],
+  ['.fs-panel', `background-color: ${D.panel} !important;`],
+  ['.fs-mark', `background-color: ${D.button} !important;`],
+  [
+    '.fs-button',
+    `background-color: ${D.button} !important; color: ${D.accentInk} !important;`,
+  ],
+] as const;
+
+function darkCss(): string {
+  const block = (prefix: string) =>
+    DARK_RULES.map(
+      ([selector, body]) =>
+        `  ${selector
+          .split(', ')
+          .map((one) => `${prefix}${one}`)
+          .join(', ')} { ${body} }`
+    ).join('\n');
+  return `@media (prefers-color-scheme: dark) {
+${block('')}
+}
+${block('[data-ogsc] ')}
+${block('[data-ogsb] ')}`;
+}
 
 /**
  * Renders one email into its two bodies.
@@ -474,9 +624,17 @@ export function renderEmail(input: {
   subject: string;
   preheader: string;
   blocks: Block[];
+  /**
+   * The queue this message belongs to, shown in the letterhead and carried
+   * as the first line of the text part so the two halves still say the same
+   * thing. Operator mail only: a client has one queue and does not need it
+   * named.
+   */
+  masthead?: string;
 }): RenderedEmail {
   const body = input.blocks.map(blockHtml).join('\n');
   const text = [
+    ...(input.masthead ? [`${FOOTER_LOCATION} / ${input.masthead}`] : []),
     ...input.blocks.map(blockText).filter((part) => part.trim().length > 0),
     // The signature separator every mail reader has understood since 1985.
     '--',
@@ -497,36 +655,43 @@ export function renderEmail(input: {
 <![endif]-->
 <style>
 :root { color-scheme: light dark; supported-color-schemes: light dark; }
+${emailFontFace()}
 body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
 table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; border-collapse: collapse; }
 img { border: 0; line-height: 100%; outline: none; text-decoration: none; -ms-interpolation-mode: bicubic; }
-@media only screen and (max-width: 620px) {
+@media only screen and (max-width: ${L.mobileBreakpoint}px) {
   .fs-shell { width: 100% !important; }
-  .fs-pad { padding-left: 22px !important; padding-right: 22px !important; }
-  .fs-card-pad { padding: 28px 22px 22px !important; }
+  .fs-pad { padding-left: ${L.gutterMobile}px !important; padding-right: ${
+    L.gutterMobile
+  }px !important; }
+  .fs-card-pad { padding: ${L.cardPaddingMobile} !important; }
 }
-${DARK_CSS}
+${darkCss()}
 </style>
 </head>
 <body class="fs-body" style="margin:0;padding:0;width:100%;background-color:${
-    EMAIL_COLORS.light.page
-  };font-family:${FONT_STACK};">
+    C.page
+  };${BODY_FACE}">
 ${preheaderHtml(input.preheader)}
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="fs-body" bgcolor="${
-    EMAIL_COLORS.light.page
-  }" style="background-color:${EMAIL_COLORS.light.page};">
+    C.page
+  }" style="background-color:${C.page};">
   <tr>
-    <td align="center" style="padding:32px 12px 40px;">
-      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" class="fs-shell" style="width:600px;max-width:600px;font-family:${FONT_STACK};">
-        <tr><td class="fs-pad" style="padding:0 8px;">${wordmarkHtml()}</td></tr>
+    <td align="center" style="padding:${L.pagePadding};">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="${
+        L.shellWidth
+      }" class="fs-shell" style="width:${L.shellWidth}px;max-width:${
+    L.shellWidth
+  }px;${BODY_FACE}">
+        <tr><td class="fs-pad" style="padding:0 ${
+          L.gutter
+        }px;">${letterheadHtml(input.masthead)}</td></tr>
         <tr>
           <td class="fs-card fs-card-pad" bgcolor="${
-            EMAIL_COLORS.light.card
-          }" style="background-color:${
-    EMAIL_COLORS.light.card
-  };border:1px solid ${
-    EMAIL_COLORS.light.rule
-  };border-radius:16px;padding:36px 36px 26px;">
+            C.card
+          }" style="background-color:${C.card};border:${L.hairline}px solid ${
+    C.rule
+  };border-radius:${L.radius.card}px;padding:${L.cardPadding};">
 ${body}
           </td>
         </tr>

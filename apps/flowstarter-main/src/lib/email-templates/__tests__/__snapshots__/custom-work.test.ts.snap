@@ -1,7 +1,9 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`customWorkOperatorEmail, locale > adds a Romanian-brief note, nothing else, when the locale is ro (snapshot) 1`] = `
-"A custom work lead
+"Flowstarter / Custom work
+
+A custom work lead
 
 The brief mentions "clientii mei se autentifica", which points to software we do not build self-serve. The brief is written in Romanian, quoted below exactly as they sent it.
 
@@ -23,7 +25,9 @@ This is a service message about your project, not marketing, so there is nothing
 `;
 
 exports[`customWorkOperatorEmail, locale > renders in English with no locale note by default (snapshot) 1`] = `
-"A custom work lead
+"Flowstarter / Custom work
+
+A custom work lead
 
 The brief mentions "customers log into", which points to software we do not build self-serve.
 

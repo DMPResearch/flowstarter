@@ -20,6 +20,12 @@
  */
 import { renderEmail, type RenderedEmail } from './base';
 
+/**
+ * The queue this row lands in, printed in the operator email's letterhead.
+ * The board's own name for it, so the email and the board agree.
+ */
+const OPERATOR_QUEUE = 'Policy review';
+
 interface ReviewReason {
   /** A few words for the subject line. Never a full sentence. */
   subjectSummary: string;
@@ -146,9 +152,15 @@ export function policyReviewOperatorEmail(input: {
   return renderEmail({
     subject: `A brief needs your review: ${reason.subjectSummary}`,
     preheader: sentence,
+    // The sibling queue is `Custom work` (see `./custom-work`). Both land in
+    // the same inbox from the same address, so the letterhead names which.
+    masthead: OPERATOR_QUEUE,
     blocks: [
       { kind: 'heading', text: 'A brief needs your review' },
-      { kind: 'paragraph', content: sentence },
+      // Same rank as the sibling email's reason, and for the same reason:
+      // this sentence is why the message exists, and "It stays open until an
+      // operator approves or refuses it" is not.
+      { kind: 'lede', content: sentence },
       {
         kind: 'paragraph',
         content: 'It stays open until an operator approves or refuses it.',

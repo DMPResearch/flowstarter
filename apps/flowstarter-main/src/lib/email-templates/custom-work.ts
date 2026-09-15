@@ -20,6 +20,14 @@ import { verbatimEvidence } from '@/lib/flowstarter/scope-classifier';
 /** The studio that contracts the custom work. Named, not implied. */
 const STUDIO = 'DMPResearch';
 
+/**
+ * The lane this lead lands in, printed in the operator email's letterhead.
+ *
+ * The same words the board uses, so the email and the board agree, and the
+ * same words the "what happens next" sentence below already says out loud.
+ */
+const OPERATOR_QUEUE = 'Custom work';
+
 function greeting(name?: string | null) {
   const trimmed = (name ?? '').trim();
   return {
@@ -298,9 +306,16 @@ export function customWorkOperatorEmail(input: {
   return renderEmail({
     subject: `Custom work lead: ${input.visitorName}, ${reason.subjectSummary}`,
     preheader: `${input.visitorEmail} was routed to a discovery call.`,
+    // Two operator queues reach the same inbox from the same address. The
+    // letterhead says which one this is before the eye reaches the heading.
+    masthead: OPERATOR_QUEUE,
     blocks: [
       { kind: 'heading', text: 'A custom work lead' },
-      { kind: 'paragraph', content: `${sentence}${briefNote}` },
+      // The reason is the standfirst, not a first paragraph: it is the one
+      // sentence that decides whether this gets opened now or after lunch,
+      // and setting it at the same rank as "this sits in the Custom work
+      // lane" was the whole reason the email read as a wall.
+      { kind: 'lede', content: `${sentence}${briefNote}` },
       { kind: 'paragraph', content: nextStep },
       { kind: 'quote', text: input.description },
       {
