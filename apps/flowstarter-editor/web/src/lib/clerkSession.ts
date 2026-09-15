@@ -60,8 +60,22 @@ interface ClerkMeFailure {
   readonly configError?: boolean;
 }
 
-const CLERK_ME_PATH = "/api/clerk/me";
-const CLERK_AUTO_PAIR_PATH = "/api/clerk/auto-pair";
+// Vite strips its configured base from `import.meta.env.BASE_URL` (same
+// pattern `router.ts` already uses). A root-mounted dev server has
+// `BASE_URL === "/"`, so these fall back to the un-prefixed paths there —
+// but a sub-path production deploy (`VITE_BASE_PATH=/editor/`, the shape
+// `docs/operations/operator-editor.md` documents) sits behind Caddy's
+// `handle_path /editor/*`, which strips the prefix before proxying to the
+// router. An absolute `/api/...` fetch from a page served at `/editor/`
+// therefore never reaches the router at all: it falls through Caddy's
+// `handle {}` block to the tenant's own site content instead, which answers
+// 200 with unrelated HTML. `safeReadJson` can't parse that, and the result
+// is "Editor server returned empty body" with no indication the request
+// went to the wrong place. Verified against a real sub-path deploy on
+// fs-sites-01, 2026-09-15.
+const EDITOR_BASE_PATH = (import.meta.env.BASE_URL ?? "/").replace(/\/+$/, "");
+const CLERK_ME_PATH = `${EDITOR_BASE_PATH}/api/clerk/me`;
+const CLERK_AUTO_PAIR_PATH = `${EDITOR_BASE_PATH}/api/clerk/auto-pair`;
 
 /** Must match server `EDITOR_CLERK_LOGIN_RETURN_HEADER` (`clerkHttp.ts`). */
 const CLERK_LOGIN_RETURN_URL_HEADER = "X-Editor-Return-Url";

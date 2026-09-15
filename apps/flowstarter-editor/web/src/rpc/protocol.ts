@@ -43,7 +43,18 @@ function resolveWsRpcSocketUrl(rawUrl: string): string {
     throw new Error(`Unsupported websocket transport URL protocol: ${resolved.protocol}`);
   }
 
-  resolved.pathname = "/ws";
+  // Join onto the base's own pathname rather than overwrite it. On a
+  // sub-path deploy (`VITE_BASE_PATH=/editor/`) the window-origin target
+  // (`../environments/primary/target.ts`) resolves `wsBaseUrl` to
+  // `wss://<host>/editor/`, carrying the prefix Caddy's `handle_path
+  // /editor/*` strips before proxying to the router. A bare assignment
+  // here threw that away and connected to `wss://<host>/ws` — outside the
+  // handled prefix, so Caddy served an ordinary 200 for whatever `handle
+  // {}` falls through to instead of upgrading the connection, and the
+  // browser reported "Unexpected response code: 200". Verified against a
+  // real sub-path deploy on fs-sites-01, 2026-09-15.
+  const basePathname = resolved.pathname.replace(/\/+$/, "");
+  resolved.pathname = `${basePathname}/ws`;
   return resolved.toString();
 }
 

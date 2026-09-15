@@ -85,8 +85,26 @@ function resolveConfiguredPrimaryTarget(): PrimaryEnvironmentTarget | null {
   };
 }
 
+// Vite strips its configured base from `import.meta.env.BASE_URL` (same
+// pattern `router.ts` and `clerkSession.ts` already use). A root-mounted
+// dev server has `BASE_URL === "/"`, so this is a no-op there — but a
+// sub-path production deploy (`VITE_BASE_PATH=/editor/`, the shape
+// `docs/operations/operator-editor.md` documents) sits behind Caddy's
+// `handle_path /editor/*`, which strips the prefix before proxying to the
+// router. Without it here, `window.location.origin` alone (no path) is
+// indistinguishable from a root deploy, and every HTTP call this target
+// resolves — auth/session, auth/bootstrap, ws-token, pairing-links,
+// clients, observability tracing — lands one level too high, past the
+// prefix Caddy is stripping for, and falls through to the tenant's own
+// site content instead of the router. That answers 200 with unrelated
+// HTML, which breaks JSON parsing downstream with no indication the
+// request went to the wrong place. Verified against a real sub-path
+// deploy on fs-sites-01, 2026-09-15 (same root cause as the
+// `CLERK_ME_PATH` / `CLERK_AUTO_PAIR_PATH` fix in `../../lib/clerkSession.ts`).
+const EDITOR_BASE_PATH = (import.meta.env.BASE_URL ?? "/").replace(/\/+$/, "");
+
 function resolveWindowOriginPrimaryTarget(): PrimaryEnvironmentTarget {
-  const httpBaseUrl = normalizeBaseUrl(window.location.origin);
+  const httpBaseUrl = normalizeBaseUrl(window.location.origin + EDITOR_BASE_PATH);
   const url = new URL(httpBaseUrl);
   if (url.protocol === "http:") {
     url.protocol = "ws:";
@@ -94,6 +112,18 @@ function resolveWindowOriginPrimaryTarget(): PrimaryEnvironmentTarget {
     url.protocol = "wss:";
   } else {
     throw new Error(`Unsupported HTTP base URL protocol: ${url.protocol}`);
+  }
+  // Unlike `httpBaseUrl` (joined with a further pathname by
+  // `resolvePrimaryEnvironmentHttpUrl`, so a bare `/editor` is fine there),
+  // `wsBaseUrl` is handed to `WsTransport` and used as the literal socket
+  // URL, no further path appended. The Caddy snippet distinguishes
+  // `/editor/*` (proxied to the router) from bare `/editor` (301 redirect
+  // to add the trailing slash) — and a WebSocket handshake cannot follow a
+  // redirect, so it fails closed with no error surfaced past "no projects
+  // yet". Keep the trailing slash here so the RPC socket URL actually
+  // matches `/editor/*`.
+  if (url.pathname !== "" && !url.pathname.endsWith("/")) {
+    url.pathname = `${url.pathname}/`;
   }
   return {
     source: "window-origin",
@@ -114,7 +144,12 @@ export function resolvePrimaryEnvironmentHttpUrl(
   }
 
   const url = new URL(resolveHttpRequestBaseUrl(primaryTarget.target.httpBaseUrl));
-  url.pathname = pathname;
+  // Join onto the base's own pathname rather than overwrite it: a
+  // window-origin target now carries the editor's sub-path base (see
+  // `resolveWindowOriginPrimaryTarget` above), and a bare assignment here
+  // would throw that away, landing the request back outside `/editor/*`.
+  const basePathname = url.pathname.replace(/\/+$/, "");
+  url.pathname = `${basePathname}${pathname.startsWith("/") ? pathname : `/${pathname}`}`;
   if (searchParams) {
     url.search = new URLSearchParams(searchParams).toString();
   }
