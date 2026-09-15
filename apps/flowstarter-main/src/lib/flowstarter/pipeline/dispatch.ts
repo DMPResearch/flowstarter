@@ -11,7 +11,62 @@
  * So this throws on every failure and lets each caller choose. It never
  * creates or mutates a job row; enqueueing stays in deposit-workflow.ts,
  * behind its unique indexes.
+ *
+ * `probeBuildWorkerHealth` also lives here, alongside the only other code
+ * that talks to this worker, for `/api/health` to report `buildWorker`
+ * honestly when `FLOWSTARTER_BUILD_WORKER_URL` is configured.
  */
+
+/**
+ * A plain env-shaped record rather than `NodeJS.ProcessEnv`: Next.js
+ * augments that global interface with a required `NODE_ENV`, which would
+ * force every test fixture below to carry a field this module never reads.
+ * `process.env` itself still satisfies this looser shape.
+ */
+type EnvLike = Record<string, string | undefined>;
+
+/** Long enough for a same-host or same-network health check, short enough that a dead worker fails fast. */
+export const DEFAULT_BUILD_WORKER_HEALTH_TIMEOUT_MS = 2_000;
+
+function healthTimeoutMs(env: EnvLike): number {
+  const configured = Number(
+    env.FLOWSTARTER_BUILD_WORKER_HEALTH_TIMEOUT_MS?.trim()
+  );
+  return Number.isFinite(configured) && configured > 0
+    ? configured
+    : DEFAULT_BUILD_WORKER_HEALTH_TIMEOUT_MS;
+}
+
+/**
+ * A bounded `GET /health` against the build worker. `handleRequest` in
+ * apps/build-worker/src/http.ts answers `/health` before it ever checks
+ * `Authorization`, so no shared secret is needed here. Anything other than a
+ * clean 2xx inside the timeout — refused connection, DNS failure, a hang, a
+ * 5xx — counts as "not answering", mirroring `probeMcpHealth` in
+ * lib/discovery/generation-availability.ts (#142): never throws, an
+ * unparsable URL or a network failure both just report `false`.
+ */
+export async function probeBuildWorkerHealth(
+  workerUrl: string,
+  env: EnvLike = process.env
+): Promise<boolean> {
+  let url: URL;
+  try {
+    url = new URL('/health', workerUrl);
+  } catch {
+    return false;
+  }
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      signal: AbortSignal.timeout(healthTimeoutMs(env)),
+      cache: 'no-store',
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
 
 export class DispatchError extends Error {
   constructor(message: string) {

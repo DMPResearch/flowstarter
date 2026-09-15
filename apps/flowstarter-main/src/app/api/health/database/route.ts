@@ -1,4 +1,4 @@
-import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
+import { probeDatabase } from '@/lib/health/database-probe';
 import { NextResponse } from 'next/server';
 
 /**
@@ -11,70 +11,40 @@ import { NextResponse } from 'next/server';
  * on `workspaces` at all, and the same query would report a healthy database
  * as unhealthy.
  *
- * The service role client is the right caller for this. It is server-only,
- * every other server route already uses it, and the handler returns a status
- * and a timestamp, never a row.
+ * The actual query now lives in `probeDatabase` (lib/health/database-probe.ts),
+ * shared with `/api/health`, which used to echo the Supabase configuration
+ * without ever testing a connection — a real outage this route reported
+ * correctly went unnoticed at `/api/health`, the endpoint deploy scripts and
+ * watchers actually trust. One probe, called from both routes, is what keeps
+ * them from disagreeing.
  */
 
 export async function GET() {
-  try {
-    // Create Supabase client
-    const supabase = createSupabaseServiceRoleClient();
+  const result = await probeDatabase();
 
-    // Simple query to test database connection
-    // Using a lightweight query that should work on any Supabase instance
-    const { error } = await supabase
-      .from('workspaces')
-      .select('count', { count: 'exact', head: true });
-
-    if (error) {
-      console.error('Database health check failed:', error);
-      return NextResponse.json(
-        {
-          status: 'error',
-          message: 'Database connection failed',
-          error: error.message,
-          timestamp: new Date().toISOString(),
-        },
-        { status: 503 }
-      );
-    }
-
-    return NextResponse.json({
-      status: 'healthy',
-      message: 'Database connection successful',
-      timestamp: new Date().toISOString(),
-      database: 'supabase',
-    });
-  } catch (error) {
-    console.error('Database health check error:', error);
-
+  if (!result.ok) {
+    console.error('Database health check failed:', result.message);
     return NextResponse.json(
       {
         status: 'error',
-        message: 'Health check failed',
-        error: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Database connection failed',
+        error: result.message,
         timestamp: new Date().toISOString(),
       },
       { status: 503 }
     );
   }
+
+  return NextResponse.json({
+    status: 'healthy',
+    message: 'Database connection successful',
+    timestamp: new Date().toISOString(),
+    database: 'supabase',
+  });
 }
 
 // Also support HEAD requests for quick checks
 export async function HEAD() {
-  try {
-    const supabase = createSupabaseServiceRoleClient();
-    const { error } = await supabase
-      .from('workspaces')
-      .select('count', { count: 'exact', head: true });
-
-    if (error) {
-      return new NextResponse(null, { status: 503 });
-    }
-
-    return new NextResponse(null, { status: 200 });
-  } catch (error) {
-    return new NextResponse(null, { status: 503 });
-  }
+  const result = await probeDatabase();
+  return new NextResponse(null, { status: result.ok ? 200 : 503 });
 }
