@@ -6,6 +6,7 @@ import {
   type EnvironmentId,
 } from "@flowstarter/editor-contracts";
 import { DateTime } from "effect";
+import { withBasePath } from "../../lib/basePath";
 
 /**
  * The desktop bridge was removed in the concierge pivot, so the server
@@ -254,13 +255,21 @@ function removeDesktopClientSession(
 }
 
 function resolveDesktopPairingUrl(endpointUrl: string, credential: string): string {
+  // `endpointUrl` is a standalone desktop-exposed backend's own origin
+  // (LAN host:port), not this SPA's own sub-path deploy behind Caddy — it
+  // is always root-mounted, so a bare `/pair` here is correct and must
+  // not go through `withBasePath` (allowed exception, see
+  // `basePathLiterals.test.ts`).
   const url = new URL(endpointUrl);
   url.pathname = "/pair";
   return setPairingTokenOnUrl(url, credential).toString();
 }
 
 function resolveCurrentOriginPairingUrl(credential: string): string {
-  const url = new URL("/pair", window.location.href);
+  // `withBasePath` keeps this under `/editor/` on a sub-path deploy — a
+  // bare `/pair` would generate a shareable link that 404s (or hits the
+  // tenant's own site) once opened on another device.
+  const url = new URL(withBasePath("/pair"), window.location.href);
   return setPairingTokenOnUrl(url, credential).toString();
 }
 

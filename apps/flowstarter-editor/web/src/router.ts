@@ -4,12 +4,12 @@ import { createRouter, RouterHistory } from "@tanstack/react-router";
 
 import { AppAtomRegistryProvider } from "./rpc/atomRegistry";
 import { routeTree } from "./routeTree.gen";
+import { EDITOR_BASE_PATH } from "./lib/basePath";
 
 // Mirror Vite's `base` so TanStack Router keeps the prefix in URLs and
-// link generation. Vite strips its base from `import.meta.env.BASE_URL`
-// trailing slash to '/editor/' → '/editor'. When deployed at root,
-// BASE_URL is '/' and basepath becomes '' (TanStack default).
-const baseUrl = (import.meta.env.BASE_URL ?? "/").replace(/\/+$/, "");
+// link generation (see `lib/basePath.ts`). When deployed at root,
+// EDITOR_BASE_PATH is '' and basepath becomes '' (TanStack default).
+const baseUrl = EDITOR_BASE_PATH;
 
 export function getRouter(history: RouterHistory, queryClient: QueryClient) {
   return createRouter({

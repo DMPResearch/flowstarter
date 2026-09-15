@@ -848,23 +848,33 @@ site's `index.html` instead, which the SPA reports as *"Unexpected token '<'
   today therefore means `docker exec -i flowstarter-cal-db pg_restore -U calcom
 -d calcom --clean --if-exists < db-flowstarter-cal-db.dump` by hand, after
   verifying the dump against `manifest.sha256` yourself.
-- **The editor web app hardcodes `/api/...` paths in a few places that do not
-  respect `VITE_BASE_PATH`.** Found and fixed 2026-09-15 for the ones that
-  block every session (`CLERK_ME_PATH`/`CLERK_AUTO_PAIR_PATH` in
+- **The editor web app hardcoded `/api/...` paths in a few places that did
+  not respect `VITE_BASE_PATH`.** Found and fixed in two passes. 2026-09-15
+  (#182) fixed the ones that block every session outright
+  (`CLERK_ME_PATH`/`CLERK_AUTO_PAIR_PATH` in
   `apps/flowstarter-editor/web/src/lib/clerkSession.ts`, and the
   `window-origin` fallback in
   `apps/flowstarter-editor/web/src/environments/primary/target.ts`, which
   feeds `/api/auth/session`, `/api/auth/bootstrap`, `/api/auth/ws-token` and
   the WebSocket RPC socket URL — the last one needs its trailing slash kept,
   since a bare `/editor` without one hits Caddy's `redir /editor/ permanent`
-  and a WebSocket handshake cannot follow a redirect). A few secondary ones
-  are still open, same root cause, lower stakes because they gate optional
-  settings rather than session bootstrap: `HeaderChromeControls.tsx`
-  (`/api/auth/sign-out`), `publishSite.ts` (`/api/site/publish`),
-  `ConnectionsSettings.tsx` (`/pair`), `approveMockup.ts`
-  (`/api/clerk/workspace/approve-mockup`). Worth a follow-up pass across the
-  whole `apps/flowstarter-editor/web` tree for any other absolute `/api/...`
-  fetch before the next sub-path deploy.
+  and a WebSocket handshake cannot follow a redirect). Same day, a follow-up
+  sweep fixed the secondary ones #182 left open (`HeaderChromeControls.tsx`'s
+  `/api/auth/sign-out` and post-sign-out redirect, `publishSite.ts`'s
+  `/api/site/publish`, `ConnectionsSettings.tsx`'s shareable `/pair` link,
+  `approveMockup.ts`'s `/api/clerk/workspace/approve-mockup`) and
+  consolidated every base-path computation behind one helper,
+  `apps/flowstarter-editor/web/src/lib/basePath.ts`
+  (`withBasePath()`/`EDITOR_BASE_PATH`), which `router.ts`, `clerkSession.ts`
+  and `target.ts` now import instead of each re-deriving
+  `import.meta.env.BASE_URL` locally. A source-tree rule test,
+  `apps/flowstarter-editor/web/src/basePathLiterals.test.ts`, scans for new
+  hardcoded `/api/...`, `/ws`, or `/pair` literals in `fetch()`, `new
+  WebSocket()`, `new URL()`, and `.pathname =` and fails the suite on any
+  that isn't routed through the helper or listed as a reasoned exception
+  (currently one: `ConnectionsSettings.tsx`'s desktop-bridge pairing URL,
+  which targets a separate always-root-mounted LAN backend, not this SPA's
+  own sub-path deploy).
 
 ## One-time box setup
 

@@ -25,6 +25,7 @@
  */
 
 import type { TierContextValue } from "~/hooks/useTier";
+import { withBasePath } from "./basePath";
 
 export interface PublishTarget {
   readonly slug: string;
@@ -110,7 +111,7 @@ export async function runPublish(
   handlers.onBuildStart(target);
 
   try {
-    const res = await fetch("/api/site/publish", {
+    const res = await fetch(withBasePath("/api/site/publish"), {
       method: "POST",
       credentials: "include",
       headers: { "content-type": "application/json" },

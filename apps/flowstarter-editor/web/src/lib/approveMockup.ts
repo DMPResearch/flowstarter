@@ -4,7 +4,9 @@
  * returns the discriminated outcome so the banner can react.
  */
 
-const APPROVE_MOCKUP_PATH = "/api/clerk/workspace/approve-mockup";
+import { withBasePath } from "./basePath";
+
+const APPROVE_MOCKUP_PATH = withBasePath("/api/clerk/workspace/approve-mockup");
 
 export type ApproveMockupResolution =
   | {

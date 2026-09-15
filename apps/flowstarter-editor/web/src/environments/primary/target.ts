@@ -1,4 +1,5 @@
 import type { KnownEnvironment } from "@flowstarter/editor-client-runtime";
+import { EDITOR_BASE_PATH } from "../../lib/basePath";
 
 export interface PrimaryEnvironmentTarget {
   readonly source: KnownEnvironment["source"];
@@ -85,23 +86,20 @@ function resolveConfiguredPrimaryTarget(): PrimaryEnvironmentTarget | null {
   };
 }
 
-// Vite strips its configured base from `import.meta.env.BASE_URL` (same
-// pattern `router.ts` and `clerkSession.ts` already use). A root-mounted
-// dev server has `BASE_URL === "/"`, so this is a no-op there — but a
-// sub-path production deploy (`VITE_BASE_PATH=/editor/`, the shape
+// See `../../lib/basePath.ts`: a sub-path production deploy
+// (`VITE_BASE_PATH=/editor/`, the shape
 // `docs/operations/operator-editor.md` documents) sits behind Caddy's
 // `handle_path /editor/*`, which strips the prefix before proxying to the
-// router. Without it here, `window.location.origin` alone (no path) is
-// indistinguishable from a root deploy, and every HTTP call this target
-// resolves — auth/session, auth/bootstrap, ws-token, pairing-links,
-// clients, observability tracing — lands one level too high, past the
-// prefix Caddy is stripping for, and falls through to the tenant's own
-// site content instead of the router. That answers 200 with unrelated
-// HTML, which breaks JSON parsing downstream with no indication the
-// request went to the wrong place. Verified against a real sub-path
+// router. Without `EDITOR_BASE_PATH` here, `window.location.origin` alone
+// (no path) is indistinguishable from a root deploy, and every HTTP call
+// this target resolves — auth/session, auth/bootstrap, ws-token,
+// pairing-links, clients, observability tracing — lands one level too
+// high, past the prefix Caddy is stripping for, and falls through to the
+// tenant's own site content instead of the router. That answers 200 with
+// unrelated HTML, which breaks JSON parsing downstream with no indication
+// the request went to the wrong place. Verified against a real sub-path
 // deploy on fs-sites-01, 2026-09-15 (same root cause as the
 // `CLERK_ME_PATH` / `CLERK_AUTO_PAIR_PATH` fix in `../../lib/clerkSession.ts`).
-const EDITOR_BASE_PATH = (import.meta.env.BASE_URL ?? "/").replace(/\/+$/, "");
 
 function resolveWindowOriginPrimaryTarget(): PrimaryEnvironmentTarget {
   const httpBaseUrl = normalizeBaseUrl(window.location.origin + EDITOR_BASE_PATH);
