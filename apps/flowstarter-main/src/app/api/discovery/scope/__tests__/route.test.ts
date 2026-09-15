@@ -94,6 +94,34 @@ describe('POST /api/discovery/scope', () => {
     expect(json).not.toHaveProperty('rule');
   });
 
+  it('defaults locale to en when the intake does not send one', async () => {
+    runScopeGate.mockResolvedValue({
+      route: 'self-serve',
+      scope: 'standard',
+      confidence: 0.9,
+      evidence: [],
+      rule: 'standardAboveThreshold',
+    });
+    await POST(post(BRIEF));
+    expect(runScopeGate).toHaveBeenCalledWith(
+      expect.objectContaining({ locale: 'en' })
+    );
+  });
+
+  it('forwards a ro locale to the gate for the acceptable-use notice', async () => {
+    runScopeGate.mockResolvedValue({
+      route: 'self-serve',
+      scope: 'standard',
+      confidence: 0.9,
+      evidence: [],
+      rule: 'standardAboveThreshold',
+    });
+    await POST(post({ ...BRIEF, locale: 'ro' }));
+    expect(runScopeGate).toHaveBeenCalledWith(
+      expect.objectContaining({ locale: 'ro' })
+    );
+  });
+
   it('passes the clarifying answer through on the second pass', async () => {
     runScopeGate.mockResolvedValue({
       route: 'self-serve',

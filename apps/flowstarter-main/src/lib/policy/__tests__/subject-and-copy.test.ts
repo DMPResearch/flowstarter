@@ -184,7 +184,7 @@ describe('the copy', () => {
     expect(paragraph).toContain('/contact');
   });
 
-  it('uses no em dashes and no emoji, anywhere', () => {
+  it('uses no em dashes and no emoji, anywhere, in either locale', () => {
     // House rule, and the reason it is a test: this copy is generated from the
     // category reasons, so one careless edit to the policy module would put a
     // dash on a page a client reads.
@@ -197,12 +197,95 @@ describe('the copy', () => {
       '[\\uD83C-\\uDBFF][\\uDC00-\\uDFFF]|[\\u2600-\\u27BF]'
     );
     const dashes = new RegExp('[\\u2014\\u2013]');
-    for (const category of [...PROHIBITED_CATEGORIES, ...REVIEW_CATEGORIES]) {
-      for (const notice of [refusalNotice(category), reviewNotice(category)]) {
-        const all = `${notice.title} ${notice.message} ${notice.next}`;
-        expect(all, category.id).not.toMatch(dashes);
-        expect(all, category.id).not.toMatch(emoji);
+    for (const locale of ['en', 'ro'] as const) {
+      for (const category of [...PROHIBITED_CATEGORIES, ...REVIEW_CATEGORIES]) {
+        for (const notice of [
+          refusalNotice(category, locale),
+          reviewNotice(category, locale),
+        ]) {
+          const all = `${notice.title} ${notice.message} ${notice.next}`;
+          expect(all, `${locale}/${category.id}`).not.toMatch(dashes);
+          expect(all, `${locale}/${category.id}`).not.toMatch(emoji);
+        }
       }
     }
+  });
+});
+
+describe('the copy, in the visitor own language', () => {
+  // The intake already carries `locale: 'en' | 'ro'` the same way
+  // `intake-graph`, `intake-chat` and `business-names` do (see
+  // `IntakeGraphLocale`); this is the same two-value contract for the
+  // acceptable-use gate's notice.
+  it('defaults every existing call site to English, unchanged', () => {
+    const refusal = refusalNotice(categoryById('adult_content')!);
+    const review = reviewNotice(categoryById('legal_cannabis')!);
+    expect(refusal.locale).toBe('en');
+    expect(refusal.title).toBe('We cannot build this one');
+    expect(review.locale).toBe('en');
+    expect(review.title).toBe('One of us needs to look at this first');
+  });
+
+  it('answers a refusal in Romanian, with correct diacritics, when asked', () => {
+    const notice = refusalNotice(categoryById('adult_content')!, 'ro');
+    expect(notice.locale).toBe('ro');
+    expect(notice.title).toBe('Nu putem construi acest site');
+    expect(notice.message).toContain('utilizare acceptabilă');
+    expect(notice.message).toContain('nu s-a taxat nimic');
+    expect(notice.next).toContain('o persoană va analiza cazul');
+    // Diacritics survive rather than degrading to their ASCII look-alikes.
+    expect(notice.message).toMatch(/[ăâîșț]/);
+  });
+
+  it('answers a review in Romanian as a pause, not a refusal', () => {
+    const notice = reviewNotice(categoryById('legal_cannabis')!, 'ro');
+    expect(notice.decision).toBe('review');
+    expect(notice.locale).toBe('ro');
+    expect(notice.message).toContain('o persoană o verifică');
+    expect(notice.message).not.toContain('nu putem');
+    expect(notice.next).toMatch(/[ăâîșț]/);
+  });
+
+  it('is also what a review reads as when the classifier itself failed', () => {
+    // `PolicyDecision`'s own doc: review "is also where every uncertain
+    // answer lands, including a broken classifier" -- there is no separate
+    // "unclear" notice, so the Romanian review copy is what an unclear
+    // verdict reads too. `noticeFor` is the one seam every enforcement point
+    // calls through, so exercising it here is exercising that path.
+    const notice = noticeFor({
+      decision: 'review',
+      category: categoryById('none')!,
+      locale: 'ro',
+    });
+    expect(notice?.title).toBe('Trebuie mai întâi să verificăm');
+  });
+
+  it('carries the locale through noticeFor for a refusal too', () => {
+    const notice = noticeFor({
+      decision: 'refuse',
+      category: categoryById('weapons_sales')!,
+      locale: 'ro',
+    });
+    expect(notice?.locale).toBe('ro');
+    expect(notice?.title).toBe('Nu putem construi acest site');
+  });
+
+  it('still returns nothing for an allow, locale or not', () => {
+    expect(
+      noticeFor({
+        decision: 'allow',
+        category: categoryById('none')!,
+        locale: 'ro',
+      })
+    ).toBeNull();
+  });
+
+  it('folds the Romanian notice into one Romanian paragraph too', () => {
+    const paragraph = noticeParagraph(
+      refusalNotice(categoryById('illegal_drugs')!, 'ro')
+    );
+    expect(paragraph).toContain('/terms#acceptable-use');
+    expect(paragraph).toContain('/contact');
+    expect(paragraph).toContain('utilizarea acceptabilă');
   });
 });

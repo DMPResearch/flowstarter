@@ -171,9 +171,18 @@ export default {
       },
     ],
   },
-  // Optimize compilation speed
+  // Optimize compilation speed by stripping console.log/debug/info noise from
+  // production builds. `warn` and `error` are excluded on purpose: every
+  // sigma, acceptable-use, scope and policy decision line
+  // (`[sigma] ...`, `[scope] ...`, `[policy] ...`) is logged through one of
+  // those two levels precisely so an operator can see classifier behaviour in
+  // the staging/prod bundle. Stripping them made every decision invisible
+  // outside the boot line -- see the fix that added this comment.
   compiler: {
-    removeConsole: process.env.NODE_ENV === 'production',
+    removeConsole:
+      process.env.NODE_ENV === 'production'
+        ? { exclude: ['error', 'warn'] }
+        : false,
   },
   allowedDevOrigins: [
     '192.168.3.119',

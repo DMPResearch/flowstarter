@@ -37,6 +37,7 @@ const policyDecision = { value: 'allow' as 'allow' | 'review' | 'refuse' };
 interface ScreenCall {
   surface: string;
   text: string;
+  locale?: string;
 }
 const screenAcceptableUse = vi.fn(async (_input: ScreenCall) => ({
   verdict: { decision: policyDecision.value },
@@ -234,6 +235,16 @@ describe('the acceptable-use gate, ahead of the scope classification', () => {
     expect(call.text).toContain('A portal my customers log into');
     // Composed through `intakeSubject`, so the link title it read is in it.
     expect(call.text).toContain('Acme - Client Portal Login');
+  });
+
+  it('passes the visitor locale through to the acceptable-use screen', async () => {
+    await runScopeGate({ ...BRIEF, locale: 'ro' }, noNetwork);
+    expect(screenAcceptableUse.mock.calls[0][0].locale).toBe('ro');
+  });
+
+  it('defaults to English when the caller sends no locale', async () => {
+    await runScopeGate(BRIEF, noNetwork);
+    expect(screenAcceptableUse.mock.calls[0][0].locale).toBeUndefined();
   });
 
   it('files nothing and offers nothing for a refused brief', async () => {
