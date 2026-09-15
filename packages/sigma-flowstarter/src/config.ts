@@ -26,7 +26,10 @@ export const PACKAGE_ROOT: string = process.env.SIGMA_FLOWSTARTER_ROOT
 export const CONFIG_DIR: string = join(PACKAGE_ROOT, 'config');
 export const MODELS_DIR: string = join(PACKAGE_ROOT, 'models');
 export const CENTROIDS_PATH: string = join(MODELS_DIR, 'centroids.json');
-export const SEMANTIC_CONFIG_PATH: string = join(MODELS_DIR, 'semantic-config.json');
+export const SEMANTIC_CONFIG_PATH: string = join(
+  MODELS_DIR,
+  'semantic-config.json',
+);
 export const PROVENANCE_PATH: string = join(MODELS_DIR, 'provenance.json');
 
 export interface PolicyConfig {
@@ -55,7 +58,17 @@ export interface EvaluationConfig {
   scope: Record<string, number>;
   calibration: { minCoverage: number; scopeMinCoverage: number };
   gates: {
+    /** The cascade as production actually runs it: an injected tier confirms every refuse candidate. */
     acceptableUseMaxWeightedCost: number;
+    /**
+     * The degraded path: no injected tier at all, so a refuse candidate can
+     * only ever fall back to `review` (see `requireInjectedConfirmation`).
+     * Its own gate, because a regression in the semantic tier's candidate
+     * quality must fail a suite even when the confirming-tier eval, which
+     * papers over a wrong candidate whenever it still names the right
+     * category, would not catch it.
+     */
+    acceptableUseNoLlmMaxWeightedCost: number;
     scopeMaxWeightedCost: number;
     minCoverage: number;
     scopeMinCoverage: number;
@@ -84,7 +97,9 @@ export function loadPolicy(): PolicyConfig {
 
 let evaluation: EvaluationConfig | undefined;
 export function loadEvaluationConfig(): EvaluationConfig {
-  evaluation ??= readJsonFile<EvaluationConfig>(join(CONFIG_DIR, 'evaluation.json'));
+  evaluation ??= readJsonFile<EvaluationConfig>(
+    join(CONFIG_DIR, 'evaluation.json'),
+  );
   return evaluation;
 }
 

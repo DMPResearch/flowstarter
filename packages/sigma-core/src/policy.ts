@@ -31,6 +31,28 @@ export interface ActionGuard {
   minTierConfidence?: number;
   /** When true, an injected tier may not produce this action at all. */
   semanticOnly?: boolean;
+  /**
+   * When true, the semantic tier may NEVER settle this action on its own,
+   * however far above `minSimilarity`/`minMargin` it sits. Only an injected
+   * tier — one that read the text and named the category, not a cosine
+   * against a centroid — may produce it; when no injected tier is
+   * configured, or the one configured could not answer, the action falls to
+   * `fallback` exactly as an abstention would.
+   *
+   * The mirror image of `semanticOnly`: that flag says an injected tier's
+   * opinion is not wanted for this action; this one says the semantic
+   * tier's opinion is not ENOUGH for it, on its own, no matter how far above
+   * its floor it sits. Reach for it on an action that is a one-way door with
+   * no appeal in the moment — Flowstarter's `refuse` guard is the case this
+   * was built for (2026-09-15, staging scenario 8): a prompt-injection
+   * payload was refused as `scams_impersonation` on a margin of 0.088, five
+   * hundredths above the 0.06 floor, by the embedding tier alone, next to a
+   * drugs brief the same run correctly routed through the LLM tier at 0.900.
+   * A margin that clears a calibrated band is still a cosine, not a read of
+   * intent; a customer-facing "we will not build this" deserves the tier
+   * that can name the category and quote the evidence.
+   */
+  requireInjectedConfirmation?: boolean;
 }
 
 export interface DecisionThresholds<A extends string = string> {
@@ -43,7 +65,10 @@ export interface DecisionThresholds<A extends string = string> {
   failClosedInProduction: boolean;
 }
 
-export interface DecisionMapping<L extends string = string, A extends string = string> {
+export interface DecisionMapping<
+  L extends string = string,
+  A extends string = string,
+> {
   /** Which head in the trace this mapping reads. */
   decision: string;
   /** label -> action. Returning null means "treat as abstained". */
@@ -59,7 +84,10 @@ export type OutcomeReason =
   | 'unmapped_label'
   | 'error';
 
-export interface PolicyOutcome<L extends string = string, A extends string = string> {
+export interface PolicyOutcome<
+  L extends string = string,
+  A extends string = string,
+> {
   action: A;
   /** The label that produced the action, or null when the fallback did. */
   label: L | null;
@@ -150,7 +178,10 @@ export function decide<L extends string = string, A extends string = string>(
  * decides whether to spend a second tier. Pure, and the same code path
  * `decide` takes, so the two can never disagree.
  */
-export function semanticSettles<L extends string = string, A extends string = string>(
+export function semanticSettles<
+  L extends string = string,
+  A extends string = string,
+>(
   semantic: SemanticResult<L>,
   thresholds: DecisionThresholds<A>,
   mapping: DecisionMapping<L, A>,
@@ -174,7 +205,16 @@ function guardOf(
   guard: ActionGuard,
 ): string | null {
   if (tier === 'semantic') {
-    if (guard.minSimilarity !== undefined && semantic.similarity < guard.minSimilarity) {
+    // Checked first, and unconditionally: a requireInjectedConfirmation
+    // guard is not a stricter similarity or margin floor, it is a different
+    // KIND of requirement, and a semantic verdict cannot satisfy it at any
+    // distance from centroid. See the field's doc comment.
+    if (guard.requireInjectedConfirmation)
+      return 'requires_injected_confirmation';
+    if (
+      guard.minSimilarity !== undefined &&
+      semantic.similarity < guard.minSimilarity
+    ) {
       return 'min_similarity';
     }
     if (guard.minMargin !== undefined && semantic.margin < guard.minMargin) {
@@ -184,7 +224,10 @@ function guardOf(
   }
   if (tier === 'injected') {
     if (guard.semanticOnly) return 'semantic_only';
-    if (guard.minTierConfidence !== undefined && confidence < guard.minTierConfidence) {
+    if (
+      guard.minTierConfidence !== undefined &&
+      confidence < guard.minTierConfidence
+    ) {
       return 'min_tier_confidence';
     }
     return null;
