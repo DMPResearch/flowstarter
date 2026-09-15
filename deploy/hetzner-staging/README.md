@@ -497,6 +497,172 @@ own `POSTGRES_USER`/`POSTGRES_DB`, because Cal's are `calcom`/`calcom` and not
 `postgres`. That database holds every client's booking page and every booking
 made against it, and none of it is reproducible from git.
 
+## Shipping the sigma model
+
+The sigma classifier (`@flowstarter/sigma-flowstarter`, PR #160, dist build
+and native `onnxruntime-node` dependency in PR #167) gates the discovery
+funnel on acceptable use and commercial scope, locally: a pinned
+multilingual-e5-small ONNX encoder (`packages/sigma-core/config/encoder.json`)
+with `allowRemoteModels=false` at runtime — no outbound call from inside a
+visitor's request, ever. Three separate things have to be true in this image
+before that works, and Next's own build pipeline gets none of them right on
+its own: the model weights have to be on disk (`sigma-model` stage), the
+classifier's own runtime code — `@flowstarter/sigma-flowstarter`,
+`@flowstarter/sigma-core`, `@huggingface/transformers`, `onnxruntime-node` —
+has to actually be reachable at runtime (`sigma-runtime-deps` stage), and
+both sigma packages' own asset lookups (`models/`, `config/`) have to point
+somewhere real (`SIGMA_CORE_ROOT`/`SIGMA_FLOWSTARTER_ROOT`). Miss any one of
+the three and the classifier fails open to human review on every check (by
+design — see `packages/sigma-flowstarter/src/gate.ts`), silently, unless
+someone is watching `/api/health`.
+
+**The model weights: the `sigma-model` stage.** Runs
+`packages/sigma-core/scripts/fetch-model.mjs` at build time — the pinned
+Hugging Face revision, every file sha256-verified against
+`packages/sigma-core/config/encoder.json`, into
+`SIGMA_MODEL_CACHE_DIR=/opt/flowstarter/sigma-model-cache`. Needs neither
+`pnpm install` nor the `deps` stage's `node_modules` (the script depends on
+nothing but Node's own `fetch`/`crypto`/`fs`), so it runs in parallel with
+every other stage, and retries a transient download failure with backoff
+(observed in practice on a resource-constrained build host: a ~120MB file
+dying mid-download to a generic "terminated" is common enough to be worth
+not failing the whole build over). The `runner` stage copies the cache in at
+the same fixed path (`--chown=node:node`; the `node` user never needs to
+write to it) and sets the same env var, which
+`packages/sigma-core/src/artifacts.ts`'s `resolveCacheDir()` reads.
+
+**The runtime code: why `.next/standalone` cannot be trusted with it, and
+the `sigma-runtime-deps` stage that doesn't.** Both sigma packages build to
+`dist/` and are ordinary, untranspiled, `serverExternalPackages`-listed
+external packages (#167) — every ingredient Next's own tracing usually needs
+to carry a package into `.next/standalone` on its own. It still doesn't,
+for either the classifier's package files or its own native dependencies,
+and the two gaps fail differently:
+
+- `@flowstarter/sigma-flowstarter` and `@flowstarter/sigma-core` themselves
+  are simply absent from `.next/standalone` — no `packages/sigma-core`, no
+  `node_modules/@flowstarter/*` — because Turbopack's tracing never follows
+  the one code path that reaches them: `src/lib/sigma/warm.ts`'s dynamic
+  `import()`, called only from `src/instrumentation.ts` (which is not
+  route-traced the way an API route is), while `src/app/api/health/
+  route.ts`'s STATIC import of the same file only touches `getSigmaHealth`,
+  never the sigma-flowstarter runtime import in the same file, so
+  tree-shaking drops it. A plain Node import of `@flowstarter/
+  sigma-flowstarter` from an isolated copy of `.next/standalone` throws
+  `Cannot find package` immediately. Inside the real container this was
+  worse than a clean error before the fix below: `warmSigmaOrWarn()`'s
+  dynamic `import()` never settled inside Turbopack's runtime module loader
+  for a genuinely missing module, so the classifier's first warm-up
+  attempt hung the process indefinitely instead of failing open.
+- `@huggingface/transformers`, `onnxruntime-node`, `onnxruntime-common` and
+  `sharp` ARE present in `.next/standalone` — Next's tracing does reach
+  them, as externals — but incompletely: the native `.node` binding lands
+  with no shared library beside it (`libonnxruntime.so.1: cannot open
+  shared object file`), and `sharp` is missing outright despite
+  apps/flowstarter-main's own direct dependency on it for `next/image`.
+  Worse, once the files ARE all correctly present via a naive top-level
+  copy, the compiled server chunk STILL fails: Turbopack's production
+  "external module" wrapper resolves a dynamic import like
+  `require('onnxruntime-node')` from inside `@huggingface/transformers`
+  against the pnpm virtual-store path it saw AT BUILD TIME
+  (`node_modules/.pnpm/onnxruntime-node@1.24.3/node_modules/
+  onnxruntime-node`), not wherever the files land at runtime — the same
+  class of bug as the `templates` build stage's astro-shim path baking,
+  elsewhere in this file, just for a different package.
+
+`deploy/hetzner-staging/scripts/stage-sigma-runtime.mjs` (run by the
+`sigma-runtime-deps` stage, merged into the `runner` stage's
+`node_modules`) does not trust tracing for any of this: it dereferences
+pnpm's symlinks and copies the REAL files for the whole chain —
+`@flowstarter/sigma-flowstarter` → `@flowstarter/sigma-core` →
+`@huggingface/transformers` → `onnxruntime-node` (+ `onnxruntime-common`)
+→ `sharp` (+ its platform-specific `@img/sharp-*` binary and plain
+dependencies) — following each package's own resolution of the next
+(this repo has two different `onnxruntime-node` versions installed for
+unrelated reasons; resolving from the wrong anchor silently grabs the
+wrong one), to a flat top-level `node_modules/<name>` AND, for every leaf
+npm package, a second copy mirrored at the exact
+`node_modules/.pnpm/<name>@<version>/node_modules/<name>` path Next's own
+partial trace already created — the one Turbopack's baked-in resolution
+actually reads. Also prunes `onnxruntime-node`'s bundled binaries (five
+platform/arch combinations, 200MB+ together) down to the build's own
+`process.platform`/`process.arch` in both copies.
+
+**Asset lookups: `SIGMA_CORE_ROOT` / `SIGMA_FLOWSTARTER_ROOT`.** Even with
+the runtime code correctly in place, `packages/sigma-core/src/
+artifacts.ts`'s `CORE_ROOT` and `packages/sigma-flowstarter/src/
+config.ts`'s `PACKAGE_ROOT` — both computed from `import.meta.url` at
+module-load time, used to find `config/encoder.json`,
+`models/centroids.json`, etc. — get baked in against wherever the package
+sat AT BUILD TIME (`/app/packages/sigma-flowstarter` in the `builder`
+stage), not wherever it actually ends up. The `runner` stage sets both env
+vars (both roots already support this override, for exactly this kind of
+case) to the flat copy the `sigma-runtime-deps` stage staged, sidestepping
+the baked-in path the same way `SIGMA_MODEL_CACHE_DIR` sidesteps trusting
+tracing for the model cache.
+
+**Cross-chunk state: why `getSigmaHealth()` is `globalThis`-backed, not a
+plain module variable.** `src/lib/sigma/warm.ts` is imported by both
+`instrumentation.ts` and the health route, and Turbopack builds each entry
+point as its own separate chunk graph — this file gets bundled into BOTH,
+as two independent module instances with independent closures. A plain
+`let health` would mean `register()`'s write and `route.ts`'s read never
+see each other despite running in the same process; `globalThis` (keyed by
+`Symbol.for(...)`, so every bundle's copy of this module resolves to the
+same underlying value) is the one thing genuinely shared regardless of how
+a bundler split the code that reaches it.
+
+**Logging: `process.stdout`/`stderr.write`, not `console.log`/`.warn`.**
+`next.config.mjs` sets `compiler.removeConsole` in production, which strips
+every `console.*` CALL EXPRESSION from the compiled output. A
+`console.log`/`console.warn` in `warm.ts` never made it into `docker logs`
+at all — silently, the one failure mode this module exists to make loud.
+
+**Warm-up, and what it costs.** `register()` calls `warmSigmaOrWarn()` once,
+after the rate-limit posture gate, off the request path. It never throws —
+unlike the rate-limit gate, a missing sigma model degrades the product
+(every check falls open to a human) rather than corrupting it. `GET
+/api/health` reports the result as `sigma: "ready" | "missing"`, additive
+to the existing `ok`/`supabase`/`commit` fields — `ok` stays `true` either
+way; a missing model is a deploy defect worth noticing, not a reason to
+fail the liveness probe or block a rollout.
+
+**Measured** (`docker build -f deploy/hetzner-staging/Dockerfile --target
+runner .`, `docker run`, `curl /api/health`; native `onnxruntime-node`
+built for and measured on linux/arm64 — the local Docker Desktop VM's
+architecture — not the linux/amd64 CI actually ships; re-verify on an
+amd64 runner before trusting the exact byte counts, though the mechanism
+is architecture-agnostic):
+
+| | |
+| --- | --- |
+| Baseline image (before this change) | 360,144,778 bytes (~343 MiB) |
+| With the sigma model + runtime deps | 488,281,192 bytes (~465 MiB) |
+| Delta | ~128 MiB |
+| `sigma-model` layer (encoder weights) | 135 MB |
+| `sigma-runtime-deps` layer (code, flat + `.pnpm`-mirrored) | 110 MB |
+| Time from container start to `sigma: "ready"` | ~1s (`onnxruntime cpuid_info warning: Unknown CPU vendor` logs first — harmless, ONNX Runtime's CPU-feature detection doesn't recognize the vendor string this VM reports; warm-up completes normally after it) |
+
+The `sigma-runtime-deps` layer carries every leaf npm package twice (flat +
+mirrored) — a known, currently-accepted size cost of not trusting Next's
+tracing for either copy independently; see that stage's comment before
+trying to drop one without re-verifying the other still works. Re-measure
+after touching `packages/sigma-core/config/encoder.json`'s
+`model`/`revision` (a different encoder is a different size) or upgrading
+`@huggingface/transformers` (a different onnxruntime-node pin).
+
+If a future Next/Turbopack upgrade fixes the underlying tracing and
+baked-path gaps, this whole mechanism can shrink back to nothing: check
+with `docker run --rm <image> node -e
+"require('@flowstarter/sigma-flowstarter')"` after a build, and confirm
+`/api/health` reports `sigma: "ready"` shortly after start, before removing
+either the `sigma-runtime-deps` stage or the two `SIGMA_*_ROOT` env vars.
+
+**Local dev / Mac.** `pnpm --filter @flowstarter/sigma-core fetch-model`, a
+one-off, documented in `apps/flowstarter-main/README.md` and `.env.example`.
+Not run automatically by `pnpm install` — it fetches a ~135 MB pinned model,
+not an npm package.
+
 ## Known gaps
 
 - **Signed Storage URLs.** Tenant asset URLs are signed against
