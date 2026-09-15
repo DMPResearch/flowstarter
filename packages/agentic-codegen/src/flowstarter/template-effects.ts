@@ -3,12 +3,19 @@
  * survive the agent that fills it with a client's words.
  *
  * Every other output gate asks whether the built site is honest, safe or
- * complete. None of them asks whether it still *moves*. A delivered portfolio
- * made this visible: the compiled pages carried the template's own script
- * bundle — three `IntersectionObserver`s and the reveal selectors — and not
- * one element the observers could attach to, because the agent had rewritten
- * the section components and written new markup for them. The script was
- * there, the hooks were gone, and every gate passed.
+ * complete. None of them asks whether it still *moves*, and the agent that
+ * fills a template with a client's words edits the exact files the motion
+ * lives in. A template's effects are a contract between three files that
+ * never see each other — an attribute in a section's markup, a selector for
+ * it in `src/scripts/`, a rule in that section's `<style>` block — and only
+ * one of the three is being rewritten. Rewrite the markup and the script
+ * still loads, the stylesheet still ships, and nothing on the page answers to
+ * either.
+ *
+ * The rule below is a floor under that, not a diagnosis of any one build.
+ * What it cost to write is small; what it prevents is a class of regression
+ * that no other gate can see, because every one of them reads what the page
+ * *says*.
  *
  * The rule this module states is narrow and mechanical:
  *
@@ -72,12 +79,14 @@ export interface TemplateEffectsFile {
  * if it is, does it still carry its hooks — and the first step is answered by
  * the class names the component's own markup writes out.
  *
- * This is not a theory. The delivered portfolio that prompted all of this had
- * dropped `Stats` and `Testimonial` from its homepage entirely, which is a
- * content decision, and had also rewritten `Expertise` so that
- * `expertise__left` and `expertise__right` survived and the
- * `expertise__left-inner` that carried `position: sticky` did not. One of
- * those is a build that lost an effect. Only one.
+ * Both halves of that are load-bearing, and a real delivered site shows why:
+ * its homepage dropped `Stats` and `Testimonial` outright — no stats counter,
+ * no testimonial reveal, and no class of either left on the page. Without the
+ * marker step this rule would have failed that build for two effects the
+ * agent was entitled to remove along with the sections that carried them.
+ * Whether removing a section the brief had content for is a defect is a real
+ * question; it is a question for the gates that read what the page says, not
+ * for this one.
  */
 export interface TemplateEffectsSection {
   /** The component, posix, e.g. `src/components/Expertise.astro`. */

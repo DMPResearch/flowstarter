@@ -209,6 +209,13 @@ import { useFormSuccess } from './hooks/useFormSuccess.js';
 
 // src/components/about/AboutJourneySection.astro
 {
+  // The loader half of the step timeline. This template's own
+  // AboutJourneySection is still the flat row layout and renders no
+  // `data-journey-*` markup, so the hook finds no `[data-journey-section]`
+  // and returns — the same guard every block in this file relies on. It is
+  // here because a hook module nothing imports can never run whatever the
+  // markup does, and the other three templates that ship this component wire
+  // it exactly this way.
   useJourneyTimeline();
 }
 
