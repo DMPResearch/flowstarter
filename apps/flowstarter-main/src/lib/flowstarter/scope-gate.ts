@@ -22,7 +22,7 @@ import { publicAppOrigin } from '@flowstarter/platform-config';
 import { resolveOperatorNotifyEmail, sendEmail } from '@/lib/email';
 import { screenAcceptableUse } from '@/lib/policy/gate';
 import type { PolicyLocale, PolicyNotice } from '@/lib/policy/copy';
-import { intakeSubject } from '@/lib/policy/subject';
+import { intakeLink, intakeSubject } from '@/lib/policy/subject';
 import {
   customWorkEnquiryEmail,
   customWorkOperatorEmail,
@@ -197,6 +197,7 @@ async function screenedVerdict(
   input: ScopeGateInput,
   linkTitle: string
 ): Promise<{ acceptableUse: AcceptableUse; notice: PolicyNotice | null }> {
+  const link = intakeLink(input);
   const screening = await screenAcceptableUse({
     surface: 'preview',
     text: intakeSubject({
@@ -206,6 +207,13 @@ async function screenedVerdict(
       linkedinUrl: input.linkedinUrl,
       linkTitle,
     }),
+    // The visitor's own words for the operator review email's quote block,
+    // never the composed `text` above -- see `ScreenInput.briefText`. This is
+    // the same `input.description` `openScopeReview` below already threads
+    // through for the scope gate's own two review rules.
+    briefText: input.description,
+    linkUrl: link?.url,
+    linkLabel: link?.label,
     locale: input.locale,
   });
   // The notice travels with the verdict so a `refused` or `hold` route can
@@ -411,6 +419,7 @@ export async function runScopeGate(
     clarification: input.clarification,
   });
   const classification = await classifyScope(classifierText);
+  const link = intakeLink(input);
 
   const decision = decideRoute({
     scope: classification.scope,
@@ -434,6 +443,8 @@ export async function runScopeGate(
       // quotes the brief the visitor actually typed, and `scopeClassifierText`
       // is a longer prompt built for a model, link title and all.
       briefText: input.description,
+      linkUrl: link?.url,
+      linkLabel: link?.label,
       contactName: input.fullName,
       contactEmail: input.email,
     });
@@ -517,6 +528,8 @@ async function openScopeReview(input: {
   classification: ScopeClassification;
   subject: string;
   briefText: string;
+  linkUrl?: string;
+  linkLabel?: string;
   contactName: string;
   contactEmail: string;
 }): Promise<void> {
@@ -547,6 +560,8 @@ async function openScopeReview(input: {
       promptVersion: input.classification.classifier,
     },
     briefText: input.briefText,
+    linkUrl: input.linkUrl,
+    linkLabel: input.linkLabel,
     contactName: input.contactName,
     contactEmail: input.contactEmail,
     actor: 'scope-gate',

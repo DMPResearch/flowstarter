@@ -130,7 +130,10 @@ vi.mock('@/lib/policy/review', () => ({
   })),
 }));
 
+import { recordPolicyOutcome } from '@/lib/policy/review';
 import { POST } from '../route';
+
+const recordPolicyOutcomeMock = vi.mocked(recordPolicyOutcome);
 
 function classification(
   overrides: Partial<Parameters<typeof classify>[0]> = {}
@@ -255,5 +258,33 @@ describe('POST /api/discovery/preview/live — acceptable-use gate', () => {
     // A clean intake reaches the reservation and gets a real job going.
     expect(reserveFunnelSpendMock).toHaveBeenCalledTimes(1);
     expect(responseBody.demoId).toBeTruthy();
+  });
+
+  it('quotes the visitor own description to the operator, never the composed classifier subject', async () => {
+    // The bug this pins: the operator's "A brief needs your review" email
+    // once quoted `intakeSubject`'s composed block ("What the business
+    // does: ... Link hostname: ...") instead of what the visitor actually
+    // typed. `screenAcceptableUse` is real here (only the classifier and
+    // `recordPolicyOutcome` are mocked), so this exercises the route's own
+    // wiring of `briefText`/`linkUrl` end to end.
+    classify.mockResolvedValue(
+      classification({ categoryId: 'licensed_pharmacy', confidence: 0.6 })
+    );
+
+    await POST(
+      previewRequest({
+        description: 'We fill repeat prescriptions for regular customers.',
+        websiteUrl: 'https://example-pharmacy.ro',
+      })
+    );
+
+    const written = recordPolicyOutcomeMock.mock.calls.at(-1)?.[0];
+    expect(written?.briefText).toBe(
+      'We fill repeat prescriptions for regular customers.'
+    );
+    expect(written?.briefText).not.toContain('What the business does');
+    expect(written?.briefText).not.toContain('Link hostname');
+    expect(written?.linkUrl).toBe('https://example-pharmacy.ro');
+    expect(written?.linkLabel).toBe('Their site');
   });
 });

@@ -40,7 +40,7 @@ import {
   policyStatusFor,
   screenAcceptableUse,
 } from '@/lib/policy/gate';
-import { intakeSubject } from '@/lib/policy/subject';
+import { intakeLink, intakeSubject } from '@/lib/policy/subject';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -202,9 +202,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // pass the four quick questions and then type the real business into the
   // claim form, and the classifier's cache makes the repeat free when they
   // have not.
+  const claimLink = intakeLink(spec);
   const screening = await screenAcceptableUse({
     surface: 'claim',
     text: intakeSubject(spec),
+    // The visitor's own words for the operator review email's quote block,
+    // never the composed `text` above -- see `ScreenInput.briefText`.
+    briefText: spec.description,
+    linkUrl: claimLink?.url,
+    linkLabel: claimLink?.label,
     actor: auth.userId,
   });
   if (screening.blocked && screening.notice) {

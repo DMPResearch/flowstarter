@@ -28,6 +28,7 @@ import {
   changeRequestSubject,
   composeSubject,
   hostnameOf,
+  intakeLink,
   intakeSubject,
 } from '../subject';
 
@@ -106,6 +107,38 @@ describe('composing what the classifier reads', () => {
       { label: 'Offer', value: 'w  e  e  d\n\n\n\nfor   sale' },
     ]);
     expect(subject).toBe('Offer: w e e d for sale');
+  });
+});
+
+describe('intakeLink: the one link, labelled for a person to read', () => {
+  it('prefers the website, labelled "Their site"', () => {
+    expect(
+      intakeLink({
+        websiteUrl: 'https://acme.example.com',
+        instagramUrl: 'https://instagram.com/acme',
+      })
+    ).toEqual({ label: 'Their site', url: 'https://acme.example.com' });
+  });
+
+  it('falls back to Instagram, labelled "Their profile"', () => {
+    expect(intakeLink({ instagramUrl: 'https://instagram.com/acme' })).toEqual({
+      label: 'Their profile',
+      url: 'https://instagram.com/acme',
+    });
+  });
+
+  it('falls back to LinkedIn, labelled "Their profile"', () => {
+    expect(
+      intakeLink({ linkedinUrl: 'https://linkedin.com/company/acme' })
+    ).toEqual({
+      label: 'Their profile',
+      url: 'https://linkedin.com/company/acme',
+    });
+  });
+
+  it('is null when the visitor gave no link at all', () => {
+    expect(intakeLink({})).toBeNull();
+    expect(intakeLink({ websiteUrl: '   ' })).toBeNull();
   });
 });
 

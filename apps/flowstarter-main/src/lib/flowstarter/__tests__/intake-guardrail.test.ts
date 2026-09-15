@@ -15,13 +15,44 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('server-only', () => ({}));
 
+interface ScreenCall {
+  surface: string;
+  text: string;
+  briefText?: string;
+  linkUrl?: string;
+  linkLabel?: string;
+}
+const CLEAN = {
+  id: 'none',
+  label: 'No policy category',
+  reason: 'Nothing in this submission falls under the acceptable-use policy.',
+  disposition: 'clean' as const,
+};
+const screenAcceptableUse = vi.fn(async (_input: ScreenCall) => ({
+  verdict: {
+    decision: 'allow' as const,
+    category: CLEAN,
+    confidence: 0.9,
+    rule: 'clean_confident' as const,
+    tier: 'llm' as const,
+    needsHuman: false,
+  },
+  classification: {},
+  blocked: false,
+  notice: null,
+  reviewId: null,
+}));
+vi.mock('@/lib/policy/gate', () => ({
+  screenAcceptableUse: (input: ScreenCall) => screenAcceptableUse(input),
+}));
+
 import {
   decideRoute,
   type AcceptableUse,
   type ScopeRoute,
 } from '../scope-route';
 import { acceptableUseFrom } from '../acceptable-use-verdict';
-import { intakeStopFor } from '../intake-guardrail';
+import { intakeStopFor, screenIntakeDescription } from '../intake-guardrail';
 import {
   CLEAN_CATEGORY,
   type PolicyVerdict,
@@ -109,5 +140,22 @@ describe('acceptableUseFrom, read by both surfaces', () => {
     );
     expect(narrowed).toBe('unsettled');
     expect(intakeStopFor(narrowed)).toBeNull();
+  });
+});
+
+describe('screenIntakeDescription, what it hands the gate', () => {
+  it('threads the visitor own words as briefText, and the link separately, never folded into the composed subject', async () => {
+    // Same fix as the funnel's other five call sites: the operator review
+    // email's quote must be what the visitor typed, not `intakeSubject`'s
+    // composed block built for the classifier.
+    await screenIntakeDescription({
+      description: 'I need a website for my business.',
+      instagramUrl: 'https://instagram.com/example',
+    });
+    const call = screenAcceptableUse.mock.calls.at(-1)?.[0];
+    expect(call?.briefText).toBe('I need a website for my business.');
+    expect(call?.linkUrl).toBe('https://instagram.com/example');
+    expect(call?.linkLabel).toBe('Their profile');
+    expect(call?.briefText).not.toContain('What the business does');
   });
 });

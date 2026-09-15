@@ -71,6 +71,9 @@ vi.mock('@/lib/policy/review', () => ({
   })),
 }));
 
+import { recordPolicyOutcome } from '@/lib/policy/review';
+const recordPolicyOutcomeMock = vi.mocked(recordPolicyOutcome);
+
 function classification(
   overrides: Partial<Parameters<typeof classify>[0]> = {}
 ) {
@@ -171,6 +174,31 @@ describe('POST /api/discovery/preview/[demoId]/guest-deposit-checkout — accept
     // The property under test: a refused category cannot pay. No Checkout
     // session, no charge, no chargeback later.
     expect(createSessionSpy).not.toHaveBeenCalled();
+  });
+
+  it('quotes the visitor own description to the operator, never the composed classifier subject', async () => {
+    // Same bug, same fix, on the guest-deposit route's own screen:
+    // `screenAcceptableUse` is real here, only the classifier and
+    // `recordPolicyOutcome` are mocked.
+    classify.mockResolvedValue(
+      classification({ categoryId: 'licensed_pharmacy', confidence: 0.6 })
+    );
+    stashPreview();
+
+    await POST(
+      checkoutRequest({
+        ...VALID_BODY,
+        websiteUrl: 'https://example-pharmacy.ro',
+      }),
+      params()
+    );
+
+    const written = recordPolicyOutcomeMock.mock.calls.at(-1)?.[0];
+    expect(written?.briefText).toBe('Sourdough, daily.');
+    expect(written?.briefText).not.toContain('What the business does');
+    expect(written?.briefText).not.toContain('Link hostname');
+    expect(written?.linkUrl).toBe('https://example-pharmacy.ro');
+    expect(written?.linkLabel).toBe('Their site');
   });
 
   it('still opens checkout for a clean classification', async () => {

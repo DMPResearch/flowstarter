@@ -65,13 +65,13 @@ three-valued `PolicyDecision` is narrowed onto **five** routing values by
 `acceptableUseFrom` (`scope-gate.ts`), because `review` was three unrelated
 facts wearing one word and the funnel has to send them three different ways.
 
-| Verdict, and what produced it                                        | Routing value | Route                  | The visitor gets                                                              | The operator gets                                          | Booking link |
-| -------------------------------------------------------------------- | ------------- | ---------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------ |
-| `refuse`                                                             | `blocked`     | `refused`              | the refusal notice, in their own language. No preview, no build.              | a `policy_reviews` row with the category and evidence hash | **never**    |
-| `review` **naming a category** (`sensitive_lawful`, `prohibited_uncertain`) | `review`      | `self-serve`           | their preview; a person checks the licence in parallel                        | a `policy_reviews` row, open, with the category            | **never**    |
-| `review` **naming none** (`needs_human_flag`, `clean_but_abstained`, `unknown_category`) | `unsettled`   | whatever **scope** says | the scope head's answer, unchanged — including the one clarifying question    | a row only if the scope rule asked for one                 | **never**    |
-| `review` from `classifier_unavailable`                               | `hold`        | `hold`                 | "we are still checking this one", en or ro. No preview, no build, no CTA.     | a `policy_reviews` row, plus the outage alert              | **never**    |
-| `allow`                                                              | `allowed`     | whatever **scope** says | `standard` → preview, `custom` → discovery call, `unclear` → one question     | nothing                                                    | only on scope `custom` |
+| Verdict, and what produced it                                                            | Routing value | Route                   | The visitor gets                                                           | The operator gets                                          | Booking link           |
+| ---------------------------------------------------------------------------------------- | ------------- | ----------------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------- | ---------------------- |
+| `refuse`                                                                                 | `blocked`     | `refused`               | the refusal notice, in their own language. No preview, no build.           | a `policy_reviews` row with the category and evidence hash | **never**              |
+| `review` **naming a category** (`sensitive_lawful`, `prohibited_uncertain`)              | `review`      | `self-serve`            | their preview; a person checks the licence in parallel                     | a `policy_reviews` row, open, with the category            | **never**              |
+| `review` **naming none** (`needs_human_flag`, `clean_but_abstained`, `unknown_category`) | `unsettled`   | whatever **scope** says | the scope head's answer, unchanged — including the one clarifying question | a row only if the scope rule asked for one                 | **never**              |
+| `review` from `classifier_unavailable`                                                   | `hold`        | `hold`                  | "we are still checking this one", en or ro. No preview, no build, no CTA.  | a `policy_reviews` row, plus the outage alert              | **never**              |
+| `allow`                                                                                  | `allowed`     | whatever **scope** says | `standard` → preview, `custom` → discovery call, `unclear` → one question  | nothing                                                    | only on scope `custom` |
 
 Four things this table is load-bearing about:
 
@@ -87,7 +87,7 @@ Four things this table is load-bearing about:
    `runScopeGate` uses the description, links and link title, while
    `/api/discovery/preview/live` uses the full spec including `businessName`,
    `industry`, `targetAudience`, `goal`, `offer` and `services` — so the
-   second screen misses the content-hash cache and makes a *fresh* paid call
+   second screen misses the content-hash cache and makes a _fresh_ paid call
    that can time out on its own. Routing a refusal through the component
    whose job is to start generations, and trusting a second coin flip to stop
    it, is the same mistake in a different place.
@@ -99,6 +99,63 @@ Four things this table is load-bearing about:
    confident enough to call this clean" is not a finding about the business,
    so "I need a website for my business." still earns its clarifying question
    instead of disappearing into the acceptable-use branch.
+
+## The `policy_reviews` row and the operator email: only when a person can act
+
+"The operator gets" column above is two things, not one: a row in
+`policy_reviews` and, when a row is actually written for a `review` verdict,
+"A brief needs your review" (`policyReviewOperatorEmail`,
+`apps/flowstarter-main/src/lib/email-templates/policy-review.ts`, sent from
+`recordPolicyOutcome` in `apps/flowstarter-main/src/lib/policy/review.ts`).
+Both are gated by the same rule, `reviewIsActionable`
+(`apps/flowstarter-main/src/lib/policy/acceptable-use.ts`), because the
+question is the same one twice: is this something an operator can do
+something about?
+
+| Outcome                                                                                                                    | Row written | Email sent                                 |
+| -------------------------------------------------------------------------------------------------------------------------- | ----------- | ------------------------------------------ |
+| `refuse`, any category                                                                                                     | yes         | **no** — already closed, nothing to decide |
+| `review` naming a category (`sensitive_lawful`, `prohibited_uncertain`)                                                    | yes         | yes                                        |
+| `review` from `classifier_unavailable` (PR #193's hold)                                                                    | yes         | yes                                        |
+| the scope gate's own two review rules (#180: `scope_visitor_disagrees_with_classifier`, `scope_unresolved_after_question`) | yes         | yes                                        |
+| `review` naming no category (`needs_human_flag`, `clean_but_abstained`, `unknown_category`)                                | **no**      | **no**                                     |
+| `allow`, any category                                                                                                      | no          | no                                         |
+
+The last row of the first table is the one this section makes explicit: a
+`review` that names no category is the classifier's own uncertainty about
+nothing in particular, not a finding about the business. Before this rule
+existed, `recordPolicyOutcome` wrote a row and sent "A brief needs your
+review" for every non-`allow` verdict, so a two-word submission with no
+category ("I need a website for my business.") reached an operator's inbox
+with a sentence they could not act on ("the classifier flagged this brief for
+a person to check, without naming a category") and nothing to check it
+against — the row an operator cannot act on is exactly the noise that stops a
+review queue from being read. It still routes correctly (the `unsettled`
+bucket above hands it to the scope head, which asks its own clarifying
+question when it has one to ask); it simply no longer duplicates that with a
+silent row and a card with nothing on it. The one line that survives
+regardless is `recordPolicyOutcome`'s own `console.warn`, so the fact is still
+greppable in the logs even when the board and the inbox stay quiet.
+
+Sent once per row, in both directions: never twice for the same brief (a
+cache hit on a duplicate submission, or the `policy_reviews` partial unique
+index rejecting a second insert, does not re-notify — `recorded` stays
+`false`), and never for a verdict this rule declined to write in the first
+place.
+
+**The email quotes the visitor's own words, never the composed classifier
+subject.** `screenAcceptableUse`'s `text` (`apps/flowstarter-main/src/lib/
+policy/gate.ts`) is `./subject.ts`'s `intakeSubject`, composed for a model to
+reason over — "What the business does: I need a website for my business.\nLink
+hostname: instagram.com" for the two-word example above. `briefText` is a
+separate field on the same call, the caller's raw description, threaded
+through to the email's quote block and nowhere else (not the row, not the
+event payload, not a log line — see that module's own NOT list). Before this
+was two fields, `recordPolicyOutcome` defaulted `briefText` to `text`, and the
+composed block reached an operator's inbox quoted as though it were what the
+visitor typed. The one link a visitor gives (`intakeLink`, same file) is a
+separate labelled fact row in the email — "Their site" or "Their profile" —
+never folded into the quote either.
 
 The whole table is executable:
 `apps/flowstarter-main/src/lib/policy/__tests__/acceptable-use-outcome-table.test.ts`
@@ -123,7 +180,7 @@ the identical text was correctly refused at `refuse|illegal_drugs|0.900|llm`.
 
 `@flowstarter/sigma-core`'s cascade applies `DEFAULT_TIER_BUDGET_MS` (3 s) to
 any injected tier whose caller does not override it, and that default is
-sized for a *local* tier. The app injected a paid `openai/gpt-4o-mini` call
+sized for a _local_ tier. The app injected a paid `openai/gpt-4o-mini` call
 and said nothing, so turning the embedding tier on silently replaced the
 app's own 15 s `ACCEPTABLE_USE_TIMEOUT_MS` with 3 s — a 5x cut invisible in
 either file's diff.
@@ -131,16 +188,16 @@ either file's diff.
 Measured against OpenRouter with the real prompt at temperature 0 and the
 real 300-token cap, 25 samples per brief:
 
-| Brief                | min    | p50            | max     |
-| -------------------- | ------ | -------------- | ------- |
-| drugs and firearms   | 706 ms | 802 / 1953 ms  | 2237 ms |
-| Romanian adult site  | 680 ms | 748 / 805 ms   | 872 ms  |
+| Brief               | min    | p50           | max     |
+| ------------------- | ------ | ------------- | ------- |
+| drugs and firearms  | 706 ms | 802 / 1953 ms | 2237 ms |
+| Romanian adult site | 680 ms | 748 / 805 ms  | 872 ms  |
 
 (two medians: the model's latency on this prompt is bimodal across runs an
 hour apart, which is the point.)
 
 The model call alone reaches 2.2 s — about 75% of the old budget — and that
-is *before* `callLlmObject` spends the same budget on the `prepare()`
+is _before_ `callLlmObject` spends the same budget on the `prepare()`
 workspace-cap read and the `settle()` `llm_usage` insert it wraps the call
 in, both real round trips against a hosted Supabase on staging. The drugs
 brief measured 2.4x the adult brief's median and 2.6x its maximum, so the
@@ -172,11 +229,10 @@ what happened, not for the branch that caught it) rather than
 and it routes to `hold` instead of `self-serve`.
 
 The counter also moved up a layer, from `classifyWithLlm` to
-`classifyAcceptableUse`. A run of failures is per *submission*, not per model
+`classifyAcceptableUse`. A run of failures is per _submission_, not per model
 call, and only the adapter can see a cascade whose deciding tier died without
 the model call itself throwing.
 
 `[policy] acceptable-use classifier unavailable` in a log nobody is tailing
 is not an alert. A run of `CLASSIFIER_FAILURE_ALERT_THRESHOLD` failures
 raises `acceptable_use_classifier_failed` — see `docs/operations/alerts.md`.
-

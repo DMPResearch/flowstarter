@@ -128,8 +128,21 @@ export function policyReviewOperatorEmail(input: {
   categoryId: string;
   /** `PolicyCategory.label`. Used only as the fallback mention, never printed as-is. */
   categoryLabel: string;
-  /** The exact text that was classified, quoted as it is. Empty renders no quote. */
+  /**
+   * The visitor's own words, quoted as they are. Empty renders no quote.
+   *
+   * Never the composed subject the classifier read (`intakeSubject`'s
+   * "What the business does: ... Link hostname: ..." block): that string is
+   * built for a model, and quoting it back to a person as though it were what
+   * the visitor typed is the bug this field exists to not repeat. The one
+   * link the visitor gave is `linkUrl` below, a labelled fact, never folded
+   * into this quote.
+   */
   briefText: string;
+  /** The visitor's own site or social link, when they gave one. Never the primary link. */
+  linkUrl?: string | null;
+  /** What `linkUrl` is, so the fact row reads right. Defaults to a neutral label. */
+  linkLabel?: string;
   contactName?: string | null;
   contactEmail?: string | null;
   /** The review's own place on the admin board. The primary link and the button's target. */
@@ -142,6 +155,7 @@ export function policyReviewOperatorEmail(input: {
   const name = input.contactName?.trim();
   const email = input.contactEmail?.trim();
   const brief = input.briefText.trim();
+  const link = input.linkUrl?.trim();
 
   return renderEmail({
     subject: `A brief needs your review: ${reason.subjectSummary}`,
@@ -154,13 +168,16 @@ export function policyReviewOperatorEmail(input: {
         content: 'It stays open until an operator approves or refuses it.',
       },
       ...(brief ? [{ kind: 'quote' as const, text: brief }] : []),
-      ...(name || email
+      ...(name || email || link
         ? [
             {
               kind: 'facts' as const,
               rows: [
                 { label: 'Name', value: name ?? '' },
                 { label: 'Email', value: email ?? '' },
+                ...(link
+                  ? [{ label: input.linkLabel ?? 'Their link', value: link }]
+                  : []),
               ],
             },
           ]

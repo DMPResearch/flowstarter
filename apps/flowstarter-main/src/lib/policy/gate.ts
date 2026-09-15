@@ -28,6 +28,23 @@ export interface ScreenInput {
   surface: PolicySurface;
   /** The composed subject. Build it with `./subject.ts`, never by hand. */
   text: string;
+  /**
+   * The visitor's own words, verbatim -- for the operator review email's
+   * quote block only, never for classification and never `text` above.
+   *
+   * `text` is composed for a MODEL to reason over (`./subject.ts`'s
+   * `intakeSubject`: "What the business does: ... Link hostname: ..."), and
+   * quoting that string back to a PERSON as though it were what the visitor
+   * typed turned "I need a website for my business." into "What the business
+   * does: I need a website for my business. Link hostname: instagram.com" in
+   * an operator's inbox. Absent, `recordPolicyOutcome` renders no quote at
+   * all, the same as before this field existed.
+   */
+  briefText?: string;
+  /** The visitor's own site or social link, as a labelled fact row in the operator email. Never the classifier's input. */
+  linkUrl?: string | null;
+  /** What `linkUrl` is, so the fact row reads right. */
+  linkLabel?: string;
   workspaceId?: string | null;
   projectId?: string | null;
   /** Who triggered this, for the timeline. Defaults to 'system'. */
@@ -111,10 +128,15 @@ export async function screenAcceptableUse(
       actor: input.actor,
       db: input.db,
       // The operator email's quoted brief, and only that -- `recordPolicyOutcome`
-      // never writes this to the row, the event payload or a log line. Every
-      // caller of `screenAcceptableUse` already built `text` to classify; this
-      // is the one place that text is spent a second time.
-      briefText: input.text,
+      // never writes this to the row, the event payload or a log line. This is
+      // `input.briefText`, the visitor's own words, never `input.text`: `text`
+      // is what `decide()` above just classified, composed for a model, and
+      // quoting IT to a person is the defect `briefText`'s own doc comment
+      // exists to not repeat. A caller that has not threaded `briefText` yet
+      // simply gets an email with no quoted brief.
+      briefText: input.briefText,
+      linkUrl: input.linkUrl,
+      linkLabel: input.linkLabel,
     });
     reviewId = outcome.reviewId;
   }

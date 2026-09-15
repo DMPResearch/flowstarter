@@ -63,6 +63,9 @@ const policyRule = { value: 'sensitive_lawful' as PolicyRule };
 interface ScreenCall {
   surface: string;
   text: string;
+  briefText?: string;
+  linkUrl?: string;
+  linkLabel?: string;
   locale?: string;
 }
 const screenAcceptableUse = vi.fn(async (_input: ScreenCall) => ({
@@ -312,6 +315,19 @@ describe('the acceptable-use gate, ahead of the scope classification', () => {
     expect(call.text).toContain('A portal my customers log into');
     // Composed through `intakeSubject`, so the link title it read is in it.
     expect(call.text).toContain('Acme - Client Portal Login');
+  });
+
+  it('threads the visitor own description and link separately, never the composed subject', async () => {
+    // `briefText`/`linkUrl` are for the operator review email's quote block
+    // only -- never for classification, which is what `text` above is for.
+    // Confusing the two is the bug the operator email report caught.
+    await runScopeGate(BRIEF, noNetwork);
+    const call = screenAcceptableUse.mock.calls[0][0];
+    expect(call.briefText).toBe(BRIEF.description);
+    expect(call.linkUrl).toBe(BRIEF.websiteUrl);
+    expect(call.linkLabel).toBe('Their site');
+    // The composed `text`, not `briefText`, is what carries the link title.
+    expect(call.briefText).not.toContain('Acme - Client Portal Login');
   });
 
   it('passes the visitor locale through to the acceptable-use screen', async () => {
@@ -632,6 +648,15 @@ describe('the clarifying question', () => {
     );
     expect(notification).toBeDefined();
     expect(notification![0].to).toBe('ops@flowstarter.net');
+    // `openScopeReview` threads the gate's own `description`/link fields,
+    // never `scopeClassifierText`'s longer, composed prompt -- see the
+    // comment on that call in `scope-gate.ts`. This is the sibling of the
+    // acceptable-use bug: the visitor's own words, quoted, and the link as
+    // its own fact row rather than folded into a composed block.
+    expect(notification![0].text).toContain(BRIEF.description);
+    expect(notification![0].text).toContain(`Their site: ${BRIEF.websiteUrl}`);
+    expect(notification![0].text).not.toContain('Link hostname');
+    expect(notification![0].text).not.toContain('What the business does');
   });
 
   it('lets a clarified standard answer through to the preview', async () => {

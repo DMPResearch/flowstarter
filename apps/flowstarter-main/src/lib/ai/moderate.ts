@@ -113,6 +113,10 @@ export async function aiModerateContent(input: {
       services: input.services,
       goal: input.goals,
     }),
+    // The visitor's own words for the operator review email's quote block,
+    // never the composed `text` above -- see `ScreenInput.briefText`. No
+    // link: this adapter's callers never had one to pass.
+    briefText: input.description,
     locale: input.locale,
     actor: 'ai-moderate',
   });

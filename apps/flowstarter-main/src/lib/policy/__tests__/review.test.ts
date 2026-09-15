@@ -42,7 +42,11 @@ vi.mock('@/lib/email', () => ({
   resolveOperatorNotifyEmail: () => operatorEmail.value,
 }));
 
-import { categoryById, type PolicyVerdict } from '../acceptable-use';
+import {
+  CLEAN_CATEGORY,
+  categoryById,
+  type PolicyVerdict,
+} from '../acceptable-use';
 import {
   POLICY_EVENT_KINDS,
   PolicyReviewError,
@@ -396,6 +400,134 @@ describe('recording an outcome', () => {
   });
 });
 
+describe('the actionable-review rule', () => {
+  // A categoryless review is the classifier's own uncertainty about nothing
+  // in particular (`docs/security/acceptable-use.md`'s `unsettled` bucket),
+  // not a statement about the business. It is not something an operator can
+  // act on, so PR #193/#194's three categoryless rules must write no row,
+  // send no email, and put nothing on the timeline -- see
+  // `reviewIsActionable` in `../acceptable-use`.
+  it.each([
+    'needs_human_flag',
+    'clean_but_abstained',
+    'unknown_category',
+  ] as const)(
+    'writes no row and sends no email for %s, a review naming no category',
+    async (rule) => {
+      const result = await recordPolicyOutcome({
+        surface: 'preview',
+        verdict: verdict({ category: CLEAN_CATEGORY, rule, confidence: 0.2 }),
+        classification,
+        workspaceId: WORKSPACE,
+        briefText: 'I need a website for my business.',
+        db: fake.client,
+      });
+      expect(result).toEqual({ reviewId: null, recorded: false });
+      expect(fake.rows.policy_reviews).toHaveLength(0);
+      expect(sendEmail).not.toHaveBeenCalled();
+    }
+  );
+
+  it('still writes the row and sends the email for a category-naming review', async () => {
+    // The control: the same shape of call, but the verdict names a real
+    // category, so it stays exactly as actionable as before this rule
+    // existed.
+    const result = await recordPolicyOutcome({
+      surface: 'preview',
+      verdict: verdict(), // prohibited_uncertain / illegal_drugs, the default
+      classification,
+      workspaceId: WORKSPACE,
+      briefText: 'We sell prescription medication online.',
+      db: fake.client,
+    });
+    expect(result.recorded).toBe(true);
+    expect(fake.rows.policy_reviews).toHaveLength(1);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes the row and sends the email for classifier_unavailable, a hold', async () => {
+    const result = await recordPolicyOutcome({
+      surface: 'preview',
+      verdict: verdict({
+        category: CLEAN_CATEGORY,
+        rule: 'classifier_unavailable',
+        confidence: 0,
+      }),
+      classification,
+      workspaceId: WORKSPACE,
+      briefText: 'A brief nothing could classify.',
+      db: fake.client,
+    });
+    expect(result.recorded).toBe(true);
+    expect(fake.rows.policy_reviews).toHaveLength(1);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    'scope_visitor_disagrees_with_classifier',
+    'scope_unresolved_after_question',
+  ] as const)(
+    'writes the row and sends the email for %s, the scope gate own two rules',
+    async (rule) => {
+      const result = await recordPolicyOutcome({
+        surface: 'preview',
+        verdict: verdict({ category: CLEAN_CATEGORY, rule, needsHuman: true }),
+        classification,
+        workspaceId: WORKSPACE,
+        briefText: 'A portal my customers log into.',
+        db: fake.client,
+      });
+      expect(result.recorded).toBe(true);
+      expect(fake.rows.policy_reviews).toHaveLength(1);
+      expect(sendEmail).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it('still logs the category-less hold, even though it writes nothing', async () => {
+    // The one thing that survives: a developer grepping the logs still sees
+    // it happened, even though the board and the inbox both stay quiet.
+    const warn = vi.mocked(console.warn);
+    await recordPolicyOutcome({
+      surface: 'preview',
+      verdict: verdict({
+        category: CLEAN_CATEGORY,
+        rule: 'needs_human_flag',
+        confidence: 0,
+      }),
+      classification,
+      db: fake.client,
+    });
+    const line = warn.mock.calls.map((call) => String(call[0])).join(' ');
+    expect(line).toContain('needs_human_flag');
+  });
+
+  it('never writes twice for the same brief: a category-naming review still dedupes', async () => {
+    // Not a new property -- the existing partial unique index / 23505 path --
+    // but worth pinning next to the new gate so "never twice" reads as one
+    // rule with the rest of this describe block.
+    const client = {
+      from: () => ({
+        insert: () => ({
+          select: () => ({
+            maybeSingle: async () => ({ data: null, error: { code: '23505' } }),
+          }),
+          then: (onfulfilled: (v: unknown) => unknown) =>
+            Promise.resolve(onfulfilled({ data: null, error: null })),
+        }),
+      }),
+    } as unknown as PolicyReviewClient;
+
+    await recordPolicyOutcome({
+      surface: 'preview',
+      verdict: verdict(),
+      classification,
+      briefText: 'We sell prescription medication online.',
+      db: client,
+    });
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+});
+
 describe('notifying an operator', () => {
   it('sends "A brief needs your review" for a review verdict', async () => {
     await recordPolicyOutcome({
@@ -498,6 +630,23 @@ describe('notifying an operator', () => {
     const sent = sendEmail.mock.calls[0][0];
     expect(sent.html).toContain('/admin/dashboard/pipeline');
     expect(sent.html).not.toContain('#policy-review-');
+  });
+
+  it('passes the link through to the email as a fact row, never into the quote', async () => {
+    await recordPolicyOutcome({
+      surface: 'preview',
+      verdict: verdict(),
+      classification,
+      workspaceId: WORKSPACE,
+      briefText: 'We sell prescription medication online.',
+      linkUrl: 'https://instagram.com/example',
+      linkLabel: 'Their profile',
+      db: fake.client,
+    });
+    const sent = sendEmail.mock.calls[0][0];
+    expect(sent.text).toContain('Their profile: https://instagram.com/example');
+    const row = fake.rows.policy_reviews[0];
+    expect(JSON.stringify(row)).not.toContain('instagram.com');
   });
 
   it('passes the contact fields through to the email and nowhere else', async () => {

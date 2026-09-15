@@ -203,6 +203,71 @@ describe('policyReviewOperatorEmail, the brief and contact details', () => {
     expect(mail.text).not.toContain('Name:');
     expect(mail.text).not.toContain('Email:');
   });
+
+  it('renders the link as its own labelled fact row, never folded into the quote', () => {
+    const mail = policyReviewOperatorEmail({
+      ...BASE,
+      rule: 'sensitive_lawful',
+      categoryId: 'licensed_pharmacy',
+      categoryLabel: 'Licensed pharmacy or medicine retail',
+      linkUrl: 'https://instagram.com/farmaciasperantei',
+      linkLabel: 'Their profile',
+    });
+    expect(mail.text).toContain(
+      'Their profile: https://instagram.com/farmaciasperantei'
+    );
+    // The link is a fact, not part of what is quoted.
+    const quoteText = mail.text.split('Their profile:')[0];
+    expect(quoteText).not.toContain('instagram.com');
+  });
+
+  it('labels the link row "Their link" when the caller sends no label', () => {
+    const mail = policyReviewOperatorEmail({
+      ...BASE,
+      rule: 'sensitive_lawful',
+      categoryId: 'licensed_pharmacy',
+      categoryLabel: 'Licensed pharmacy or medicine retail',
+      linkUrl: 'https://example.com',
+    });
+    expect(mail.text).toContain('Their link: https://example.com');
+  });
+
+  it('shows the facts block for a link alone, with no name or email', () => {
+    const mail = policyReviewOperatorEmail({
+      ...BASE,
+      rule: 'sensitive_lawful',
+      categoryId: 'licensed_pharmacy',
+      categoryLabel: 'Licensed pharmacy or medicine retail',
+      linkUrl: 'https://example.com',
+    });
+    expect(mail.text).not.toContain('Name:');
+    expect(mail.text).not.toContain('Email:');
+    expect(mail.text).toContain('Their link:');
+  });
+});
+
+describe('policyReviewOperatorEmail, never the composed classifier subject', () => {
+  // The defect this template's callers exist to not repeat: `intakeSubject`'s
+  // composed block ("What the business does: ... Link hostname: ...")
+  // reaching this quote instead of the visitor's own words. The real fix
+  // lives at the call site (`gate.ts`'s `ScreenInput.briefText` and its six
+  // callers, asserted in their own suites); this pins the visitor's actual
+  // sentence surviving untouched, with the link as its own fact row instead
+  // of folded into the composed block the bug used to render.
+  it('quotes the visitor description verbatim when the caller sends it, not a composed block', () => {
+    const mail = policyReviewOperatorEmail({
+      ...BASE,
+      rule: 'sensitive_lawful',
+      categoryId: 'licensed_pharmacy',
+      categoryLabel: 'Licensed pharmacy or medicine retail',
+      briefText: 'I need a website for my business.',
+      linkUrl: 'https://instagram.com',
+      linkLabel: 'Their profile',
+    });
+    expect(mail.text).toContain('I need a website for my business.');
+    expect(mail.text).not.toContain('What the business does:');
+    expect(mail.text).not.toContain('Link hostname:');
+  });
 });
 
 describe('policyReviewOperatorEmail, what happens next', () => {
