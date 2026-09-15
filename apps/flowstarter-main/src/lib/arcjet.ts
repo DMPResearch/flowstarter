@@ -66,6 +66,42 @@ export const ajWithRateLimit = arcjet({
 });
 
 /**
+ * Same shape as `ajWithRateLimit`, except `detectBot` runs at `DRY_RUN`
+ * instead of `LIVE`: Arcjet still evaluates and logs a bot decision, it just
+ * never turns into a 403.
+ *
+ * Selected in `src/middleware.ts` for exactly one caller: a request that has
+ * already proved itself the staging showcase recorder via
+ * `isRecorderRequestAllowed` (`@flowstarter/platform-config` —
+ * see `recorder-allowance.ts` there for the full policy, including why it is
+ * inert in production). Shield and the sliding-window rate limit are
+ * unchanged at `LIVE`; only bot detection is relaxed, and only for that one
+ * request. This is deliberately its own client, not a per-request rule
+ * override, so the `browser` policy's rules stay declared in one place each
+ * and a test can pin "this client's detectBot is DRY_RUN" the same way
+ * `arcjet-machine-policy.test.ts` already pins `ajMachine`'s.
+ */
+export const ajWithRateLimitBotDryRun = arcjet({
+  key: process.env.ARCJET_KEY!,
+  characteristics: ['ip.src'],
+  rules: [
+    shield({ mode: 'LIVE' }),
+    detectBot({
+      mode: 'DRY_RUN',
+      allow: ['CATEGORY:SEARCH_ENGINE', 'CATEGORY:MONITOR', 'CATEGORY:PREVIEW'],
+    }),
+    // Sliding window rate limit: 20 requests per 60 seconds — unchanged from
+    // ajWithRateLimit. The recorder allowance only ever relaxes bot
+    // detection; rate limits still apply.
+    slidingWindow({
+      mode: 'LIVE',
+      interval: '1m',
+      max: 20,
+    }),
+  ],
+});
+
+/**
  * Arcjet client for the middleware's `machine` policy: signature/shared-secret
  * callers (Cal.com's webhook delivery, the build worker's callbacks) rather
  * than a browser. See `arcjetPolicyFor` in `@/lib/route-manifest` for the
@@ -164,6 +200,7 @@ export const ajPublic = arcjet({
 export type ArcjetClient =
   | typeof aj
   | typeof ajWithRateLimit
+  | typeof ajWithRateLimitBotDryRun
   | typeof ajMachine
   | typeof ajAI
   | typeof ajSensitive

@@ -485,3 +485,16 @@ export {
   UnsafePlatformOriginError,
 } from './public-origin';
 export type { PublicOriginEnvInput } from './public-origin';
+
+// ---------------------------------------------------------------------------
+// Recorder allowance (staging-only Arcjet bot-rule dry-run for the showcase
+// recorder — see recorder-allowance.ts for the full policy).
+// ---------------------------------------------------------------------------
+
+export {
+  RECORDER_HEADER_NAME,
+  RECORDER_SECRET_ENV,
+  isRecorderRequestAllowed,
+  readRecorderAllowanceEnvFromProcess,
+} from './recorder-allowance';
+export type { RecorderAllowanceEnvInput } from './recorder-allowance';
