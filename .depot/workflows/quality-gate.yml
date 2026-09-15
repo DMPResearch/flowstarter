@@ -18,7 +18,10 @@
 #      a check that no tracked source file carries a literal NUL byte (git
 #      samples a blob for one to decide whether to diff it as text, so a NUL
 #      byte hides that file's diffs from review — see
-#      scripts/check-no-nul-bytes.mjs)
+#      scripts/check-no-nul-bytes.mjs), plus a check that every en.ts key in
+#      a visitor-facing block (the discovery funnel, the scope gate, policy
+#      notices, the preview step, the brief, the client dashboard) has a
+#      ro.ts translation — see scripts/check-i18n-ro-coverage.mjs
 #   2. Typecheck — flow-design-system + flowstarter-main
 #   3. Unit tests with coverage for flowstarter-main, agentic-codegen and
 #      build-worker (vitest), then the coverage ratchet. Each package's vitest
@@ -80,6 +83,13 @@ jobs:
       # for the defect it was written to catch (`useScopeRoute.ts`).
       - name: No literal NUL bytes in a tracked source file
         run: node scripts/check-no-nul-bytes.mjs
+      # ro.ts is an overlay: a key it omits silently falls back to English
+      # (see I18nProvider in src/lib/i18n.tsx). Fine for a block nobody has
+      # translated on purpose, not fine for a block a Romanian-speaking
+      # visitor is standing in — see scripts/check-i18n-ro-coverage.mjs for
+      # the exact blocks checked and the defect that made this a gate.
+      - name: Romanian catalogue — no missing key in a visitor-facing block
+        run: node scripts/check-i18n-ro-coverage.mjs
   # ── 2. Typecheck ──────────────────────────────────────────────────────────
   typecheck:
     name: Typecheck
