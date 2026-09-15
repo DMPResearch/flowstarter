@@ -13,6 +13,7 @@ import { LogInIcon, LogOutIcon, UserIcon } from "lucide-react";
 import { useState, type CSSProperties } from "react";
 import { useTheme } from "../hooks/useTheme";
 import { useTier } from "../hooks/useTier";
+import { editorOriginUrl, withBasePath } from "../lib/basePath";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -131,11 +132,13 @@ export function EditorAccountChip({ variant = "sidebar" }: { variant?: "sidebar"
   // header variant now shows the actual signed-in user's avatar.
   const initial = (workspaceLabel.trim()[0] ?? "?").toUpperCase();
 
-  const stayOnEditorUrl =
-    typeof window !== "undefined" ? window.location.origin : "/";
+  // `editorOriginUrl()` keeps the redirect under `/editor/` on a sub-path
+  // deploy — a bare `window.location.origin` would bounce Clerk's
+  // post-sign-out redirect to the tenant's own site content instead.
+  const stayOnEditorUrl = editorOriginUrl();
   const signOutAndRevoke = async () => {
     try {
-      await fetch("/api/auth/sign-out", {
+      await fetch(withBasePath("/api/auth/sign-out"), {
         method: "POST",
         credentials: "include",
       });
