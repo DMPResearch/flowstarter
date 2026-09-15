@@ -47,7 +47,8 @@ export interface TagBlock {
 /** One character, so this can never backtrack over attacker-supplied text. */
 const WORD_CHARACTER = /[A-Za-z0-9_-]/;
 
-function isWordCharacter(char: string | undefined): boolean {
+/** Exported so `template-effects.ts` reads word boundaries the same way. */
+export function isWordCharacter(char: string | undefined): boolean {
   return char !== undefined && WORD_CHARACTER.test(char);
 }
 

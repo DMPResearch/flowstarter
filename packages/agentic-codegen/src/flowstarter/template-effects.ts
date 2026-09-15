@@ -50,6 +50,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import { parse, type DefaultTreeAdapterMap } from 'parse5';
+import { isWordCharacter, tagBlocks } from './html-scan';
 
 /** The job fails with this when a build dropped the template's effect layer. */
 export const TEMPLATE_EFFECTS_DROPPED = 'TEMPLATE_EFFECTS_DROPPED';
@@ -169,69 +170,14 @@ function resolveRelative(fromFile: string, specifier: string): string {
   return base.join('/');
 }
 
-function isWordCharacter(char: string | undefined): boolean {
-  return char !== undefined && WORD_CHARACTER.test(char);
-}
-
-/** One character, so this can never backtrack over attacker-supplied text. */
-const WORD_CHARACTER = /[A-Za-z0-9_-]/;
-
-/** Where one `<tag …>…</tag>` sits in a source file, and what is inside it. */
-interface TagBlock {
-  inner: string;
-  /** The `<` of the opening tag. */
-  start: number;
-  /** One past the `>` of the closing tag, or the end of the file. */
-  end: number;
-}
-
 /**
- * Every `<style>` or `<script>` block in a file, found by scanning rather
- * than by matching.
- *
- * A regular expression is the obvious way to write this and the wrong one
- * twice over. `<style[\s\S]*?</style>` reads a template an agent wrote, so a
- * file full of `<style` openings makes it quadratic; and it does not
- * recognise `</script >`, which a browser closes and the pattern does not —
- * the difference between a selector being read as script (ignored) and as
- * markup (required). Indexed scanning is linear and closes the tag the way
- * the HTML spec does: the name, then anything up to the next `>`.
+ * `isWordCharacter` and `tagBlocks` used to live here, as the second copy of
+ * the same scanner. They are now in `html-scan.ts`, imported at the top,
+ * because a third copy landed a day later in the person gate, and two gates
+ * reading a built page differently is the defect both scanners exist to
+ * prevent. The behaviour is unchanged: the same indexed scan, closing a tag
+ * the way the spec does.
  */
-function tagBlocks(source: string, tag: 'style' | 'script'): TagBlock[] {
-  const blocks: TagBlock[] = [];
-  const lower = source.toLowerCase();
-  const open = `<${tag}`;
-  const close = `</${tag}`;
-  let from = 0;
-  for (;;) {
-    const start = lower.indexOf(open, from);
-    if (start < 0) return blocks;
-    const afterName = start + open.length;
-    // `<style>` and `<style lang="scss">`, but not `<styles>`.
-    if (isWordCharacter(source[afterName])) {
-      from = afterName;
-      continue;
-    }
-    const openEnd = source.indexOf('>', afterName);
-    if (openEnd < 0) return blocks;
-    const closeStart = lower.indexOf(close, openEnd + 1);
-    if (closeStart < 0) {
-      // An unclosed block runs to the end of the file, which is what a
-      // browser would do with it too.
-      blocks.push({
-        inner: source.slice(openEnd + 1),
-        start,
-        end: source.length,
-      });
-      return blocks;
-    }
-    // `</script>` and `</script >` alike: the tag ends at its own `>`.
-    const closeEnd = source.indexOf('>', closeStart + close.length);
-    const end = closeEnd < 0 ? source.length : closeEnd + 1;
-    blocks.push({ inner: source.slice(openEnd + 1, closeStart), start, end });
-    from = end;
-  }
-}
 
 /**
  * An `.astro` file's template body: frontmatter, `<style>` and `<script>`
