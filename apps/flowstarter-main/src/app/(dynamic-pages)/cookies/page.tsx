@@ -93,9 +93,10 @@ export default function CookiesPage() {
             </li>
             <li>
               <strong>Functional</strong>: small comforts such as your
-              light/dark theme preference and the country we infer so prices
-              read correctly. Optional; if you decline, the site falls back to
-              system defaults.
+              light/dark theme preference, the country we infer so prices read
+              correctly, and the language you read the site in (your own choice
+              from the switcher, or our best guess from your browser). Optional;
+              if you decline, the site falls back to system defaults.
             </li>
             <li>
               <strong>Analytics</strong>: {analytics.statement}

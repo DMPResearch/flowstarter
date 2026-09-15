@@ -902,6 +902,13 @@ const ro: Record<string, string> = {
   'dashboard.analytics.title': 'Prezentare generală Analytics',
   'dashboard.analytics.subtitle':
     'Urmărește-ți progresul și indicatorii de performanță',
+
+  // ─── The language switcher ─────────────────────────────────────────────
+  'nav.language': 'Limbă',
+  'nav.language.en': 'Engleză',
+  'nav.language.ro': 'Română',
+  'nav.language.switchTo.en': 'Schimbă în engleză',
+  'nav.language.switchTo.ro': 'Schimbă în română',
 };
 
 export default ro;

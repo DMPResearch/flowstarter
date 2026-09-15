@@ -5,6 +5,7 @@ import type { MouseEvent } from 'react';
 import { usePathname } from 'next/navigation';
 import { Menu } from 'lucide-react';
 import { ThemeToggle } from '@/components/ui/theme-toggle';
+import { LanguageSwitcher } from '@/components/ui/language-switcher';
 import { Logo } from '@/components/ui/logo';
 import { Button } from '@/components/ui/unified-button';
 import { UserMenu } from '@/components/ui/user-menu';
@@ -111,6 +112,9 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
 
               <div className="flex items-center gap-2 sm:gap-4">
                 <div className="hidden md:block">
+                  <LanguageSwitcher />
+                </div>
+                <div className="hidden md:block">
                   <ThemeToggle />
                 </div>
                 <Button
@@ -178,6 +182,13 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
                 aria-label="Mobile navigation"
                 className="ls-mobile-nav mt-3 border-t border-[var(--ls-rule)] pt-5"
               >
+                <div className="ls-mobile-theme md:hidden mb-3 flex items-center justify-between gap-3 rounded-2xl px-3.5 py-3">
+                  <span className="ls-mobile-theme-label">
+                    {tLanding('nav.language')}
+                  </span>
+                  <LanguageSwitcher />
+                </div>
+
                 <div className="ls-mobile-theme md:hidden mb-5 flex items-center justify-between gap-3 rounded-2xl px-3.5 py-3">
                   <span className="ls-mobile-theme-label">
                     {tLanding('nav.theme')}
@@ -366,6 +377,9 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
         </Link>
 
         <div className="flex items-center gap-1.5 sm:gap-3">
+          <div className="hidden sm:block">
+            <LanguageSwitcher />
+          </div>
           <div className="hidden sm:block">
             <ThemeToggle />
           </div>

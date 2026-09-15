@@ -23,6 +23,12 @@ import {
 } from '@/lib/auth/forced-password-change';
 import { teamRoleForEmail } from '@/lib/auth/team-role';
 import {
+  LOCALE_COOKIE_NAME,
+  LOCALE_HEADER_NAME,
+  isSupportedLocale,
+  resolveLocale,
+} from '@/lib/locale-resolution';
+import {
   arcjetPolicyFor,
   KNOWN_APP_ROUTES,
   PUBLIC_ROUTES,
@@ -272,9 +278,52 @@ export default clerkMiddleware(async (auth, req) => {
   const nonce = generateNonce();
   const requestHeaders = new Headers(req.headers);
   requestHeaders.set('x-nonce', nonce);
+
+  // ── Locale resolution ─────────────────────────────────────────────────
+  // An explicit choice (the fs_locale cookie, written either by the
+  // switcher or by this same block caching its own inference) always wins;
+  // otherwise the Accept-Language header's best match among the locales
+  // this app ships copy for; otherwise English. Never a guess from page or
+  // brief content — see `resolveLocale`'s own doc comment.
+  //
+  // Forwarded as a REQUEST header for the same reason the nonce is: any
+  // already-dynamic server code downstream (route handlers, a nested
+  // layout) can read it via `headers()` without recomputing the rule. The
+  // root layout does NOT read it — it stays statically renderable on
+  // purpose (see its own comment), and instead resolves locale entirely
+  // client-side from the same cookie, exactly like theme.
+  const existingLocaleCookie = req.cookies.get(LOCALE_COOKIE_NAME)?.value;
+  const resolvedLocale = resolveLocale({
+    cookie: existingLocaleCookie,
+    acceptLanguage: req.headers.get('accept-language'),
+  });
+  requestHeaders.set(LOCALE_HEADER_NAME, resolvedLocale);
+
   const res = NextResponse.next({ request: { headers: requestHeaders } });
   // Also set on response so it can be inspected during debugging
   res.headers.set('x-nonce', nonce);
+
+  // Cache the resolution so it is not recomputed on every request — same
+  // pattern as `fs_country` below. Only when there was no explicit choice
+  // already: an inferred value must never overwrite one the visitor (or the
+  // switcher) actually set.
+  if (!isSupportedLocale(existingLocaleCookie)) {
+    try {
+      res.cookies.set(LOCALE_COOKIE_NAME, resolvedLocale, {
+        path: '/',
+        sameSite: 'lax',
+        // Readable by client JS on purpose: the root layout's boot script
+        // and `I18nProvider` both read it to resolve locale without a
+        // second network round trip. It holds nothing but a two-letter
+        // language code — functional, not tracking.
+        httpOnly: false,
+        secure: true,
+        maxAge: 60 * 60 * 24 * 365, // 1 year
+      });
+    } catch {
+      // fail-open
+    }
+  }
 
   // --- Path traversal protection ---
   // Block any request with path traversal patterns in the URL
