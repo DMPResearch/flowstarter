@@ -68,6 +68,63 @@ export interface ScopeClassification {
    * `PolicyClassification` in `@/lib/policy/acceptable-use`.
    */
   decided?: boolean;
+  /**
+   * Machine-readable why, for a log line or a developer, never for a person
+   * reading an email or a card.
+   *
+   * `@flowstarter/sigma-flowstarter` reports one reason string per head --
+   * calibration state, head, verdict, tier, e.g.
+   * `confident:scope:custom-work:semantic` -- documented on its own
+   * `Decision.reasons` as "safe to log" precisely because it is NOT a
+   * sentence and NOT a quote from anything the visitor wrote. #191 shipped
+   * an operator email that read this string into `evidence` and printed it
+   * as though it were a clause from the brief: `The brief mentions
+   * "confident:scope:custom-work:semantic"`. `trace` is where that string
+   * belongs -- optional, implementation-specific, and never read by
+   * `customWorkOperatorEmail`, `CustomWorkLeadCard` or anything else that
+   * renders a classification for a person. A caller that wants it for
+   * diagnostics logs it directly; nothing here persists it.
+   */
+  trace?: string;
+}
+
+/**
+ * Fold whitespace and case so "Customers  log\ninto" and "customers log into"
+ * compare equal. The one normalisation every verbatim check below applies to
+ * both sides.
+ */
+export function normalizeForMatch(text: string): string {
+  return text.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/**
+ * Is `fragment` actually in `source`, once both are folded the same way?
+ *
+ * The one gate a string has to clear before anything prints it as though the
+ * visitor wrote it. An empty fragment never clears it -- there is nothing to
+ * check, and printing "" as a quote is its own small lie.
+ */
+export function occursVerbatim(fragment: string, source: string): boolean {
+  const needle = normalizeForMatch(fragment);
+  if (!needle) return false;
+  return normalizeForMatch(source).includes(needle);
+}
+
+/**
+ * Only the fragments of `evidence` that are actually `source`'s own words.
+ *
+ * The defensive half of the fix for #191: even if something upstream of a
+ * caller ever puts a classifier's reason code, a prompt version tag or any
+ * other invented phrase into `evidence`, nothing that did not come from the
+ * text itself survives this filter. Every renderer of `evidence` -- the
+ * custom-work email, the pipeline card, anything added later -- is expected
+ * to run its fragments through this before quoting them.
+ */
+export function verbatimEvidence(
+  evidence: readonly string[],
+  source: string
+): string[] {
+  return evidence.filter((fragment) => occursVerbatim(fragment, source));
 }
 
 export type ScopeClassifier = (text: string) => Promise<ScopeClassification>;

@@ -100,6 +100,37 @@ describe('toCustomWorkCard', () => {
     }
   });
 
+  it('drops a stored fragment that is not actually in the brief', () => {
+    // The defensive half of the fix for #191: the classifiers no longer
+    // write a reason code into `scope_evidence`, but a row written before
+    // that fix keeps whatever it was written with, and a future bug could
+    // reintroduce the same shape. This card must never show a fragment that
+    // is not the visitor's own words, no matter which write path produced
+    // the row.
+    const card = toCustomWorkCard(
+      row({
+        description: 'A portal my customers log into',
+        scope_evidence: [
+          'confident:scope:custom-work:semantic',
+          'customers log into',
+        ],
+      }),
+      NOW
+    );
+    expect(card.evidence).toEqual(['customers log into']);
+  });
+
+  it('is empty, not the reason code, when nothing stored survives the brief check', () => {
+    const card = toCustomWorkCard(
+      row({
+        description: 'A portal my customers log into',
+        scope_evidence: ['confident:scope:custom-work:semantic'],
+      }),
+      NOW
+    );
+    expect(card.evidence).toEqual([]);
+  });
+
   it('reads `contacted` from the timestamp, not from the status alone', () => {
     const card = toCustomWorkCard(
       row({

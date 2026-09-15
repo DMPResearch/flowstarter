@@ -3,7 +3,7 @@
 exports[`customWorkOperatorEmail, locale > adds a Romanian-brief note, nothing else, when the locale is ro (snapshot) 1`] = `
 "A custom work lead
 
-The brief mentions "customers log into", which points to software we do not build self-serve. The brief is written in Romanian, quoted below exactly as they sent it.
+The brief mentions "clientii mei se autentifica", which points to software we do not build self-serve. The brief is written in Romanian, quoted below exactly as they sent it.
 
 They can book the call themselves at the link we sent them. Until then, or until you reach out, this sits in the Custom work lane.
 

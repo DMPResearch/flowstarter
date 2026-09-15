@@ -31,9 +31,11 @@ vi.mock('@/lib/ai/classify-scope-sigma', () => ({
 import {
   UNCLASSIFIED,
   classifyScope,
+  occursVerbatim,
   resetScopeClassifier,
   scopeClassifierText,
   setScopeClassifier,
+  verbatimEvidence,
 } from '../scope-classifier';
 
 beforeEach(() => {
@@ -155,5 +157,41 @@ describe('scopeClassifierText', () => {
       description: 'x'.repeat(10_000),
     });
     expect(text.length).toBeLessThan(2_200);
+  });
+});
+
+describe('occursVerbatim / verbatimEvidence, the shared defensive check', () => {
+  const BRIEF = 'A Portal   my customers log into\nto track their orders';
+
+  it('matches case-insensitively and across normalised whitespace', () => {
+    expect(occursVerbatim('customers log into', BRIEF)).toBe(true);
+    expect(occursVerbatim('CUSTOMERS LOG INTO', BRIEF)).toBe(true);
+    expect(occursVerbatim('a portal my customers', BRIEF)).toBe(true);
+  });
+
+  it('rejects a fragment that is not actually in the source', () => {
+    expect(occursVerbatim('confident:scope:custom-work:semantic', BRIEF)).toBe(
+      false
+    );
+    expect(occursVerbatim('a client login area', BRIEF)).toBe(false);
+  });
+
+  it('rejects an empty or whitespace-only fragment rather than matching everything', () => {
+    expect(occursVerbatim('', BRIEF)).toBe(false);
+    expect(occursVerbatim('   ', BRIEF)).toBe(false);
+  });
+
+  it('filters a mixed list down to only the fragments the brief actually contains', () => {
+    expect(
+      verbatimEvidence(
+        [
+          'customers log into',
+          'confident:scope:custom-work:semantic',
+          'track their orders',
+          'llm:2026-09-14.1',
+        ],
+        BRIEF
+      )
+    ).toEqual(['customers log into', 'track their orders']);
   });
 });

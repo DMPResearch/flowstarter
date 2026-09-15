@@ -17,6 +17,7 @@
  * Pure, like `./board`: rows in, cards out, `now` passed rather than read.
  */
 import type { CustomWorkLeadRow } from '@/lib/flowstarter/custom-work-leads';
+import { verbatimEvidence } from '@/lib/flowstarter/scope-classifier';
 import { formatDuration } from './board';
 
 export interface CustomWorkCard {
@@ -74,13 +75,27 @@ export const CUSTOM_WORK_REPLY_WINDOW_MS = 24 * HOUR;
 /** Statuses that mean somebody has already dealt with it. */
 const ANSWERED = new Set(['contacted', 'booked', 'closed']);
 
-function evidenceOf(raw: unknown): string[] {
+/**
+ * The stored fragments, filtered to the ones that are actually in the brief.
+ *
+ * Read time, not write time: `scope_evidence` is written once by
+ * `recordCustomWorkLead` from whatever `classifyScope` reported, and a row
+ * written before a classifier bug was fixed keeps whatever it was written
+ * with. Filtering again here means this card can never show a fragment that
+ * is not the visitor's own words -- a reason code, a prompt version tag, or
+ * anything else a future classifier bug invents -- no matter when the row was
+ * written or which implementation produced it. Same rule as
+ * `customWorkOperatorEmail`'s `quotedEvidence`, applied to the same data on
+ * its other reader.
+ */
+function evidenceOf(raw: unknown, description: string): string[] {
   if (!Array.isArray(raw)) return [];
-  return raw
+  const fragments = raw
     .filter((item): item is string => typeof item === 'string')
     .map((item) => item.trim())
     .filter(Boolean)
     .slice(0, 3);
+  return verbatimEvidence(fragments, description);
 }
 
 export function toCustomWorkCard(
@@ -89,15 +104,16 @@ export function toCustomWorkCard(
 ): CustomWorkCard {
   const answered = ANSWERED.has(row.booking_status);
   const waitingMs = Math.max(0, now - Date.parse(row.created_at));
+  const description = row.description.trim().slice(0, MAX_DESCRIPTION_CHARS);
   return {
     id: row.id,
     name: row.name,
     email: row.email,
-    description: row.description.trim().slice(0, MAX_DESCRIPTION_CHARS),
+    description,
     linkUrl: row.link_url,
     scope: row.scope,
     confidence: Number(row.scope_confidence) || 0,
-    evidence: evidenceOf(row.scope_evidence),
+    evidence: evidenceOf(row.scope_evidence, description),
     classifier: row.classifier,
     route: row.route,
     routeRule: row.route_rule,

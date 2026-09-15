@@ -48,6 +48,7 @@ beforeEach(() => {
   llmClassifyScope.mockReset();
   sigmaClassifyScope.mockReset();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.spyOn(console, 'debug').mockImplementation(() => {});
 });
 
 describe('sigmaScopeEnabled', () => {
@@ -74,14 +75,81 @@ describe('sigmaScopeClassifier', () => {
     expect(result).toEqual({
       scope: 'custom',
       confidence: 0.91,
-      evidence: ['semantic:custom-work'],
+      // The embedding tier decided on its own here (no injected tier ran --
+      // `sigmaSaysCustom`'s mock trace carries no `evidence`), and centroid
+      // geometry has no sentence to report, so there is no fragment to quote.
+      // The reason string moves to `trace`, never `evidence` -- see #191.
+      evidence: [],
       classifier: 'sigma',
       // The cascade's own mapping can only reach `custom`/`standard` through
       // the guard that action's calibration passed (its fallback is always
       // `unclear`), so this is always decided when it is not `unclear`.
       decided: true,
+      trace: 'semantic:custom-work',
     });
     expect(llmClassifyScope).not.toHaveBeenCalled();
+  });
+
+  it('never puts sigma’s reason code in evidence, however confident the verdict', async () => {
+    // The exact bug from #191: an operator email quoted
+    // `confident:scope:custom-work:semantic` -- sigma's own reason string,
+    // never the visitor's text -- as though it were a clause from the brief.
+    sigmaClassifyScope.mockResolvedValue({
+      scope: 'custom',
+      reasons: { scope: 'confident:scope:custom-work:semantic' },
+      trace: { heads: { scope: { confidence: 0.91 } } },
+    });
+    const result = await sigmaScopeClassifier('A portal my customers log into');
+    expect(result.evidence).toEqual([]);
+    expect(result.evidence).not.toContain(
+      'confident:scope:custom-work:semantic'
+    );
+    // The reason code is not lost, only moved: it is still readable for
+    // diagnostics, just never as evidence a person is shown.
+    expect(result.trace).toBe('confident:scope:custom-work:semantic');
+  });
+
+  it('quotes the injected tier’s own evidence when it actually occurs in the brief', async () => {
+    sigmaClassifyScope.mockResolvedValue({
+      scope: 'custom',
+      reasons: { scope: 'confident:scope:custom-work:injected' },
+      trace: {
+        heads: {
+          scope: {
+            confidence: 0.8,
+            tier: 'injected',
+            evidence: 'customers log into',
+          },
+        },
+      },
+    });
+    const result = await sigmaScopeClassifier(
+      'A portal my customers log into their account'
+    );
+    expect(result.evidence).toEqual(['customers log into']);
+  });
+
+  it('drops the injected tier’s evidence when it is not actually in the brief', async () => {
+    // A model can paraphrase instead of quoting. A paraphrase in quotation
+    // marks reads exactly like the #191 bug to an operator who cannot tell
+    // the difference without opening the brief, so it is dropped the same way.
+    sigmaClassifyScope.mockResolvedValue({
+      scope: 'custom',
+      reasons: { scope: 'confident:scope:custom-work:injected' },
+      trace: {
+        heads: {
+          scope: {
+            confidence: 0.8,
+            tier: 'injected',
+            evidence: 'a client login area',
+          },
+        },
+      },
+    });
+    const result = await sigmaScopeClassifier(
+      'A portal my customers log into their account'
+    );
+    expect(result.evidence).toEqual([]);
   });
 
   it('reports decided even when the raw margin is nowhere near the LLM adapter’s bars', async () => {
