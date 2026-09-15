@@ -1,365 +1,173 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+/**
+ * `aiModerateContent`, now that it is an adapter and not a guardrail.
+ *
+ * This suite used to assert the thirteen regular expressions that lived in
+ * `../moderate.ts` -- that "Chat with OnlyFans models here" was caught, that
+ * the match was case-insensitive, that the `services` field was searched too
+ * -- and then the second LLM prompt's own risk bands on top of them. All of
+ * it is gone, and none of it is what should be tested now: the product has one
+ * acceptable-use guardrail, the classifier behind `screenAcceptableUse`, and
+ * `packages/sigma-flowstarter/test/acceptable-use-eval.test.ts` plus
+ * `src/lib/policy/__tests__` are where its detection is measured.
+ *
+ * What is left to test here is the adapter: that it asks the gate, that it
+ * asks with a properly composed subject, and that it flattens the verdict onto
+ * the old shape without losing the parts a caller needs to say the true thing.
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// vi.hoisted prevents TDZ errors when fileParallelism=true hoists vi.mock calls
-const { mockGenerateText } = vi.hoisted(() => ({
-  mockGenerateText: vi.fn(),
+vi.mock('server-only', () => ({}));
+
+const screenAcceptableUse = vi.fn();
+vi.mock('@/lib/policy/gate', () => ({
+  screenAcceptableUse: (input: unknown) => screenAcceptableUse(input),
 }));
 
-vi.mock('ai', () => ({
-  generateText: mockGenerateText,
-  generateObject: vi.fn(),
-  streamText: vi.fn(),
-}));
-
-vi.mock('@/lib/ai/client', () => ({
-  models: { gpt4: { id: 'mock-gpt4' } },
-  getModel: (id?: string) => ({ modelId: id ?? 'mock-gpt4' }),
-  isOpenRouterConfigured: () => true,
-}));
-vi.mock('@/supabase-clients/server', () => ({
-  createSupabaseServiceRoleClient: () => ({
-    from: () => ({ insert: () => Promise.resolve({ error: null }) }),
-  }),
-}));
-
-// Import once — mocks are already in place via vi.mock hoisting
 import { aiModerateContent } from '../moderate';
 
-describe('AI Content Moderation', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+const CLEAN = { id: 'none', label: 'No category', disposition: 'clean' };
+const DRUGS = {
+  id: 'illegal_drugs',
+  label: 'Illegal drugs and controlled substances',
+  disposition: 'prohibited',
+};
+const PHARMACY = {
+  id: 'licensed_pharmacy',
+  label: 'Licensed pharmacy',
+  disposition: 'sensitive',
+};
+
+function screening(overrides: {
+  decision: 'allow' | 'review' | 'refuse';
+  category?: typeof CLEAN;
+  confidence?: number;
+  rule?: string;
+  notice?: unknown;
+}) {
+  return {
+    verdict: {
+      decision: overrides.decision,
+      category: overrides.category ?? CLEAN,
+      confidence: overrides.confidence ?? 0.9,
+      rule: overrides.rule ?? 'tier_decided',
+      tier: 'llm',
+      needsHuman: overrides.decision !== 'allow',
+    },
+    classification: {},
+    notice: overrides.notice ?? null,
+    reviewId: null,
+    blocked: overrides.decision !== 'allow',
+  };
+}
+
+beforeEach(() => {
+  screenAcceptableUse.mockReset();
+});
+
+describe('aiModerateContent', () => {
+  it('asks the one gate rather than matching strings of its own', async () => {
+    screenAcceptableUse.mockResolvedValue(screening({ decision: 'allow' }));
+
+    await aiModerateContent({
+      description: 'A bakery in Oradea',
+      industry: 'Food',
+      services: 'Bread, cakes',
+      goals: 'Get more walk-ins',
+    });
+
+    expect(screenAcceptableUse).toHaveBeenCalledOnce();
+    const call = screenAcceptableUse.mock.calls[0][0] as {
+      text: string;
+      surface: string;
+      actor: string;
+    };
+    expect(call.surface).toBe('preview');
+    expect(call.actor).toBe('ai-moderate');
+    // Composed by `intakeSubject`, labels and all, so the classifier's
+    // content-hash cache is shared with the scope gate and the preview route
+    // rather than being a third, differently-spelled subject.
+    expect(call.text).toContain('What the business does: A bakery in Oradea');
+    expect(call.text).toContain('Industry: Food');
+    expect(call.text).toContain('Services: Bread, cakes');
+    expect(call.text).toContain('Goal for the site: Get more walk-ins');
   });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
+  it('passes a clean verdict through as approved', async () => {
+    screenAcceptableUse.mockResolvedValue(
+      screening({ decision: 'allow', confidence: 0.04 })
+    );
+
+    const result = await aiModerateContent({ description: 'A bakery' });
+
+    expect(result.isProhibited).toBe(false);
+    expect(result.recommendation).toBe('APPROVED');
+    expect(result.riskLevel).toBe('LOW');
+    expect(result.categories).toEqual([]);
+    expect(result.reasons).toEqual([]);
+    expect(result.notice).toBeNull();
+    expect(result.decision).toBe('allow');
   });
 
-  describe('Keyword Pre-screening', () => {
-    it('should detect adult content keywords and reject immediately', async () => {
-      const result = await aiModerateContent({
-        description: 'Chat with OnlyFans models here',
-        industry: 'Entertainment',
-      });
+  it('flattens a refusal onto the shape the old callers read', async () => {
+    const notice = { title: 'We cannot build this one', decision: 'refuse' };
+    screenAcceptableUse.mockResolvedValue(
+      screening({
+        decision: 'refuse',
+        category: DRUGS,
+        confidence: 0.9,
+        rule: 'tier_decided',
+        notice,
+      })
+    );
 
-      expect(result.isProhibited).toBe(true);
-      expect(result.riskLevel).toBe('HIGH');
-      expect(result.riskScore).toBe(90);
-      expect(result.categories).toContain('adult-explicit');
-      expect(result.recommendation).toBe('REQUEST_REJECTED');
-      expect(mockGenerateText).not.toHaveBeenCalled(); // Should short-circuit
+    const result = await aiModerateContent({
+      description: 'A shop selling recreational drugs, paid in crypto',
     });
 
-    it('should detect spicy girls keyword', async () => {
-      const result = await aiModerateContent({
-        description: 'Platform for spicy girls to chat with fans',
-        industry: 'Social',
-      });
-
-      expect(result.isProhibited).toBe(true);
-      expect(result.riskLevel).toBe('HIGH');
-      expect(result.recommendation).toBe('REQUEST_REJECTED');
-    });
-
-    it('should detect escort services', async () => {
-      const result = await aiModerateContent({
-        description: 'Premium escort booking service',
-        industry: 'Services',
-      });
-
-      expect(result.isProhibited).toBe(true);
-      expect(result.categories).toContain('sexual-services');
-    });
-
-    it('should detect webcam services', async () => {
-      const result = await aiModerateContent({
-        description: 'Webcam chat platform',
-        services: 'Adult cam shows',
-      });
-
-      expect(result.isProhibited).toBe(true);
-      expect(result.riskLevel).toBe('HIGH');
-    });
-
-    it('should be case-insensitive for keyword detection', async () => {
-      const result = await aiModerateContent({
-        description: 'ONLYFANS style platform',
-        industry: 'Social',
-      });
-
-      expect(result.isProhibited).toBe(true);
-    });
+    expect(result.isProhibited).toBe(true);
+    expect(result.recommendation).toBe('REQUEST_REJECTED');
+    expect(result.riskLevel).toBe('HIGH');
+    expect(result.riskScore).toBe(90);
+    expect(result.categories).toEqual(['illegal_drugs']);
+    expect(result.categoryId).toBe('illegal_drugs');
+    // The sentence a visitor reads comes back with the verdict, so a caller
+    // that stops does not have to write one of its own. That invention is
+    // what this module used to be.
+    expect(result.notice).toBe(notice);
   });
 
-  describe('AI-based Moderation', () => {
-    it('should approve safe business content', async () => {
-      mockGenerateText.mockResolvedValue({
-        text: JSON.stringify({
-          isProhibited: false,
-          riskLevel: 'LOW',
-          reasons: [],
-          riskScore: 10,
-          categories: [],
-          recommendation: 'APPROVED',
-        }),
-      });
+  it('stops on a review too, as the moderator it replaced did', async () => {
+    screenAcceptableUse.mockResolvedValue(
+      screening({
+        decision: 'review',
+        category: PHARMACY,
+        confidence: 0.107,
+        rule: 'sensitive_lawful',
+      })
+    );
 
-      const result = await aiModerateContent({
-        description: 'Building a project management SaaS for teams',
-        industry: 'Technology',
-        businessType: 'B2B Software',
-        goals: 'Help teams collaborate better',
-      });
+    const result = await aiModerateContent({ description: 'A pharmacy' });
 
-      expect(result.isProhibited).toBe(false);
-      expect(result.riskLevel).toBe('LOW');
-      expect(result.recommendation).toBe('APPROVED');
-      expect(mockGenerateText).toHaveBeenCalled();
-    });
-
-    it('should handle HIGH risk level as prohibited', async () => {
-      mockGenerateText.mockResolvedValue({
-        text: JSON.stringify({
-          isProhibited: false,
-          riskLevel: 'HIGH',
-          reasons: ['Potentially problematic content'],
-          riskScore: 70,
-          categories: ['high-risk'],
-          recommendation: 'REVIEW_REQUIRED',
-        }),
-      });
-
-      const result = await aiModerateContent({
-        description: 'Borderline service offering',
-        industry: 'Services',
-      });
-
-      expect(result.isProhibited).toBe(true);
-      expect(result.riskLevel).toBe('HIGH');
-    });
-
-    it('should handle CRITICAL risk level as prohibited', async () => {
-      mockGenerateText.mockResolvedValue({
-        text: JSON.stringify({
-          isProhibited: false,
-          riskLevel: 'CRITICAL',
-          reasons: ['Illegal activity detected'],
-          riskScore: 95,
-          categories: ['illegal'],
-          recommendation: 'REQUEST_REJECTED',
-        }),
-      });
-
-      const result = await aiModerateContent({
-        description: 'Platform for illegal services',
-        industry: 'Services',
-      });
-
-      expect(result.isProhibited).toBe(true);
-      expect(result.riskLevel).toBe('CRITICAL');
-    });
-
-    it('should treat non-APPROVED recommendations as prohibited', async () => {
-      mockGenerateText.mockResolvedValue({
-        text: JSON.stringify({
-          isProhibited: false,
-          riskLevel: 'MEDIUM',
-          reasons: ['Requires manual review'],
-          riskScore: 55,
-          categories: ['uncertain'],
-          recommendation: 'REVIEW_REQUIRED',
-        }),
-      });
-
-      const result = await aiModerateContent({
-        description: 'Ambiguous business description',
-        industry: 'Various',
-      });
-
-      expect(result.isProhibited).toBe(true);
-    });
-
-    it('should treat risk score >= 60 as prohibited', async () => {
-      mockGenerateText.mockResolvedValue({
-        text: JSON.stringify({
-          isProhibited: false,
-          riskLevel: 'MEDIUM',
-          reasons: ['Moderate risk detected'],
-          riskScore: 65,
-          categories: ['moderate-risk'],
-          recommendation: 'REVIEW_REQUIRED',
-        }),
-      });
-
-      const result = await aiModerateContent({
-        description: 'Risky business venture',
-        industry: 'Services',
-      });
-
-      expect(result.isProhibited).toBe(true);
-      expect(result.riskScore).toBe(65);
-    });
-
-    it('should handle markdown JSON response format', async () => {
-      mockGenerateText.mockResolvedValue({
-        text: '```json\n{"isProhibited":false,"riskLevel":"LOW","reasons":[],"riskScore":5,"categories":[],"recommendation":"APPROVED"}\n```',
-      });
-
-      const result = await aiModerateContent({
-        description: 'E-commerce store for handmade crafts',
-        industry: 'Retail',
-      });
-
-      expect(result.isProhibited).toBe(false);
-      expect(result.riskLevel).toBe('LOW');
-    });
-
-    it('should handle plain markdown code block format', async () => {
-      mockGenerateText.mockResolvedValue({
-        text: '```\n{"isProhibited":false,"riskLevel":"LOW","reasons":[],"riskScore":10,"categories":[],"recommendation":"APPROVED"}\n```',
-      });
-
-      const result = await aiModerateContent({
-        description: 'Online tutoring platform',
-        industry: 'Education',
-      });
-
-      expect(result.isProhibited).toBe(false);
-    });
+    // `isProhibited` is one bit over a three-valued verdict, and "do not build
+    // this yet" is what both blocking values mean. A caller that has to tell
+    // a refusal from a review reads `decision`.
+    expect(result.isProhibited).toBe(true);
+    expect(result.recommendation).toBe('REVIEW_REQUIRED');
+    expect(result.riskLevel).toBe('MEDIUM');
+    expect(result.decision).toBe('review');
+    expect(result.categoryId).toBe('licensed_pharmacy');
   });
 
-  describe('Error Handling', () => {
-    it('should return conservative fallback on moderation error', async () => {
-      mockGenerateText.mockRejectedValue(new Error('AI service timeout'));
+  it('carries the visitor language through to the notice, not to the classifier', async () => {
+    screenAcceptableUse.mockResolvedValue(screening({ decision: 'allow' }));
 
-      const result = await aiModerateContent({
-        description: 'Any business description',
-        industry: 'Technology',
-      });
-
-      // Implementation fails open - allows through on service failure
-      // Keyword pre-screen catches obvious violations before AI call
-      expect(result.isProhibited).toBe(false);
-      expect(result.riskLevel).toBe('LOW');
-      expect(result.riskScore).toBe(0);
-      expect(result.recommendation).toBe('APPROVED');
+    await aiModerateContent({
+      description: 'O brutărie din Oradea',
+      locale: 'ro',
     });
 
-    it('should return conservative fallback on JSON parse error', async () => {
-      mockGenerateText.mockResolvedValue({
-        text: 'Invalid JSON response',
-      });
-
-      const result = await aiModerateContent({
-        description: 'Business description',
-        industry: 'Technology',
-      });
-
-      // Fails open on parse error
-      expect(result.isProhibited).toBe(false);
-      expect(result.recommendation).toBe('APPROVED');
-    });
-
-    it('should handle empty responses permissively', async () => {
-      mockGenerateText.mockResolvedValue({
-        text: '',
-      });
-
-      const result = await aiModerateContent({
-        description: 'Some description',
-        industry: 'Industry',
-      });
-
-      // Fails open
-      expect(result.isProhibited).toBe(false);
-      expect(result.riskLevel).toBe('LOW');
-    });
-  });
-
-  describe('Input Handling', () => {
-    it('should handle missing optional fields', async () => {
-      mockGenerateText.mockResolvedValue({
-        text: JSON.stringify({
-          isProhibited: false,
-          riskLevel: 'LOW',
-          reasons: [],
-          riskScore: 15,
-          categories: [],
-          recommendation: 'APPROVED',
-        }),
-      });
-
-      const result = await aiModerateContent({
-        description: 'Simple business description',
-      });
-
-      expect(result.isProhibited).toBe(false);
-      expect(mockGenerateText).toHaveBeenCalled();
-    });
-
-    it('should handle empty strings gracefully', async () => {
-      mockGenerateText.mockResolvedValue({
-        text: JSON.stringify({
-          isProhibited: false,
-          riskLevel: 'LOW',
-          reasons: [],
-          riskScore: 20,
-          categories: [],
-          recommendation: 'APPROVED',
-        }),
-      });
-
-      const result = await aiModerateContent({
-        description: '',
-        industry: '',
-        businessType: '',
-      });
-
-      expect(result).toBeDefined();
-    });
-
-    it('should check services field for prohibited keywords', async () => {
-      const result = await aiModerateContent({
-        description: 'Entertainment services',
-        services: 'Adult entertainment and explicit content',
-      });
-
-      expect(result.isProhibited).toBe(true);
-      expect(result.riskLevel).toBe('HIGH');
-    });
-  });
-
-  describe('System Prompt Construction', () => {
-    it('should pass all business info fields to AI model', async () => {
-      mockGenerateText.mockResolvedValue({
-        text: JSON.stringify({
-          isProhibited: false,
-          riskLevel: 'LOW',
-          reasons: [],
-          riskScore: 10,
-          categories: [],
-          recommendation: 'APPROVED',
-        }),
-      });
-
-      await aiModerateContent({
-        description: 'Comprehensive business platform',
-        industry: 'Technology',
-        businessType: 'SaaS',
-        goals: 'Streamline operations',
-        services: 'Cloud hosting and analytics',
-      });
-
-      expect(mockGenerateText).toHaveBeenCalled();
-      const callArgs = mockGenerateText.mock.calls[0][0];
-      const userMessage = callArgs.messages.find(
-        (m: { role: string }) => m.role === 'user'
-      );
-
-      expect(userMessage.content).toContain('Comprehensive business platform');
-      expect(userMessage.content).toContain('Technology');
-      expect(userMessage.content).toContain('SaaS');
-      expect(userMessage.content).toContain('Streamline operations');
-      expect(userMessage.content).toContain('Cloud hosting and analytics');
-    });
+    expect(
+      (screenAcceptableUse.mock.calls[0][0] as { locale?: string }).locale
+    ).toBe('ro');
   });
 });

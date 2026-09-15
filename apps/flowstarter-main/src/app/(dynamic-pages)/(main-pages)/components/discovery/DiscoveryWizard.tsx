@@ -24,7 +24,10 @@ import {
   stepForConversation,
 } from './intake-script';
 import { IntakeConversation } from './steps/IntakeConversation';
-import { IntakeGraphConversation } from './steps/IntakeGraphConversation';
+import {
+  IntakeGraphConversation,
+  type IntakePolicyStop,
+} from './steps/IntakeGraphConversation';
 import { IntakePreviewPane } from './steps/IntakePreviewPane';
 import { useBrandSignals } from './useBrandSignals';
 import { useScopeRoute } from './useScopeRoute';
@@ -157,6 +160,20 @@ export function DiscoveryWizard({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   /**
+   * The acceptable-use gate ended the intake.
+   *
+   * Held by the wizard and not only by the conversation, because the thing it
+   * has to stop is the wizard's own: `stepForConversation` below advances to
+   * `PREVIEW_STEP` the moment the script runs dry, and `PREVIEW_STEP` is where
+   * `PreviewStep` mounts and starts a generation, and where `ScopeGateStep`
+   * can offer a booking link. A refused brief must reach neither, and the way
+   * to guarantee that is to not move.
+   */
+  const [intakeStop, setIntakeStop] = useState<IntakePolicyStop | null>(null);
+  const handlePolicyStop = useCallback((stop: IntakePolicyStop) => {
+    setIntakeStop(stop);
+  }, []);
+  /**
    * An edit asked for from the preview pane's fact list. The nonce is what
    * makes pressing the same pencil twice land in the conversation; see
    * `IntakeConversation`'s `editRequest`.
@@ -240,13 +257,17 @@ export function DiscoveryWizard({
    */
   useEffect(() => {
     if (step > CONVERSATION_LAST_STEP) return;
+    // The gate said no. The conversation stays where it is: no preview, no
+    // scope call, no booking link, and the notice the conversation is already
+    // showing stays the last word.
+    if (intakeStop) return;
     // The quick script running dry is what moves the wizard on, and it moves
     // it straight to the preview. There is no gap-filling interview in front
     // of it any more: the questions that used to be there are asked on the
     // dashboard, after the deposit, where the answers are worth more.
     const target = stepForConversation(data, answered, PREVIEW_STEP);
     if (target !== step) setStep(target);
-  }, [answered, data, step]);
+  }, [answered, data, step, intakeStop]);
 
   // Every stage is two panes wide now, so the modal is wide from the first
   // question rather than growing under the visitor part-way through. The
@@ -453,6 +474,7 @@ export function DiscoveryWizard({
                     setData(nextData);
                     setAnswered(nextAnswered);
                   }}
+                  onPolicyStop={handlePolicyStop}
                   t={t}
                 />
               ) : (

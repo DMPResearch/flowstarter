@@ -24,6 +24,8 @@ import { readJsonCapped } from '@/lib/net/ingress';
 import { routeLimiter } from '@/lib/security/route-limits';
 import { clientIp } from '@/lib/request-ip';
 import { runScopeGate } from '@/lib/flowstarter/scope-gate';
+import { HOLD_COPY } from '@/lib/flowstarter/scope-route';
+import { holdNotice, type PolicyLocale } from '@/lib/policy/copy';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -63,17 +65,51 @@ const Schema = z.object({
 });
 
 /**
- * What the wizard falls back to when this endpoint cannot answer.
+ * What this endpoint answers when it could not decide.
  *
- * `self-serve`, deliberately, and it is the one fail-open in the feature. The
- * alternative is that a broken classifier, a rate limit or a bad deploy stops
- * every visitor from ever reaching a preview, which is the funnel being down.
- * The gate itself already fails closed where it counts -- a classification that
- * throws returns `unclear`, which asks rather than builds -- so this branch is
- * only reached when the handler could not run at all, and at that point the
- * honest default is the product's default.
+ * It used to be `self-serve`, described here as "the one fail-open in the
+ * feature" on the reasoning that a broken classifier must not stop every
+ * visitor reaching a preview. The reasoning was wrong in the one case it
+ * mattered, and the showcase recorder filmed it twice on 2026-09-15: a rate
+ * limit answered `429 {"route":"self-serve","reason":"unavailable"}`, the
+ * wizard believed the `route` field, and a haulage client-portal brief got a
+ * generated preview with an invented "Customer Portal" page and a EUR 159.80
+ * deposit offer against work that should have been a discovery call.
+ *
+ * `self-serve` is not a neutral default. It is the single value in this
+ * feature's vocabulary that means GENERATE, and handing it out because we
+ * could not reach a decision is the same mistake #193 fixed one layer down:
+ * a classifier that could not answer is not a classifier that said yes. So
+ * the honest answer is `hold` -- #193's own state -- which stops, says so in
+ * the visitor's language, mints no booking link and spends no generation
+ * (`spendsGenerationBudget('hold')` is false).
+ *
+ * `reason: 'unavailable'` stays on the body, unchanged, so a browser running
+ * an older bundle still has the one word it needs to tell "we could not
+ * decide" from a real verdict.
  */
-const FALLBACK = { route: 'self-serve' as const, reason: 'unavailable' };
+function unavailable(locale: PolicyLocale) {
+  return {
+    route: 'hold' as const,
+    reason: 'unavailable',
+    offerCopy: HOLD_COPY,
+    policy: holdNotice(locale),
+  };
+}
+
+/**
+ * Nothing to classify: no body, no description, nothing said.
+ *
+ * Deliberately NOT `hold`. A hold tells a visitor a person is reading their
+ * brief, and there is no brief -- telling them to wait for a reply to
+ * something they never sent is a worse answer than carrying on. This is the
+ * one branch where the product's default really is the honest answer, and it
+ * carries its own reason so the browser can tell the two apart.
+ */
+const NOTHING_TO_CLASSIFY = {
+  route: 'self-serve' as const,
+  reason: 'no-brief',
+};
 
 export async function POST(req: NextRequest) {
   // Per-IP, backed by Arcjet (see `routeLimiter` and
@@ -85,7 +121,15 @@ export async function POST(req: NextRequest) {
     clientIp(req.headers)
   );
   if (!limit.ok) {
-    return NextResponse.json(FALLBACK, {
+    // The status stays 429 and `Retry-After` stays on it: the browser retries
+    // on this clock rather than on a number of its own (see
+    // `scopeRetryAfterSeconds` in `useScopeRoute`). What changed is the body,
+    // which no longer says `self-serve`.
+    //
+    // The locale is read from the unparsed request here because the body has
+    // not been read yet and must not be: refusing before parsing is what
+    // makes an abusive body cheap to turn away.
+    return NextResponse.json(unavailable(localeHint(req)), {
       status: 429,
       headers: { 'Retry-After': String(limit.retryAfter) },
     });
@@ -93,11 +137,14 @@ export async function POST(req: NextRequest) {
 
   const body = await readJsonCapped(req);
   if (body.status !== 'ok') {
-    return NextResponse.json(FALLBACK, { status: 200 });
+    return NextResponse.json(unavailable(localeHint(req)), { status: 200 });
   }
   const parsed = Schema.safeParse(body.value);
-  if (!parsed.success || !parsed.data.description.trim()) {
-    return NextResponse.json(FALLBACK, { status: 200 });
+  if (!parsed.success) {
+    return NextResponse.json(unavailable(localeHint(req)), { status: 200 });
+  }
+  if (!parsed.data.description.trim()) {
+    return NextResponse.json(NOTHING_TO_CLASSIFY, { status: 200 });
   }
 
   try {
@@ -142,6 +189,19 @@ export async function POST(req: NextRequest) {
       '[scope] the routing gate failed:',
       error instanceof Error ? error.message : 'unknown error'
     );
-    return NextResponse.json(FALLBACK, { status: 200 });
+    return NextResponse.json(unavailable(parsed.data.locale), { status: 200 });
   }
+}
+
+/**
+ * The visitor's language when the body has not been parsed, or could not be.
+ *
+ * `Accept-Language` is the only signal left at that point, and it is only ever
+ * used to pick which of two already-written notices to send. Anything that is
+ * not Romanian is English, which is the default everywhere else in
+ * `@/lib/policy/copy`.
+ */
+function localeHint(req: NextRequest): PolicyLocale {
+  const header = req.headers.get('accept-language') ?? '';
+  return /(^|[,\s])ro\b/i.test(header) ? 'ro' : 'en';
 }

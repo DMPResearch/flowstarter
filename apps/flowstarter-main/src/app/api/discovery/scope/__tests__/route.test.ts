@@ -31,10 +31,18 @@ vi.mock('@/lib/security/route-limits', () => ({
 
 import { POST } from '../route';
 
-function post(body: unknown, ip = '203.0.113.9') {
+function post(
+  body: unknown,
+  extraHeaders: Record<string, string> = {},
+  ip = '203.0.113.9'
+) {
   return new NextRequest('https://flowstarter.net/api/discovery/scope', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-forwarded-for': ip },
+    headers: {
+      'content-type': 'application/json',
+      'x-forwarded-for': ip,
+      ...extraHeaders,
+    },
     body: JSON.stringify(body),
   });
 }
@@ -190,29 +198,58 @@ describe('POST /api/discovery/scope', () => {
     expect(json.questionKey).toBe('landing.discovery.scope.question');
   });
 
-  it('fails open to the preview rather than dead-ending the funnel', async () => {
+  it('holds rather than generating when the gate itself threw', async () => {
     runScopeGate.mockRejectedValue(new Error('everything is on fire'));
     const res = await POST(post(BRIEF));
     expect(res.status).toBe(200);
-    expect((await res.json()).route).toBe('self-serve');
+    const json = await res.json();
+    // Not `self-serve`. Nothing classified this brief, so nobody may act on
+    // it -- the same rule #193 wrote for an unavailable classifier.
+    expect(json.route).toBe('hold');
+    expect(json.reason).toBe('unavailable');
+    expect(json.bookingUrl).toBeUndefined();
+    expect(json.policy.decision).toBe('review');
   });
 
   it('does not run the gate for a body with nothing to classify', async () => {
     const res = await POST(post({ fullName: 'Sarah', email: 'x@y.z' }));
-    expect((await res.json()).route).toBe('self-serve');
+    const json = await res.json();
+    // The one branch that is still `self-serve`, and it carries its own
+    // reason: there is no brief to hold, so telling the visitor a person is
+    // reading one would be a lie.
+    expect(json.route).toBe('self-serve');
+    expect(json.reason).toBe('no-brief');
     expect(runScopeGate).not.toHaveBeenCalled();
   });
 
-  it('rate limits without spending a classification', async () => {
+  it('holds on a rate limit instead of handing out a generation', async () => {
     limited.value = true;
     const res = await POST(post(BRIEF));
     expect(res.status).toBe(429);
     expect(res.headers.get('Retry-After')).toBe('42');
-    // Still `self-serve`: a refused request must not dead-end the funnel, and
-    // the visitor's next stop is the preview exactly as it was before this
-    // route existed.
-    expect((await res.json()).route).toBe('self-serve');
+    // This is finding 2 from the 2026-09-15 showcase run, as a test. The body
+    // used to say `self-serve`, the wizard believed it, and a client-portal
+    // brief got a generated preview and a deposit offer out of a rate limit.
+    const json = await res.json();
+    expect(json.route).toBe('hold');
+    expect(json.reason).toBe('unavailable');
+    expect(json.bookingUrl).toBeUndefined();
+    // The hold copy and the hold notice travel with it, so the screen says
+    // the true thing rather than guessing at one.
+    expect(json.offerCopy.titleKey).toBe('landing.discovery.scope.hold.title');
+    expect(json.policy.title).toBe('We are still checking this one');
     expect(runScopeGate).not.toHaveBeenCalled();
+  });
+
+  it('writes the hold notice in the language the request asked in', async () => {
+    limited.value = true;
+    const res = await POST(
+      post(BRIEF, { 'accept-language': 'ro-RO,ro;q=0.9' })
+    );
+    expect(res.status).toBe(429);
+    const json = await res.json();
+    expect(json.policy.locale).toBe('ro');
+    expect(json.policy.title).toBe('Încă verificăm');
   });
 
   it('never caches a routing decision at the edge', async () => {

@@ -1,7 +1,11 @@
 import 'server-only';
 import type { NextRequest } from 'next/server';
 import { slidingWindow, type ArcjetDecision } from '@arcjet/next';
-import { aj } from '@/lib/arcjet';
+import {
+  RECORDER_HEADER_NAME,
+  isRecorderRequestAllowed,
+} from '@flowstarter/platform-config';
+import { ajRouteLimit } from '@/lib/arcjet';
 import {
   SlidingWindowRateLimiter,
   consumeRateLimit,
@@ -11,7 +15,8 @@ import {
 
 /**
  * The shape every route's Arcjet client is narrowed to once
- * `aj.withRule(...)` has added its per-route rule. The SDK's own return type
+ * `ajRouteLimit.withRule(...)` has added its per-route rule. The SDK's own
+ * return type
  * is a generic whose `protect()` tuple arity depends on which characteristics
  * were declared (zero args for the built-in `ip.src`, one props object for a
  * custom characteristic like `email`/`token`) — awkward to carry through a
@@ -29,10 +34,11 @@ interface RouteArcjetClient {
 /**
  * Per-route rate limiting, backed in priority order by:
  *
- *   1. Arcjet — `aj.withRule(slidingWindow(...))`, a per-route rule layered
- *      onto the same client `src/middleware.ts` already runs shield and bot
- *      detection through. One provider, one dashboard, one outage to plan
- *      for, instead of a second system (Upstash) that exists only for this.
+ *   1. Arcjet — `ajRouteLimit.withRule(slidingWindow(...))`, the same
+ *      provider `src/middleware.ts` runs shield and bot detection through,
+ *      on a client that carries neither. One provider, one dashboard, one
+ *      outage to plan for, instead of a second system (Upstash) that exists
+ *      only for this.
  *   2. Upstash — the fixed-window counter `consumeRateLimit` already
  *      implements (PR #113/#124), unchanged, for anyone running without an
  *      Arcjet key but with a shared Redis.
@@ -139,8 +145,11 @@ function runtimeFor(def: RouteLimitDefinition): RouteLimiterRuntime {
   const limit = resolvedLimit(def);
   const windowMs = resolvedWindowMs(def);
 
+  // `ajRouteLimit`, not `aj`: a route limiter limits rate, and nothing else.
+  // See that client's own doc for the 2026-09-15 defect that came of layering
+  // this rule onto a client carrying shield and `detectBot`.
   const arcjetClient = process.env.ARCJET_KEY
-    ? (aj.withRule(
+    ? (ajRouteLimit.withRule(
         slidingWindow({
           mode: 'LIVE',
           characteristics: [ARCJET_CHARACTERISTIC_NAME[def.characteristic]],
@@ -160,7 +169,8 @@ function runtimeFor(def: RouteLimitDefinition): RouteLimiterRuntime {
 
 function decisionFromArcjet(
   decision: ArcjetDecision,
-  windowMs: number
+  windowMs: number,
+  name: string
 ): RouteLimitDecision {
   if (!decision.isDenied()) {
     return { ok: true, retryAfter: 0 };
@@ -174,8 +184,21 @@ function decisionFromArcjet(
         : Math.max(1, Math.ceil(windowMs / 1000));
     return { ok: false, retryAfter };
   }
-  // Shield / bot / any other Arcjet denial reached through the same client:
-  // still a refusal, just not one with its own reset clock to report.
+  // A denial that is not a rate limit should be impossible now: the client
+  // this runs on (`ajRouteLimit`) carries the sliding window and nothing else.
+  // It is kept, loudly, because the version of this branch that returned a
+  // silent `{ ok: false }` is how a bot denial spent a day being read as a
+  // rate limit that would not refill. If it ever fires again, the log says so
+  // in the one line an operator greps for.
+  //
+  // `console.warn` rather than `info`: `next.config.mjs` strips every console
+  // call except `error` and `warn` from the production bundle, and staging
+  // builds with `NODE_ENV=production`.
+  console.warn(
+    `[route-limit:${name}] Arcjet denied this request for a reason that is ` +
+      'not a rate limit; reporting it as one. The route-limit client carries ' +
+      'no shield or bot rule, so this should not happen.'
+  );
   return { ok: false, retryAfter: Math.max(1, Math.ceil(windowMs / 1000)) };
 }
 
@@ -204,10 +227,58 @@ function onArcjetError(
   return { ok: true, retryAfter: 0 };
 }
 
+/**
+ * The showcase recorder, and only it, skips the route's rate limit.
+ *
+ * #178 gave the recorder an allowance at the middleware's bot rule; it did
+ * not give it one here, and on 2026-09-15 that was enough to stop the
+ * showcase: filming one scenario end to end costs several `discovery-scope`
+ * calls inside a minute, against a limit of ten per minute per IP shared with
+ * every retry and every preflight probe the recorder makes from the same
+ * address. A run that cannot finish produces no evidence, which is the whole
+ * reason the recorder exists.
+ *
+ * Exactly the same policy as the bot allowance, because it is exactly the same
+ * decision function: `isRecorderRequestAllowed` refuses outright when
+ * `FLOWSTARTER_ENV === 'production'`, before it reads the header, and refuses
+ * again when no `FLOWSTARTER_RECORDER_SECRET` is configured — which `prod.env`
+ * never sets. Two independent reasons production stays closed. The header
+ * comparison is constant time.
+ *
+ * Every hit is logged as a security event, through the same
+ * `[SECURITY] event=...` shape `src/middleware.ts` uses, so the one grep finds
+ * both. `console.warn` and not `console.info`: `next.config.mjs` strips every
+ * console call except `error` and `warn` from a production bundle, and staging
+ * builds with `NODE_ENV=production` — an audit line that is compiled out is
+ * not an audit line. (This is why the 2026-09-15 run found no `[policy]`
+ * lines in the container log at all.)
+ */
+async function recorderMayBypass(
+  request: NextRequest,
+  name: string
+): Promise<boolean> {
+  const allowed = await isRecorderRequestAllowed(
+    request.headers.get(RECORDER_HEADER_NAME)
+  );
+  if (!allowed) return false;
+  console.warn(
+    `[SECURITY] event=security.recorder_allowance limit=${name} ` +
+      'detail=route_rate_limit_bypassed'
+  );
+  return true;
+}
+
 function createRouteLimiter(def: RouteLimitDefinition): RouteLimiter {
   return {
     name: def.name,
     async check(request, key) {
+      // Before every backend, so the allowance means the same thing whichever
+      // one is configured — and so a recorder run on a box with no Arcjet key
+      // is not quietly stopped by the in-memory counter instead.
+      if (await recorderMayBypass(request, def.name)) {
+        return { ok: true, retryAfter: 0 };
+      }
+
       const runtime = runtimeFor(def);
       const windowMs = resolvedWindowMs(def);
 
@@ -218,7 +289,7 @@ function createRouteLimiter(def: RouteLimitDefinition): RouteLimiter {
               ? undefined
               : { [def.characteristic]: key };
           const decision = await runtime.arcjetClient.protect(request, props);
-          return decisionFromArcjet(decision, windowMs);
+          return decisionFromArcjet(decision, windowMs, def.name);
         } catch (error) {
           return onArcjetError(def, error);
         }

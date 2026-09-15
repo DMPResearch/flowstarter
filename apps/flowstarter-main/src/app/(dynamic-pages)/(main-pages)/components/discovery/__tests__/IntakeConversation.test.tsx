@@ -96,11 +96,21 @@ async function skipConnect(user: User) {
 
 beforeEach(() => {
   window.sessionStorage.clear();
-  // The recommendation route is the only thing left that would reach out.
-  global.fetch = vi.fn(async () => ({
-    ok: false,
-    json: async () => ({}),
-  })) as unknown as typeof fetch;
+  global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    // The routing gate has to answer for real. A blanket `ok: false` used to
+    // reach the preview anyway, because the browser read the body's
+    // `self-serve` and ignored the status; it does not any more -- an answer
+    // the route could not decide is a `hold`, and a hold does not generate.
+    // See `useScopeRoute`'s module doc and finding 2 of 2026-09-15.
+    if (String(input).startsWith('/api/discovery/scope')) {
+      return {
+        ok: true,
+        headers: { get: () => null },
+        json: async () => ({ route: 'self-serve', scope: 'standard' }),
+      } as unknown as Response;
+    }
+    return { ok: false, json: async () => ({}) } as Response;
+  }) as unknown as typeof fetch;
 });
 
 afterEach(() => {
