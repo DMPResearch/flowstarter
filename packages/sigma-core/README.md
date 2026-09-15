@@ -23,9 +23,9 @@ Flowstarter's own heads live next door in
    ▼
   centroid tier      cosine vs per-label centroids, per head
    │
-   ├── confident ────────────────────────────┐
+   ├── settled ──────────────────────────────┐
    │                                         │
-   └── abstained ──▶ injected tier (optional) ┤   caller-supplied, budgeted
+   └── not settled ─▶ injected tier (optional)┤   caller-supplied, budgeted
                           │                   │
                           └── abstained ──────┤
                                               ▼
@@ -43,8 +43,17 @@ Four ideas carry the whole thing.
 the top cosine must reach `min_sim` *and* lead the runner-up by `margin`.
 Inside the band the head says so, and the platform's fallback action takes
 over. Everything else is built on that — the cascade only spends money where
-the local tier abstained, and the policy boundary turns an abstention into the
-safe thing rather than into a coin flip.
+the local tier did not settle the decision, and the policy boundary turns an
+abstention into the safe thing rather than into a coin flip.
+
+"Settled" defaults to "outside the band" and can be more than that. A platform
+whose policy boundary asks more of a particular action than the band asks of
+an answer can pass `settles` to `classify` — `semanticSettles` builds the
+predicate from its own `DecisionThresholds` and `DecisionMapping` — so a
+verdict that clears the band and then misses the guard for the action its
+label maps to escalates instead of ending the cascade. The core still learns
+nothing about labels: it asks the caller a yes/no question about the caller's
+own `SemanticResult`.
 
 **No tier may break the request.** Every tier runs inside a budget and a
 try/catch. A failure falls through and is recorded in the trace as a string.

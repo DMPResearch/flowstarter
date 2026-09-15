@@ -11,7 +11,9 @@
  *
  * Failure behaviour is the interesting part, so state it plainly: there is no
  * path through this module that throws in production and no path that returns
- * `allow` without a confident `clean`. A missing model, a blown budget, a
+ * `allow` without a `clean` from a tier that cleared the allow guard — the
+ * centroids above their calibrated similarity and margin, or an injected tier
+ * above `allowMinLlmConfidence`. A missing model, a blown budget, a
  * corrupt centroid file and a text in a language nobody trained all land on
  * `review` / `unclear`, which is a human looking at it — the outcome we are
  * happy to have a hundred times a day and unhappy to have never.
@@ -23,10 +25,12 @@ import {
   CentroidScorer,
   getEncoder,
   loadEncoderConfig,
+  semanticSettles,
   type DecisionMapping,
   type DecisionThresholds,
   type DecisionTrace,
   type Encoder,
+  type SemanticResult,
   type Tier,
 } from '@flowstarter/sigma-core';
 import {
@@ -50,6 +54,22 @@ export interface Decision {
   scopeCategory: ScopeCategory | null;
   /** Machine-readable why, safe to log: never contains the user's text. */
   reasons: { acceptableUse: string; scope: string };
+  /**
+   * Per head: did a TIER produce this action, or did the fallback?
+   *
+   * `review` and `unclear` are both real verdicts and the two fallbacks, so
+   * the action alone cannot tell a caller which happened, and a caller that
+   * records "the classifier decided" either way writes down something that is
+   * false half the time. Staging did exactly that on 2026-09-15: a `clean`
+   * that missed the allow guard by a mile was filed as
+   * `rule=tier_decided, tier=embedding, confidence 0.049`.
+   *
+   * True only for `reason: 'confident'` — a label a tier produced, mapped to
+   * an action, clearing that action's guard. Anything else (abstained, guard
+   * not met, unmapped label, a malformed trace failing closed) is the
+   * platform's safe default, and honest logging says so.
+   */
+  decided: { acceptableUse: boolean; scope: boolean };
   trace: DecisionTrace;
 }
 
@@ -164,12 +184,23 @@ export async function warmSigma(): Promise<void> {
   checkReadiness(trace);
 }
 
-/** Both heads, one embedding, full trace. Never throws for a classification reason. */
+/**
+ * Both heads, one embedding, full trace. Never throws for a classification
+ * reason.
+ *
+ * The `settles` predicates are why an injected tier is consulted for more than
+ * a plain abstention: a centroid verdict that clears the band and then misses
+ * the guard for the action its label maps to is an answer nothing may act on,
+ * and asking the model is strictly better than recording an unactionable
+ * verdict as a decision. Both heads get the rule, because wiring it to one of
+ * them is the asymmetry that produced the bug in the first place.
+ */
 export async function classifyRequest(
   text: string,
   options: GateOptions = {},
 ): Promise<DecisionTrace> {
   const encoderConfig = loadEncoderConfig();
+  const policy = options.policy ?? loadPolicy();
   return coreClassify(text, {
     encoder: options.encoder ?? getEncoder(),
     scorer: getScorer(),
@@ -177,6 +208,20 @@ export async function classifyRequest(
     config: loadSemanticConfig(),
     encoderConfig,
     decisions: [ACCEPTABLE_USE_HEAD, SCOPE_HEAD],
+    settles: {
+      [ACCEPTABLE_USE_HEAD]: (semantic) =>
+        semanticSettles(
+          semantic as SemanticResult<AcceptableUseCategory>,
+          acceptableUseThresholds(policy),
+          ACCEPTABLE_USE_MAPPING,
+        ),
+      [SCOPE_HEAD]: (semantic) =>
+        semanticSettles(
+          semantic as SemanticResult<ScopeCategory>,
+          scopeThresholds(policy),
+          SCOPE_MAPPING,
+        ),
+    },
     ...(options.tiers ? { tiers: options.tiers as Record<string, Tier> } : {}),
     ...(options.tierBudgetMs !== undefined ? { tierBudgetMs: options.tierBudgetMs } : {}),
     ...(options.budgetMs !== undefined ? { budgetMs: options.budgetMs } : {}),
@@ -229,10 +274,21 @@ export function acceptableUseThresholds(
       allow: {
         minSimilarity: policy.acceptableUse.allowMinSimilarity,
         minMargin: policy.acceptableUse.allowMinMargin,
-        // An injected model may never hand out an allow on its own: the
-        // semantic tier abstaining is exactly the case where we want a human,
-        // and a model that says "clean, 0.9" is not evidence of a licence.
-        semanticOnly: true,
+        // An injected model MAY hand out an allow, well above its own floor.
+        //
+        // It used to be forbidden outright (`semanticOnly`), on the reasoning
+        // that the band abstaining is exactly where we want a human and that
+        // "clean, 0.9" from a model is not evidence of a licence. The second
+        // half of that is still true and is why every sensitive category
+        // routes to a person whatever any tier says. The first half was not:
+        // the band abstains on a large minority of ordinary briefs, so the
+        // ban did not mean "a human checks the doubtful ones", it meant "a
+        // human checks every lawful business the embeddings happened to miss".
+        // Staging 2026-09-15 recorded a Timisoara flower shop as
+        // `review, tier=llm, 0.900, category none` for exactly this reason,
+        // with the model's raw answer reading
+        // `{"category":"none","confidence":0.95,"needs_human":false}`.
+        minTierConfidence: policy.acceptableUse.allowMinLlmConfidence,
       },
     },
     failClosedInProduction: policy.failClosedInProduction,
@@ -276,6 +332,10 @@ export function decide(trace: DecisionTrace, policy: PolicyConfig = loadPolicy()
     reasons: {
       acceptableUse: `${acceptableUse.reason}:${acceptableUse.detail}`,
       scope: `${scope.reason}:${scope.detail}`,
+    },
+    decided: {
+      acceptableUse: acceptableUse.reason === 'confident',
+      scope: scope.reason === 'confident',
     },
     trace,
   };

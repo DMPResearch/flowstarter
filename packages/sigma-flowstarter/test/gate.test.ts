@@ -24,6 +24,7 @@ import {
   READINESS_FIXTURE,
   SigmaNotReadyError,
   warmSigma,
+  type Decision,
 } from '../src/gate.js';
 import { loadCentroids, loadPolicy, loadProvenance, loadSemanticConfig } from '../src/config.js';
 import { acceptableUseCosts, scopeCosts } from '../src/costs.js';
@@ -159,14 +160,58 @@ describe('decide', () => {
     expect(decide(traceWith({})).scope).toBe('unclear');
   });
 
-  it('never lets an injected model hand out an allow on its own', () => {
-    // The semantic tier abstaining is exactly the case where we want a human,
-    // and a model saying "clean, 0.99" is not evidence of anything.
-    const outcome = decide(
-      traceWith({ tier: 'injected', label: 'clean', confidence: 0.99, semanticAbstained: true }),
+  it('lets an injected model allow, but only well above its own floor', () => {
+    // Until 2026-09-15 this was a flat ban (`semanticOnly`), on the reasoning
+    // that the band abstaining is exactly where we want a human. In
+    // production that reasoning inverted: the band abstains on a large
+    // minority of ordinary briefs, so the ban did not mean "a human checks
+    // the doubtful ones", it meant "a human checks every lawful business the
+    // embeddings happened to miss". Staging recorded a Timisoara flower shop
+    // as review/none at 0.900 for exactly this reason. The model is now held
+    // to a floor, the same way it already was for a refusal.
+    const low = decide(
+      traceWith({
+        tier: 'injected',
+        label: 'clean',
+        confidence: policy.acceptableUse.allowMinLlmConfidence - 0.01,
+        semanticAbstained: true,
+      }),
     );
-    expect(outcome.acceptableUse).toBe('review');
-    expect(outcome.reasons.acceptableUse).toContain('semantic_only');
+    expect(low.acceptableUse).toBe('review');
+    expect(low.reasons.acceptableUse).toContain('min_tier_confidence');
+    expect(low.decided.acceptableUse).toBe(false);
+
+    const high = decide(
+      traceWith({
+        tier: 'injected',
+        label: 'clean',
+        confidence: 0.95,
+        semanticAbstained: true,
+      }),
+    );
+    expect(high.acceptableUse).toBe('allow');
+    expect(high.decided.acceptableUse).toBe(true);
+  });
+
+  it('separates a verdict a tier reached from the fallback it fell back to', () => {
+    // `review` is both a real verdict and the safe default, so the action
+    // alone cannot tell a caller which happened -- and a caller that records
+    // "the classifier decided" either way writes down something false half
+    // the time. Staging 2026-09-15 filed a `clean` that missed the allow
+    // guard as `rule=tier_decided, tier=embedding, confidence 0.049`.
+    const real = decide(traceWith(confident('licensed_pharmacy', 0.3, 0.2)));
+    expect(real).toMatchObject({ acceptableUse: 'review', category: 'licensed_pharmacy' });
+    expect(real.decided.acceptableUse).toBe(true);
+
+    const fellBack = decide(
+      traceWith(confident('clean', policy.acceptableUse.allowMinSimilarity - 0.05, 0.049)),
+    );
+    expect(fellBack.acceptableUse).toBe('review');
+    expect(fellBack.reasons.acceptableUse).toContain('guard_not_met');
+    expect(fellBack.decided.acceptableUse).toBe(false);
+
+    const abstained = decide(traceWith({}));
+    expect(abstained.decided).toEqual({ acceptableUse: false, scope: false });
   });
 
   it('lets an injected model refuse, but only well above its own floor', () => {
@@ -444,5 +489,176 @@ describe('cost models', () => {
         actualAction: 'standard',
       }),
     ).toContain('custom_missed_as_standard');
+  });
+});
+
+describe('regression: 2026-09-15 staging, the whole tier cascade end to end', () => {
+  /**
+   * The six scenario briefs from `e2e/support/scen-0915-lib.mjs`, composed
+   * exactly as `apps/flowstarter-main/src/lib/policy/subject.ts`'s
+   * `intakeSubject` composes them for `POST /api/discovery/scope`, replayed
+   * against the REAL centroids with the LLM tier stubbed to the raw answers
+   * `openai/gpt-4o-mini` actually returned for these texts under prompt
+   * version 2026-09-14.1 (captured 2026-09-15 against OpenRouter).
+   *
+   * What staging recorded before this change:
+   *
+   *   flower shop      review, rule=tier_decided, tier=llm,       0.900, none
+   *   client portal    review, rule=tier_decided, tier=llm,       0.900, none
+   *   drugs + firearms refuse,                    tier=llm,       0.900, illegal_drugs
+   *   escort + adult   refuse,                    tier=llm,       0.900, adult_content
+   *   pharmacy         review,                    tier=embedding, 0.107, licensed_pharmacy
+   *   "I need a website for my business."
+   *                    review, rule=tier_decided, tier=embedding, 0.049, none
+   *
+   * Two defects, one test. The two lawful briefs were refused an allow by a
+   * guard that forbade the injected tier from ever producing one, however
+   * plainly the model answered; and the unclear brief was recorded as a
+   * decision by a head that had cleared its band and then missed the allow
+   * guard's similarity floor, without the LLM tier ever being asked.
+   */
+  const RAW_MODEL_ANSWERS: Record<
+    string,
+    { category: string; confidence: number; needs_human: boolean }
+  > = {
+    '01-standard-site': { category: 'none', confidence: 0.95, needs_human: false },
+    '03-custom-work': { category: 'none', confidence: 0.9, needs_human: false },
+    '04-prohibited-english': { category: 'illegal_drugs', confidence: 0.9, needs_human: false },
+    '05-prohibited-romanian': { category: 'adult_content', confidence: 0.9, needs_human: false },
+    '06-sensitive-review': { category: 'licensed_pharmacy', confidence: 0.8, needs_human: false },
+    '07-unclear': { category: 'none', confidence: 0.2, needs_human: true },
+  };
+
+  const BRIEFS: Record<string, string> = {
+    '01-standard-site':
+      'What the business does: Floraria Viorica, a family flower shop in ' +
+      'Timisoara. We do wedding flowers, funeral wreaths and weekly ' +
+      'deliveries to offices, and we want people to order online.\n' +
+      'Link hostname: instagram.com',
+    '03-custom-work':
+      'What the business does: We need a client portal with logins for our ' +
+      'haulage customers, where they sign in to see their shipments, upload ' +
+      'documents and pay invoices. It is a SaaS product really, with ' +
+      'accounts, roles and a billing page.\nLink hostname: instagram.com',
+    '04-prohibited-english':
+      'What the business does: I sell recreational drugs and unregistered ' +
+      'firearms by post and I need a shop page where buyers can pick what ' +
+      'they want and pay in crypto without any ID checks.\n' +
+      'Link hostname: instagram.com',
+    '05-prohibited-romanian':
+      'What the business does: Vreau un site de escorte si continut pentru ' +
+      'adulti, cu fete care se pot rezerva pe ore si abonament lunar de tip ' +
+      'OnlyFans pentru poze si filme explicite.\nLink hostname: instagram.com',
+    '06-sensitive-review':
+      'What the business does: We are a licensed pharmacy and family clinic ' +
+      'in Brasov. We dispense prescription medicines, give vaccinations and ' +
+      'run a small GP practice, and we want a site where patients can see ' +
+      'opening hours and book an appointment.\nLink hostname: instagram.com',
+    '07-unclear':
+      'What the business does: I need a website for my business.\n' +
+      'Link hostname: instagram.com',
+  };
+
+  /**
+   * The app's category ids in this package's label space, plus its one rule
+   * about `needs_human`. The real translation is `sigmaTierFromLlm` in
+   * `apps/flowstarter-main/src/lib/policy/classifier.ts` and is tested there;
+   * this is the same rule spelled out, so the package test does not have to
+   * import the app to replay a real answer.
+   */
+  const AS_SIGMA_LABEL: Record<string, string> = {
+    none: 'clean',
+    illegal_drugs: 'illegal_drugs',
+    adult_content: 'adult_content',
+    licensed_pharmacy: 'licensed_pharmacy',
+  };
+
+  async function replay(id: string): Promise<{ decision: Decision; tierCalled: boolean }> {
+    const raw = RAW_MODEL_ANSWERS[id] as (typeof RAW_MODEL_ANSWERS)[string];
+    let tierCalled = false;
+    const decision = await classifyAcceptableUse(BRIEFS[id] as string, {
+      tiers: {
+        acceptable_use: async () => {
+          tierCalled = true;
+          const label = AS_SIGMA_LABEL[raw.category] as string;
+          // "Clean, but a person should look" is not a clean verdict, and a
+          // TierVerdict has nowhere to say so.
+          if (label === 'clean' && raw.needs_human) return null;
+          return { label, confidence: raw.confidence, evidence: 'stubbed' };
+        },
+      },
+    });
+    return { decision, tierCalled };
+  }
+
+  it('allows the flower shop, on the centroids alone', async () => {
+    const { decision, tierCalled } = await replay('01-standard-site');
+    expect(decision.acceptableUse).toBe('allow');
+    expect(decision.category).toBe('clean');
+    expect(decision.decided.acceptableUse).toBe(true);
+    // The cheap tier settled it, so the paid one was never asked.
+    expect(tierCalled).toBe(false);
+  });
+
+  it('allows the client portal on the model answer the band could not reach', async () => {
+    // The band abstains here -- its nearest centroid is `scams_impersonation`
+    // at a margin of about 0.02, which is exactly what a band is for -- the
+    // model says `none` at 0.9, and that used to become `review` because an
+    // injected tier was forbidden to allow. Acceptable use only: whether a
+    // SaaS portal is custom work is the scope head's question, not this one's.
+    const { decision, tierCalled } = await replay('03-custom-work');
+    expect(tierCalled).toBe(true);
+    expect(decision.acceptableUse).toBe('allow');
+    expect(decision.category).toBe('clean');
+    expect(decision.decided.acceptableUse).toBe(true);
+  });
+
+  it('refuses the drugs and firearms shop, with the category on the row', async () => {
+    const { decision } = await replay('04-prohibited-english');
+    expect(decision.acceptableUse).toBe('refuse');
+    expect(decision.category).toBe('illegal_drugs');
+    expect(decision.decided.acceptableUse).toBe(true);
+  });
+
+  it('refuses the Romanian escort and adult subscription site, with the category', async () => {
+    const { decision } = await replay('05-prohibited-romanian');
+    expect(decision.acceptableUse).toBe('refuse');
+    expect(decision.category).toBe('adult_content');
+    expect(decision.decided.acceptableUse).toBe(true);
+  });
+
+  it('sends the licensed pharmacy to a person, with the category, as a real verdict', async () => {
+    const { decision } = await replay('06-sensitive-review');
+    expect(decision.acceptableUse).toBe('review');
+    expect(decision.category).toBe('licensed_pharmacy');
+    // A licence is not something a sentence can prove, so this one is decided
+    // rather than fallen back to -- and the row must say which.
+    expect(decision.decided.acceptableUse).toBe(true);
+  });
+
+  it('takes the unclear brief to the LLM tier instead of deciding on a guard it did not clear', async () => {
+    const { decision, tierCalled } = await replay('07-unclear');
+    // The defect: the head cleared its abstention band with `clean` and then
+    // failed the allow guard, and the cascade had already returned by the
+    // time anything noticed, so this was never asked and the miss was filed
+    // as `tier_decided`.
+    expect(tierCalled).toBe(true);
+    const head = decision.trace.heads[ACCEPTABLE_USE_HEAD];
+    expect(head?.semanticAbstained).toBe(false);
+    expect(head?.injectedAttempted).toBe(true);
+    expect(head?.injectedAbstained).toBe(true);
+    // The model asked for a person too, so nothing decided anything and the
+    // package is on its fallback. That is a review, and it says so.
+    expect(decision.acceptableUse).toBe('review');
+    expect(decision.decided.acceptableUse).toBe(false);
+    expect(decision.reasons.acceptableUse).toContain('guard_not_met');
+  });
+
+  it('still never spends the paid tier where the cheap one settled it', async () => {
+    // The cost property the cascade exists for, restated against the new
+    // escalation rule: a head is spared the model when its centroid verdict
+    // was strong enough to ACT on, not merely strong enough to state.
+    const calls = await Promise.all(Object.keys(BRIEFS).map((id) => replay(id)));
+    expect(calls.filter((call) => call.tierCalled)).toHaveLength(4);
   });
 });

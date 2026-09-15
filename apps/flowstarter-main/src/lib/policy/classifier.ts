@@ -167,6 +167,9 @@ const APP_TO_SIGMA: Readonly<Record<string, string>> = Object.fromEntries(
   Object.entries(SIGMA_TO_APP).map(([sigma, app]) => [app, sigma])
 );
 
+/** The package's name for "nothing in the policy applies". Ours is `none`. */
+const SIGMA_CLEAN_LABEL = 'clean';
+
 /**
  * Whether the embedding tier runs.
  *
@@ -229,6 +232,12 @@ export interface SigmaDecision {
   acceptableUse: 'allow' | 'review' | 'refuse';
   category: string | null;
   reasons: { acceptableUse: string };
+  /**
+   * Whether a TIER produced that action, or the package's safe fallback did.
+   * `review` is both a real verdict and the fallback, so the action alone
+   * cannot tell them apart — see `Decision.decided` in the package.
+   */
+  decided: { acceptableUse: boolean };
   trace: { heads: Record<string, SigmaHeadTrace | undefined> };
 }
 
@@ -285,11 +294,22 @@ export function classificationFromSigmaDecision(
     evidence: head?.evidence ?? decision.reasons.acceptableUse,
     needsHuman: decision.acceptableUse !== 'allow',
     tier: head?.tier === 'injected' ? 'llm' : 'embedding',
-    // Authoritative: see `decidedAction` in acceptable-use.ts. The package's
-    // bands are calibrated against cosine margins, ours against a model's
-    // self-reported probability, and re-deciding across those scales would
-    // change the gate with nothing in the diff to show it.
-    decidedAction: decision.acceptableUse,
+    // Authoritative ONLY when a tier actually decided: see `decidedAction` in
+    // acceptable-use.ts. The package's bands are calibrated against cosine
+    // margins, ours against a model's self-reported probability, and
+    // re-deciding across those scales would change the gate with nothing in
+    // the diff to show it.
+    //
+    // When the package fell back instead — it abstained, or its verdict
+    // missed the guard for the action that verdict maps to — nothing decided
+    // anything, and claiming otherwise is what put
+    // `rule=tier_decided, tier=embedding, confidence 0.049` on a staging
+    // review row for "I need a website for my business." on 2026-09-15. The
+    // rule layer below reads `needsHuman` in that case and files the row
+    // under a rule that says what actually happened.
+    ...(decision.decided.acceptableUse
+      ? { decidedAction: decision.acceptableUse }
+      : {}),
   };
 }
 
@@ -314,6 +334,16 @@ export function sigmaTierFromLlm(
     // A label the package does not know is an abstention, not a guess. Its
     // own fallback is `review`, which is where an unreadable answer belongs.
     if (!label) return null;
+    // "Clean, but a person should look" is not a clean verdict, and the
+    // package's `TierVerdict` has nowhere to carry the distinction: it is a
+    // label and a confidence, and a clean label above the allow floor is an
+    // allow. `needs_human` is the flag the prompt asks the model to raise for
+    // thin text and for jurisdictions it cannot settle -- "I need a website
+    // for my business." comes back `none / 0.2 / needs_human: true` -- so on
+    // the one label where it could turn into an allow, it abstains instead.
+    // Every other label already routes to a person or to a refusal on its own
+    // merits, which is why this is not a blanket rule.
+    if (label === SIGMA_CLEAN_LABEL && answer.needsHuman) return null;
     return {
       label,
       confidence: answer.confidence,

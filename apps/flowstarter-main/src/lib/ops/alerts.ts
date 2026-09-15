@@ -22,7 +22,8 @@ export type AlertEvent =
   | 'build_job_failed'
   | 'client_email_failed'
   | 'health_check_failed'
-  | 'scope_classifier_failed';
+  | 'scope_classifier_failed'
+  | 'acceptable_use_classifier_failed';
 
 export type AlertSeverity = 'critical' | 'warning';
 
@@ -74,6 +75,18 @@ const RULES: Record<AlertEvent, AlertRule> = {
   scope_classifier_failed: {
     severity: 'critical',
     dedupeWindowEnvVar: 'OPS_ALERT_SCOPE_CLASSIFIER_FAILED_DEDUPE_MINUTES',
+    defaultDedupeWindowMinutes: 60,
+  },
+  // The acceptable-use classifier is the same shape of silence, one gate
+  // along: it fails closed to `review`, every enforcement point keeps
+  // answering, and the only visible effect is a review queue quietly filling
+  // with businesses nobody needed to look at. Same severity and window as the
+  // scope head, because the reasoning is identical -- while it is down, the
+  // policy is running on no verdict at all.
+  acceptable_use_classifier_failed: {
+    severity: 'critical',
+    dedupeWindowEnvVar:
+      'OPS_ALERT_ACCEPTABLE_USE_CLASSIFIER_FAILED_DEDUPE_MINUTES',
     defaultDedupeWindowMinutes: 60,
   },
 };

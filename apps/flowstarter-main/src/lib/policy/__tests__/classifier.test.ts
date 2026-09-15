@@ -12,12 +12,29 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const callLlmObject = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/ai/llm', () => ({ callLlmObject }));
 
+/** The alert path reaches Supabase and Resend; neither belongs in a unit test. */
+interface OpsAlertCall {
+  event: string;
+  discriminator: string;
+  detail: Record<string, unknown>;
+}
+const sendOpsAlert = vi.hoisted(() =>
+  vi.fn<(input: OpsAlertCall) => Promise<{ sent: boolean }>>()
+);
+vi.mock('@/lib/ops/send-ops-alert', () => ({ sendOpsAlert }));
+
+import {
+  CLASSIFIER_FAILURE_ALERT_THRESHOLD,
+  resetClassifierHealth,
+} from '@/lib/ai/classifier-health';
+
 import {
   classifyAcceptableUse,
   clearAcceptableUseCache,
   evidenceHashOf,
   sigmaTierAvailable,
 } from '../classifier';
+import { ACCEPTABLE_USE_CLASSIFIER_HEALTH_KEY } from '../llm-tier';
 import { ACCEPTABLE_USE_PROMPT_VERSION } from '../prompt';
 
 function answer(object: {
@@ -49,6 +66,9 @@ beforeEach(() => {
   vi.stubEnv('ACCEPTABLE_USE_CLASSIFIER', 'real');
   vi.stubEnv('ACCEPTABLE_USE_SIGMA', 'false');
   clearAcceptableUseCache();
+  resetClassifierHealth();
+  sendOpsAlert.mockReset();
+  sendOpsAlert.mockResolvedValue({ sent: true });
   callLlmObject.mockReset();
   callLlmObject.mockResolvedValue(
     answer({ category: 'none', confidence: 0.95 })
@@ -281,6 +301,67 @@ describe('the test-only stub classifier', () => {
       expect.stringContaining('being ignored')
     );
     error.mockRestore();
+  });
+});
+
+describe('a classifier that has stopped answering', () => {
+  /**
+   * The same rule, threshold and shape as the scope classifier's alert
+   * (#180), because the failure is the same shape: this branch fails CLOSED,
+   * so an outage is invisible from the outside. Every enforcement point keeps
+   * answering, every submission becomes a review in production, and the only
+   * symptom is an operator queue filling up with ordinary businesses — which
+   * reads like traffic, not like a failure.
+   */
+  beforeEach(() => {
+    callLlmObject.mockRejectedValue(new Error('provider is down'));
+  });
+
+  it('says nothing about the first failures, which are usually a blip', async () => {
+    for (let i = 0; i < CLASSIFIER_FAILURE_ALERT_THRESHOLD - 1; i += 1) {
+      await classifyAcceptableUse({ surface: 'preview', text: `brief ${i}` });
+    }
+    expect(sendOpsAlert).not.toHaveBeenCalled();
+  });
+
+  it('raises an operator alert once the run is long enough', async () => {
+    for (let i = 0; i < CLASSIFIER_FAILURE_ALERT_THRESHOLD; i += 1) {
+      await classifyAcceptableUse({ surface: 'preview', text: `brief ${i}` });
+    }
+    expect(sendOpsAlert).toHaveBeenCalledTimes(1);
+    const alert = sendOpsAlert.mock.calls[0]![0];
+    expect(alert.event).toBe('acceptable_use_classifier_failed');
+    expect(alert.discriminator).toBe(ACCEPTABLE_USE_CLASSIFIER_HEALTH_KEY);
+    expect(alert.detail.consecutiveFailures).toBe(
+      CLASSIFIER_FAILURE_ALERT_THRESHOLD
+    );
+    expect(alert.detail.reason).toBe('provider is down');
+    expect(alert.detail.promptVersion).toBe(ACCEPTABLE_USE_PROMPT_VERSION);
+  });
+
+  it('never puts the submission itself in the alert', async () => {
+    for (let i = 0; i < CLASSIFIER_FAILURE_ALERT_THRESHOLD; i += 1) {
+      await classifyAcceptableUse({
+        surface: 'preview',
+        text: `A clinic on Strada Memorandumului run by Ana, attempt ${i}`,
+      });
+    }
+    expect(JSON.stringify(sendOpsAlert.mock.calls)).not.toContain(
+      'Memorandumului'
+    );
+  });
+
+  it('forgets the run as soon as one classification succeeds', async () => {
+    for (let i = 0; i < CLASSIFIER_FAILURE_ALERT_THRESHOLD - 1; i += 1) {
+      await classifyAcceptableUse({ surface: 'preview', text: `brief ${i}` });
+    }
+    callLlmObject.mockResolvedValue(
+      answer({ category: 'none', confidence: 0.95 })
+    );
+    await classifyAcceptableUse({ surface: 'preview', text: 'a bakery' });
+    callLlmObject.mockRejectedValue(new Error('provider is down again'));
+    await classifyAcceptableUse({ surface: 'preview', text: 'another brief' });
+    expect(sendOpsAlert).not.toHaveBeenCalled();
   });
 });
 

@@ -4,7 +4,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { decide, type DecisionMapping, type DecisionThresholds, type DecisionTrace, type HeadTrace } from '../src/index.js';
+import { decide, semanticSettles, type DecisionMapping, type DecisionThresholds, type DecisionTrace, type HeadTrace, type SemanticResult } from '../src/index.js';
 
 type Label = 'red' | 'green' | 'amber';
 type Action = 'stop' | 'go' | 'wait';
@@ -190,5 +190,67 @@ describe('decide', () => {
         decision: 'missing',
       }),
     ).toThrow();
+  });
+});
+
+describe('semanticSettles', () => {
+  /**
+   * The same guards `decide` applies, asked one step earlier so the cascade
+   * can act on the answer. Clearing the band and clearing the guard for the
+   * action your label maps to are two different things, and a head that does
+   * the first and not the second has produced an answer nobody may act on.
+   */
+  function semantic(over: Partial<SemanticResult<Label>> = {}): SemanticResult<Label> {
+    return {
+      label: 'green',
+      runnerUp: 'amber',
+      similarity: 0.6,
+      margin: 0.3,
+      abstained: false,
+      reason: 'confident',
+      ...over,
+    };
+  }
+
+  it('is false for an abstention, whatever the label says', () => {
+    expect(semanticSettles(semantic({ abstained: true }), THRESHOLDS, MAPPING)).toBe(false);
+    expect(semanticSettles(semantic({ label: null }), THRESHOLDS, MAPPING)).toBe(false);
+  });
+
+  it('is true for a confident label whose action has no guard', () => {
+    // `wait` is the fallback and needs no guard: doing it wrongly costs a
+    // human two minutes, which is the whole reason it is the fallback.
+    expect(semanticSettles(semantic({ label: 'amber' }), THRESHOLDS, MAPPING)).toBe(true);
+  });
+
+  it('is false for a confident label that misses its action guard', () => {
+    // The 2026-09-15 case, in miniature: the band said `green` and meant it,
+    // and `go` needs more similarity than the band needs to answer at all.
+    expect(semanticSettles(semantic({ similarity: 0.35 }), THRESHOLDS, MAPPING)).toBe(false);
+    expect(semanticSettles(semantic({ margin: 0.05 }), THRESHOLDS, MAPPING)).toBe(false);
+  });
+
+  it('is false when the mapping does not know the label', () => {
+    expect(semanticSettles(semantic(), THRESHOLDS, { ...MAPPING, action: () => null })).toBe(
+      false,
+    );
+  });
+
+  it('agrees with decide on the same verdict, every time', () => {
+    // The property that matters: if these two ever disagree, the cascade
+    // spends a tier it did not need to, or skips one it did.
+    for (const similarity of [0.2, 0.35, 0.45, 0.9]) {
+      for (const margin of [0.02, 0.09, 0.11, 0.4]) {
+        const result = semantic({ similarity, margin });
+        const outcome = decide<Label, Action>(
+          trace({ label: 'green', semantic: result, confidence: margin }),
+          THRESHOLDS,
+          MAPPING,
+        );
+        expect(semanticSettles(result, THRESHOLDS, MAPPING)).toBe(
+          outcome.reason === 'confident',
+        );
+      }
+    }
   });
 });

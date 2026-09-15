@@ -37,6 +37,7 @@ export interface PolicyConfig {
     refuseMinLlmConfidence: number;
     allowMinSimilarity: number;
     allowMinMargin: number;
+    allowMinLlmConfidence: number;
   };
   scope: {
     customMinSimilarity: number;

@@ -74,17 +74,32 @@ The resulting contract, which the gate depends on:
 | confident prohibited, guard met | `refuse` | — |
 | confident clean, guard met | `allow` | — |
 | any sensitive category | `review` | — |
-| band abstained | `review` | `unclear` |
-| guard not met | `review` | `unclear` |
+| band abstained, nothing else answered | `review` | `unclear` |
+| guard not met, nothing else answered | `review` | `unclear` |
 | encoder missing, slow or broken | `review` | `unclear` |
-| injected model says "clean" | `review` (never `allow`) | — |
+| injected model says "clean" above `allowMinLlmConfidence` | `allow` | — |
+| injected model says "clean" below it | `review` | — |
 | any error, in production | `review` | `unclear` |
 
 There is no path through this package that throws in production, and none that
-returns `allow` without a confident `clean` from the local tier. An injected
-model may refuse (above 0.85 self-reported confidence) but may never allow: the
-semantic tier abstaining is exactly the case where we want a person, and a
-model saying "clean, 0.99" is not evidence of a licence.
+returns `allow` without a `clean` from a tier that cleared the allow guard.
+
+**A verdict a tier reached and a fallback are not the same thing**, and
+`review`/`unclear` are both. `decision.decided` says which happened per head:
+true only for a label a tier produced, mapped to an action, clearing that
+action's guard. A caller that logs "the classifier decided" without reading it
+writes down something false about half the rows.
+
+A **settled** centroid verdict is never second-guessed by a model — that is
+what bounds the cost. Settled means more than "outside the band": a verdict
+that clears the band and then misses the guard for the action its own label
+maps to is an answer nobody may act on, so it escalates to the injected tier
+rather than ending the cascade. An injected model may refuse (above
+`refuseMinLlmConfidence`) and may allow (above `allowMinLlmConfidence`); it is
+held to a floor in both directions because a model's self-reported probability
+is worth less than a calibrated cosine. Every sensitive category still goes to
+a person whatever any tier says, because a licence is not something a sentence
+can prove.
 
 ## How the acceptable-use gate consumes it
 
@@ -125,7 +140,8 @@ Notes for the gate:
 - Adding an LLM second tier later is a one-line change at the call site and
   touches nothing in this package:
   `classifyAcceptableUse(text, { tiers: { acceptable_use: myTier } })`. It is
-  consulted only where the local tier abstained.
+  consulted only where the local tier did not settle the decision — inside the
+  band, or outside it but short of the guard for the action it asked for.
 - **Bundling.** `main`/`types`/`exports` point at built `dist/` output (see
   `@flowstarter/sigma-core`'s README, "Packaging: this ships built JS, not
   source" — the same fix applies here, via the same `tsc -p

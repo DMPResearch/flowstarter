@@ -45,7 +45,10 @@ function sigmaDecision(over: Partial<SigmaDecision> = {}): SigmaDecision {
   return {
     acceptableUse: 'refuse',
     category: 'prostitution_escort',
-    reasons: { acceptableUse: 'semantic:margin-0.41' },
+    reasons: {
+      acceptableUse: 'confident:acceptable_use:prostitution_escort:semantic',
+    },
+    decided: { acceptableUse: true },
     trace: {
       heads: {
         acceptable_use: {
@@ -189,20 +192,60 @@ describe('translating a sigma decision into a classification', () => {
         trace: { heads: {} },
       })
     );
-    expect(classification.evidence).toBe('semantic:margin-0.41');
+    expect(classification.evidence).toBe(
+      'confident:acceptable_use:prostitution_escort:semantic'
+    );
     expect(classification.confidence).toBe(0);
   });
 
-  it('decides review when the package settled on no category at all', () => {
-    // Its embedding tier abstained and nothing overruled it. That is a
-    // decision, not a model inventing a label, so it must not be routed
-    // through the unknown-category branch.
+  it('does not call the package fallback a decision', () => {
+    // Staging 2026-09-15, scenario 7 ("I need a website for my business."):
+    // the embedding head cleared its band with `clean` and then missed the
+    // allow guard's similarity floor, so the package fell back to `review`
+    // with nothing having decided anything. The row read
+    // `decision=review, rule=tier_decided, tier=embedding, confidence 0.049`,
+    // which says a calibrated tier judged this. None did.
     const classification = classificationFromSigmaDecision(
-      sigmaDecision({ acceptableUse: 'review', category: null })
+      sigmaDecision({
+        acceptableUse: 'review',
+        category: 'clean',
+        decided: { acceptableUse: false },
+        reasons: {
+          acceptableUse: 'guard_not_met:acceptable_use:clean:min_similarity',
+        },
+        trace: {
+          heads: {
+            acceptable_use: {
+              tier: 'semantic',
+              confidence: 0.049,
+              evidence: null,
+            },
+          },
+        },
+      })
     );
-    expect(classification.categoryId).toBe('none');
-    expect(decide(classification).decision).toBe('review');
-    expect(decide(classification).rule).toBe('tier_decided');
+    expect(classification.decidedAction).toBeUndefined();
+    expect(classification.needsHuman).toBe(true);
+    const verdict = decide(classification);
+    expect(verdict.decision).toBe('review');
+    expect(verdict.rule).toBe('needs_human_flag');
+  });
+
+  it('honours a review a tier really decided, with the category behind it', () => {
+    // The other half of the same rule: a licensed pharmacy is a real verdict
+    // on a real label, and that one IS a tier decision.
+    const classification = classificationFromSigmaDecision(
+      sigmaDecision({
+        acceptableUse: 'review',
+        category: 'licensed_pharmacy',
+        decided: { acceptableUse: true },
+      })
+    );
+    expect(classification.categoryId).toBe('licensed_pharmacy');
+    const verdict = decide(classification);
+    expect(verdict.decision).toBe('review');
+    expect(verdict.rule).toBe('tier_decided');
+    expect(verdict.category.id).toBe('licensed_pharmacy');
   });
 });
 
@@ -237,6 +280,48 @@ describe('our classification as the package second tier', () => {
     await expect(
       tier('text', 'acceptable_use', AbortSignal.timeout(50))
     ).resolves.toBeNull();
+  });
+
+  it('abstains on a clean answer the model itself wants a person to see', async () => {
+    // The package's `TierVerdict` is a label and a confidence; it has nowhere
+    // to put `needs_human`, and `clean` is the one label that could become an
+    // allow. Scenario 7 on staging ("I need a website for my business.")
+    // comes back `none / 0.2 / needs_human: true` -- thin text, exactly what
+    // the prompt asks the model to flag -- and an allow is not what that
+    // means. Abstaining leaves the package on its own fallback, `review`.
+    const tier = sigmaTierFromLlm(async () =>
+      answer({ categoryId: 'none', confidence: 0.2, needsHuman: true })
+    );
+    await expect(
+      tier('text', 'acceptable_use', AbortSignal.timeout(50))
+    ).resolves.toBeNull();
+  });
+
+  it('still hands over a clean answer the model is happy with', async () => {
+    const tier = sigmaTierFromLlm(async () =>
+      answer({ categoryId: 'none', confidence: 0.95, needsHuman: false })
+    );
+    const verdict = await tier(
+      'text',
+      'acceptable_use',
+      AbortSignal.timeout(50)
+    );
+    expect(verdict).toMatchObject({ label: 'clean', confidence: 0.95 });
+  });
+
+  it('keeps a needs_human answer on every other label, where it cannot allow', async () => {
+    // A sensitive or prohibited label routes to a person or to a refusal on
+    // its own merits, so dropping it would throw away the only evidence the
+    // operator card has.
+    const tier = sigmaTierFromLlm(async () =>
+      answer({ categoryId: 'licensed_pharmacy', needsHuman: true })
+    );
+    const verdict = await tier(
+      'text',
+      'acceptable_use',
+      AbortSignal.timeout(50)
+    );
+    expect(verdict?.label).toBe('licensed_pharmacy');
   });
 
   it('abstains on a label the package has never heard of', async () => {

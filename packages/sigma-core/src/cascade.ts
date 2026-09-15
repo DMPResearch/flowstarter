@@ -2,7 +2,8 @@
  * The budgeted, fail-open cascade.
  *
  *   one embedding  ->  centroid tier per head  ->  injected tier where that
- *   head abstained  ->  nothing (the policy boundary supplies the default)
+ *   head did not settle it  ->  nothing (the policy boundary supplies the
+ *   default)
  *
  * Three rules, taken from Ereno sigma and kept:
  *
@@ -38,10 +39,28 @@ export interface ClassifyOptions {
   /** Which heads to score. Defaults to every decision the scorer knows. */
   decisions?: string[];
   /**
-   * Per-decision second tier, consulted ONLY where the centroid tier
-   * abstained. Omit a decision to leave it purely local.
+   * Per-decision second tier, consulted where the centroid tier did not
+   * settle the decision. Omit a decision to leave it purely local.
    */
   tiers?: Record<string, Tier>;
+  /**
+   * Per-decision: "does this centroid verdict settle the decision?"
+   *
+   * Defaults to "yes, unless the band abstained", which is the cheapest
+   * possible reading and was the only one available until 2026-09-15. It is
+   * not the whole truth: a platform's policy boundary can have a HIGHER bar
+   * for a particular action than the band has for answering at all, and a
+   * verdict that clears the band and then fails that bar is an answer nobody
+   * may act on. Before this hook existed the cascade had already returned by
+   * the time anything discovered that, so the injected tier — the one thing
+   * that could have produced an actionable answer — was never asked, and the
+   * unactionable verdict was recorded as if it were a decision.
+   *
+   * The core still learns nothing about labels or actions: the caller passes
+   * a predicate over its own `SemanticResult`. See `semanticSettles` in
+   * policy.ts, which is what a caller with a `DecisionMapping` should hand in.
+   */
+  settles?: Record<string, (semantic: SemanticResult) => boolean>;
   /** Budget for one injected tier call. Over it, the head stays abstained. */
   tierBudgetMs?: number;
   /** Override the encoder budget for this call. */
@@ -122,16 +141,22 @@ export async function classify(
     }
   }
 
-  // Only where the local tier abstained. A confident centroid verdict is
-  // never second-guessed by a model: that is what makes the cost bounded.
+  // Only where the local tier did not settle it: it abstained, or the caller
+  // says its verdict is not strong enough to act on. A SETTLED centroid
+  // verdict is never second-guessed by a model, which is what makes the cost
+  // bounded; an unsettled one is exactly what the second tier is for.
   const tiers = options.tiers ?? {};
-  const abstained = decisions.filter(
-    (decision) => (heads[decision] as HeadTrace).semanticAbstained && tiers[decision],
-  );
-  if (abstained.length > 0) {
+  const settles = options.settles ?? {};
+  const unsettled = decisions.filter((decision) => {
+    if (!tiers[decision]) return false;
+    const head = heads[decision] as HeadTrace;
+    const settled = settles[decision];
+    return settled ? !settled(head.semantic) : head.semanticAbstained;
+  });
+  if (unsettled.length > 0) {
     const tierBudget = options.tierBudgetMs ?? DEFAULT_TIER_BUDGET_MS;
     await Promise.all(
-      abstained.map(async (decision) => {
+      unsettled.map(async (decision) => {
         const head = heads[decision] as HeadTrace;
         head.injectedAttempted = true;
         const tierStarted = performance.now();

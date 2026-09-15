@@ -16,6 +16,10 @@ import 'server-only';
 import { z } from 'zod';
 
 import { callLlmObject } from '@/lib/ai/llm';
+import {
+  noteClassifierFailure,
+  noteClassifierSuccess,
+} from '@/lib/ai/classifier-health';
 
 import {
   CATEGORY_IDS,
@@ -143,6 +147,7 @@ export async function classifyWithLlm(
 
     const answer = result.object;
     const known = categoryById(answer.category);
+    noteClassifierSuccess(ACCEPTABLE_USE_CLASSIFIER_HEALTH_KEY);
     return {
       // An id outside the policy's own list is passed through verbatim. The
       // rule layer recognises it as unknown and routes to review; rewriting it
@@ -159,12 +164,68 @@ export async function classifyWithLlm(
   } catch (error) {
     // The submission itself is never logged. The caller logs the evidence
     // hash; this line says only that the tier could not answer.
+    const reason = error instanceof Error ? error.message : 'unknown error';
     console.warn(
       `[policy] acceptable-use classifier unavailable (surface=${input.surface})`,
-      error instanceof Error ? error.message : error
+      reason
     );
+    await alertIfDown(reason);
     return unavailableClassification(
       'The classifier could not be reached for this submission.'
+    );
+  }
+}
+
+/**
+ * Which classifier the failure run belongs to. One key per head, so the
+ * acceptable-use tier going down does not reset or mask the scope
+ * classifier's count (`SCOPE_CLASSIFIER_HEALTH_KEY`), or the other way round.
+ */
+export const ACCEPTABLE_USE_CLASSIFIER_HEALTH_KEY = 'acceptable_use';
+
+/**
+ * Tell an operator once the failures stop looking like a blip.
+ *
+ * The same rule, threshold and shape as the scope classifier's alert (#180),
+ * for the same reason: this branch fails CLOSED, so an outage is invisible
+ * from the outside. Every enforcement point keeps answering, every submission
+ * becomes a `review` in production, and the only symptom is an operator queue
+ * filling up with ordinary businesses — which reads like traffic, not like a
+ * failure. `[policy] acceptable-use classifier unavailable` in a log nobody
+ * is tailing is not an alert.
+ *
+ * Awaited rather than fired and forgotten, unlike the scope head's: this call
+ * is already inside the failure path of a request that is about to return a
+ * review, the counter has to be incremented before the next classification
+ * reads it, and `sendOpsAlert` does not throw. The try/catch is here because
+ * the dynamic import itself can fail where Supabase is not configured, and an
+ * alert failing is never a reason for a classification to fail differently.
+ */
+async function alertIfDown(reason: string): Promise<void> {
+  const { consecutiveFailures, shouldAlert } = noteClassifierFailure(
+    ACCEPTABLE_USE_CLASSIFIER_HEALTH_KEY
+  );
+  if (!shouldAlert) return;
+  try {
+    const { sendOpsAlert } = await import('@/lib/ops/send-ops-alert');
+    await sendOpsAlert({
+      event: 'acceptable_use_classifier_failed',
+      // One run of failures is one thing happening, whatever the submission
+      // count: the discriminator names the classifier, not the request.
+      discriminator: ACCEPTABLE_USE_CLASSIFIER_HEALTH_KEY,
+      title: 'The acceptable-use classifier is not answering',
+      detail: {
+        consecutiveFailures,
+        reason,
+        promptVersion: ACCEPTABLE_USE_PROMPT_VERSION,
+        effect:
+          'Every submission fails closed to review in production, so no visitor reaches a preview and the operator queue fills with businesses nobody needed to read.',
+      },
+    });
+  } catch (error) {
+    console.error(
+      '[policy] could not raise the classifier outage alert:',
+      error instanceof Error ? error.message : 'unknown error'
     );
   }
 }
