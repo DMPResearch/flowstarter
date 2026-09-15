@@ -76,8 +76,41 @@ describe('sigmaScopeClassifier', () => {
       confidence: 0.91,
       evidence: ['semantic:custom-work'],
       classifier: 'sigma',
+      // The cascade's own mapping can only reach `custom`/`standard` through
+      // the guard that action's calibration passed (its fallback is always
+      // `unclear`), so this is always decided when it is not `unclear`.
+      decided: true,
     });
     expect(llmClassifyScope).not.toHaveBeenCalled();
+  });
+
+  it('reports decided even when the raw margin is nowhere near the LLM adapter’s bars', async () => {
+    // The defect this fix exists for: a confident sigma verdict can carry a
+    // cosine margin around 0.07, which never clears `SCOPE_STANDARD_CONFIDENCE`
+    // (0.6 by default). `decided` must still be true, because it comes from
+    // the cascade's own calibration, not from comparing this number to that
+    // bar.
+    sigmaClassifyScope.mockResolvedValue({
+      scope: 'standard',
+      reasons: { scope: 'confident:scope:standard-site:semantic' },
+      trace: { heads: { scope: { confidence: 0.07 } } },
+    });
+    const result = await sigmaScopeClassifier('A bakery in Cluj');
+    expect(result).toMatchObject({
+      scope: 'standard',
+      confidence: 0.07,
+      decided: true,
+    });
+  });
+
+  it('reports not decided when the cascade abstains', async () => {
+    sigmaClassifyScope.mockResolvedValue({
+      scope: 'unclear',
+      reasons: { scope: 'abstained:scope:below_min_sim' },
+      trace: { heads: { scope: { confidence: 0 } } },
+    });
+    const result = await sigmaScopeClassifier('something vague');
+    expect(result).toMatchObject({ scope: 'unclear', decided: false });
   });
 
   it('hands the model call down as the injected second tier', async () => {
@@ -172,7 +205,11 @@ describe('sigmaScopeClassifier', () => {
       reasons: { scope: 'semantic:?' },
       trace: { heads: { scope: { confidence: 0.99 } } },
     });
-    expect((await sigmaScopeClassifier('x')).scope).toBe('unclear');
+    const result = await sigmaScopeClassifier('x');
+    expect(result.scope).toBe('unclear');
+    // An unrecognised action is never decided, whatever confidence the raw
+    // trace carried: `scopeFrom` already turned it into `unclear`.
+    expect(result.decided).toBe(false);
   });
 
   it('clamps a confidence sigma did not report', async () => {
@@ -184,5 +221,6 @@ describe('sigmaScopeClassifier', () => {
     const result = await sigmaScopeClassifier('x');
     expect(result.confidence).toBe(0);
     expect(result.evidence).toEqual([]);
+    expect(result.decided).toBe(true);
   });
 });

@@ -139,11 +139,25 @@ export async function sigmaScopeClassifier(
       tiers: { scope: llmTier },
     });
     const head = decision.trace?.heads?.scope;
+    const scope = scopeFrom(decision.scope);
     return {
-      scope: scopeFrom(decision.scope),
+      scope,
       confidence: Math.min(1, Math.max(0, Number(head?.confidence) || 0)),
       evidence: evidenceFrom(decision.reasons?.scope ?? ''),
       classifier: 'sigma',
+      // `@flowstarter/sigma-core`'s `decide()` maps every head to its
+      // platform action through a guard on that head's OWN calibration
+      // (cosine similarity/margin for the embedding tier, its own confidence
+      // for an injected one -- see `packages/sigma-core/src/policy.ts`), and
+      // the fallback for a guard that does not clear is always `unclear` (see
+      // `SCOPE_MAPPING` in `packages/sigma-flowstarter/src/gate.ts`). So
+      // `scope` can only be `custom` or `standard` here because that guard
+      // already passed: the cascade has decided, on its own scale, and
+      // `confidence` above is that scale's number, not a probability
+      // `scopeRouteThresholds()` was tuned for. This is what makes a raw
+      // margin around 0.07 for a confident verdict route correctly instead of
+      // failing every threshold comparison `decideRoute` used to make.
+      decided: scope !== 'unclear',
     };
   } catch (error) {
     // Same direction as everywhere else in this feature: degrade to the thing

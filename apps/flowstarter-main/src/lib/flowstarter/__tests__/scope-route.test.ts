@@ -45,12 +45,34 @@ interface Row {
   settled: Scope;
   /** True when a person is asked to read the brief anyway. */
   review?: boolean;
+  /** Overrides `decidedFrom(scope, confidence)`. See that function's doc. */
+  decided?: boolean;
 }
 
 const { customAtOrAbove, standardAtOrAbove } = scopeRouteThresholds();
 
 /** A hair under and a hair over, so "at or above" is tested at the boundary. */
 const JUST_UNDER = (bar: number) => Number((bar - 0.01).toFixed(2));
+
+/**
+ * What `decided` would be for a row, when the row does not set it explicitly.
+ *
+ * `decideRoute` itself no longer compares `confidence` to a threshold -- see
+ * the module doc on `ScopeClassification.decided` in `../scope-classifier`
+ * for why: a sigma cosine margin and an LLM's self-reported probability are
+ * not the same scale, and comparing one to a bar tuned for the other was the
+ * bug. This table's rows still carry `confidence` for readability and still
+ * assert the same routes they always did, so this reproduces exactly what an
+ * LLM-adapter-style `decided` computation (confidence >= the relevant bar)
+ * would have handed `decideRoute`, the same arithmetic `decideRoute` used to
+ * do internally. A row proving the two are now independent overrides
+ * `decided` explicitly instead of relying on this default.
+ */
+function decidedFrom(scope: Scope, confidence: number): boolean {
+  if (scope === 'custom') return confidence >= customAtOrAbove;
+  if (scope === 'standard') return confidence >= standardAtOrAbove;
+  return false;
+}
 
 const TABLE: Row[] = [
   // ── First pass, custom ──────────────────────────────────────────────────
@@ -349,6 +371,7 @@ describe('decideRoute', () => {
       const decision = decideRoute({
         scope: row.scope,
         confidence: row.confidence,
+        decided: row.decided ?? decidedFrom(row.scope, row.confidence),
         alreadyClarified: row.alreadyClarified,
         ...(row.visitorAnswer ? { visitorAnswer: row.visitorAnswer } : {}),
         ...(row.acceptableUse ? { acceptableUse: row.acceptableUse } : {}),
@@ -427,21 +450,34 @@ describe('decideRoute', () => {
   });
 
   it('treats an absent acceptable-use verdict as the gate not having run', () => {
-    expect(decideRoute({ scope: 'standard', confidence: 1 }).route).toBe(
-      'self-serve'
-    );
+    expect(
+      decideRoute({ scope: 'standard', confidence: 1, decided: true }).route
+    ).toBe('self-serve');
   });
 
-  it('clamps a confidence outside 0..1 instead of trusting it', () => {
-    expect(decideRoute({ scope: 'standard', confidence: 42 }).route).toBe(
-      'self-serve'
-    );
-    expect(decideRoute({ scope: 'custom', confidence: -5 }).route).toBe(
+  it('acts on `decided`, never on `confidence` directly', () => {
+    // The regression this fix exists for. A raw sigma margin (around 0.07 for
+    // a confident verdict) is nowhere near the bars `confidence` used to be
+    // compared to in here, and a number that used to clear the old inline
+    // comparison (0.65 cleared the 0.6 standard bar) must not act on its own
+    // now that nothing in this function reads `confidence` for that purpose
+    // -- only `decided` does.
+    expect(
+      decideRoute({ scope: 'standard', confidence: 0.07, decided: true }).route
+    ).toBe('self-serve');
+    expect(
+      decideRoute({ scope: 'standard', confidence: 0.65, decided: false }).route
+    ).toBe('ask-one-more-question');
+    // Absent is the same as false: nothing decided it.
+    expect(decideRoute({ scope: 'standard', confidence: 0.65 }).route).toBe(
       'ask-one-more-question'
     );
     expect(
-      decideRoute({ scope: 'standard', confidence: Number.NaN }).route
+      decideRoute({ scope: 'custom', confidence: 1, decided: false }).route
     ).toBe('ask-one-more-question');
+    expect(
+      decideRoute({ scope: 'custom', confidence: 0, decided: true }).route
+    ).toBe('discovery-call');
   });
 
   it('holds custom to a higher bar than standard', () => {
@@ -459,9 +495,14 @@ describe('scopeRouteThresholds', () => {
       customAtOrAbove: 0.4,
       standardAtOrAbove: 0.2,
     });
-    expect(decideRoute({ scope: 'custom', confidence: 0.5 }).route).toBe(
-      'discovery-call'
-    );
+    // `decideRoute` itself reads nothing here any more -- only the LLM
+    // adapter does, at classification time (see classify-scope.test.ts's
+    // `decided` suite for that end of this same property). This is the half
+    // of it this module owns: once something has computed `decided` from
+    // the overridden bar, `decideRoute` acts on it.
+    expect(
+      decideRoute({ scope: 'custom', confidence: 0.5, decided: true }).route
+    ).toBe('discovery-call');
   });
 
   it('ignores a value that is not a confidence', () => {
@@ -474,12 +515,16 @@ describe('scopeRouteThresholds', () => {
   it('decides the disagreement at the same bar it routes custom work at', () => {
     // One threshold, not two: the confidence that would have sent this brief
     // to a call on its own is the confidence that makes the visitor's answer
-    // a disagreement rather than the last word.
+    // a disagreement rather than the last word. `classify-scope.ts`'s LLM
+    // adapter computes `decided` from exactly this bar (see
+    // classify-scope.test.ts); this proves `decideRoute` reads nothing but
+    // the flag once it has one, whichever side of the bar produced it.
     process.env.SCOPE_CUSTOM_CONFIDENCE = '0.9';
     expect(
       decideRoute({
         scope: 'custom',
         confidence: 0.89,
+        decided: false,
         visitorAnswer: 'site',
         alreadyClarified: true,
       }).rule
@@ -488,6 +533,7 @@ describe('scopeRouteThresholds', () => {
       decideRoute({
         scope: 'custom',
         confidence: 0.9,
+        decided: true,
         visitorAnswer: 'site',
         alreadyClarified: true,
       }).rule

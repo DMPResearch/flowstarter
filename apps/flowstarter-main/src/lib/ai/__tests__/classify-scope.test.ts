@@ -3,7 +3,7 @@
  * temperature 0, cost accounted through the one seam, cached by content hash,
  * and failing closed to `unclear`.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('server-only', () => ({}));
 
@@ -82,6 +82,8 @@ describe('llmClassifyScope', () => {
       confidence: 0.88,
       evidence: ['customers log in', 'a dashboard'],
       classifier: `llm:${SCOPE_PROMPT_VERSION}`,
+      // 0.88 clears the default custom bar (0.7), so this tier has decided.
+      decided: true,
     });
   });
 
@@ -147,6 +149,54 @@ describe('llmClassifyScope', () => {
     await llmClassifyScope('x'.repeat(MAX_SCOPE_INPUT_CHARS * 3));
     const sent = callLlmObject.mock.calls[0][0].prompt as string;
     expect(sent.length).toBe(MAX_SCOPE_INPUT_CHARS);
+  });
+});
+
+/**
+ * `decided`: the one place this adapter still compares a confidence to a
+ * threshold, now that `@/lib/flowstarter/scope-route`'s `decideRoute` no
+ * longer does. See `ScopeClassification.decided`'s doc for why the two
+ * adapters cannot share one comparison: this tier's `confidence` is the
+ * scale `scopeRouteThresholds()` was tuned for, and the sigma tier's is not.
+ */
+describe('decided', () => {
+  afterEach(() => {
+    delete process.env.SCOPE_CUSTOM_CONFIDENCE;
+    delete process.env.SCOPE_STANDARD_CONFIDENCE;
+  });
+
+  it('is true once confidence clears the standard bar, false just under it', async () => {
+    answers({ scope: 'standard', confidence: 0.6 });
+    expect((await llmClassifyScope('a')).decided).toBe(true);
+    clearScopeCache();
+    answers({ scope: 'standard', confidence: 0.59 });
+    expect((await llmClassifyScope('b')).decided).toBe(false);
+  });
+
+  it('holds custom to its own, higher bar', async () => {
+    // Below the default 0.7 custom bar, even though it would clear standard's.
+    answers({ scope: 'custom', confidence: 0.65 });
+    expect((await llmClassifyScope('a portal')).decided).toBe(false);
+  });
+
+  it('is never true for unclear, whatever the confidence', async () => {
+    answers({ scope: 'unclear', confidence: 1 });
+    expect((await llmClassifyScope('x')).decided).toBe(false);
+  });
+
+  it('reads the same ops override scopeRouteThresholds() does', async () => {
+    // The other half of "one threshold, not two" (see scope-route.test.ts's
+    // "decides the disagreement at the same bar it routes custom work at"):
+    // an operator overriding SCOPE_CUSTOM_CONFIDENCE changes what this
+    // adapter decides, not just what `decideRoute` would have compared it to.
+    process.env.SCOPE_CUSTOM_CONFIDENCE = '0.4';
+    answers({ scope: 'custom', confidence: 0.5 });
+    expect((await llmClassifyScope('a portal')).decided).toBe(true);
+  });
+
+  it('is false when the model call fails closed to unclear', async () => {
+    callLlmObject.mockRejectedValue(new Error('provider is down'));
+    expect((await llmClassifyScope('a bakery')).decided).toBe(false);
   });
 });
 

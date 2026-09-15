@@ -131,6 +131,10 @@ function classifierSaying(
     confidence: 0.95,
     evidence: ['customers log into'],
     classifier: 'test',
+    // The default reads as "confidently decided", matching what 0.95 used to
+    // mean to `decideRoute` on its own before `decided` existed. A row that
+    // wants to prove the two are independent overrides this explicitly.
+    decided: true,
     ...partial,
   };
 }
@@ -345,6 +349,48 @@ describe('runScopeGate on a standard brief', () => {
     expect(result.bookingUrl).toBeUndefined();
     expect(insertedRows).toHaveLength(0);
     expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('routes self-serve on a sigma-shaped confident verdict, however small the raw margin', async () => {
+    // The defect this fix exists for: a sigma cosine margin around 0.07 for a
+    // confident `standard` verdict is nowhere near the 0.6 confidence bar, but
+    // `decided: true` is what the routing rule reads now, not the number.
+    setScopeClassifier(async () =>
+      classifierSaying({
+        scope: 'standard',
+        confidence: 0.07,
+        evidence: [],
+        classifier: 'sigma',
+        decided: true,
+      })
+    );
+    const result = await runScopeGate(
+      { ...BRIEF, description: 'A bakery in Cluj' },
+      noNetwork
+    );
+    expect(result.route).toBe('self-serve');
+    expect(result.questionKey).toBeUndefined();
+  });
+
+  it('still asks once when nothing decided it, even at a confidence that used to clear the bar on its own', async () => {
+    // 0.65 cleared the old 0.6 standard bar under the previous, confidence-only
+    // contract. Without `decided` set, it must not act by itself any more --
+    // otherwise this is the same bug back under a different classifier.
+    setScopeClassifier(async () =>
+      classifierSaying({
+        scope: 'standard',
+        confidence: 0.65,
+        evidence: [],
+        classifier: 'llm:test',
+        decided: false,
+      })
+    );
+    const result = await runScopeGate(
+      { ...BRIEF, description: 'A bakery in Cluj' },
+      noNetwork
+    );
+    expect(result.route).toBe('ask-one-more-question');
+    expect(result.questionKey).toBe(SCOPE_QUESTION_KEY);
   });
 });
 

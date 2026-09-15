@@ -360,6 +360,7 @@ export async function runScopeGate(
   const decision = decideRoute({
     scope: classification.scope,
     confidence: classification.confidence,
+    decided: classification.decided,
     acceptableUse,
     visitorAnswer: input.answerKey,
     alreadyClarified:
