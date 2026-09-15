@@ -243,14 +243,38 @@ embedding tier still settles a clearly clean brief on its own, because a
 wrong allow there costs a preview a later surface screens again, not a door
 closed on a stranger with no appeal.
 
-This moved the acceptable-use held-out eval's weighted cost from 135 to 735
-(`packages/sigma-flowstarter/config/evaluation.json`'s
-`acceptableUseMaxWeightedCost`, raised 200 → 900 with the eval run that
-justifies it, per that file's own rule): that eval runs the semantic tier
-with **no LLM tier at all**, by design, to measure the embedding tier in
-isolation, so every one of its 68 refuse-expected rows that used to settle
-for free now correctly costs one `review_instead_of_refuse` (10) instead —
-zero prohibited misses, zero refused clean businesses, all of it the
-tradeable line. In production, where an LLM tier is always configured, most
-of those settle back on `refuse` after one cheap confirmation call rather
-than holding for review.
+One held-out run cannot honestly measure both halves of "confirmed, or holds"
+at once, so `packages/sigma-flowstarter/test/acceptable-use-eval.test.ts` now
+runs the dataset twice, each gated on its own number in
+`config/evaluation.json`:
+
+- **confirmed by the injected tier** (`acceptableUseMaxWeightedCost`, gated at 200) — `harness.ts`'s `confirmingTier` stands in for a real LLM tier this
+  eval cannot call over the network, confirming each row's own ground truth
+  (never the embedding tier's own guess — a stub that echoed the guess back
+  would rubber-stamp exactly the false-positive refusal this change exists to
+  stop, the same one it already caught in this dataset:
+  `sensitive_debt_advice`'s `xfail` marker is removed, because it is fixed
+  now). This is the production-representative number: measured cost 161 over
+  158 scored rows, coverage 0.975 (up from 0.955 — the confirming tier also
+  resolves rows that used to abstain), zero prohibited misses. Fourteen of the
+  68 refuse-expected rows carry no ground-truth category — their `note` names
+  a euphemism, not a committed id — and `confirmingTier` declines rather than
+  invent one, so they correctly cost `review_instead_of_refuse` (140 of the
+  161). That is not a gap in the fix; it is the stub being honest about what
+  it was not given grounds to confirm.
+- **no LLM tier**, the degraded path (`acceptableUseNoLlmMaxWeightedCost`,
+  gated at 900) — the semantic tier alone, exactly as this eval ran before
+  `requireInjectedConfirmation` existed. Measured cost 735 over the same 158
+  rows, coverage 0.956, zero prohibited misses, zero refused clean
+  businesses — every point of the rise from 135 is the tradeable
+  `review_instead_of_refuse` line. This run exists because the confirmed run
+  above cannot, by itself, catch a regression in the semantic tier's own
+  candidate quality: `confirmingTier` papers over a wrong candidate whenever
+  it still names a real category. Only the tier-less run prices that risk,
+  which is why it has a gate of its own rather than being folded into the
+  first number.
+
+Neither number is what production actually costs on an ordinary day — an
+injected tier is always configured there, so 161 (gated at 200) is the
+representative one, and 735 (gated at 900) prices the day that tier is down,
+which is exactly the day #193 and this change both exist for.
