@@ -683,6 +683,63 @@ describe('SupabaseFullSiteBuildJobStore', () => {
       ]);
     });
 
+    it('claims a built-but-undeployed job for deploy, and spends no generation attempt', async () => {
+      // Run 9's row: three attempts on the clock, a gate-passed artifact on
+      // the payload, and a deploy that failed. The claim plans a redeploy and
+      // leaves `attempt_count` exactly where it was — the row's generation
+      // history is a record of how many times agents built this site, and
+      // shipping bytes they already produced did not build it again.
+      const artifact = {
+        url: 'http://127.0.0.1:8787/artifacts/job-token.tar.gz',
+        sha256: 'a'.repeat(64),
+        sizeBytes: 6_711_757,
+        commitSha: 'abc123def456',
+        branch: 'client/flowstarter-0f4e1088',
+        gateReport: { passed: ['build'], at: '2026-09-12T20:00:00.000Z' },
+        recordedAt: '2026-09-12T20:00:00.000Z',
+      };
+      const row = ledgerRow({
+        status: 'failed',
+        error_code: 'SITE_DEPLOY_FAILED',
+        attempt_count: 3,
+        payload: {
+          builtArtifact: artifact,
+          buildPhase: 'deploying',
+          attempts: { generation: 3, deploy: 1 },
+        },
+      });
+      const { client, calls } = makeScriptedClient({
+        workspace_briefs: [readyBrief()],
+        flowstarter_agent_jobs: [{ data: row }, { data: { id: row.id } }],
+        workspaces: [
+          {
+            data: {
+              id: WORKSPACE_ID,
+              project_state: ProjectState.DEPOSIT_PAID,
+              cal_com_url: null,
+            },
+          },
+        ],
+        flowstarter_project_artifacts: [{ data: artifacts() }],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+        maxDeployAttempts: 5,
+      });
+
+      const job = await store.claim(row.id);
+
+      expect(job?.resume).toEqual({ resume: 'deploy', artifact });
+      const cas = calls.find(
+        (c) => c.table === 'flowstarter_agent_jobs' && c.op === 'update',
+      );
+      const values = cas?.values as Record<string, unknown>;
+      expect(values['attempt_count']).toBe(3);
+      expect(values['payload']).toMatchObject({
+        attempts: { generation: 3, deploy: 2 },
+      });
+    });
+
     it('returns null for a job id that does not exist, without claiming anything', async () => {
       const { client, calls } = makeScriptedClient({
         flowstarter_agent_jobs: [{ data: null, error: null }],
@@ -1135,6 +1192,59 @@ describe('SupabaseFullSiteBuildJobStore', () => {
           ),
         ).toHaveLength(0);
       });
+    });
+  });
+
+  describe('recordBuiltArtifact', () => {
+    const artifact = {
+      url: 'http://127.0.0.1:8787/artifacts/job-token.tar.gz',
+      sha256: 'a'.repeat(64),
+      sizeBytes: 6_711_757,
+      commitSha: 'abc123def456',
+      branch: 'client/flowstarter-0f4e1088',
+      gateReport: { passed: ['build'], at: '2026-09-12T20:00:00.000Z' },
+      recordedAt: '2026-09-12T20:00:00.000Z',
+    };
+
+    it('writes the bytes and the phase as one fact, keeping the rest of the payload', async () => {
+      const { client, calls } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: { payload: { previewIntent: { previewId: 'p1' } } } },
+          { data: { id: 'job-1' } },
+        ],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await store.recordBuiltArtifact('job-1', artifact);
+
+      const update = calls.find((c) => c.op === 'update');
+      expect(update?.values).toMatchObject({
+        payload: {
+          previewIntent: { previewId: 'p1' },
+          builtArtifact: artifact,
+          buildPhase: 'deploying',
+        },
+      });
+    });
+
+    it('refuses to write for an attempt that has been overtaken', async () => {
+      // Fenced like every other write a run makes: an attempt that lost its
+      // lease must not stamp its artifact onto the attempt that replaced it.
+      const { client } = makeScriptedClient({
+        flowstarter_agent_jobs: [
+          { data: { payload: {} } },
+          { data: null, error: null },
+        ],
+      });
+      const store = new SupabaseFullSiteBuildJobStore(client, {
+        maxAttempts: 3,
+      });
+
+      await expect(
+        store.recordBuiltArtifact('job-1', artifact),
+      ).rejects.toBeInstanceOf(LeaseLostError);
     });
   });
 
@@ -3114,7 +3224,10 @@ describe('operator editor sessions on the store', () => {
             result_manifest: {
               files: [
                 { path: 'src/content/site.md', content: 'what the team wrote' },
-                { path: 'src/pages/pricing.astro', content: '<h1>Pricing</h1>' },
+                {
+                  path: 'src/pages/pricing.astro',
+                  content: '<h1>Pricing</h1>',
+                },
               ],
             },
           },
@@ -3728,9 +3841,9 @@ describe('operator editor sessions on the store', () => {
       // fix, and a status reading `failed` would say "this session is over"
       // when the whole point is that it is not.
       expect(session?.values).toMatchObject({ status: 'ready' });
-      expect(
-        (session?.values as { last_error: string }).last_error,
-      ).toContain('Lorem ipsum');
+      expect((session?.values as { last_error: string }).last_error).toContain(
+        'Lorem ipsum',
+      );
       expect(session?.eqCalls).toContainEqual(['id', SESSION_ID]);
       expect(session?.eqCalls).toContainEqual(['status', 'shipping']);
       expect(session?.eqCalls).toContainEqual(['workspace_id', WORKSPACE_ID]);

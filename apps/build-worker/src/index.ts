@@ -84,6 +84,7 @@ const supabase = createClient(
 
 const store = new SupabaseFullSiteBuildJobStore(supabase, {
   maxAttempts: config.maxAttempts,
+  maxDeployAttempts: config.maxDeployAttempts,
   leaseTtlMs: config.lease.ttlMs,
   backoff: {
     baseMs: config.lease.backoffBaseMs,

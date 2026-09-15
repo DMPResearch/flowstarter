@@ -25,7 +25,15 @@ import {
 
 const NOW = Date.parse('2026-09-12T12:00:00.000Z');
 const TTL = 120_000;
-const RULES = { now: NOW, maxAttempts: 3, leaseTtlMs: TTL };
+const RULES = {
+  now: NOW,
+  maxAttempts: 3,
+  maxDeployAttempts: 5,
+  leaseTtlMs: TTL,
+};
+
+/** What a row with no recorded artifact is always claimed for. */
+const GENERATE = { resume: 'generation', reason: 'no-artifact' } as const;
 
 function row(overrides: Partial<LeasedJobRow> = {}): LeasedJobRow {
   return {
@@ -46,6 +54,7 @@ describe('claimVerdict', () => {
     expect(claimVerdict(row(), RULES)).toEqual({
       claimable: true,
       recovered: false,
+      plan: GENERATE,
     });
   });
 
@@ -73,6 +82,7 @@ describe('claimVerdict', () => {
     expect(claimVerdict(abandoned, RULES)).toEqual({
       claimable: true,
       recovered: true,
+      plan: GENERATE,
     });
   });
 
@@ -81,6 +91,7 @@ describe('claimVerdict', () => {
     expect(claimVerdict(legacy, RULES)).toEqual({
       claimable: true,
       recovered: true,
+      plan: GENERATE,
     });
     const recent = row({ status: 'running', started_at: iso(-1_000) });
     expect(claimVerdict(recent, RULES)).toEqual({
@@ -122,6 +133,7 @@ describe('claimVerdict', () => {
     expect(claimVerdict({ ...backingOff, run_after: iso(-1) }, RULES)).toEqual({
       claimable: true,
       recovered: false,
+      plan: GENERATE,
     });
   });
 
@@ -139,6 +151,7 @@ describe('claimVerdict', () => {
     expect(claimVerdict({ ...spent, max_attempts: 4 }, RULES)).toEqual({
       claimable: true,
       recovered: false,
+      plan: GENERATE,
     });
   });
 
@@ -177,7 +190,7 @@ describe('claimVerdict', () => {
         }),
         RULES,
       ),
-    ).toEqual({ claimable: true, recovered: false });
+    ).toEqual({ claimable: true, recovered: false, plan: GENERATE });
     // An unrecognised throw whose message names a transient cause counts too:
     // the generic code says "something threw", and the detail is the evidence.
     expect(
@@ -190,7 +203,7 @@ describe('claimVerdict', () => {
         }),
         RULES,
       ),
-    ).toEqual({ claimable: true, recovered: false });
+    ).toEqual({ claimable: true, recovered: false, plan: GENERATE });
   });
 
   it('leaves a failure nobody can explain to an operator', () => {
@@ -223,13 +236,13 @@ describe('claimVerdict', () => {
         row({ status: 'queued', error_code: 'PAGE_BUDGET_EXCEEDED' }),
         RULES,
       ),
-    ).toEqual({ claimable: true, recovered: false });
+    ).toEqual({ claimable: true, recovered: false, plan: GENERATE });
     expect(
       claimVerdict(
         row({ status: 'waiting_brief', error_code: 'PAGE_BUDGET_EXCEEDED' }),
         RULES,
       ),
-    ).toEqual({ claimable: true, recovered: false });
+    ).toEqual({ claimable: true, recovered: false, plan: GENERATE });
   });
 
   it('ignores a kind this worker does not run', () => {

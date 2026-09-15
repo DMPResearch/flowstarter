@@ -28,6 +28,24 @@ Any failure records `FULL_SITE_BUILD_FAILED` on the ledger and rolls the
 workspace back to `DEPOSIT_PAID` so the job can be re-dispatched (up to
 `FLOWSTARTER_BUILD_MAX_ATTEMPTS`).
 
+A failure **after** the gates is counted apart. Once a build has committed and
+packaged, the artifact — its URL, its sha256, and the list of gates it passed
+— is recorded on the job, and a failure from there on is a deploy failure:
+the next attempt sends the same bytes to the same endpoint, runs no agent, and
+spends `FLOWSTARTER_BUILD_MAX_DEPLOY_ATTEMPTS` rather than the generation
+budget. Generation re-runs only when no artifact was recorded or the failure
+was in a generation or gate phase. The rule is
+`planBuildResume` in `packages/agentic-codegen/src/flowstarter/build-phase.ts`;
+the claim rule that reads it is `leases.ts`.
+
+A deploy that fails because there is nowhere to deploy to — no host allocated,
+an inactive server, an unconfigured agent — is `SITE_DEPLOY_NEEDS_OPERATOR`
+and is terminal: no retry allocates a host. flowstarter-main raises a
+`deploy_needs_operator` alert for it, and once the host exists the operator
+presses **Re-deploy the built site** on the project's pipeline tab
+(`POST /api/admin/projects/[id]/pipeline/requeue-deploy`), which ships the
+recorded artifact and refuses when there is not one.
+
 ## Endpoints
 
 | Method | Path              | Auth   | Response                                                                 |
@@ -73,14 +91,15 @@ Optional:
 | `FLOWSTARTER_BUILD_ISOLATION`                                         | `docker` in staging/production, `native` in development — see below                 |
 | `FLOWSTARTER_BUILD_VALIDATE_ISOLATION`                                | the name that setting shipped under; still honoured, and must not disagree          |
 | `FLOWSTARTER_BUILD_TIMEOUT_MS`                                        | `900000` (per command)                                                              |
-| `FLOWSTARTER_BUILD_MAX_ATTEMPTS`                                      | `3`                                                                                 |
+| `FLOWSTARTER_BUILD_MAX_ATTEMPTS`                                      | `3` — generation attempts: worktree, agents, gates                                  |
+| `FLOWSTARTER_BUILD_MAX_DEPLOY_ATTEMPTS`                               | `5` — deploys of a site that already passed every gate; counted apart               |
 | `FLOWSTARTER_BUILD_CONCURRENCY` / `FLOWSTARTER_BUILD_QUEUE_LIMIT`     | `1` / `32`                                                                          |
 | `FLOWSTARTER_BUILD_POLL_INTERVAL_MS` / `FLOWSTARTER_BUILD_POLL_LIMIT` | `60000` / `25` — how often the ledger is swept, and how many rows one sweep takes   |
 | `FLOWSTARTER_BUILD_LEASE_TTL_MS`                                      | `120000` — how long a claim is good for without a heartbeat                         |
 | `FLOWSTARTER_BUILD_LEASE_HEARTBEAT_MS`                                | `30000` — at most half the TTL, or the service refuses to start                     |
 | `FLOWSTARTER_BUILD_RETRY_BACKOFF_MS`                                  | `30000` — the first retry's wait; doubles per attempt                               |
 | `FLOWSTARTER_BUILD_RETRY_BACKOFF_MAX_MS`                              | `900000` — the cap on that doubling                                                 |
-| `CAL_BASE_URL`                                                    | unset — the platform's own Cal.com, e.g. `https://cal.flowstarter.dev`              |
+| `CAL_BASE_URL`                                                        | unset — the platform's own Cal.com, e.g. `https://cal.flowstarter.dev`              |
 
 `CAL_BASE_URL` is optional but load-bearing once the platform provisions
 booking pages itself (see `docs/operations/cal.md`). The host in it is what

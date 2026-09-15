@@ -27,6 +27,7 @@ import {
   History,
   MessagesSquare,
   RefreshCw,
+  UploadCloud,
 } from 'lucide-react';
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
 import { Pill, type Tone } from '@flowstarter/flow-design-system';
@@ -73,6 +74,7 @@ import {
   useOverrideProjectState,
   usePipelineDetail,
   useRedispatchBuild,
+  useRequeueDeploy,
   type PipelineEvent,
   type PipelineJobDetail,
 } from '@/hooks/usePipeline';
@@ -245,11 +247,13 @@ function BuildCard({
   onOpen: () => void;
 }) {
   const redispatch = useRedispatchBuild(projectId);
+  const requeueDeploy = useRequeueDeploy(projectId);
   const cancel = useCancelPipelineJob(projectId);
   const [cancelling, setCancelling] = useState(false);
   const [reason, setReason] = useState('');
 
-  const busy = redispatch.isPending || cancel.isPending;
+  const busy =
+    redispatch.isPending || requeueDeploy.isPending || cancel.isPending;
   const canTalk = CONVERSATIONAL_KINDS.has(job.kind);
 
   const onRedispatch = async () => {
@@ -264,6 +268,32 @@ function BuildCard({
       );
     } catch (e) {
       toast.error(errorMessage(e, 'Re-dispatch failed'));
+    }
+  };
+
+  /**
+   * Ship the build that is already finished.
+   *
+   * Worth its own button next to Re-dispatch because the two cost completely
+   * different things: this one deploys bytes that already passed every gate,
+   * and re-dispatch pays for the whole site to be generated again. An operator
+   * looking at a job that died on a 409 should not have to know that to make
+   * the cheap choice.
+   */
+  const onRequeueDeploy = async () => {
+    try {
+      const result = await requeueDeploy.mutateAsync({ jobId: job.id });
+      const built = `${(result.artifact.sizeBytes / 1_000_000).toFixed(
+        1
+      )} MB, past ${result.artifact.gatesPassed.length} gates`;
+      toast[result.dispatched ? 'success' : 'warning'](
+        result.dispatched
+          ? `Re-deploying the built site (${built})`
+          : `Queued the re-deploy (${built}), but the worker could not be ` +
+              `reached: ${result.dispatchError ?? 'unknown error'}`
+      );
+    } catch (e) {
+      toast.error(errorMessage(e, 'Re-deploy failed'));
     }
   };
 
@@ -370,6 +400,26 @@ function BuildCard({
           <Button size="xs" variant="outline" onClick={onOpen}>
             <MessagesSquare className="h-3.5 w-3.5" />
             Talk to the agents
+          </Button>
+        )}
+        {job.canRequeueDeploy && (
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={onRequeueDeploy}
+            disabled={busy}
+            title={
+              'This build already produced a site that passed every gate. ' +
+              'Deploys those exact bytes again; runs no agents and spends no ' +
+              'generation budget.'
+            }
+          >
+            <UploadCloud
+              className={`h-3.5 w-3.5 ${
+                requeueDeploy.isPending ? 'animate-pulse' : ''
+              }`}
+            />
+            Re-deploy the built site
           </Button>
         )}
         {job.canRedispatch && (

@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ArtifactStore, artifactTokenFromPath } from '../src/artifacts';
+import { SITE_DEPLOY_FAILED } from '@flowstarter/agentic-codegen';
 import { LocalPublishError, LocalSitePublisher } from '../src/local-publisher';
 import { CommandSiteValidator } from '../src/validator';
 
@@ -236,6 +237,10 @@ describe('LocalSitePublisher', () => {
   });
 
   it('fails the build when the deploy is refused, rather than reporting HUMAN_QA', async () => {
+    // A refusal that names no `code` says nothing about whether another try
+    // would help, so it is the retryable kind — and it is a named deploy
+    // failure rather than an anonymous build failure, which is what lets
+    // `failure-policy.ts` and the deploy budget tell the two apart at all.
     await expect(
       publisher({
         calls: [],
@@ -248,7 +253,7 @@ describe('LocalSitePublisher', () => {
         commitSha: 'a'.repeat(40),
         siteRoot,
       }),
-    ).rejects.toBeInstanceOf(LocalPublishError);
+    ).rejects.toMatchObject({ code: SITE_DEPLOY_FAILED });
   });
 
   it('fails the build when the deploy finished in any state but live', async () => {

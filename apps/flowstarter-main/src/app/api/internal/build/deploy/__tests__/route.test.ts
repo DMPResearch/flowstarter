@@ -30,6 +30,16 @@ vi.mock('@/supabase-clients/server', () => ({
   createSupabaseServiceRoleClient: () => ({}),
 }));
 
+const sendOpsAlertMock =
+  vi.fn<
+    (input: { event: string; discriminator: string }) => Promise<unknown>
+  >();
+vi.mock('@/lib/ops/send-ops-alert', () => ({
+  sendOpsAlert: (input: { event: string; discriminator: string }) =>
+    sendOpsAlertMock(input),
+}));
+
+import { DeployError } from '@/lib/hosting/deploy';
 import { POST } from '../route';
 
 function req(body: unknown): Request {
@@ -47,6 +57,8 @@ const WORKSPACE = '0f4e1088-8d8f-4f18-83b1-406cc292b23c';
 const GOOD_SHA256 = 'b'.repeat(64);
 
 beforeEach(() => {
+  sendOpsAlertMock.mockReset();
+  sendOpsAlertMock.mockResolvedValue({ sent: true });
   deployBuildArtifactMock.mockReset();
   deployBuildArtifactMock.mockResolvedValue({
     deployment: {
@@ -98,5 +110,65 @@ describe('artifactSha256 is required', () => {
       artifactSha256: string;
     };
     expect(call.artifactSha256).toBe(GOOD_SHA256);
+  });
+});
+
+/**
+ * A deploy that failed because there is nowhere to deploy to.
+ *
+ * Run 9 of workspace ba3e9323 spent two of its three attempts rediscovering a
+ * 409 `workspace_unallocated` — a workspace with no host allocated, which no
+ * retry can conjure — and nothing told anybody. The build worker records this
+ * class of failure as terminal on purpose; this is the half that makes a
+ * terminal job reach a person.
+ */
+describe('a deploy that needs an operator', () => {
+  it('alerts, and still answers the worker with the code it can classify', async () => {
+    deployBuildArtifactMock.mockRejectedValue(
+      new DeployError('workspace_unallocated', 'workspace has no server')
+    );
+
+    const res = await POST(
+      req({
+        workspaceId: WORKSPACE,
+        artifactUrl: 'https://artifacts.test/site.tar.gz',
+        artifactSha256: GOOD_SHA256,
+      }) as never
+    );
+
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: 'workspace_unallocated',
+    });
+    expect(sendOpsAlertMock).toHaveBeenCalledTimes(1);
+    expect(sendOpsAlertMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'deploy_needs_operator',
+        // Per workspace and reason: the same workspace still unallocated an
+        // hour later is the same news; a second workspace hitting it is not.
+        discriminator: `${WORKSPACE}:workspace_unallocated`,
+        workspaceId: WORKSPACE,
+      })
+    );
+  });
+
+  it('stays quiet for a deploy that is simply worth trying again', async () => {
+    // A busy or unreachable deploy-agent is the retryable kind. Paging on it
+    // would page on every transient 502, which is how an alert stops being
+    // read at all.
+    deployBuildArtifactMock.mockRejectedValue(
+      new DeployError('agent_error', 'deploy-agent 502')
+    );
+
+    const res = await POST(
+      req({
+        workspaceId: WORKSPACE,
+        artifactUrl: 'https://artifacts.test/site.tar.gz',
+        artifactSha256: GOOD_SHA256,
+      }) as never
+    );
+
+    expect(res.status).toBe(502);
+    expect(sendOpsAlertMock).not.toHaveBeenCalled();
   });
 });

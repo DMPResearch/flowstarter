@@ -125,6 +125,10 @@ const PHASE_RULES: ReadonlyArray<readonly [string, PhaseActivity]> = [
   ],
   ['Removing unsafe markup', { kind: 'repairing', subject: 'gate.markup' }],
   ['Committing the site', { kind: 'publishing', subject: 'site' }],
+  // The resumed deploy of an artifact a previous attempt already built and
+  // gated. It is a publish, not a build: an operator watching a job that spent
+  // no model time on this attempt must not read "generating" on the timeline.
+  ['Redeploying the built site', { kind: 'publishing', subject: 'site' }],
   ['Publishing for review', { kind: 'publishing', subject: 'site' }],
   [
     'Saving the new version of the site',
@@ -158,6 +162,7 @@ const KIND_BY_FIRST_WORD: Readonly<Record<string, AgentActivityKind>> = {
   putting: 'repairing',
   committing: 'publishing',
   publishing: 'publishing',
+  redeploying: 'publishing',
   saving: 'publishing',
   live: 'done',
   handed: 'done',

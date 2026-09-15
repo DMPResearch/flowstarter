@@ -23,7 +23,8 @@ export type AlertEvent =
   | 'client_email_failed'
   | 'health_check_failed'
   | 'scope_classifier_failed'
-  | 'acceptable_use_classifier_failed';
+  | 'acceptable_use_classifier_failed'
+  | 'deploy_needs_operator';
 
 export type AlertSeverity = 'critical' | 'warning';
 
@@ -88,6 +89,22 @@ const RULES: Record<AlertEvent, AlertRule> = {
     dedupeWindowEnvVar:
       'OPS_ALERT_ACCEPTABLE_USE_CLASSIFIER_FAILED_DEDUPE_MINUTES',
     defaultDedupeWindowMinutes: 60,
+  },
+  // A finished, gate-passed site that cannot be put anywhere. The deploy asked
+  // for a host and there is not one: the workspace is unallocated, or the
+  // server it names is gone or inactive, or nobody configured the agent on it.
+  // No retry clears any of those, and the build worker knows it — the failure
+  // is terminal there on purpose. This alert is the other half of that
+  // decision: a job that stops and waits for a person has to *reach* a person.
+  // Run 9 spent two of three attempts rediscovering a 409 that an operator
+  // could have cleared in a minute, because nothing told anybody.
+  //
+  // Critical, because the client has paid and the work is done. A short
+  // window, because the useful signal is that it is still unallocated.
+  deploy_needs_operator: {
+    severity: 'critical',
+    dedupeWindowEnvVar: 'OPS_ALERT_DEPLOY_NEEDS_OPERATOR_DEDUPE_MINUTES',
+    defaultDedupeWindowMinutes: 30,
   },
 };
 

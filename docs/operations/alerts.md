@@ -24,8 +24,21 @@ anything (`src/lib/ops/__tests__/alerts.test.ts`).
 | `health_check_failed`              | critical | 30 minutes            | `OPS_ALERT_HEALTH_CHECK_FAILED_DEDUPE_MINUTES`              |
 | `scope_classifier_failed`          | critical | 60 minutes            | `OPS_ALERT_SCOPE_CLASSIFIER_FAILED_DEDUPE_MINUTES`          |
 | `acceptable_use_classifier_failed` | critical | 60 minutes            | `OPS_ALERT_ACCEPTABLE_USE_CLASSIFIER_FAILED_DEDUPE_MINUTES` |
+| `deploy_needs_operator`            | critical | 30 minutes            | `OPS_ALERT_DEPLOY_NEEDS_OPERATOR_DEDUPE_MINUTES`            |
 
-The last two are the classifier outage alerts, and they exist because both
+`deploy_needs_operator` is a finished, paid-for site with nowhere to go: the
+deploy asked for a host and there is not one — the workspace is unallocated,
+or the server it names is gone, inactive or unconfigured. No retry clears any
+of those, so the build worker records the failure as terminal
+(`SITE_DEPLOY_NEEDS_OPERATOR`) and stops. This alert is the other half of that
+decision: a job that stops and waits for a person has to reach one. It is
+raised by `POST /api/internal/build/deploy`, keyed by workspace and reason,
+and the fix is always an operator allocating, activating or configuring a
+host. Once that is done, the build does not need re-building — press
+**Re-deploy the built site** on the project's pipeline tab and the artifact
+that already passed every gate goes out.
+
+The classifier outage alerts, and they exist because both
 classifiers fail **closed**: the scope head to `unclear`, the acceptable-use
 head to `review`. Neither failure moves an error rate, changes a status code
 or shows up anywhere a dashboard would look — on 2026-09-15 the scope head
@@ -103,6 +116,7 @@ daily QA.
 | `OPS_ALERT_HEALTH_CHECK_FAILED_DEDUPE_MINUTES`              | `apps/flowstarter-main` | Overrides the 30-minute default for `health_check_failed` (unused today, since prod-synthetic.yml uses the GitHub-issue path instead; kept for a future caller that does route through `ops_alerts`). |
 | `OPS_ALERT_SCOPE_CLASSIFIER_FAILED_DEDUPE_MINUTES`          | `apps/flowstarter-main` | Overrides the 60-minute default for `scope_classifier_failed`.                                                                                                                                        |
 | `OPS_ALERT_ACCEPTABLE_USE_CLASSIFIER_FAILED_DEDUPE_MINUTES` | `apps/flowstarter-main` | Overrides the 60-minute default for `acceptable_use_classifier_failed`.                                                                                                                               |
+| `OPS_ALERT_DEPLOY_NEEDS_OPERATOR_DEDUPE_MINUTES`            | `apps/flowstarter-main` | Overrides the 30-minute default for `deploy_needs_operator`.                                                                                                                                          |
 | `CLASSIFIER_FAILURE_ALERT_THRESHOLD`                        | `apps/flowstarter-main` | How many classifications in a row must fail before either classifier alert fires. Three by default; a value that is not a positive integer is ignored.                                                |
 | `RESEND_API_KEY`                                            | `apps/flowstarter-main` | Already required for every client email; `sendOpsAlert` reuses `lib/email.ts`'s `sendEmail`, the same transport.                                                                                      |
 | `GH_REVIEW_TOKEN`                                           | Depot                   | Optional. Files the `production-alert` issue under a stable identity; absent, the workflow token does it, same as `daily-qa.yml`.                                                                     |

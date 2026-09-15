@@ -29,6 +29,12 @@
  * what this worker may pick up.
  */
 
+import {
+  deployAttemptBudget,
+  planBuildResume,
+  readAttemptCounters,
+  type BuildResumePlan,
+} from '@flowstarter/agentic-codegen';
 import { isRetryableBuildFailure } from './failure-policy';
 
 /**
@@ -112,6 +118,8 @@ export type ClaimRefusal =
   | 'wrong-kind'
   | 'terminal'
   | 'attempts-exhausted'
+  /** Out of *deploy* tries on a site that is built and gated. Needs a person. */
+  | 'deploy-attempts-exhausted'
   | 'not-due'
   | 'leased'
   | 'running-without-lease'
@@ -119,13 +127,34 @@ export type ClaimRefusal =
   | 'terminal-verdict';
 
 export type ClaimVerdict =
-  | { claimable: true; recovered: boolean }
+  | {
+      claimable: true;
+      recovered: boolean;
+      /**
+       * What the claimer is being given the job *for*. The budget this claim
+       * was measured against and the work the attempt will do are the same
+       * decision, so they are made once, here, and the store bumps whichever
+       * counter this names.
+       */
+      plan: BuildResumePlan;
+    }
   | { claimable: false; reason: ClaimRefusal };
 
 export interface ClaimRules {
   now: number;
   /** Fallback budget when the row carries none. */
   maxAttempts: number;
+  /**
+   * How many times a built, gated site may be handed to the deploy side.
+   *
+   * Its own budget, because a deploy costs a request and a generation costs a
+   * client's model spend, and letting the cheap one consume the expensive
+   * one's allowance is precisely what ended run 9 with a finished site nobody
+   * could ship. Named and configured (`FLOWSTARTER_BUILD_MAX_DEPLOY_ATTEMPTS`)
+   * rather than derived from `maxAttempts`, so the two can be tuned for the
+   * different things they are.
+   */
+  maxDeployAttempts: number;
   /** How long a claim is good for without a heartbeat. */
   leaseTtlMs: number;
 }
@@ -145,6 +174,32 @@ export function attemptBudget(row: LeasedJobRow, configured: number): number {
   return typeof row.max_attempts === 'number' && row.max_attempts > 0
     ? row.max_attempts
     : configured;
+}
+
+/**
+ * What this attempt would be for, and whether its budget is spent.
+ *
+ * One function so the claim rule and startup reconciliation cannot disagree
+ * about whether a job has anything left. The plan decides which budget is
+ * consulted: a job with a gate-passed artifact that failed on the deploy side
+ * is measured against the deploy budget and nothing else, which is the literal
+ * statement of "a deploy failure does not consume a generation attempt".
+ */
+export function attemptVerdict(
+  row: LeasedJobRow,
+  rules: ClaimRules,
+): { plan: BuildResumePlan } | { exhausted: ClaimRefusal } {
+  const plan = planBuildResume({ kind: row.kind, payload: row.payload });
+  const counters = readAttemptCounters(row.payload, row.attempt_count);
+  if (plan.resume === 'deploy') {
+    return counters.deploy >=
+      deployAttemptBudget(row.payload, rules.maxDeployAttempts)
+      ? { exhausted: 'deploy-attempts-exhausted' }
+      : { plan };
+  }
+  return counters.generation >= attemptBudget(row, rules.maxAttempts)
+    ? { exhausted: 'attempts-exhausted' }
+    : { plan };
 }
 
 /** Backoff, in the one place that decides it. */
@@ -196,9 +251,11 @@ export function claimVerdict(
   if (!CLAIMABLE_KINDS.has(row.kind)) {
     return { claimable: false, reason: 'wrong-kind' };
   }
-  if (row.attempt_count >= attemptBudget(row, rules.maxAttempts)) {
-    return { claimable: false, reason: 'attempts-exhausted' };
+  const attempts = attemptVerdict(row, rules);
+  if ('exhausted' in attempts) {
+    return { claimable: false, reason: attempts.exhausted };
   }
+  const { plan } = attempts;
 
   if (RESTING_STATUSES.has(row.status)) {
     // A resting row should carry no lease. If one is somehow still live, the
@@ -215,7 +272,7 @@ export function claimVerdict(
       return { claimable: false, reason: 'terminal-verdict' };
     }
     return isDue(row, rules.now)
-      ? { claimable: true, recovered: false }
+      ? { claimable: true, recovered: false, plan }
       : { claimable: false, reason: 'not-due' };
   }
 
@@ -227,7 +284,7 @@ export function claimVerdict(
     if (deadline > rules.now) return { claimable: false, reason: 'leased' };
     // Recovery deliberately ignores `run_after`: this build is already in
     // flight and its backoff was spent before it ever started.
-    return { claimable: true, recovered: true };
+    return { claimable: true, recovered: true, plan };
   }
 
   return { claimable: false, reason: 'terminal' };
@@ -319,9 +376,11 @@ export function staleLeaseAction(
 
   const published = publishedResult(row.payload);
   if (published) return { action: 'complete', published };
-  if (row.attempt_count >= attemptBudget(row, rules.maxAttempts)) {
-    return { action: 'abandon' };
-  }
+  // The same budget question the claim rule asks, asked the same way. A job
+  // whose worker died holding a gate-passed artifact has deploy tries left
+  // even when its generation budget is spent, and abandoning it here would
+  // strand exactly the site this change exists to rescue.
+  if ('exhausted' in attemptVerdict(row, rules)) return { action: 'abandon' };
   return { action: 'requeue' };
 }
 

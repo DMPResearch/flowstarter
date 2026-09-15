@@ -19,12 +19,16 @@ import {
   normalizeCalLink,
   parseBriefInput,
   operatorEditCreatedBy,
+  readAttemptCounters,
   parseChangeRequestIntent,
   parseOperatorEditIntent,
   withoutMissingAssets,
   OPERATOR_EDIT_VERSION_SUMMARY,
   type BrandConfig,
   type BriefInput,
+  type BuildPhase,
+  type BuildResumePlan,
+  type BuiltArtifactRecord,
   type BusinessIntakePayload,
   type ChangeRequestIntent,
   type FullSiteBuildEvent,
@@ -44,6 +48,7 @@ import {
   withChangeRequestAssets,
 } from './change-request-assets';
 import {
+  attemptVerdict,
   CLAIMABLE_KINDS,
   claimVerdict,
   leaseOwner,
@@ -164,6 +169,10 @@ export function isClaimable(
   return claimVerdict(row, {
     now: rules.now ?? Date.now(),
     maxAttempts,
+    // A caller asking this two-argument question is asking about generation:
+    // it predates deploy budgets and names only one. Falling back to the same
+    // number keeps its answer exactly what it has always been.
+    maxDeployAttempts: maxAttempts,
     leaseTtlMs: rules.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
   }).claimable;
 }
@@ -492,6 +501,13 @@ export function buildJobFromRows(input: {
    * started and publish it as though it were their work.
    */
   operatorEditFiles?: readonly TemplateScaffoldFile[] | null;
+  /**
+   * What this attempt is for, as the claim rule decided it. Carried onto the
+   * job so the worker runs a build or a redeploy from the same fact the budget
+   * was measured against, rather than re-deriving it from the payload and
+   * risking a different answer.
+   */
+  resume?: BuildResumePlan | null;
 }): FullSiteBuildJob {
   const intake = asRecord(
     input.artifacts.intake_payload,
@@ -556,6 +572,7 @@ export function buildJobFromRows(input: {
       input.changeRequestAssetFiles ?? [],
     ),
     requiredIntegrations,
+    ...(input.resume ? { resume: input.resume } : {}),
     ...(calComUrl ? { calComUrl } : {}),
     ...(leadCaptureEndpoint ? { leadCaptureEndpoint } : {}),
     ...(previewIntent ? { previewIntent } : {}),
@@ -584,15 +601,19 @@ export function changeRequestFor(
  * tests must read the payload through one rule, so a payload shape that the
  * tests accept cannot be one the claim path quietly rejects.
  */
-export function operatorEditFor(
-  row: JobLedgerRow,
-): OperatorEditIntent | null {
+export function operatorEditFor(row: JobLedgerRow): OperatorEditIntent | null {
   if (row.kind !== 'OPERATOR_EDIT_BUILD') return null;
   return parseOperatorEditIntent(row.payload);
 }
 
 export interface SupabaseJobStoreOptions {
   maxAttempts: number;
+  /**
+   * The deploy budget, apart from the generation one. See `ClaimRules` in
+   * `leases.ts`: a job with a gate-passed artifact that failed on the deploy
+   * side is measured against this and never against `maxAttempts`.
+   */
+  maxDeployAttempts?: number;
   /** How long a claim is good for without a heartbeat. */
   leaseTtlMs?: number;
   /** Who this process says it is on the rows it holds. */
@@ -779,11 +800,17 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
   private leaseRules(): {
     now: number;
     maxAttempts: number;
+    maxDeployAttempts: number;
     leaseTtlMs: number;
   } {
     return {
       now: this.now(),
       maxAttempts: this.options.maxAttempts,
+      // A store constructed without one falls back to the generation budget,
+      // which is the behaviour every caller had before deploy attempts were
+      // counted separately.
+      maxDeployAttempts:
+        this.options.maxDeployAttempts ?? this.options.maxAttempts,
       leaseTtlMs: this.leaseTtlMs,
     };
   }
@@ -1233,11 +1260,36 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
     // on the value that was read. Two workers claiming the same row cannot
     // mint the same token, and the loser's writes are refused from here on.
     const fence = nextFencingToken(row);
+    // Which counter this attempt spends, decided once by the claim rule and
+    // simply carried out here. A deploy resume leaves `attempt_count` exactly
+    // where it was: the row's generation history is a record of how many times
+    // agents built this site, and a redeploy of bytes they already produced
+    // did not build it again. That is the literal form of "a deploy-side
+    // failure does not consume a generation attempt" — it is visible on the
+    // row, not only in the rule that reads it.
+    const resume = verdict.plan;
+    const counters = readAttemptCounters(row.payload, row.attempt_count);
+    const spent =
+      resume.resume === 'deploy'
+        ? { ...counters, deploy: counters.deploy + 1 }
+        : { ...counters, generation: counters.generation + 1 };
+    const claimedPayload = {
+      ...(row.payload &&
+      typeof row.payload === 'object' &&
+      !Array.isArray(row.payload)
+        ? (row.payload as Record<string, unknown>)
+        : {}),
+      attempts: spent,
+    };
     const claimQuery = this.client
       .from('flowstarter_agent_jobs')
       .update({
         status: 'running',
-        attempt_count: row.attempt_count + 1,
+        attempt_count:
+          resume.resume === 'deploy'
+            ? row.attempt_count
+            : row.attempt_count + 1,
+        payload: claimedPayload,
         started_at: now,
         finished_at: null,
         error_code: null,
@@ -1261,7 +1313,13 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
     if (claimError) throw claimError;
     if (!claimed) return null;
     this.workspaceByJob.set(jobId, row.workspace_id);
-    this.attemptsByJob.set(jobId, row.attempt_count + 1);
+    // Backoff grows with the counter this attempt actually spent, so a run of
+    // deploy retries backs off on its own schedule rather than on one set by
+    // however many times the site was generated.
+    this.attemptsByJob.set(
+      jobId,
+      resume.resume === 'deploy' ? spent.deploy : spent.generation,
+    );
     this.fenceByJob.set(jobId, fence);
 
     // Past this point the row reads `running`. FullSiteBuildWorker only starts
@@ -1269,6 +1327,16 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
     // here has to release the row itself or the job is stuck at `running`
     // forever and can never be re-dispatched.
     try {
+      // A redeploy fetches no client media. Those files are the *inputs to a
+      // build*, and this attempt is not building: it is handing over bytes
+      // that were produced and gated while every one of them was already
+      // resolved. Downloading them again would be a fresh chance to fail on
+      // something the finished site no longer depends on — a picture whose
+      // rights were withdrawn after the build passed would turn a redeploy of
+      // an audited artifact into a terminal claim failure. The two cheap row
+      // reads below stay, because the job this returns has to be a whole job.
+      const redeploying = resume.resume === 'deploy';
+
       const { data: workspace, error: workspaceError } = await this.client
         .from('workspaces')
         .select('id, project_state, cal_com_url, lead_capture_token')
@@ -1306,19 +1374,22 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
       // minutes building a site that the applied-change gate would then fail
       // anyway with a much worse explanation.
       const changeRequest = changeRequestFor(row);
-      const changeRequestAssetFiles = changeRequest
-        ? await loadChangeRequestAssetFiles({
-            client: this.client,
-            workspaceId: row.workspace_id,
-            assets: changeRequest.assets,
-          })
-        : [];
+      const changeRequestAssetFiles =
+        changeRequest && !redeploying
+          ? await loadChangeRequestAssetFiles({
+              client: this.client,
+              workspaceId: row.workspace_id,
+              assets: changeRequest.assets,
+            })
+          : [];
 
       // The brief's own files, fetched the same way and at the same moment,
       // for the same reason: a build that discovers a missing picture three
       // agent-minutes in explains itself far worse than one that resolves
       // every path before it starts.
-      const brief = await this.loadBriefMaterial(row);
+      const brief = redeploying
+        ? { files: [] as TemplateScaffoldFile[], briefInput: null }
+        : await this.loadBriefMaterial(row);
 
       // And the operator's worktree, for a third time the same reason. The
       // bytes come out of the session row rather than off the editor host's
@@ -1326,11 +1397,13 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
       // already have been idle-reaped, and a build that can only be reproduced
       // from a filesystem somebody has to go and look at is not reproducible.
       const operatorEdit = operatorEditFor(row);
-      const operatorEditFiles = operatorEdit
-        ? await this.loadOperatorEditManifest(row.workspace_id, operatorEdit)
-        : null;
+      const operatorEditFiles =
+        operatorEdit && !redeploying
+          ? await this.loadOperatorEditManifest(row.workspace_id, operatorEdit)
+          : null;
 
       return buildJobFromRows({
+        resume,
         job: row,
         projectState: workspace.project_state,
         artifacts,
@@ -2057,9 +2130,41 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
    * The lease is dropped in the same write. A failed row nobody holds is what
    * lets the very next sweep pick the retry up.
    */
+  /**
+   * The gate-passed artifact, and the phase that says it is deployable.
+   *
+   * Written in the window between packaging the tarball and asking the deploy
+   * side to take it — the window run 9 died in. Both facts go in one fenced
+   * statement because they are one fact: bytes with no phase read as a build
+   * that died while packaging, and a phase with no bytes reads as nothing at
+   * all, and `planBuildResume` refuses either half on its own.
+   *
+   * Fenced like every other write this run makes, so an attempt that has been
+   * overtaken cannot stamp its artifact onto the attempt that replaced it.
+   */
+  async recordBuiltArtifact(
+    jobId: string,
+    artifact: BuiltArtifactRecord,
+  ): Promise<void> {
+    const now = new Date(this.now()).toISOString();
+    const existing = await this.currentPayload(jobId);
+    const { data, error } = await this.fencedJobUpdate(jobId, {
+      payload: {
+        ...existing,
+        builtArtifact: artifact,
+        buildPhase: 'deploying' satisfies BuildPhase,
+      },
+      updated_at: now,
+    })
+      .select('id')
+      .maybeSingle<{ id: string }>();
+    if (error) throw error;
+    if (!data) throw this.lost(jobId, 'record the built artifact for');
+  }
+
   async markFailed(
     jobId: string,
-    failure: { code: string; detail: string },
+    failure: { code: string; detail: string; phase?: BuildPhase },
   ): Promise<void> {
     const at = this.now();
     const now = new Date(at).toISOString();
@@ -2081,13 +2186,23 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
       code: failure.code,
       detail,
       at: now,
+      ...(failure.phase ? { phase: failure.phase } : {}),
     });
     const { data, error } = await this.fencedJobUpdate(jobId, {
       status: 'failed',
       error_code: failure.code,
       error_detail: detail,
       error_code_first: firstRecordedFailureCode(existing, failure.code),
-      payload: { ...existing, failures },
+      payload: {
+        ...existing,
+        failures,
+        // How far this attempt got, kept as the job's own state rather than
+        // inferred later from a code. With the artifact recorded above it is
+        // the whole input to `planBuildResume`, and a failure that names no
+        // phase leaves whatever the last one said — which is correct: a
+        // reconciler abandoning a lease decided nothing about the build.
+        ...(failure.phase ? { buildPhase: failure.phase } : {}),
+      },
       finished_at: now,
       updated_at: now,
       leased_by: null,
