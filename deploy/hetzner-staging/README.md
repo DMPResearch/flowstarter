@@ -19,6 +19,9 @@ for production at `flowstarter.net`.
 | `/opt/flowstarter/editor`      | Flowstarter editor compose file + stack script      |
 | `/etc/flowstarter/editor.env`  | Editor secrets, mode 600                            |
 | `/etc/flowstarter/cal.env`     | Cal secrets and admin credentials, mode 600         |
+| `/opt/flowstarter/build-worker` | Build worker compose file                          |
+| `/etc/flowstarter/build-worker-staging.env` | Build worker secrets, mode 600         |
+| `/srv/flowstarter/build-worker` | Build worker state: local sites repo, per-client worktrees, packaged artifacts, exported build output. Bind-mounted into the worker at this same absolute path — see "The build worker" |
 
 The directory is still called `staging` so nothing that already references it
 breaks. It holds every slot.
@@ -831,6 +834,156 @@ docker build -f apps/flowstarter-editor/Dockerfile   --build-arg VITE_BASE_PATH=
 SPA emits root-absolute asset URLs and the tenant vhost serves them the static
 site's `index.html` instead, which the SPA reports as *"Unexpected token '<'
 … is not valid JSON"*.
+
+## The build worker
+
+`apps/build-worker` is what drains `flowstarter_agent_jobs`. flowstarter-main
+writes one row per paid build, per paid change request and per operator editor
+session shipped, then POSTs the job id to `FLOWSTARTER_BUILD_WORKER_URL` as a
+nudge. Until 2026-09-15 that variable was unset on this box and no worker ran
+here, so every `FULL_SITE_BUILD`, `CHANGE_REQUEST_BUILD` and
+`OPERATOR_EDIT_BUILD` queued on staging sat unclaimed and paid builds only ever
+ran from a developer's Mac.
+
+```
+flowstarter-main (app slot, network_mode: host)   127.0.0.1:3000
+  │  POST /jobs/full-site  (bearer, 8s timeout)
+  ▼
+build-worker (network_mode: host)                 127.0.0.1:8787
+  │  claims the ledger row, leases it, heartbeats every 30s
+  │  materialises the job's manifest into a git worktree
+  │  docker run  ──►  one DISPOSABLE container per validate command
+  │                   read-only root, --network=none after the install,
+  │                   --cap-drop=ALL, non-root, no socket
+  │  runs every output gate over the exported build
+  │  packages a tarball, serves it on its own port
+  ▼
+flowstarter-main  POST /api/internal/build/deploy  (same bearer)
+  │  deploySite → deployments row → site_versions → DNS
+  ▼
+deploy-agent (sites)                              127.0.0.1:8443
+     fetches the tarball back over loopback, extracts to /var/www/sites/<slug>
+```
+
+### The Docker socket, stated plainly
+
+The worker container is handed `/var/run/docker.sock`, which is root on this
+box. That is deliberate and it is the only such mount on the host:
+
+- **The worker never runs a client's generated code.** Validation —
+  `pnpm install && pnpm run build` over an Astro site a coding agent wrote — is
+  the one step that executes untrusted code, and it runs in a _separate,
+  disposable_ container per command (`apps/build-worker/src/validator.ts`):
+  read-only root filesystem, one bind mount (`/site`), `--network=none` for
+  everything after the install,
+  `--cap-drop=ALL --security-opt=no-new-privileges`, a memory cap, a pids cap, a
+  non-root `--user`, and **no socket**. That child is the boundary; the socket
+  is what lets the worker ask for it.
+- **In staging and production this is mandatory, not opt-in.**
+  `apps/build-worker/src/isolation.ts` refuses to start with
+  `FLOWSTARTER_BUILD_ISOLATION=native` once `FLOWSTARTER_ENV` resolves to
+  staging or production, and `resolveValidationFencing` additionally refuses
+  unless the validation image already has pnpm baked in and the build step runs
+  with `--network=none`. A host that cannot run the isolated validator fails
+  loudly instead of quietly building a client's generated Astro config next to
+  every other client's worktree.
+- **So the rule for anyone editing this:** everything that runs _inside_ the
+  worker container is code from this repository. Anything that would run
+  somebody else's code — a shell tool, an operator-supplied command — belongs
+  one container further out, where there is no socket.
+
+### The worktrees bind mount, and the trap it avoids
+
+`docker run --mount=type=bind,source=<path>` is resolved by the **daemon**, on
+the **host** — not inside the process that asked for it. The worker passes the
+site workspace's own absolute path as that source. A worktrees root that existed
+only inside the worker container would therefore make the daemon mount a host
+path that does not exist, and every build would fail on a missing `package.json`
+for a site whose files are plainly there. That is the hardest failure in this
+deployment to read backwards, so the compose file mounts
+`/srv/flowstarter/build-worker` at the identical absolute path on both sides and
+`worker-stack.sh check` asserts it resolves on both.
+
+### `/etc/flowstarter/build-worker-staging.env`
+
+Mode 600, root-owned, written by hand. Copy it from
+`build-worker/build-worker.env.example`, which documents every key. The ones
+that are not obvious:
+
+| Key                                | Why                                                                                                                                                                                                                                     |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FLOWSTARTER_ENV=staging`          | The only thing that can name staging at all: every containerised slot runs `NODE_ENV=production`. It is what forces docker isolation and refuses `FLOWSTARTER_BUILD_SKIP_VALIDATION`.                                                   |
+| `FLOWSTARTER_BUILD_WORKER_SECRET`  | Must be **byte-identical** to the one in `staging.env`. Both directions are signed with it: the app's dispatch in, the worker's deploy callback and policy scan back.                                                                   |
+| `FLOWSTARTER_BUILD_WORKER_HOST`    | `127.0.0.1`. With `network_mode: host` this is the firewall. A `0.0.0.0` bind publishes `POST /jobs/full-site` **and** the unauthenticated `/artifacts/<token>.tar.gz` route that serves clients' unreleased sites.                     |
+| `FLOWSTARTER_BUILD_MODE=local`     | `github` publishes by opening a draft PR — a review gate, not a deploy: nothing reaches the client's host and no `site_versions` row is published. Staging exists to rehearse the chain that ends with a client seeing their site.      |
+| `FLOWSTARTER_MAIN_URL`             | `http://127.0.0.1:3000`, the deploy callback and the acceptable-use scan. No default, on purpose: a silent fallback to port 3000 killed two builds against a port nothing was listening on.                                             |
+| `FLOWSTARTER_PUBLIC_APP_ORIGIN`    | `FLOWSTARTER_MAIN_URL` is loopback, which is right for the callback and wrong for anything baked _into_ a client's site. This is what the contact-form endpoint and the site's CSP are derived from.                                    |
+| `CAL_BASE_URL`                     | Silent when wrong. Unset, the booking-host allow list falls back to `cal.com` only, the booking page is dropped from the build, and the client ships without the calendar they were emailed a link to. Must equal the app slot's value. |
+| `FLOWSTARTER_POLICY_SCAN_REQUIRED` | `true`. `local` mode defaults it to false (a laptop with no app running). This worker publishes sites a client will see, so "the gate passed" and "the gate never ran" must not look the same.                                          |
+
+And in `staging.env`, on the app's side:
+`FLOWSTARTER_BUILD_WORKER_URL=http://127.0.0.1:8787` plus the same
+`FLOWSTARTER_BUILD_WORKER_SECRET`. `dispatchAgentJob` refuses any endpoint that
+is neither HTTPS nor loopback.
+
+### Installing and driving it
+
+`scripts/worker-stack.sh` is the only thing that should run `docker compose`
+against the build worker's compose file. It installs itself through the ordinary
+CI sync (`sync-supabase.sh` picks up any new `scripts/*.sh`), and CI also keeps
+`/opt/flowstarter/build-worker/docker-compose.yml` current. What is needed once,
+by hand, on a new box:
+
+```bash
+sudo mkdir -p /opt/flowstarter/build-worker /srv/flowstarter/build-worker
+sudo cp deploy/hetzner-staging/build-worker/docker-compose.yml /opt/flowstarter/build-worker/
+sudo cp deploy/hetzner-staging/scripts/worker-stack.sh /opt/flowstarter/staging/
+sudo chmod +x /opt/flowstarter/staging/worker-stack.sh
+sudo install -m 600 /dev/null /etc/flowstarter/build-worker-staging.env
+# Fill it in from build-worker/build-worker.env.example, then build the
+# disposable image a generated site is actually compiled inside:
+sudo /opt/flowstarter/staging/worker-stack.sh image
+sudo /opt/flowstarter/staging/worker-stack.sh up
+sudo /opt/flowstarter/staging/worker-stack.sh check    # must pass before going further
+sudo /opt/flowstarter/staging/worker-stack.sh health
+```
+
+| Subcommand         | What it does                                                                                                                                                                                                                                                                                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `up [image]`       | Pulls, `compose up -d`, waits (bounded, `BUILD_WORKER_HEALTH_TIMEOUT`, default 180s) for healthy, then runs `check`. With no image argument it reuses the image the container is already on, so a hand-run deploy never rolls the worker back to whatever `:main` points at.                                                                           |
+| `recreate [image]` | `docker rm -f` then `up`. This is what applies an env-file change: `docker restart` does **not** re-read `--env-file`.                                                                                                                                                                                                                                 |
+| `down`             | `compose down`.                                                                                                                                                                                                                                                                                                                                        |
+| `status`           | Container name, health, and the image tag actually running.                                                                                                                                                                                                                                                                                            |
+| `check`            | Fails unless the listener is loopback (configured **and** observed), the shared secret is at least 32 characters, isolation is `docker`, the validation image is present, the worktrees root resolves identically on host and in container, and the worker can reach the host daemon.                                                                  |
+| `health`           | The worker answers `/health` on loopback, **and** dispatch 401s an unsigned POST.                                                                                                                                                                                                                                                                      |
+| `image`            | Builds `flowstarter/build-validation:node22-pnpm10` on this host from `apps/build-worker/docker/validation-runtime.Dockerfile`. Built locally, never pulled: the worker invokes the Docker CLI with no registry credentials, so the image has to be on the host already, and one built from this repo is the only version of it we can say we control. |
+
+The worker's own image is built and pushed by `staging-deploy.yml`
+(`ghcr.io/dmpresearch/flowstarter-build-worker:<sha>`) and deployed **after** the
+app slot. That order matters: the worker's publish step calls back into
+flowstarter-main, so deploying it first would give it a window in which it can
+claim a job, build it, and then fail at publish against an app mid-restart.
+
+### What production will need
+
+Nothing in the worker image is environment-specific — it takes no
+`NEXT_PUBLIC_*` build args — so the same image serves both. What `prod` needs is
+its own slot beside this one:
+
+- `/etc/flowstarter/build-worker-prod.env` with `FLOWSTARTER_ENV=production`,
+  the hosted Supabase project's URL and service-role key, and
+  `FLOWSTARTER_MAIN_URL=http://127.0.0.1:3100` (the `prod` slot's port).
+- `FLOWSTARTER_BUILD_WORKER_URL` + the matching secret in `prod.env`, and a
+  second container on its own port (`FLOWSTARTER_BUILD_WORKER_PORT=8788`) with
+  its own `BUILD_WORKER_STATE_ROOT`. Two workers against one ledger is already
+  safe — the claim is an atomic compare-and-set and leases are fenced — but two
+  workers against **one worktrees root** is not, so the state roots must differ.
+- **The artifact URL.** In production `assertUsableArtifactUrl` requires HTTPS,
+  so a production worker cannot serve its own tarball off loopback the way this
+  one does. Either that rule is widened for a same-box worker the way it already
+  is for staging, or the worker gains a publisher that uploads to Supabase
+  Storage and hands out a signed URL — which is what the artifact store's own
+  comment says production was always meant to do.
 
 ## Known gaps
 

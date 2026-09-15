@@ -79,6 +79,37 @@ describe('assertUsableArtifactUrl', () => {
         NODE_ENV: 'production',
       })
     ).toThrow(ArtifactUrlError);
+    // FLOWSTARTER_ENV is authoritative when set, so naming production
+    // explicitly is refused too.
+    expect(() =>
+      assertUsableArtifactUrl('http://127.0.0.1:8787/a.tar.gz', {
+        NODE_ENV: 'production',
+        FLOWSTARTER_ENV: 'production',
+      })
+    ).toThrow(ArtifactUrlError);
+  });
+
+  // The staging slot is the case this rule got wrong. Every containerised slot
+  // runs NODE_ENV=production — that is what a Next standalone build is — so
+  // reading NODE_ENV made staging take production's rule and refuse the
+  // loopback URL of the build worker running beside it on the same host,
+  // after that build had been made and every gate had already passed.
+  it('accepts the loopback artifact URL of a build worker on the same host in staging', () => {
+    expect(
+      assertUsableArtifactUrl('http://127.0.0.1:8787/artifacts/a.tar.gz', {
+        NODE_ENV: 'production',
+        FLOWSTARTER_ENV: 'staging',
+      }).hostname
+    ).toBe('127.0.0.1');
+  });
+
+  it('still refuses a non-loopback http artifact in staging', () => {
+    expect(() =>
+      assertUsableArtifactUrl('http://evil.example/site.tar.gz', {
+        NODE_ENV: 'production',
+        FLOWSTARTER_ENV: 'staging',
+      })
+    ).toThrow(ArtifactUrlError);
   });
 
   it('refuses a non-http scheme and a malformed URL', () => {

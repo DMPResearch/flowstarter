@@ -101,6 +101,7 @@ jobs:
         run: |
           owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
           echo "name=ghcr.io/${owner}/flowstarter-main" >> "$GITHUB_OUTPUT"
+          echo "worker=ghcr.io/${owner}/flowstarter-build-worker" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         if: steps.supabase.outputs.present == 'true'
@@ -136,6 +137,29 @@ jobs:
             FLOWSTARTER_BUILD_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # The build worker, as its own image. Separate from the app's on purpose:
+      # it installs a different (much smaller) dependency graph, it carries a
+      # Docker CLI the app must never have, and it takes no NEXT_PUBLIC_* build
+      # args at all — nothing about it is inlined at build time, so the same
+      # image is correct for staging and for production and the two lanes
+      # cannot cross-contaminate through it the way they could through the
+      # app's bundle.
+      #
+      # Built unconditionally alongside the app, deployed below only when the
+      # SSH secrets are present, exactly like the app's.
+      - name: Build and push the build worker image
+        if: steps.supabase.outputs.present == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/build-worker/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.image.outputs.worker }}:${{ github.sha }}
+            ${{ steps.image.outputs.worker }}:main
+          cache-from: type=gha,scope=build-worker
+          cache-to: type=gha,mode=max,scope=build-worker
 
       - name: Resolve staging URL
         if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
@@ -180,7 +204,14 @@ jobs:
       # days-old commit (missing #175's image retention) when the staging
       # disk filled. See docs/operations/deploy-disk.md and
       # sync-supabase.sh's own header comment.
-      - name: Sync supabase/ and scripts/ to the host
+      #
+      # A third top-level entry, "build-worker", carries the build worker's
+      # compose file to /opt/flowstarter/build-worker/ for the same reason:
+      # it is a file the box runs and `main` owns. Its env file is NOT in that
+      # stream and never will be — the real one is
+      # /etc/flowstarter/build-worker-staging.env, mode 600, and a lane that
+      # could write it could write a secret out of a git checkout.
+      - name: Sync supabase/, scripts/ and the build worker compose file to the host
         if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
         env:
           HOST: ${{ secrets.STAGING_SSH_HOST }}
@@ -191,8 +222,8 @@ jobs:
           install -m 600 /dev/null "$RUNNER_TEMP/staging_key"
           printf '%s\n' "$KEY" > "$RUNNER_TEMP/staging_key"
           SSH=(ssh -i "$RUNNER_TEMP/staging_key" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
-          tar -C . -cf - supabase -C deploy/hetzner-staging scripts | "${SSH[@]}" "${USER}@${HOST}" \
-            "sudo /opt/flowstarter/staging/sync-supabase.sh"
+          tar -C . -cf - supabase -C deploy/hetzner-staging scripts build-worker \
+            | "${SSH[@]}" "${USER}@${HOST}" "sudo /opt/flowstarter/staging/sync-supabase.sh"
 
       # Trust, then verify: sync-supabase.sh already logs each script it
       # installs, but a silent gap here (a script that fails to copy, a stale
@@ -233,6 +264,21 @@ jobs:
           fi
           echo "All scripts on the host match this repo checkout byte-for-byte."
 
+          # The build worker's compose file, checked the same way and for the
+          # same reason. It is not under scripts/, so the glob above cannot
+          # cover it, and a compose file that silently stayed behind is
+          # exactly the drift this whole step exists to catch: it is what
+          # decides the Docker socket mount, the worktrees bind path and the
+          # resource caps.
+          compose_expected="$(sha256sum deploy/hetzner-staging/build-worker/docker-compose.yml | awk '{print $1}')"
+          compose_actual="$("${SSH[@]}" "${USER}@${HOST}" \
+            "sha256sum /opt/flowstarter/build-worker/docker-compose.yml 2>/dev/null | awk '{print \$1}'" || true)"
+          if [ "$compose_expected" != "$compose_actual" ]; then
+            echo "::error::/opt/flowstarter/build-worker/docker-compose.yml on the host does not match deploy/hetzner-staging/build-worker/docker-compose.yml in this push (expected ${compose_expected}, host reported '${compose_actual}'). sync-supabase.sh should have installed it in the previous step; check its output there."
+            exit 1
+          fi
+          echo "The build worker compose file on the host matches this repo checkout byte-for-byte."
+
       - name: Deploy slot main over SSH
         if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
         env:
@@ -250,6 +296,58 @@ jobs:
           # GHCR packages are private; log the host in before docker pull.
           "${SSH[@]}" "${USER}@${HOST}" \
             "echo $(printf %q "$GHCR_TOKEN") | docker login ghcr.io -u $(printf %q "$GHCR_USERNAME") --password-stdin && sudo /opt/flowstarter/staging/deploy-slot.sh main $(printf %q "$IMAGE") 3000"
+
+      # The build worker, AFTER the app slot, and the order is the point.
+      #
+      # The worker's deploy callback posts to flowstarter-main on this box's
+      # loopback, and its acceptable-use scan asks the same app for a verdict.
+      # Deploying the worker first would give it a window in which it can claim
+      # a job off the ledger, build it, and then fail at the publish step
+      # against an app slot that is mid-restart — a real client build burnt on
+      # a deploy-ordering detail. Deployed second, the worst case is a minute
+      # of a job sitting queued, which the worker's own ledger sweep picks up.
+      #
+      # Same sudo grant as every other slot script: /opt/flowstarter/staging/*.sh
+      # (Cmnd_Alias FLOWSTARTER_SLOTS in /etc/sudoers.d/flowstarter-deploy), so
+      # this needs no sudoers change. The host is already logged in to ghcr.io
+      # from the step above, which is what lets worker-stack.sh pull.
+      #
+      # This step does NOT write /etc/flowstarter/build-worker-staging.env.
+      # Secrets on this box are placed by hand, once, mode 600; a lane that
+      # could rewrite them is a lane that can leak them.
+      - name: Deploy the build worker over SSH
+        if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
+        env:
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          USER: ${{ secrets.STAGING_SSH_USER }}
+          KEY: ${{ secrets.STAGING_SSH_KEY }}
+          WORKER_IMAGE: ${{ steps.image.outputs.worker }}:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          install -m 600 /dev/null "$RUNNER_TEMP/staging_key"
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/staging_key"
+          SSH=(ssh -i "$RUNNER_TEMP/staging_key" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
+          "${SSH[@]}" "${USER}@${HOST}" \
+            "sudo /opt/flowstarter/staging/worker-stack.sh up $(printf %q "$WORKER_IMAGE")"
+
+      # `up` already waited for the container to be healthy and ran `check`
+      # (loopback bind, a usable shared secret, docker isolation, an identical
+      # worktrees path, a reachable daemon). This is the other half: that the
+      # worker answers over loopback and that dispatch refuses an unsigned
+      # POST. Both matter because "the container is running" and "a paid build
+      # will actually be claimed and published" are different facts.
+      - name: Smoke the build worker
+        if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
+        env:
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          USER: ${{ secrets.STAGING_SSH_USER }}
+          KEY: ${{ secrets.STAGING_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 600 /dev/null "$RUNNER_TEMP/staging_key"
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/staging_key"
+          SSH=(ssh -i "$RUNNER_TEMP/staging_key" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
+          "${SSH[@]}" "${USER}@${HOST}" "sudo /opt/flowstarter/staging/worker-stack.sh health"
 
       - name: Smoke health URL
         if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
