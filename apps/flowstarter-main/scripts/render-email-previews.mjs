@@ -58,6 +58,17 @@ async function loadFixtures() {
     // esbuild has to be told. Nothing heavy comes with them: the persona file
     // imports one leaf logic module and one type.
     alias: { '@': path.join(appRoot, 'src') },
+    // The classifier's native runtime, left where it is.
+    //
+    // `custom-work.ts` imports `verbatimEvidence` from
+    // `@/lib/flowstarter/scope-classifier` (#201), which is a pure string
+    // function sitting in a module that also reaches the sigma classifier and
+    // through it `onnxruntime-node`. esbuild follows a dynamic import
+    // statically, so bundling the template pulls in a `.node` binding it has
+    // no loader for and the whole harness dies on a file no email will ever
+    // touch. External keeps the import a runtime concern, and rendering an
+    // email never reaches it.
+    external: ['onnxruntime-node', 'onnxruntime-common', 'sharp'],
   });
   return import(pathToFileURL(tmp).href);
 }

@@ -9,13 +9,8 @@
  * is the point.
  */
 import { describe, expect, it } from 'vitest';
-import {
-  emailFixtures,
-  htmlColours,
-  htmlSentences,
-  lintEmailHtml,
-  words,
-} from './preview-fixtures';
+import { emailFixtures, lintEmailHtml } from './preview-fixtures';
+import { htmlColours, htmlSentences, words } from './html-reader';
 import { EMAIL_PALETTE } from '../design';
 import { invitationEmail } from '../invitation';
 import { leadNotificationEmail } from '../lead-notification';
@@ -178,6 +173,30 @@ describe('every template', () => {
       (sentence) => !text.includes(words(sentence))
     );
     expect(missing).toEqual([]);
+  });
+
+  /**
+   * The reader above passes trivially if it reads nothing.
+   *
+   * That is not a theoretical worry: it walks the document with an index
+   * rather than a pattern, so a change to the markup that moved a paragraph
+   * inside an element it does not look at would leave it returning an empty
+   * list and the check above green for the wrong reason. The floor is the
+   * shape of the smallest email in the set, a verification code, which is
+   * four sentences. The footer's transactional line is asserted on top of the
+   * count, because it is the last prose in every template: finding it is
+   * proof the reader walked the whole document rather than the first card it
+   * came to.
+   */
+  it.each(named)('%s gives the reader something to check', (_n, f) => {
+    const sentences = htmlSentences(f.mail.html).map(words);
+    expect(sentences.length).toBeGreaterThanOrEqual(4);
+    expect(sentences).toContain(
+      words(
+        'This is a service message about your project, not marketing, so ' +
+          'there is nothing to unsubscribe from.'
+      )
+    );
   });
 
   /**
