@@ -2,7 +2,7 @@
 
 *Consolidated snapshot of strategic, technical, and pricing decisions, reconciled against shipped code.*
 
-**Date:** 2026-09-14
+**Date:** 2026-09-15 (reconciled against PRs #158, #160, #162 through #174, merged overnight 2026-09-14/15)
 **Status:** Describes the live product. Superseded the May 2026 concierge draft, which described a discovery-call deposit, 50/50 founding milestones, and a Max tier that were never shipped in this form.
 **Authority:** This document is the **source of truth** for code agents. If a request contradicts a decision here, flag the contradiction rather than silently overriding it. Section 10 lists the contradictions this revision itself found and did not resolve in code.
 
@@ -27,7 +27,7 @@
 
 Flowstarter builds and maintains websites for businesses that need a professional online presence without hiring a developer. The product is **self-serve with operator supervision**: a prospect answers four questions and gets a generated preview with no human in the loop; a human (Darius, and Dorin for design and client relationships) reviews the build before it goes live and handles anything outside the client editor's scope.
 
-Work that does not fit the self-serve funnel (bespoke integrations, scope a template cannot express) routes to a **DMPResearch custom-work discovery call**. The routing half of that shipped in PR #162: after the four quick questions and before any generation, `classifyScope` reads the answers and the title of the linked page, `decideRoute` turns that verdict into `self-serve`, `discovery-call` or one clarifying question, and a `custom` brief is offered a free call on the self-hosted Cal.com instead of a build it would spend a generation run getting wrong. The acceptable-use guardrail is still on a separate branch; `decideRoute` already takes its verdict as an optional input and sends anything it did not clear to a person.
+Work that does not fit the self-serve funnel (bespoke integrations, scope a template cannot express) routes to a **DMPResearch custom-work discovery call**. The routing half of that shipped in PR #162: after the four quick questions and before any generation, `classifyScope` reads the answers and the title of the linked page, `decideRoute` turns that verdict into `self-serve`, `discovery-call` or one clarifying question, and a `custom` brief is offered a free call on the self-hosted Cal.com instead of a build it would spend a generation run getting wrong. The acceptable-use guardrail merged as PR #158 and is wired into `decideRoute`: a `refuse` verdict falls through to the funnel's own refusal copy rather than a sales call, and a `review` verdict routes to the call so a person reads it. Both heads can run on `@flowstarter/sigma-core` / `@flowstarter/sigma-flowstarter` (PR #160), with built output and retrained centroids from PR #167 and the encoder model baked into the Hetzner slot image by PR #172. Staging runs both flags on (`ACCEPTABLE_USE_SIGMA=true`, `SCOPE_SIGMA=1`); production gets them at the same infrastructure cutover that moves Clerk, Stripe and Cloudflare to their production settings (see Open Decision Points).
 
 ### Two Market Segments
 
@@ -54,7 +54,7 @@ This is what a client actually walks through today, in order:
 8. **A care plan** (the post-launch subscription): hosting, domain renewal, maintenance, support, and a monthly editor allowance. See [Pricing](#pricing).
 9. **Cal.com bookings**, self-hosted by the platform, for the client's own site.
 10. **Lead capture** on every delivered site, into that client's own workspace.
-11. **Custom-work routing** to the DMPResearch discovery call, for anything outside what the self-serve funnel can build (PR #162). The acceptable-use guardrail beside it is still in progress; see "About Flowstarter" above.
+11. **Custom-work routing** to the DMPResearch discovery call, for anything outside what the self-serve funnel can build (PR #162), gated by the acceptable-use guardrail beside it (PR #158, sigma-wired via PR #160/#167/#172); see "About Flowstarter" above.
 
 ### Technical Defaults
 
@@ -85,6 +85,10 @@ After delivery, a client edits their own site through a constrained AI editor. W
 - The allowance resets on the first of the UTC month. A daily burst cap in `site-editor.ts` is separate and unrelated to what a client bought.
 
 **Add-on packs are marketing copy only; there is no purchase path.** The FAQ and the terms page both describe "EUR 15 a month for another 25 edits, up to EUR 45 a month for 100 more." `edit-credits.ts` accepts an `addOnCredits` parameter for exactly this, but its own comment states the fact plainly: "nothing sells them yet and no column holds them, so this is a number a caller may pass and every caller currently passes 0." The exhausted-credits message deliberately does not link anywhere, because there is nowhere to send a client to buy more. **Flagged for Darius:** either build the add-on purchase path, or remove the add-on copy from the FAQ and the terms page until it exists.
+
+### Operator Editor
+
+As of PR #171, the team has a second, larger surface the client-facing editor above does not: **the team builds whole features in the editor; clients make small changes with escalation to the team for anything larger.** An operator opens a project into a full coding-agent session (`apps/flowstarter-editor`) with a real filesystem, no page budget and no repair pass, because a person is at the keyboard rather than an unattended agent. Shipping a session's changes still runs the same build gates every other path runs (#110, #128, #134, #142, #165), and a session cut from a version the client has since published past is refused outright rather than merged. See `docs/operations/operator-editor.md` for the runbook and what remains to deploy it (the editor image, the host env file, the control-plane secret).
 
 ---
 
@@ -181,7 +185,7 @@ Both also found real gaps, and a run of follow-up PRs (#133 through #146) closed
 1. **Payments and RON conversion.** Invoicing software (SmartBill / FacturaPlus / Oblio); Stripe remains primary for card payments.
 2. **VAT and cross-border invoicing.** Needs a cross-border B2B fiscal consultant before the first EU client outside Romania.
 3. **Operator identity.** The code half is done: the terms and privacy pages read the entity name, registration number, VAT number, address, governing law and court from six `FLOWSTARTER_LEGAL_*` environment variables (`apps/flowstarter-main/src/lib/legal/company.ts`), and while any of the six is unset both pages say "Operator identity pending registration" rather than asserting a Romanian company and Cluj courts, and the draft notice stays up on all three legal pages. **What is left is not code:** decide the company structure and supply the six values. The rest of the legal copy pass is closed — Plausible and Calendly are gone, Cal.com, Arcjet, OpenRouter, GitHub and Depot are disclosed, the DPA claim is now a statement of where each vendor's terms are rather than a claim of eight signatures, the retention section publishes only the two windows a job actually enforces, and the `NEXT_PUBLIC_GA_MEASUREMENT_ID` half-wiring was removed so "we run no analytics" is true of the build.
-4. **Acceptable-use guardrail.** In progress on a separate branch as of this revision; reconcile this document again once it merges. The custom-work discovery call it sits beside merged in PR #162.
+4. ~~**Acceptable-use guardrail.** In progress on a separate branch as of this revision; reconcile this document again once it merges.~~ **Resolved in code.** Merged as PR #158, with the taxonomy-agnostic classifier and Flowstarter's two guardrail heads from PR #160, built `dist/` output and retrained acceptable-use centroids from PR #167, and the encoder model plus its runtime baked into the Hetzner slot image from PR #172. Staging runs it live (`ACCEPTABLE_USE_SIGMA=true`, `SCOPE_SIGMA=1`); production is switched on at the same infrastructure cutover as the other Darius-only launch items in `docs/next-steps.md`. The custom-work discovery call it sits beside merged in PR #162.
 5. **Registrable domain separation** for tenant sites versus the platform (security audit finding H1); an infrastructure decision measured in weeks, not a code change.
 
 ---
