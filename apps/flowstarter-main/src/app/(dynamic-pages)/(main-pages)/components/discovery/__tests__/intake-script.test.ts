@@ -33,6 +33,7 @@ import {
   humanList,
   interpolate,
   nextQuestion,
+  optionLabel,
   promptText,
   questionById,
   reflectionText,
@@ -429,6 +430,20 @@ describe('nameOnSite: the one-tap disambiguation', () => {
     expect(prompt).toContain('Darius');
     expect(prompt).toContain('Dmpresearch');
     expect(prompt).not.toContain('{');
+  });
+
+  it('has no em dash or en dash, house style for every line of copy', () => {
+    const nameOnSite = questionById('nameOnSite')!;
+    for (const key of [
+      'landing.discovery.chat.q.nameOnSite.prompt',
+      'landing.discovery.chat.q.nameOnSite.reflect',
+      'landing.discovery.chat.q.nameOnSite.reflect.skipped',
+    ]) {
+      expect(t(key), key).not.toMatch(/[—–]/);
+    }
+    for (const option of nameOnSite.options ?? []) {
+      expect(optionLabel(option, t), option.value).not.toMatch(/[—–]/);
+    }
   });
 });
 

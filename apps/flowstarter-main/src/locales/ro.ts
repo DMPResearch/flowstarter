@@ -45,7 +45,7 @@ const ro: Record<string, string> = {
   // in en.ts; `{name}` and `{siteName}` are the visitor's own two candidates,
   // not placeholders.
   'landing.discovery.chat.q.nameOnSite.prompt':
-    'A cui nume merge pe site — al tău, {name}, sau {siteName}?',
+    'Al cui nume merge pe site: al tău, {name}, sau {siteName}?',
   'landing.discovery.chat.q.nameOnSite.reflect':
     'Am notat, prezint site-ul ca {business}.',
   'landing.discovery.chat.q.nameOnSite.reflect.skipped':

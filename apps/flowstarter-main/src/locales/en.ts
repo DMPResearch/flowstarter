@@ -2489,7 +2489,7 @@ const en = {
   // two actual candidates, not placeholders — see `promptText` in
   // `intake-script.ts`.
   'landing.discovery.chat.q.nameOnSite.prompt':
-    'Whose name goes on the site — yours, {name}, or {siteName}?',
+    'Whose name goes on the site: yours, {name}, or {siteName}?',
   'landing.discovery.chat.q.nameOnSite.reflect':
     "Got it, I'll introduce the site as {business}.",
   'landing.discovery.chat.q.nameOnSite.reflect.skipped':
