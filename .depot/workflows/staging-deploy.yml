@@ -159,15 +159,28 @@ jobs:
       #
       # The extract-to-temp-and-swap logic that fixed this lives in
       # sync-supabase.sh (deployed to the host alongside deploy-slot.sh and
-      # supabase-stack.sh, see README.md, "Bootstrap"), not inline here: the
-      # deploy user's sudoers entry (/etc/sudoers.d/flowstarter-deploy on the
-      # host) grants NOPASSWD only for exact commands, and a `Cmnd_Alias` for
-      # the slot scripts by path (`/opt/flowstarter/staging/*.sh`). Shell
-      # logic embedded straight into the ssh argument — the first version of
-      # this fix — is not a command sudoers can name, so it failed outright
-      # ("sudo: a password is required") the moment it shipped. Piping to one
-      # already-whitelisted script is what sudoers can actually grant.
-      - name: Sync supabase/ to the host
+      # supabase-stack.sh, see README.md, "One-time box setup"), not inline
+      # here: the deploy user's sudoers entry
+      # (/etc/sudoers.d/flowstarter-deploy on the host) grants NOPASSWD only
+      # for exact commands, and a `Cmnd_Alias` for the slot scripts by path
+      # (`/opt/flowstarter/staging/*.sh`). Shell logic embedded straight into
+      # the ssh argument — the first version of this fix — is not a command
+      # sudoers can name, so it failed outright ("sudo: a password is
+      # required") the moment it shipped. Piping to one already-whitelisted
+      # script is what sudoers can actually grant.
+      #
+      # 2026-09-15: the same tar stream also carries deploy/hetzner-staging/
+      # scripts/ now, as a second top-level "scripts" entry, and
+      # sync-supabase.sh installs any of those *.sh files that changed into
+      # /opt/flowstarter/staging/ (still just that one whitelisted script
+      # doing the writing; no sudoers change). Before this, nothing ever
+      # updated deploy-slot.sh, supabase-stack.sh, etc. on the host past
+      # their one-time bootstrap copy — main and the box silently drifted
+      # apart, and the box was still running deploy-slot.sh from a
+      # days-old commit (missing #175's image retention) when the staging
+      # disk filled. See docs/operations/deploy-disk.md and
+      # sync-supabase.sh's own header comment.
+      - name: Sync supabase/ and scripts/ to the host
         if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
         env:
           HOST: ${{ secrets.STAGING_SSH_HOST }}
@@ -178,8 +191,47 @@ jobs:
           install -m 600 /dev/null "$RUNNER_TEMP/staging_key"
           printf '%s\n' "$KEY" > "$RUNNER_TEMP/staging_key"
           SSH=(ssh -i "$RUNNER_TEMP/staging_key" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
-          tar -C . -cf - supabase | "${SSH[@]}" "${USER}@${HOST}" \
+          tar -C . -cf - supabase -C deploy/hetzner-staging scripts | "${SSH[@]}" "${USER}@${HOST}" \
             "sudo /opt/flowstarter/staging/sync-supabase.sh"
+
+      # Trust, then verify: sync-supabase.sh already logs each script it
+      # installs, but a silent gap here (a script that fails to copy, a stale
+      # sudo cache, a typo in a future edit to the tar command above) is
+      # exactly the failure mode that let the box run a days-old
+      # deploy-slot.sh in the first place. Comparing every script's sha256
+      # between this checkout and the host, right after the sync step and
+      # before deploy-slot.sh is invoked below, turns that kind of drift into
+      # a loud, immediate CI failure instead of a disk that quietly fills up
+      # again some days from now.
+      - name: Verify installed scripts match the repo
+        if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
+        env:
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          USER: ${{ secrets.STAGING_SSH_USER }}
+          KEY: ${{ secrets.STAGING_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 600 /dev/null "$RUNNER_TEMP/staging_key"
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/staging_key"
+          SSH=(ssh -i "$RUNNER_TEMP/staging_key" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
+
+          # Both sides hash the exact same file list, in the exact same
+          # order: the glob is expanded once, locally, into a quoted name
+          # list that is reused verbatim for the remote command.
+          names="$(cd deploy/hetzner-staging/scripts && printf '%q ' *.sh)"
+          expected="$(cd deploy/hetzner-staging/scripts && eval "sha256sum ${names}")"
+          actual="$("${SSH[@]}" "${USER}@${HOST}" \
+            "cd /opt/flowstarter/staging && sha256sum ${names}" 2>&1 || true)"
+
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::Scripts installed on the host do not match deploy/hetzner-staging/scripts/ in this push. sync-supabase.sh should have installed them in the previous step; check its output there, and confirm /etc/sudoers.d/flowstarter-deploy on the host still grants FLOWSTARTER_SLOTS = /opt/flowstarter/staging/*.sh."
+            echo "--- expected (this repo checkout) ---"
+            echo "$expected"
+            echo "--- actual (on the host) ---"
+            echo "$actual"
+            exit 1
+          fi
+          echo "All scripts on the host match this repo checkout byte-for-byte."
 
       - name: Deploy slot main over SSH
         if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'

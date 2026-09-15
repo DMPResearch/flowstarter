@@ -851,6 +851,15 @@ site's `index.html` instead, which the SPA reports as *"Unexpected token '<'
 
 ## One-time box setup
 
+This manual `cp` of `scripts/*.sh` is only needed once, to get
+`sync-supabase.sh` itself onto the box — after that, every `staging-deploy`
+run installs the current `main` version of every script under
+`deploy/hetzner-staging/scripts/` automatically, including updates to
+`sync-supabase.sh` itself. See "What CI is allowed to run as root" below.
+Skipping this step is not an option for a brand-new box: CI has nothing to
+SSH into that can run `sync-supabase.sh` in the first place, so the very
+first copy has to be seeded by hand.
+
 ```bash
 sudo mkdir -p /opt/flowstarter/staging /etc/flowstarter /etc/caddy/platform
 sudo cp deploy/hetzner-staging/docker-compose.yml /opt/flowstarter/staging/
@@ -932,10 +941,34 @@ already covers it. `sync-supabase.sh` is why the `supabase/` sync step in
 longer referenced by any workflow and can be dropped from the box's sudoers
 file.
 
+**Installing the scripts themselves is the same trick, one level up.** The
+`FLOWSTARTER_SLOTS` glob already covers every `.sh` file under
+`/opt/flowstarter/staging/`, whatever it's named, so nothing about *adding a
+new script* needs a sudoers change either. `staging-deploy.yml`'s sync step
+tars `deploy/hetzner-staging/scripts/` alongside `supabase/` on every push to
+`main` and pipes both to `sync-supabase.sh`, which -- still running as the
+one process sudoers already trusts -- installs any `*.sh` whose content
+changed into `/opt/flowstarter/staging/`: written to a temp file in that same
+directory first, `chmod 755`, then `mv -f` over the target, so a script
+already mid-run (including `sync-supabase.sh` replacing its own installed
+copy) keeps reading its old inode to completion rather than a half-written
+mix of old and new bytes. Identical content is left untouched, and a script
+name that has never existed on the box before is just the "content changed"
+case with nothing to compare against, so it installs the same way -- no
+separate bootstrap step needed for it. A "Verify installed scripts match the
+repo" step right after the sync compares every script's sha256 between the
+checkout and the host and fails the deploy loudly on any mismatch, rather
+than letting a silent install failure leave the box running stale code. This
+is what closes the gap that let the box run `deploy-slot.sh` from a days-old
+commit (missing #175's image retention) and fill the staging disk on
+2026-09-15 -- see `docs/operations/deploy-disk.md` and `sync-supabase.sh`'s
+own header comment for the incident.
+
 ## CI
 
 - `.depot/workflows/staging-deploy.yml`: push to `main` deploys slot `main`
-  (syncs `supabase/` to the host via `sync-supabase.sh`, runs migrations,
+  (syncs `supabase/` and `scripts/` to the host via `sync-supabase.sh`,
+  verifies the installed scripts' sha256 against the repo, runs migrations,
   refreshes staging.env)
 - `.depot/workflows/staging-pr-deploy.yml`: PR deploys slot `pr-<n>`; closed destroys it
 - `.depot/workflows/release.yml`: a release tag builds the production image and
