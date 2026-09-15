@@ -1,7 +1,14 @@
 'use client';
 
 import en from '@/locales/en';
-import React, { createContext, useContext, useMemo, useState } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
+import { LOCALE_COOKIE_NAME, isSupportedLocale } from './locale-resolution';
 
 type Messages = Record<string, string>;
 type En = typeof en;
@@ -44,6 +51,35 @@ export function I18nProvider({
   initialMessages: Record<string, Record<TranslationKeys, string>>;
 }) {
   const [locale, setLocale] = useState(initialLocale);
+
+  // The provider always mounts with `initialLocale` (English by default —
+  // see `app/layout.tsx`'s own comment on why it never reads cookies itself)
+  // so server and first client render match exactly and there is no
+  // hydration mismatch. Once mounted, this corrects to whatever
+  // `middleware.ts` resolved for this visitor — an explicit switcher choice,
+  // or its own Accept-Language inference — cached in the `fs_locale` cookie.
+  // A visitor whose resolved locale differs from English sees a brief,
+  // one-time correction rather than a permanently wrong language; this is
+  // the same "resolved client-side from a cookie" shape `app/layout.tsx`
+  // already uses for theme, applied here to locale instead of a CSS class.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const match = document.cookie
+      .split(';')
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(`${LOCALE_COOKIE_NAME}=`));
+    const cookieLocale = match
+      ? decodeURIComponent(match.split('=')[1] ?? '')
+      : null;
+    if (isSupportedLocale(cookieLocale) && cookieLocale !== locale) {
+      setLocale(cookieLocale);
+    }
+    // Runs once, on mount, to pick up the resolved value — not on every
+    // `locale` change, which would fight `setLocale` calls made explicitly
+    // elsewhere (the switcher itself sets the cookie AND navigates, so it
+    // does not depend on this effect at all).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const t = useMemo(() => {
     const enMessages = (initialMessages.en || {}) as Record<

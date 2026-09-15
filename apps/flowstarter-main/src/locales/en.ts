@@ -1121,6 +1121,11 @@ const en = {
   'nav.process': 'Process',
   'nav.theme': 'Theme',
   'nav.smartEditor': 'Smart editor',
+  'nav.language': 'Language',
+  'nav.language.en': 'English',
+  'nav.language.ro': 'Romanian',
+  'nav.language.switchTo.en': 'Switch to English',
+  'nav.language.switchTo.ro': 'Switch to Romanian',
 
   // Cookie Consent
   'cookie.title': 'We use cookies',

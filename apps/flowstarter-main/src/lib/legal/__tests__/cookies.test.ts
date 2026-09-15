@@ -24,6 +24,7 @@ import {
   COOKIE_INVENTORY,
   analyticsDisclosure,
 } from '../cookies';
+import { LOCALE_COOKIE_NAME } from '../../locale-resolution';
 
 /** Surrogate-pair range: the app's ES target predates \p{} escapes. */
 const EMOJI =
@@ -52,6 +53,17 @@ describe('the inventory', () => {
 
   it('does not list NEXT_LOCALE, which nothing in the app sets', () => {
     expect(names).not.toContain('NEXT_LOCALE');
+  });
+
+  it('lists fs_locale, set by middleware.ts (its own inference) and the /api/locale switcher (an explicit choice)', () => {
+    expect(names).toContain('fs_locale');
+    expect(LOCALE_COOKIE_NAME).toBe('fs_locale');
+    expect(readSource('src/middleware.ts')).toContain(
+      'res.cookies.set(LOCALE_COOKIE_NAME'
+    );
+    expect(readSource('src/app/api/locale/route.ts')).toContain(
+      'response.cookies.set(LOCALE_COOKIE_NAME'
+    );
   });
 
   it('does not list the consent choice, which is localStorage and not a cookie', () => {

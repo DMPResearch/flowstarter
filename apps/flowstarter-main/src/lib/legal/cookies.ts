@@ -66,6 +66,15 @@ export const COOKIE_INVENTORY: readonly CookieRow[] = [
     duration: '1 year',
     setBy: 'src/app/layout.tsx',
   },
+  {
+    name: 'fs_locale',
+    purpose:
+      'Remembers which of our two languages, English or Romanian, to show you: your own choice from the language switcher if you have made one, or our best guess from your browser language if you have not.',
+    category: 'Functional',
+    duration: '1 year',
+    setBy:
+      'src/middleware.ts, or src/app/api/locale/route.ts when you use the switcher',
+  },
 ];
 
 /**

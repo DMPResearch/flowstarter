@@ -39,6 +39,9 @@ export const PUBLIC_ROUTES = [
   '/api/contact(.*)', // Public contact form API
   '/api/support-chat(.*)', // Public support bot LLM endpoint
   '/api/discovery(.*)', // Public discovery wizard: lead capture, brand signals, preview, scope
+  // The language switcher. No session to check: a signed-out visitor on the
+  // marketing site is exactly who needs to reach it.
+  '/api/locale(.*)',
   // The contact form on a client's own generated site. There is no session to
   // check: the person filling it in is a visitor to somebody else's business,
   // not a Flowstarter user. What stands in for one is the workspace's public

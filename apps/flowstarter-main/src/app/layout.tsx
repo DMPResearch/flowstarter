@@ -70,6 +70,14 @@ export default function RootLayout({
   // so there's no flash before the class is applied — the standard no-SSR
   // theme pattern. CSP runs with 'unsafe-inline' in prod, so the inline
   // script needs no nonce.
+  //
+  // Locale follows the same rule for the same reason: `<html lang>` is
+  // corrected client-side by a second inline script below, and
+  // `I18nProvider`'s locale corrects itself from the same `fs_locale` cookie
+  // a moment later (see `src/lib/i18n.tsx`). `middleware.ts` is what
+  // actually resolves it — an explicit switcher choice, or its own
+  // Accept-Language inference — this layout only ever reads the cookie that
+  // caches that decision, client-side, never per request.
 
   return (
     <html
@@ -129,6 +137,34 @@ export default function RootLayout({
                   requestAnimationFrame(function() {
                     document.documentElement.classList.add('theme-ready');
                   });
+                } catch (e) {}
+              })();
+            `,
+          }}
+        />
+        <script
+          suppressHydrationWarning
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  // Locale, resolved entirely client-side from the fs_locale
+                  // cookie — the same "no per-request read in this layout"
+                  // shape the theme script above uses, applied to <html
+                  // lang> instead of a CSS class. middleware.ts guarantees
+                  // this cookie is already set (an explicit switcher choice,
+                  // or its own Accept-Language inference cached on first
+                  // visit) by the time this response reaches the browser, so
+                  // reading it here needs no header parsing of its own.
+                  // Keep this list in sync with SUPPORTED_LOCALES in
+                  // src/lib/locale-resolution.ts.
+                  var supported = ['en', 'ro'];
+                  var cookieLocale = document.cookie.split(';').map(function(c) { return c.trim(); })
+                    .find(function(c) { return c.indexOf('fs_locale=') === 0; });
+                  var locale = cookieLocale ? decodeURIComponent(cookieLocale.split('=')[1] || '') : null;
+                  if (locale && supported.indexOf(locale) !== -1) {
+                    document.documentElement.setAttribute('lang', locale);
+                  }
                 } catch (e) {}
               })();
             `,
