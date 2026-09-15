@@ -1,16 +1,15 @@
 /**
  * The `TEMPLATE_EFFECTS_DROPPED` gate.
  *
- * Half of this file is fixtures, and the half that matters is not: the defect
- * it exists for — a delivered portfolio whose compiled pages carried the
- * template's reveal script and no element for it to observe — would have
- * passed any assertion written against a hand-made string. So the second
- * describe block copies the real templates, runs the real `astro build`, and
- * measures the real `dist/` against the manifest derived from the real
- * source: unmodified first (the baseline has to pass, or the gate is a
- * liability), then with one section component rewritten the way the agent
- * rewrote them, then with a content-only edit of the kind the agent is now
- * told to make instead.
+ * Half of this file is fixtures, and the half that matters is not. A gate
+ * over compiled output cannot be trusted to a hand-written string: what it
+ * measures is what Astro emitted, scoping, minification and all. So the
+ * second describe block copies the real templates, runs the real
+ * `astro build`, and measures the real `dist/` against the manifest derived
+ * from the real source — unmodified first (the baseline has to pass, or the
+ * gate is a liability), then with one section component rewritten the way an
+ * agent rewrites them, then with a content-only edit of the kind the agent is
+ * now told to make instead.
  */
 
 import { execFile } from 'node:child_process';
@@ -330,10 +329,10 @@ describe('findTemplateEffectsFindings — what a build dropped', () => {
 
   test('a section the build did not render at all is not a dropped effect', () => {
     // A brief with no testimonials buys a homepage with no testimonial
-    // section. The delivered portfolio that prompted this gate had dropped
-    // `Stats` and `Testimonial` outright and had *also* rewritten the
-    // expertise column out of its sticky wrapper; only the second is a defect
-    // this rule is allowed to have an opinion about.
+    // section, and a real delivered site does exactly that: no stats counter,
+    // no testimonial reveal, and no class of either left on the page. Without
+    // this step the rule would fail that build for two effects the agent was
+    // entitled to remove along with the sections carrying them.
     const findings = findTemplateEffectsFindings(
       built('<main><h1>Acme</h1></main>'),
       manifest,
