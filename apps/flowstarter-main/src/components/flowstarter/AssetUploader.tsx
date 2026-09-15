@@ -69,8 +69,25 @@ export interface AssetUploaderProps {
   slot?: string | null;
   /** Human label for the control, e.g. "Add photos". */
   label?: string;
-  /** Fired with the server's recomputed readiness after any successful write. */
-  onSufficiency?: (sufficiency: SufficiencySummary | null) => void;
+  /**
+   * Fired after any successful write, with the server's recomputed readiness
+   * and the exact asset ids this write just touched — the ids just uploaded,
+   * or the ids rights were just confirmed over.
+   *
+   * The second argument exists so a caller never has to guess which files are
+   * new by diffing a global asset list against what it already knew: that
+   * diff is only correct if nothing else on the page reads the same list
+   * between the write and the diff, and a brief with several uploaders on one
+   * page routinely breaks that assumption. An asset a client attached,
+   * captioned and confirmed the rights to was once silently missing from the
+   * project it belonged to because two uploaders' own refreshes of the shared
+   * list landed out of order; passing the ids this call itself just wrote
+   * removes the race by construction.
+   */
+  onSufficiency?: (
+    sufficiency: SufficiencySummary | null,
+    assetIds: string[]
+  ) => void;
   /**
    * Whether a caption is part of what "confirmed" means here. True on the
    * uploads whose placement is decided by what the picture shows -- a project
@@ -188,7 +205,10 @@ export function AssetUploader({
         setPhase(
           justSent.every((asset) => asset.usable) ? 'confirmed' : 'uploaded'
         );
-        onSufficiency?.(payload.sufficiency ?? null);
+        onSufficiency?.(
+          payload.sufficiency ?? null,
+          justSent.map((asset) => asset.id)
+        );
       } catch {
         setError('That upload did not go through. Please try again.');
         setPhase('idle');
@@ -231,7 +251,7 @@ export function AssetUploader({
         )
       );
       setPhase('confirmed');
-      onSufficiency?.(payload.sufficiency ?? null);
+      onSufficiency?.(payload.sufficiency ?? null, Array.from(confirmed));
     } catch {
       setError('We could not record that confirmation. Please try again.');
       setPhase('uploaded');

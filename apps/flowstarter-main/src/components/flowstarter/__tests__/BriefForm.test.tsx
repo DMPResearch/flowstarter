@@ -880,3 +880,319 @@ describe('BriefForm — captions', () => {
     expect(photosUploader).toHaveAttribute('data-require-caption', 'false');
   });
 });
+
+/**
+ * Attaching an upload to its project is not a diff.
+ *
+ * Paid portfolio run 9 (workspace `ba3e9323-2c74-4166-af29-58ba37f130e5`)
+ * uploaded, captioned and rights-confirmed a screenshot for every one of
+ * three projects, in order, and the first project's saved brief still came
+ * back with `screenshotAssetIds: []`: the file the client attached and
+ * confirmed the rights to was never on the project it belonged to, with no
+ * error and no visible reason. Every server-side gate was clean — the PUT
+ * body the browser sent already had the empty array in it, so this was
+ * never the route dropping anything.
+ *
+ * The form used to work out "what is new" by fetching the whole workspace's
+ * asset list after every write and diffing it against a ref of every id it
+ * had ever seen. That only gives the right answer if nothing else on the
+ * page reads the same list between one uploader's write and its own diff —
+ * and a brief has one uploader per project plus two more, all sharing that
+ * one ref. Whichever refresh happens to land first claims every id the list
+ * had not shown the form yet, including ids a *different*, still-in-flight
+ * uploader just wrote and has not had its own turn to claim.
+ *
+ * These tests drive the real uploaders, in the order the run's own script
+ * used — upload, caption, confirm rights, per project, including the extra
+ * upload of the same file the run recorded for its first project — and
+ * check what actually reaches the PUT body: every project keeps its own
+ * screenshot, and nothing is unaccounted for.
+ */
+describe('BriefForm — an attached, confirmed screenshot is never dropped', () => {
+  const FLOWSTARTER_SHOT = '2f205e87-4d8e-483d-bee8-641351b54ed2';
+  const ERENO_SHOT = 'b6879783-ef3a-4764-b48f-34174cdda566';
+  const DMPRESEARCH_SHOT = 'd153afd4-c78b-474e-a626-318336fce2b9';
+
+  /** A stand-in for XMLHttpRequest, answering uploads in the order sent. */
+  class QueueXhr {
+    static queue: Array<{ status: number; body: string }> = [];
+    static sent: FormData[] = [];
+
+    private handlers: Record<string, () => void> = {};
+    private progress: ((event: ProgressEvent) => void) | null = null;
+    status = 0;
+    responseText = '';
+
+    upload = {
+      addEventListener: (
+        _type: string,
+        callback: (event: ProgressEvent) => void
+      ) => {
+        this.progress = callback;
+      },
+    };
+
+    open() {}
+    addEventListener(type: string, callback: () => void) {
+      this.handlers[type] = callback;
+    }
+    send(body: FormData) {
+      QueueXhr.sent.push(body);
+      this.progress?.({
+        lengthComputable: true,
+        loaded: 10,
+        total: 10,
+      } as ProgressEvent);
+      const next = QueueXhr.queue.shift();
+      this.status = next?.status ?? 500;
+      this.responseText = next?.body ?? '{}';
+      this.handlers['load']?.();
+    }
+  }
+
+  function uploadedPayload(
+    id: string,
+    usable: boolean,
+    captionSource: string | null
+  ) {
+    return JSON.stringify({
+      uploaded: [{ id, deduplicated: false }],
+      assets: [
+        {
+          id,
+          kind: null,
+          mime: 'image/jpeg',
+          width: 1440,
+          height: 900,
+          usable,
+          url: 'https://storage.test/signed.jpg',
+          caption: null,
+          captionSource,
+          autoCaptionKind: null,
+        },
+      ],
+      sufficiency: { ready: false, missing: [] },
+    });
+  }
+
+  const originalXhr = global.XMLHttpRequest;
+
+  beforeEach(() => {
+    QueueXhr.queue = [];
+    QueueXhr.sent = [];
+    global.XMLHttpRequest = QueueXhr as unknown as typeof XMLHttpRequest;
+  });
+
+  afterEach(() => {
+    global.XMLHttpRequest = originalXhr;
+  });
+
+  function fileInputIn(row: HTMLElement): HTMLInputElement {
+    const input = row.querySelector('input[type="file"]');
+    if (!input) throw new Error('no file input in this row');
+    return input as HTMLInputElement;
+  }
+
+  const A_FILE = () =>
+    new File([new Uint8Array([1, 2, 3])], 'shot.jpg', { type: 'image/jpeg' });
+
+  /** Routes fetch by method and path: caption, rights, and the brief itself. */
+  function routeFetch() {
+    global.fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      const href = String(url);
+      if (href.endsWith('/caption')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          assetId: string;
+          caption: string;
+        };
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            asset: {
+              id: body.assetId,
+              caption: body.caption,
+              captionSource: 'client',
+            },
+          }),
+        };
+      }
+      if (href.endsWith('/rights')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          assetIds: string[];
+        };
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            confirmedAssetIds: body.assetIds,
+            sufficiency: { ready: false, missing: [] },
+          }),
+        };
+      }
+      if (href === `/api/client/brief/${WORKSPACE}` && method === 'GET') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            brief: brief(),
+            readiness: readinessFor(brief(), []),
+            assets: [],
+          }),
+        };
+      }
+      // PUT /api/client/brief -- the save the test asserts against.
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          brief: brief(),
+          readiness: readinessFor(brief(), []),
+          assets: [],
+        }),
+      };
+    }) as unknown as typeof fetch;
+  }
+
+  /** One project row through the real uploader: upload, caption, confirm. */
+  async function fillProjectScreenshot(
+    user: ReturnType<typeof userEvent.setup>,
+    row: HTMLElement,
+    assetId: string
+  ) {
+    await user.upload(fileInputIn(row), A_FILE());
+    const thumbnail = await within(row).findByTestId('asset-thumbnail');
+    expect(thumbnail).toBeInTheDocument();
+
+    const captionInput = within(row).getByTestId(
+      `asset-caption-input-${assetId}`
+    );
+    await user.type(captionInput, 'What this screenshot shows');
+    await user.click(within(row).getByTestId(`asset-caption-save-${assetId}`));
+    await waitFor(() =>
+      expect(
+        within(row).getByTestId(`asset-caption-source-${assetId}`)
+      ).toHaveTextContent('You confirmed this')
+    );
+
+    await user.click(within(row).getByTestId('rights-checkbox'));
+    await user.click(within(row).getByTestId('confirm-rights'));
+    await within(row).findByTestId('asset-uploader-done');
+  }
+
+  it('keeps every project’s screenshot, replaying run 9’s own order of writes', async () => {
+    routeFetch();
+    const user = userEvent.setup();
+    mount();
+
+    // Three project rows, the way the run's own script built them: one
+    // `brief-add-project` click per project, not three pre-seeded rows.
+    await user.click(screen.getByTestId('brief-add-project'));
+    await user.click(screen.getByTestId('brief-add-project'));
+    await user.click(screen.getByTestId('brief-add-project'));
+    const rows = screen.getAllByTestId('brief-project-row');
+    expect(rows).toHaveLength(3);
+
+    // Project 0 (Flowstarter): the real upload the run recorded, and the
+    // second, deduplicated upload of the exact same file the run's own
+    // `project_events` also recorded before rights were confirmed.
+    QueueXhr.queue.push({
+      status: 201,
+      body: uploadedPayload(FLOWSTARTER_SHOT, false, null),
+    });
+    QueueXhr.queue.push({
+      status: 201,
+      body: uploadedPayload(FLOWSTARTER_SHOT, false, null),
+    });
+    await user.upload(fileInputIn(rows[0]), A_FILE());
+    await within(rows[0]).findByTestId('asset-thumbnail');
+    await user.upload(fileInputIn(rows[0]), A_FILE());
+
+    const flowstarterCaption = within(rows[0]).getByTestId(
+      `asset-caption-input-${FLOWSTARTER_SHOT}`
+    );
+    await user.clear(flowstarterCaption);
+    await user.type(flowstarterCaption, 'The Flowstarter home page');
+    await user.click(
+      within(rows[0]).getByTestId(`asset-caption-save-${FLOWSTARTER_SHOT}`)
+    );
+    await waitFor(() =>
+      expect(
+        within(rows[0]).getByTestId(`asset-caption-source-${FLOWSTARTER_SHOT}`)
+      ).toHaveTextContent('You confirmed this')
+    );
+    await user.click(within(rows[0]).getByTestId('rights-checkbox'));
+    await user.click(within(rows[0]).getByTestId('confirm-rights'));
+    await within(rows[0]).findByTestId('asset-uploader-done');
+
+    // Project 1 (Ereno) and project 2 (DMPResearch), the same way, each
+    // after project 0's whole cycle finished -- the run's own sequence.
+    QueueXhr.queue.push({
+      status: 201,
+      body: uploadedPayload(ERENO_SHOT, false, null),
+    });
+    await fillProjectScreenshot(user, rows[1], ERENO_SHOT);
+
+    QueueXhr.queue.push({
+      status: 201,
+      body: uploadedPayload(DMPRESEARCH_SHOT, false, null),
+    });
+    await fillProjectScreenshot(user, rows[2], DMPRESEARCH_SHOT);
+
+    await user.click(screen.getByTestId('brief-save'));
+    await waitFor(() => {
+      const projects = lastPutBody().projects as Array<{
+        screenshotAssetIds: string[];
+      }>;
+      expect(projects[0].screenshotAssetIds).toEqual([FLOWSTARTER_SHOT]);
+    });
+    const projects = lastPutBody().projects as Array<{
+      screenshotAssetIds: string[];
+    }>;
+    expect(projects[1].screenshotAssetIds).toEqual([ERENO_SHOT]);
+    expect(projects[2].screenshotAssetIds).toEqual([DMPRESEARCH_SHOT]);
+  });
+
+  /**
+   * The mechanism, isolated from the DOM choreography above: what a project
+   * gets is exactly the ids its own uploader just reported, nothing borrowed
+   * from what another uploader on the same page happens to have written by
+   * then. Project 1 uploads and confirms first here — the opposite order
+   * from the replay above — and still ends up with only its own asset,
+   * because attachment no longer depends on a shared "what have we seen so
+   * far" list that whichever call runs first gets to consume.
+   */
+  it('attaches each project’s screenshot from its own write, regardless of upload order', async () => {
+    routeFetch();
+    const user = userEvent.setup();
+    mount();
+
+    await user.click(screen.getByTestId('brief-add-project'));
+    await user.click(screen.getByTestId('brief-add-project'));
+    const rows = screen.getAllByTestId('brief-project-row');
+
+    // Project 1 (index 1) goes through its whole cycle first.
+    QueueXhr.queue.push({
+      status: 201,
+      body: uploadedPayload(ERENO_SHOT, false, null),
+    });
+    await fillProjectScreenshot(user, rows[1], ERENO_SHOT);
+
+    // Project 0 (index 0) only starts afterwards.
+    QueueXhr.queue.push({
+      status: 201,
+      body: uploadedPayload(FLOWSTARTER_SHOT, false, null),
+    });
+    await fillProjectScreenshot(user, rows[0], FLOWSTARTER_SHOT);
+
+    await user.click(screen.getByTestId('brief-save'));
+    await waitFor(() => {
+      const projects = lastPutBody().projects as Array<{
+        screenshotAssetIds: string[];
+      }>;
+      expect(projects[0].screenshotAssetIds).toEqual([FLOWSTARTER_SHOT]);
+      expect(projects[1].screenshotAssetIds).toEqual([ERENO_SHOT]);
+    });
+  });
+});
