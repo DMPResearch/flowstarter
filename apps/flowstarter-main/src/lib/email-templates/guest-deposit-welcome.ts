@@ -40,7 +40,7 @@ export function guestDepositWelcomeEmail({
       blocks: [
         { kind: 'heading', text: 'Your build has started' },
         {
-          kind: 'paragraph',
+          kind: 'lede',
           content: `Your deposit went through. We have started building ${project}, and the project is already in your dashboard.`,
         },
         {
@@ -67,7 +67,7 @@ export function guestDepositWelcomeEmail({
     blocks: [
       { kind: 'heading', text: 'Your build has started' },
       {
-        kind: 'paragraph',
+        kind: 'lede',
         content: `Your deposit went through. We have started building ${project}, and we made you an account so you can follow it.`,
       },
       {

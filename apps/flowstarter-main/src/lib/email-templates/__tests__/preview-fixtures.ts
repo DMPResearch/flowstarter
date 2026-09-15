@@ -19,14 +19,19 @@ import {
   changeRequestLiveEmail,
   depositReceivedEmail,
   newBookingEmail,
+  newEnquiryEmail,
   previewReadyEmail,
+  refundIssuedEmail,
   siteLiveEmail,
 } from '../client-notices';
+import { customWorkOperatorEmail } from '../custom-work';
 import { guestDepositWelcomeEmail } from '../guest-deposit-welcome';
 import { invitationEmail } from '../invitation';
 import { leadNotificationEmail } from '../lead-notification';
+import { policyReviewOperatorEmail } from '../policy-review';
 import { verificationEmail } from '../verification';
 import { welcomeEmail } from '../welcome';
+import { persona } from '@/test/fixtures/personas';
 
 export const DASHBOARD = 'https://flowstarter.net/dashboard/projects/ws-demo';
 export const SITE = 'https://darius-mihai-popescu-enxxz0.flowstarter.dev';
@@ -38,6 +43,53 @@ export const BOOKING_PAGE =
   'https://cal.flowstarter.dev/lumina-dental/intro-call';
 export const CAL_PASSWORD_SETUP =
   'https://cal.flowstarter.dev/auth/forgot-password';
+/** The two operator boards. Both are the primary link of their own email. */
+export const LEAD_ON_BOARD =
+  'https://flowstarter.net/admin/dashboard/pipeline#custom-work-lead-ld-4417';
+export const REVIEW_ON_BOARD =
+  'https://flowstarter.net/admin/dashboard/projects/ws-demo#policy-review-pr-2081';
+export const DISCOVERY_CALL =
+  'https://cal.flowstarter.dev/darius/discovery-call';
+
+/**
+ * The two operator emails are fixtured against the same six people the rest
+ * of the suite uses (`@/test/fixtures/personas`), rather than a second cast
+ * invented here, so a name that reads oddly in an email is a name somebody
+ * has already seen in a brief. What is written locally is the brief itself,
+ * because neither queue exists for the happy path: a persona's own intake
+ * answers never trip the scope gate or the policy gate, which is the whole
+ * reason those personas pass.
+ *
+ * Elena runs a real workshop with a real shop, so a wholesale portal her
+ * restaurants log into is the shape her custom-work brief would actually
+ * take, and she writes in Romanian, which exercises the one locale line the
+ * template has. Tom coaches beginners, and a promise to reverse a diagnosis
+ * in twelve weeks is exactly the lawful-but-sensitive claim the review queue
+ * was built to hold.
+ */
+const ELENA = persona('elena-ceramica');
+const TOM = persona('tom-trainer');
+
+/**
+ * Elena's custom-work brief, and the two fragments the classifier lifted out
+ * of it. The fragments are substrings of the brief on purpose: an operator
+ * reading a quoted phrase has to be able to find it in the paragraph
+ * underneath, or the quote is the template's word rather than hers.
+ */
+const ELENA_BRIEF =
+  'Vreau un loc unde restaurantele cu care lucrez isi fac singure comanda. ' +
+  'Fiecare restaurant se autentifica, vede seriile disponibile, pune comanda ' +
+  'si urmareste arderea. Eu vreau sa vad toate comenzile intr-un singur loc.';
+const ELENA_EVIDENCE = [
+  'Fiecare restaurant se autentifica',
+  'urmareste arderea',
+];
+
+/** Tom's brief, held by the policy gate rather than refused by it. */
+const TOM_BRIEF =
+  'Strength coaching for beginners in Leeds. My twelve week programme ' +
+  'reverses type 2 diabetes and gets most people off their blood pressure ' +
+  'medication, and I want that on the front page.';
 
 export interface EmailFixture {
   name: string;
@@ -250,6 +302,84 @@ export function emailFixtures(): EmailFixture[] {
       button: 'https://flowstarter.net/login',
       textContains: ['ana@luminadental.ro', 'We did not change your password'],
     },
+    {
+      // The client's own copy of the enquiry, distinct from the operator's
+      // `lead-notification`. It had no fixture, so nothing checked it.
+      name: 'new-enquiry',
+      mail: newEnquiryEmail({
+        enquiriesUrl: `${DASHBOARD}/enquiries`,
+        fromName: 'Mihai Ionescu',
+        fromEmail: 'mihai@example.com',
+        message:
+          'Hello, I broke a filling on Sunday and it is sore. Do you have ' +
+          'anything this week, preferably in the morning?',
+        phone: '+40 722 000 111',
+        page: 'the contact page',
+        businessName: 'Lumina Dental',
+        clientName: 'Ana',
+      }),
+      button: `${DASHBOARD}/enquiries`,
+      textContains: [
+        'mihai@example.com',
+        '+40 722 000 111',
+        'I broke a filling on Sunday',
+      ],
+    },
+    {
+      // The one email in the set with no button, and the one nothing was
+      // checking. A refund is the message a client reads most carefully.
+      name: 'refund-issued',
+      mail: refundIssuedEmail({
+        amount: '€159.80',
+        dashboardUrl: DASHBOARD,
+        clientName: 'Ana',
+        businessName: 'Lumina Dental',
+      }),
+      button: null,
+      textContains: ['€159.80', 'The work stays yours', DASHBOARD],
+    },
+    {
+      name: 'custom-work-lead',
+      mail: customWorkOperatorEmail({
+        visitorName: ELENA.discovery.fullName,
+        visitorEmail: ELENA.discovery.email,
+        description: ELENA_BRIEF,
+        linkUrl: ELENA.discovery.websiteUrl,
+        linkLabel: 'Their site',
+        routeRule: 'customAboveThreshold',
+        evidence: ELENA_EVIDENCE,
+        locale: ELENA.locale,
+        bookingUrl: DISCOVERY_CALL,
+        leadUrl: LEAD_ON_BOARD,
+      }),
+      button: LEAD_ON_BOARD,
+      textContains: [
+        ELENA.discovery.email,
+        ELENA.discovery.websiteUrl,
+        'The brief is written in Romanian',
+        'Custom work lane',
+        LEAD_ON_BOARD,
+      ],
+    },
+    {
+      name: 'policy-review',
+      mail: policyReviewOperatorEmail({
+        rule: 'sensitive_lawful',
+        categoryId: 'unlicensed_claims',
+        categoryLabel: 'Unlicensed medical or financial claims',
+        briefText: TOM_BRIEF,
+        contactName: TOM.discovery.fullName,
+        contactEmail: TOM.discovery.email,
+        reviewUrl: REVIEW_ON_BOARD,
+      }),
+      button: REVIEW_ON_BOARD,
+      textContains: [
+        TOM.discovery.email,
+        'unlicensed medical or financial claims',
+        'It stays open until an operator approves or refuses it.',
+        REVIEW_ON_BOARD,
+      ],
+    },
   ];
 }
 
@@ -268,12 +398,27 @@ export function lintEmailHtml(html: string): string[] {
     [/display\s*:\s*flex/i, 'flexbox is not supported in Outlook or Gmail'],
     [/display\s*:\s*(inline-)?grid/i, 'CSS grid is not supported in email'],
     [/@import|fonts\.googleapis|fonts\.gstatic/i, 'external font request'],
+    // The system's one `@font-face` resolves against faces the reader
+    // already has (`local()` only, see `emailFontFace` in `../design`). A
+    // `url()` in it would be a request per open and a read receipt for
+    // whoever serves the file.
+    [/@font-face[^}]*url\s*\(/i, 'webfont fetched over the network'],
     [/background-image\s*:|url\(\s*['"]?https?:/i, 'background image'],
     [/position\s*:\s*(absolute|fixed|sticky)/i, 'positioned element'],
     [/<script/i, 'script tag'],
     [/linear-gradient|radial-gradient/i, 'gradient'],
     [/\bvar\(--/, 'CSS custom property'],
     [/:\s*-?\d+(\.\d+)?rem\b/, 'rem unit (Outlook ignores it)'],
+    // Every leading in `../design` is a pixel count now. A template that
+    // drops the unit turns `line-height: 16` into sixteen times the font
+    // size, which is a 190px line box around a 12px label: catastrophic, and
+    // invisible in the plain-text part and in every assertion about copy.
+    // This happened once, to the callout's label, and the previews are the
+    // only reason anybody saw it.
+    [
+      /line-height\s*:\s*\d+(\.\d+)?\s*[;"]/,
+      'unitless line-height (a pixel scale read as a ratio)',
+    ],
   ];
   for (const [re, why] of rules) {
     if (re.test(html)) problems.push(why);

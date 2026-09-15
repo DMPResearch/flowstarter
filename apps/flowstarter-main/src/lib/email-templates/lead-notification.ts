@@ -64,13 +64,13 @@ export function leadNotificationEmail(
   const blocks: Block[] = [
     { kind: 'heading', text: 'New enquiry from your site' },
     {
-      kind: 'paragraph',
-      content: props.recipientName?.trim()
+      kind: 'greeting',
+      text: props.recipientName?.trim()
         ? `Hi ${props.recipientName.trim()},`
         : 'Hi there,',
     },
     {
-      kind: 'paragraph',
+      kind: 'lede',
       content: who
         ? `${who} just got in touch through the contact form on ${projectName}.`
         : `Someone just got in touch through the contact form on ${projectName}.`,

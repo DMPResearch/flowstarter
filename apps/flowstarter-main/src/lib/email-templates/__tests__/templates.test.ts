@@ -10,12 +10,24 @@
  */
 import { describe, expect, it } from 'vitest';
 import { emailFixtures, lintEmailHtml } from './preview-fixtures';
+import { htmlColours, htmlSentences, words } from './html-reader';
+import { EMAIL_PALETTE } from '../design';
 import { invitationEmail } from '../invitation';
 import { leadNotificationEmail } from '../lead-notification';
 import { welcomeEmail } from '../welcome';
 
 const fixtures = emailFixtures();
 const named = fixtures.map((f) => [f.name, f] as const);
+
+/**
+ * The two emails that go to an operator rather than a client, and the words
+ * their subject line has to lead with. Everything else in the set is client
+ * mail and is held to the shorter subject.
+ */
+const OPERATOR_SUBJECT_STEM = new Map([
+  ['custom-work-lead', 'Custom work lead:'],
+  ['policy-review', 'A brief needs your review:'],
+]);
 
 /**
  * Everything the copy rules call an emoji: the symbol and dingbat blocks, the
@@ -54,12 +66,39 @@ describe('every template', () => {
       'lead-notification',
       'guest-deposit-welcome',
       'guest-deposit-welcome-existing',
+      // The client's own enquiry notice, and the refund. Neither had a
+      // fixture, and a refund is the email a client reads most carefully.
+      'new-enquiry',
+      'refund-issued',
+      // The two operator emails. They shipped in #191 without a fixture, so
+      // for four weeks nothing here checked their preheader, their text
+      // part, their CSS or their size; the per-template suites next door
+      // checked their copy and nothing else.
+      'custom-work-lead',
+      'policy-review',
     ]);
   });
 
-  it.each(named)('%s has a subject an inbox list can show whole', (_n, f) => {
+  /**
+   * A client reads their mail on a phone, where a subject list gives about
+   * 40 characters, so a client subject has to say the whole thing in 60.
+   *
+   * An operator reads two queues in a desktop client, and the subject is the
+   * triage: the queue, then who, then why. That does not fit in 60 and
+   * should not be squeezed into it, because the useful half is the front
+   * half and it survives any truncation. So the rule for operator mail is
+   * the one that matters, which is that the first 35 characters, the part a
+   * phone would show, already name the queue and the person.
+   */
+  it.each(named)('%s has a subject an inbox list can triage', (name, f) => {
     expect(f.mail.subject.length).toBeGreaterThan(0);
-    expect(f.mail.subject.length).toBeLessThanOrEqual(60);
+    const queue = OPERATOR_SUBJECT_STEM.get(name);
+    if (queue) {
+      expect(f.mail.subject.length).toBeLessThanOrEqual(90);
+      expect(f.mail.subject.slice(0, 35)).toContain(queue);
+    } else {
+      expect(f.mail.subject.length).toBeLessThanOrEqual(60);
+    }
   });
 
   it.each(named)('%s has a preheader, and it is in the HTML', (_n, f) => {
@@ -118,6 +157,69 @@ describe('every template', () => {
   it.each(named)('%s stays under the Gmail clipping limit', (_n, f) => {
     expect(Buffer.byteLength(f.mail.html, 'utf8')).toBeLessThan(100 * 1024);
   });
+
+  /**
+   * The strongest version of the rule the `textContains` lists above only
+   * sample. Those name a few facts per template and a reviewer chooses them;
+   * this reads every sentence the HTML shows and requires the text part to
+   * say the same thing, so a sentence added to one half and not the other is
+   * caught by the sentence itself rather than by somebody remembering to
+   * list it.
+   *
+   * It is what makes the plain-text alternative a real alternative: a reader
+   * whose client shows text, a screen reader working from the text part, and
+   * anyone forwarding the message into a ticket all get the whole message,
+   * not the half that survived.
+   */
+  it.each(named)('%s says the same sentences in both parts', (_n, f) => {
+    const text = words(f.mail.text);
+    const missing = htmlSentences(f.mail.html).filter(
+      (sentence) => !text.includes(words(sentence))
+    );
+    expect(missing).toEqual([]);
+  });
+
+  /**
+   * The reader above passes trivially if it reads nothing.
+   *
+   * That is not a theoretical worry: it walks the document with an index
+   * rather than a pattern, so a change to the markup that moved a paragraph
+   * inside an element it does not look at would leave it returning an empty
+   * list and the check above green for the wrong reason. The floor is the
+   * shape of the smallest email in the set, a verification code, which is
+   * four sentences. The footer's transactional line is asserted on top of the
+   * count, because it is the last prose in every template: finding it is
+   * proof the reader walked the whole document rather than the first card it
+   * came to.
+   */
+  it.each(named)('%s gives the reader something to check', (_n, f) => {
+    const sentences = htmlSentences(f.mail.html).map(words);
+    expect(sentences.length).toBeGreaterThanOrEqual(4);
+    expect(sentences).toContain(
+      words(
+        'This is a service message about your project, not marketing, so ' +
+          'there is nothing to unsubscribe from.'
+      )
+    );
+  });
+
+  /**
+   * No colour outside the palette, anywhere in the document.
+   *
+   * An email is the one surface with no cascade to correct a wrong value
+   * after the fact, so the check is on the rendered HTML rather than on the
+   * source: a hex typed into a style attribute, a `bgcolor` that drifted
+   * from the fill beside it, or a dark-mode override nobody measured against
+   * a background all show up here as the same failure. Every value the
+   * design is allowed to use lives in `EMAIL_PALETTE`, and `base.test.ts`
+   * measures each of them against the surfaces it can land on.
+   */
+  it.each(named)('%s uses only palette colours', (_n, f) => {
+    const outside = Array.from(new Set(htmlColours(f.mail.html))).filter(
+      (colour) => !EMAIL_PALETTE.has(colour)
+    );
+    expect(outside).toEqual([]);
+  });
 });
 
 describe('subjects', () => {
@@ -148,7 +250,42 @@ describe('subjects', () => {
       'guest-deposit-welcome': 'Your Flowstarter account and your build',
       'guest-deposit-welcome-existing':
         'Your deposit is in and your build has started',
+      'new-enquiry': 'New enquiry from your site',
+      'refund-issued': 'We have refunded €159.80',
+      'custom-work-lead':
+        'Custom work lead: Elena Dobre, reads like software to build, not a site',
+      'policy-review':
+        'A brief needs your review: a lawful but sensitive brief',
     });
+  });
+});
+
+/**
+ * The letterhead.
+ *
+ * Client mail carries the wordmark alone. Operator mail names its queue in
+ * the top right, because both queues reach the same inbox from the same
+ * address and the subject line is the only other place that says which. The
+ * label is in the text part too: a letterhead only one half of the message
+ * carries is a letterhead that drifts.
+ */
+describe('the queue line', () => {
+  const OPERATOR: ReadonlyArray<readonly [string, string]> = [
+    ['custom-work-lead', 'Custom work'],
+    ['policy-review', 'Policy review'],
+  ];
+
+  it.each(named)('%s names its queue only if it has one', (name, f) => {
+    const queue = OPERATOR.find(([id]) => id === name)?.[1];
+    if (queue) {
+      expect(f.mail.html).toContain(`>${queue}</td>`);
+      expect(f.mail.text.split('\n')[0]).toBe(`Flowstarter / ${queue}`);
+    } else {
+      for (const [, other] of OPERATOR) {
+        expect(f.mail.html).not.toContain(`>${other}</td>`);
+      }
+      expect(f.mail.text.startsWith('Flowstarter /')).toBe(false);
+    }
   });
 });
 

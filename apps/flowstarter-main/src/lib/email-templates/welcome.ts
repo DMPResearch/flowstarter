@@ -24,9 +24,9 @@ export function welcomeEmail({
     preheader: 'Your account is ready and your dashboard is waiting.',
     blocks: [
       { kind: 'heading', text: 'Your account is ready' },
-      { kind: 'paragraph', content: name ? `Hi ${name},` : 'Hi there,' },
+      { kind: 'greeting', text: name ? `Hi ${name},` : 'Hi there,' },
       {
-        kind: 'paragraph',
+        kind: 'lede',
         content:
           'Your Flowstarter account is set up. Your dashboard is where your ' +
           'project lives: the brief you gave us, the preview when it is ' +

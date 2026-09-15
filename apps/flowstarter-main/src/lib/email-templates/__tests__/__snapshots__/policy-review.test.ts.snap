@@ -1,7 +1,9 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`policyReviewOperatorEmail, house style > renders the pharmacy example end to end (snapshot) 1`] = `
-"A brief needs your review
+"Flowstarter / Policy review
+
+A brief needs your review
 
 The brief describes a licensed pharmacy, which we build only after a person checks it.
 

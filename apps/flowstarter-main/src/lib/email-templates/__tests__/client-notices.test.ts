@@ -502,7 +502,6 @@ describe('newEnquiryEmail', () => {
   });
 });
 
-
 /**
  * The notice that hands a client an account they did not ask for.
  *
