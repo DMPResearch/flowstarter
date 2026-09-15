@@ -105,6 +105,7 @@ export * from './flowstarter/cal-preview-rule';
 export * from './flowstarter/markup-policy';
 export * from './flowstarter/template-effects';
 export * from './flowstarter/empty-image';
+export * from './flowstarter/dead-link';
 export * from './flowstarter/acceptable-use';
 export * from './flowstarter/site-html-sanitizer';
 export * from './flowstarter/placeholder-copy';

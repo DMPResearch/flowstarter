@@ -506,9 +506,22 @@ export interface PrunedScaffold {
  *
  * This is where rule 5 actually bites: with no booking link `src/pages/book.astro`
  * never reaches the workspace, so the agent cannot personalize a page that
- * should not exist and the build cannot emit one. Every `/book` link left
- * behind is rewritten to `/contact`, and every nav or footer entry pointing at
- * a dropped page is removed rather than left to 404.
+ * should not exist and the build cannot emit one. Every nav or footer entry
+ * pointing at a dropped page is removed rather than left to 404.
+ *
+ * A page's own YAML nav entry is not the only place its address survives.
+ * `Services.astro` (and its equivalents in the other templates) renders a
+ * "view all" call to action on the *home* page with `href="/services"`
+ * written straight into the component, not read from `site-labels.md` — the
+ * page-count budget can drop `services` from the set without that literal
+ * ever being touched, and the visitor who clicks it lands on a page that
+ * `try_files` now answers with a real 404 (#165/#166) rather than the
+ * pre-#165 silent home-page fallback, which is a better failure but still a
+ * dead link the brief never asked for. So every quoted `/<slug>` literal
+ * still pointing at a page this brief dropped — in *any* rewritable file,
+ * component source included — is repointed at `/contact` here, the same
+ * fallback a dropped `/book` call to action already used: `/contact` is the
+ * one destination rule 2 guarantees is always there.
  */
 export function applyPageSetToScaffold(
   files: readonly TemplateScaffoldFile[],
@@ -541,16 +554,28 @@ export function applyPageSetToScaffold(
     return { files: kept, removedPaths, rewrittenPaths };
   }
 
+  // A "book", "services", "work" or "blog" call to action that survives in
+  // component source — quoted exactly, with or without a trailing slash —
+  // points at the contact page instead: the visitor still lands somewhere
+  // they can reach a person, rather than a page the build no longer emits.
+  const droppedBasePaths = Array.from(
+    new Set(Array.from(droppedHrefs, (href) => href.replace(/\/$/, ''))),
+  );
+  const hrefLiteralPatterns = droppedBasePaths.map(
+    (base) =>
+      new RegExp(
+        `(['"])${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\/?)\\1`,
+        'g',
+      ),
+  );
+
   const rewritten = kept.map((file) => {
     if (file.encoding === 'base64') return file;
     if (!REWRITABLE.test(file.path)) return file;
 
     let content = dropYamlLinkEntries(file.content, droppedHrefs);
-    // A "book" call to action that survived in component source points at the
-    // contact page: the visitor still lands somewhere they can reach a person.
-    if (!pageSet.booking) {
-      content = content.replace(/(['"])\/book(\/?)\1/g, '$1/contact$1');
-      content = content.replace(/href="\/book\/?"/g, 'href="/contact"');
+    for (const pattern of hrefLiteralPatterns) {
+      content = content.replace(pattern, '$1/contact$1');
     }
     if (content === file.content) return file;
     rewrittenPaths.push(file.path);
