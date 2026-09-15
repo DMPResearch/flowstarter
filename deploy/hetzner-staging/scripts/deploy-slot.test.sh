@@ -65,6 +65,16 @@ echo "docker $*" >> "$STUB_LOG"
 # Logged on every invocation (pull and compose up both count), which is
 # enough to prove deploy-slot.sh exported it before either ran.
 echo "env FLOWSTARTER_BUILD_COMMIT=${FLOWSTARTER_BUILD_COMMIT-<unset>}" >> "$STUB_LOG"
+# destroy-slot.sh's image cleanup: which image the (fake) container runs,
+# and who else (fake) still runs it, both controllable per test case.
+if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' "${DOCKER_CONTAINER_IMAGE-}"
+  exit 0
+fi
+if [ "$1" = "ps" ] && [ "$2" = "-a" ]; then
+  printf '%s\n' "${DOCKER_ANCESTOR_USERS-}"
+  exit 0
+fi
 exit 0
 STUB
 cat >"$ROOT/bin/curl" <<'STUB'
@@ -88,7 +98,23 @@ cat >"$ROOT/opt/supabase-stack.sh" <<'STUB'
 echo "supabase-stack $*" >> "$STUB_LOG"
 exit 0
 STUB
-chmod +x "$ROOT/bin/"* "$ROOT/opt/supabase-stack.sh"
+# `df -Pm <path>` stub for the disk-floor preflight: column 4 (Available) is
+# DF_FREE_MB, defaulted high so a test only sets it to exercise the floor.
+cat >"$ROOT/bin/df" <<'STUB'
+#!/usr/bin/env bash
+echo "df $*" >> "$STUB_LOG"
+printf 'Filesystem 1M-blocks Used Available Capacity Mounted\n'
+printf '/dev/stub 999999 0 %s 1%% /\n' "${DF_FREE_MB:-999999}"
+STUB
+# Retention pass stub: prune-images.sh itself is unit-tested on its own
+# (prune-images.test.sh); this file only has to prove deploy-slot.sh calls
+# it at the right two points and reacts correctly to its exit code.
+cat >"$ROOT/opt/prune-images.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "PRUNE_CALL" >> "$STUB_LOG"
+exit "${PRUNE_EXIT_CODE:-0}"
+STUB
+chmod +x "$ROOT/bin/"* "$ROOT/opt/supabase-stack.sh" "$ROOT/opt/prune-images.sh"
 
 export PATH="$ROOT/bin:$PATH"
 export STUB_LOG="$ROOT/stub.log"
@@ -146,6 +172,76 @@ assert_contains "$log" "supabase-stack ensure" "pr-73 runs the stack ensure step
 assert_not_contains "$log" "supabase-stack migrate" "pr-73 does not migrate"
 assert_not_contains "$log" "supabase-stack write-env" "pr-73 does not rewrite the keys"
 assert_contains "$log" "env FLOWSTARTER_BUILD_COMMIT=pr-73" "pr-73 exports its own image tag as FLOWSTARTER_BUILD_COMMIT"
+
+# ── Disk retention: preflight and post-deploy (2026-09-15 incident) ────────
+echo "deploy-slot.sh: image retention runs as a preflight and again after a successful deploy"
+unset DF_FREE_MB PRUNE_EXIT_CODE FLOWSTARTER_DISK_FLOOR_MB 2>/dev/null || true
+out="$(run_deploy main ghcr.io/x/y:sha)"
+log="$(cat "$STUB_LOG")"
+calls="$(grep -c '^PRUNE_CALL$' <<<"$log")"
+if [ "$calls" -eq 2 ]; then
+  ok "prune-images.sh runs exactly twice: preflight and post-deploy"
+else
+  no "prune-images.sh runs exactly twice: preflight and post-deploy" "ran ${calls} times: ${log}"
+fi
+assert_contains "$out" "Deployed https://staging.flowstarter.dev" "the deploy still succeeds"
+
+echo "deploy-slot.sh: disk floor preflight refuses a deploy when free space is still short after retention"
+export DF_FREE_MB=100
+out="$(run_deploy main ghcr.io/x/y:sha)"
+rc=$?
+log="$(cat "$STUB_LOG")"
+unset DF_FREE_MB
+if [ "$rc" -ne 0 ]; then
+  ok "refuses to deploy below the disk floor"
+else
+  no "refuses to deploy below the disk floor" "exited 0"
+fi
+assert_contains "$out" "refusing to deploy" "the refusal message says so"
+assert_contains "$out" "100 MB free" "the refusal message names the free space it saw"
+assert_contains "$out" "10240 MB floor" "the refusal message names the default floor"
+assert_not_contains "$log" "docker pull" "no image is pulled once the preflight refuses"
+assert_not_contains "$log" "systemctl reload" "no Caddy reload happens once the preflight refuses"
+calls="$(grep -c '^PRUNE_CALL$' <<<"$log")"
+if [ "$calls" -eq 1 ]; then
+  ok "retention still ran once (the preflight attempt) before the refusal"
+else
+  no "retention still ran once (the preflight attempt) before the refusal" "ran ${calls} times"
+fi
+
+echo "deploy-slot.sh: the disk floor is a named, overridable knob"
+export DF_FREE_MB=500 FLOWSTARTER_DISK_FLOOR_MB=100
+out="$(run_deploy main ghcr.io/x/y:sha)"
+rc=$?
+unset DF_FREE_MB FLOWSTARTER_DISK_FLOOR_MB
+if [ "$rc" -eq 0 ]; then
+  ok "a lower FLOWSTARTER_DISK_FLOOR_MB lets an otherwise-refused deploy through"
+else
+  no "a lower FLOWSTARTER_DISK_FLOOR_MB lets an otherwise-refused deploy through" "$out"
+fi
+
+echo "deploy-slot.sh: a missing retention script warns but does not block the deploy"
+out="$(PRUNE_IMAGES_SCRIPT="$ROOT/opt/does-not-exist.sh" run_deploy main ghcr.io/x/y:sha)"
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  ok "a missing prune-images.sh does not fail the deploy"
+else
+  no "a missing prune-images.sh does not fail the deploy" "$out"
+fi
+assert_contains "$out" "retention script not found" "it says why it skipped retention"
+
+echo "deploy-slot.sh: a failing post-deploy retention pass does not turn a successful deploy into a failure"
+export PRUNE_EXIT_CODE=1
+out="$(run_deploy main ghcr.io/x/y:sha)"
+rc=$?
+unset PRUNE_EXIT_CODE
+if [ "$rc" -eq 0 ]; then
+  ok "the deploy still exits 0"
+else
+  no "the deploy still exits 0" "$out"
+fi
+assert_contains "$out" "Deployed https://staging.flowstarter.dev" "the deploy still reports success"
+assert_contains "$out" "exited non-zero" "the retention failure is still visible in the log"
 
 # ── The prod slot ───────────────────────────────────────────────────────────
 echo "deploy-slot.sh: slot prod"
@@ -405,6 +501,37 @@ if [ ! -f "$ROOT/caddy/pr-73.caddy" ]; then
 else
   no "pr-73 removes its Caddy snippet"
 fi
+
+# ── destroy-slot.sh: image cleanup ──────────────────────────────────────────
+# So a destroyed pr-N slot's image does not just sit on disk until
+# prune-images.sh's keep-count eventually catches up with it.
+echo "destroy-slot.sh: image cleanup"
+export DOCKER_CONTAINER_IMAGE="sha256:pr73image"
+export DOCKER_ANCESTOR_USERS=""
+out="$(run_destroy pr-73)"
+log="$(cat "$STUB_LOG")"
+assert_contains "$log" "rmi sha256:pr73image" "removes the slot's image once no container is found using it"
+assert_contains "$out" "Removed image sha256:pr73image" "and says so"
+
+export DOCKER_ANCESTOR_USERS="some-other-container-id"
+out="$(run_destroy pr-73)"
+log="$(cat "$STUB_LOG")"
+assert_not_contains "$log" "rmi sha256:pr73image" "leaves the image alone when another container still runs it"
+assert_contains "$out" "Leaving image sha256:pr73image" "and says why"
+assert_contains "$out" "some-other-container-id" "naming who still uses it"
+unset DOCKER_ANCESTOR_USERS
+
+export DOCKER_CONTAINER_IMAGE=""
+out="$(run_destroy pr-73)"
+rc=$?
+log="$(cat "$STUB_LOG")"
+if [ "$rc" -eq 0 ]; then
+  ok "destroying a slot with no resolvable image (already gone) does not fail"
+else
+  no "destroying a slot with no resolvable image (already gone) does not fail" "$out"
+fi
+assert_not_contains "$log" " rmi " "no rmi is attempted when no image could be resolved"
+unset DOCKER_CONTAINER_IMAGE
 
 out="$(run_destroy prod)"
 rc=$?
