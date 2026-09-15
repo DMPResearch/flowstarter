@@ -937,6 +937,7 @@ by hand, on a new box:
 ```bash
 sudo mkdir -p /opt/flowstarter/build-worker /srv/flowstarter/build-worker
 sudo cp deploy/hetzner-staging/build-worker/docker-compose.yml /opt/flowstarter/build-worker/
+sudo cp apps/build-worker/docker/validation-runtime.Dockerfile /opt/flowstarter/build-worker/
 sudo cp deploy/hetzner-staging/scripts/worker-stack.sh /opt/flowstarter/staging/
 sudo chmod +x /opt/flowstarter/staging/worker-stack.sh
 sudo install -m 600 /dev/null /etc/flowstarter/build-worker-staging.env

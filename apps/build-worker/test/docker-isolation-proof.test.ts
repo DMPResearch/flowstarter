@@ -203,9 +203,9 @@ describe.skipIf(!ENABLED)(
       // that had nothing to do with isolation, which nobody noticed because
       // this file only runs when FLOWSTARTER_BUILD_DOCKER_PROOF=1. What the
       // assertion has to say is "it did not throw", so it says that.
-      await expect(
-        validator.validate(site, 'full'),
-      ).resolves.toEqual(expect.objectContaining({ outputDir: expect.any(String) }));
+      await expect(validator.validate(site, 'full')).resolves.toEqual(
+        expect.objectContaining({ outputDir: expect.any(String) }),
+      );
       expect(output.join('\n')).toContain('REACHED:');
     }, 120_000);
   },

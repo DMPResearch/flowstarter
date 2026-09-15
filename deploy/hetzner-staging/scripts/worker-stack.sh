@@ -136,9 +136,25 @@ cmd_image() {
   # invokes the Docker CLI with no registry credentials, so the image has to be
   # local or public, and a locally built one is the only version of it we can
   # say we control.
-  local dockerfile="$REPO_DIR/apps/build-worker/docker/validation-runtime.Dockerfile"
-  [ -f "$dockerfile" ] \
-    || die "no validation Dockerfile at $dockerfile; sync a checkout of the repo to $REPO_DIR first"
+  #
+  # Three places it can be, in order of how deliberate they are: an operator's
+  # explicit override, the copy installed beside the compose file (which is
+  # what a box with no full checkout has), and a repo checkout if one is
+  # present. The last is the only one CI's supabase/ sync cannot produce, so it
+  # must not be the only one.
+  local dockerfile=""
+  local candidate
+  for candidate in \
+    "${BUILD_WORKER_VALIDATION_DOCKERFILE:-}" \
+    "$HERE/../build-worker/validation-runtime.Dockerfile" \
+    "$REPO_DIR/apps/build-worker/docker/validation-runtime.Dockerfile"; do
+    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+      dockerfile="$candidate"
+      break
+    fi
+  done
+  [ -n "$dockerfile" ] \
+    || die "no validation Dockerfile found. Looked at \$BUILD_WORKER_VALIDATION_DOCKERFILE, $HERE/../build-worker/validation-runtime.Dockerfile and $REPO_DIR/apps/build-worker/docker/validation-runtime.Dockerfile. Copy apps/build-worker/docker/validation-runtime.Dockerfile to the second of those."
   say "building $VALIDATION_IMAGE (pnpm $VALIDATION_PNPM_VERSION baked in)"
   "$DOCKER" build \
     -f "$dockerfile" \
