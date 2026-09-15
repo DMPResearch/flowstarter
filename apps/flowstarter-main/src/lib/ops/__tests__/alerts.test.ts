@@ -15,12 +15,21 @@ const EVENTS: AlertEvent[] = [
   'build_job_failed',
   'client_email_failed',
   'health_check_failed',
+  'deploy_needs_operator',
 ];
 
 describe('alertSeverity', () => {
   it('classifies a failed paid build and a failed health check as critical', () => {
     expect(alertSeverity('build_job_failed')).toBe('critical');
     expect(alertSeverity('health_check_failed')).toBe('critical');
+  });
+
+  it('classifies a deploy with nowhere to go as critical', () => {
+    // A finished, paid-for site that cannot be put on a host. No retry clears
+    // it, so if nobody is told, nobody acts — which is how run 9 spent two of
+    // its three attempts rediscovering a 409 an operator could have fixed.
+    expect(alertSeverity('deploy_needs_operator')).toBe('critical');
+    expect(dedupeWindowMs('deploy_needs_operator')).toBe(30 * 60_000);
   });
 
   it('classifies a failed client email as a warning, not critical', () => {

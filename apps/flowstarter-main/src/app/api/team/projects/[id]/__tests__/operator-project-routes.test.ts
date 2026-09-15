@@ -50,6 +50,7 @@ import { GET as JOB_EVENTS } from '../pipeline/jobs/[jobId]/events/route';
 import { GET as JOB_LOG } from '../pipeline/jobs/[jobId]/log/route';
 import { POST as JOB_NOTE } from '../pipeline/jobs/[jobId]/notes/route';
 import { POST as REDISPATCH } from '../pipeline/redispatch/route';
+import { POST as REQUEUE_DEPLOY } from '../pipeline/requeue-deploy/route';
 import { POST as OVERRIDE_STATE } from '../pipeline/state/route';
 import { GET as LIST_POLICY_REVIEWS } from '../policy/route';
 import { POST as RESOLVE_POLICY_REVIEW } from '../policy/decision/route';
@@ -294,6 +295,11 @@ function everyOperatorRoute(): RouteCase[] {
       () => REDISPATCH(post(`${base}/pipeline/redispatch`, {}), project),
     ],
     [
+      'pipeline/requeue-deploy',
+      () =>
+        REQUEUE_DEPLOY(post(`${base}/pipeline/requeue-deploy`, {}), project),
+    ],
+    [
       'pipeline/state',
       () =>
         OVERRIDE_STATE(
@@ -403,6 +409,6 @@ describe('a workspace that is not yours to operate', () => {
     // A guard on the guard: the list above is what the two cases run, so a
     // route added without an entry has to change this number too, and the
     // walker test says which file is missing.
-    expect(everyOperatorRoute()).toHaveLength(36);
+    expect(everyOperatorRoute()).toHaveLength(37);
   });
 });

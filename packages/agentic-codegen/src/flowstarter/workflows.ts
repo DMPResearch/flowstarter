@@ -40,6 +40,12 @@ import {
   type FlowstarterBuildKind,
   type GitWorktree,
 } from './worktree';
+import {
+  REDEPLOY_PHASE,
+  type BuildPhase,
+  type BuildResumePlan,
+  type BuiltArtifactRecord,
+} from './build-phase';
 import { ProjectState } from './types';
 import type {
   ApprovedPreviewEdit,
@@ -1676,6 +1682,17 @@ export interface FullSiteBuildJob {
    * dashboard's brief page.
    */
   briefInput?: BriefInput | null;
+  /**
+   * What this attempt is for: building the site, or putting a site a previous
+   * attempt already built and gated onto the host.
+   *
+   * Decided by `planBuildResume` in `build-phase.ts` from the job's own
+   * durable state, and decided by the *store* rather than here, because the
+   * store is what read the payload and what already counted this attempt
+   * against the matching budget. Absent means generation, which is what every
+   * store written before this field existed reports and the only safe default.
+   */
+  resume?: BuildResumePlan | null;
 }
 
 /**
@@ -1781,10 +1798,7 @@ export interface FullSiteBuildJobStore {
    * reason a rebuild and a change build do not: a live client whose site one
    * of us improved has not gone back into the build pipeline.
    */
-  markOperatorEditStarted?(
-    jobId: string,
-    worktree: GitWorktree,
-  ): Promise<void>;
+  markOperatorEditStarted?(jobId: string, worktree: GitWorktree): Promise<void>;
   /**
    * The operator's worktree, saved as the site's next version, before anything
    * is published. Returns the number the client is later shown.
@@ -1820,9 +1834,35 @@ export interface FullSiteBuildJobStore {
       version: number;
     },
   ): Promise<void>;
+  /**
+   * The gate-passed artifact, on the job, before anything is deployed.
+   *
+   * Called by the publish step in the window between packaging the bytes and
+   * asking the deploy side to take them. That window is where run 9 lost a
+   * correct 6.7 MB build: the deploy failed, the attempt died, and the next
+   * attempt had no way to know the bytes existed. Recording here is what lets
+   * `planBuildResume` offer a deploy-only retry instead of another generation.
+   *
+   * Optional, so a store written before this still builds — it simply never
+   * records an artifact, and every retry is a full one, exactly as before.
+   */
+  recordBuiltArtifact?(
+    jobId: string,
+    artifact: BuiltArtifactRecord,
+  ): Promise<void>;
   markFailed(
     jobId: string,
-    error: { code: string; detail: string },
+    error: {
+      code: string;
+      detail: string;
+      /**
+       * Which half of the build this failure happened in. The store writes it
+       * onto the job, and the next claim reads it back: a deploy-side failure
+       * with an artifact on the row resumes at the deploy, and spends the
+       * deploy budget rather than the generation one.
+       */
+      phase?: BuildPhase;
+    },
   ): Promise<void>;
   /**
    * Progress and agent replies for the operator watching the build. Optional
@@ -2484,7 +2524,52 @@ export interface PullRequestPublisher {
     changeRequestId?: string | null;
     /** The `site_versions.version` being published, when there is one. */
     siteVersion?: number | null;
+    /**
+     * Called the instant the deployable bytes exist and before anything is
+     * asked to take them, with the digest and the address they live at.
+     *
+     * This is the seam that makes a deploy-only retry possible at all. A
+     * publisher that packages and deploys in one call knows, for a few hundred
+     * milliseconds, something nothing else in the system will ever learn if
+     * the deploy then fails — that a complete, gate-passed artifact exists.
+     * The worker writes it onto the job here, so the fact outlives the attempt.
+     *
+     * Optional, and never a reason to fail a publish: the GitHub publisher
+     * packages nothing and simply never calls it.
+     */
+    onArtifact?: (artifact: PackagedArtifact) => Promise<void>;
   }): Promise<{ pullRequestUrl: string; stagingUrl: string }>;
+  /**
+   * Deploy an artifact that already exists, with no packaging and no build.
+   *
+   * The other half of `onArtifact`: given back the record a previous attempt
+   * wrote, put exactly those bytes on the host. The digest travels with them,
+   * so the deploy side verifies it is extracting the same site that passed the
+   * gates rather than whatever is at that URL now.
+   *
+   * Optional. A publisher without it cannot be resumed, and `planBuildResume`
+   * never gets the chance to ask — the worker checks for the method and falls
+   * back to a full build, which is the behaviour every publisher had before.
+   */
+  deployArtifact?(input: {
+    projectId: string;
+    artifact: BuiltArtifactRecord;
+  }): Promise<{ pullRequestUrl: string; stagingUrl: string }>;
+}
+
+/**
+ * What a publisher knows about the bytes it just packaged.
+ *
+ * Deliberately only the four facts the packaging step is the authority on. The
+ * commit, the branch and the list of gates the build passed are the *worker's*
+ * facts, and it adds them before the record is written — a publisher that
+ * reported them would be repeating something it was told.
+ */
+export interface PackagedArtifact {
+  url: string;
+  path?: string | null;
+  sha256: string;
+  sizeBytes: number;
 }
 
 export interface FullSiteBuildWorkerOptions {
@@ -2699,7 +2784,7 @@ export class FullSiteBuildWorker {
    */
   private async recordFailure(
     jobId: string,
-    failure: { code: string; detail: string },
+    failure: { code: string; detail: string; phase?: BuildPhase },
   ): Promise<void> {
     try {
       await this.store.markFailed(jobId, failure);
@@ -2840,13 +2925,55 @@ export class FullSiteBuildWorker {
       await this.operatorEditBuild(job, say, log, activity, signal);
       return;
     }
+    // A previous attempt built this site, passed every gate on it and
+    // packaged it; what failed was putting the bytes on a host. Re-running the
+    // generation would spend a paid client's model budget re-deriving output
+    // that already exists and already passed — which is what happened to run 9
+    // and is the defect this branch removes. The store decided this, off the
+    // job's own durable state, and has already counted the attempt against the
+    // deploy budget rather than the generation one.
+    //
+    // Before the project-state check on purpose. That check is a precondition
+    // for *building*: it refuses to run agents over a project that is not at
+    // DEPOSIT_PAID. This attempt runs no agents and produces no output — it
+    // ships bytes that were gated while the project was in exactly the right
+    // state — so holding it to a generation-side precondition would strand a
+    // finished site over a status it does not depend on.
+    if (job.resume?.resume === 'deploy' && this.pullRequests.deployArtifact) {
+      await this.redeployBuiltSite(
+        job,
+        job.resume.artifact,
+        phase,
+        say,
+        log,
+        activity,
+        signal,
+      );
+      return;
+    }
+
     if (job.projectState !== ProjectState.DEPOSIT_PAID) {
       await this.store.markFailed(jobId, {
         code: 'INVALID_PROJECT_STATE',
         detail: `Full build requires DEPOSIT_PAID, received ${job.projectState}`,
+        phase: 'preparing',
       });
       return;
     }
+
+    // How far this attempt got, as the durable fact the next one reads back.
+    // Moved forward at the boundaries that change what a retry may skip, not
+    // at every prose phase: the prose is for a person, this is for a rule.
+    let buildPhase: BuildPhase = 'preparing';
+    // The gates this build actually passed, named as they pass. An artifact is
+    // only re-deployable because somebody checked it, and "somebody checked
+    // it" has to be a recorded list rather than an inference from how far the
+    // build got.
+    const passedGates: string[] = [];
+    /** Idempotent: `check()` runs several times and clears the same gate. */
+    const recordGate = (name: string): void => {
+      if (!passedGates.includes(name)) passedGates.push(name);
+    };
 
     // The exported build output: the host-owned copy the validator makes of
     // what the build emitted, and the only thing every gate and the publisher
@@ -3044,6 +3171,10 @@ export class FullSiteBuildWorker {
       // when it finished. The summary is the agent's own words; the board
       // shows it as the agents' reply.
       const pass = async (label: string, feedback?: string) => {
+        // Every agent pass is generation, the repair ones included: they all
+        // spend the same budget, and a failure in any of them is a failure of
+        // the half a retry has to run again.
+        buildPhase = 'generating';
         await phase(label);
         const build = await expand(feedback);
         // The pass's own log lands before its closing words.
@@ -3080,6 +3211,7 @@ export class FullSiteBuildWorker {
             builtOutput,
           );
         }
+        recordGate('build');
       };
 
       const notes = await pendingNotes();
@@ -3207,6 +3339,9 @@ export class FullSiteBuildWorker {
       // would notice them. Both get one repair pass and then fail the job:
       // the alternative is handing QA a site that is bigger than the brief or
       // that promises a calendar nobody owns, which is what shipped before.
+      // Everything from here to the commit is a deterministic rule reading
+      // files that already exist. No agent runs unless one of them refuses.
+      buildPhase = 'gating';
       await phase('Checking the site matches the brief');
       const builtPaths = async () =>
         (await builtSiteText()).map((file) => file.path.replace(/^dist\//, ''));
@@ -3223,6 +3358,7 @@ export class FullSiteBuildWorker {
       if (pageIssue) {
         throw new FullSiteBuildFailure(PAGE_BUDGET_EXCEEDED, pageIssue);
       }
+      recordGate('page-budget');
 
       await phase('Checking for placeholder copy');
       const placeholderOptions = { hasBookingLink: Boolean(job.calComUrl) };
@@ -3245,6 +3381,7 @@ export class FullSiteBuildWorker {
           placeholderIssue,
         );
       }
+      recordGate('placeholder-copy');
 
       // The output gate that protects the client's name rather than the
       // site's shape: every project the work section presents has to be one
@@ -3288,6 +3425,7 @@ export class FullSiteBuildWorker {
         if (inventedIssue) {
           throw new FullSiteBuildFailure(INVENTED_PROJECT, inventedIssue);
         }
+        recordGate('invented-project');
       }
 
       // Same shape, over images rather than words: a client whose brief had
@@ -3380,6 +3518,8 @@ export class FullSiteBuildWorker {
           describePortraitSlotIssue(portraitSlots, portrait),
         );
       }
+      recordGate('placeholder-images');
+      if (portrait) recordGate('portrait-slot');
 
       // The same shape again, over what the page *does* rather than what it
       // says. The brief and every change request are text a stranger wrote,
@@ -3406,10 +3546,12 @@ export class FullSiteBuildWorker {
       if (markupIssue) {
         throw new FullSiteBuildFailure(GENERATED_HTML_UNSAFE, markupIssue);
       }
+      recordGate('markup-policy');
 
       // The last picture check — see `assertNoEmptyImages`.
       await phase('Checking for empty image elements');
       assertNoEmptyImages(await builtSiteText());
+      recordGate('empty-images');
 
       // The last gate, and the only one with no repair pass. See
       // `assertAcceptableUse`. It runs after every other check so that the
@@ -3425,11 +3567,18 @@ export class FullSiteBuildWorker {
         say,
       );
 
+      recordGate('acceptable-use');
+
+      buildPhase = 'committing';
       await phase('Committing the site');
       const commitSha = await this.worktrees.commit(
         worktree,
         buildCommitMessage(job.kind, job.projectId),
       );
+      // Every gate has signed off and the tree is committed. From here on a
+      // failure is a failure of the machinery that moves bytes, never of the
+      // site, and the next attempt must not pay to derive the site again.
+      buildPhase = 'packaging';
       await phase('Publishing for review');
       // The last point at which this attempt can still be stopped for free.
       // Everything after it is visible to a client, so ownership is proven
@@ -3444,8 +3593,32 @@ export class FullSiteBuildWorker {
         outputRoot: builtOutput,
         calComUrl: job.calComUrl ?? null,
         leadCaptureEndpoint: job.leadCaptureEndpoint ?? null,
+        // The bytes, onto the job, the moment they exist and before anything
+        // is asked to take them. See `recordBuiltArtifact`: this is the write
+        // that lets a failed deploy be retried as a deploy.
+        onArtifact: async (artifact) => {
+          buildPhase = 'deploying';
+          await this.recordGatePassedArtifact(jobId, artifact, {
+            commitSha,
+            branch: worktree.branch,
+            gates: passedGates,
+          });
+          await say(
+            'log',
+            `Packaged ${artifact.sizeBytes} bytes, sha256 ${artifact.sha256}, ` +
+              `past ${passedGates.length} gate(s). Recorded on the job, so a ` +
+              'deploy that fails can be retried as a deploy rather than as a ' +
+              'whole new build.',
+            {
+              sha256: artifact.sha256,
+              sizeBytes: artifact.sizeBytes,
+              gates: passedGates,
+            },
+          );
+        },
       });
       await this.store.markHumanQa(jobId, { commitSha, ...published });
+      buildPhase = 'live';
       // No `activity.finish()` here: 'Handed to human QA' is already a `done`
       // step by the phase rule, and saying it twice would put two full stops
       // on the timeline.
@@ -3474,12 +3647,136 @@ export class FullSiteBuildWorker {
           error instanceof Error
             ? error.message.slice(0, 2_000)
             : 'Unknown build failure',
+        // How far this attempt got. With the artifact recorded above, this is
+        // the second half of what the next claim reads to decide whether it
+        // has to build anything at all.
+        phase: buildPhase,
       });
       throw error;
     } finally {
       // Whatever the outcome, the last lines of work are on the record.
       await log?.flush();
       await this.releaseOutput(builtOutput);
+    }
+  }
+
+  /**
+   * The gate report and the packaged bytes, written onto the job as one fact.
+   *
+   * Never throws. A publish that has produced correct bytes must not be failed
+   * because the bookkeeping that would have made a retry cheaper could not be
+   * written — the worst case of a missed write is the behaviour this whole
+   * change replaces, which is a full rebuild.
+   */
+  private async recordGatePassedArtifact(
+    jobId: string,
+    artifact: PackagedArtifact,
+    build: { commitSha: string; branch: string; gates: readonly string[] },
+  ): Promise<void> {
+    if (!this.store.recordBuiltArtifact) return;
+    const at = new Date().toISOString();
+    try {
+      await this.store.recordBuiltArtifact(jobId, {
+        url: artifact.url,
+        ...(artifact.path ? { path: artifact.path } : {}),
+        sha256: artifact.sha256,
+        sizeBytes: artifact.sizeBytes,
+        commitSha: build.commitSha,
+        branch: build.branch,
+        gateReport: { passed: [...build.gates], at },
+        recordedAt: at,
+      });
+    } catch (error) {
+      console.warn(
+        `[full-site-build] could not record the built artifact for ${jobId}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
+
+  /**
+   * A site that was already built, already gated and already packaged, put on
+   * the host — with no worktree, no agent and no gate re-run.
+   *
+   * The gates are not re-run and that is the point, not an omission. Every one
+   * of them is a deterministic rule over files, and these are the same files,
+   * by sha256: re-running them could only produce the same verdict, and doing
+   * it would need the worktree back, which would need the generation back.
+   * The recorded gate report is what this attempt stands on, and
+   * `parseBuiltArtifact` refuses an artifact that carries an empty one.
+   */
+  private async redeployBuiltSite(
+    job: FullSiteBuildJob,
+    artifact: BuiltArtifactRecord,
+    phase: (body: string) => Promise<void>,
+    say: (
+      kind: FullSiteBuildEventKind,
+      body: string,
+      payload?: Record<string, unknown>,
+    ) => Promise<void>,
+    log: JobLogWriter | null,
+    activity: ActivityRecorder,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const jobId = job.id;
+    try {
+      await phase(REDEPLOY_PHASE);
+      await say(
+        'log',
+        `This site was built and passed ${artifact.gateReport.passed.length} ` +
+          `gate(s) on an earlier attempt (${artifact.gateReport.passed.join(', ')}), ` +
+          `and was packaged as ${artifact.sizeBytes} bytes, sha256 ` +
+          `${artifact.sha256}, from commit ${artifact.commitSha}. What failed ` +
+          'was putting it on a host. This attempt deploys those exact bytes ' +
+          'and runs no agent, so it spends no generation budget.',
+        {
+          sha256: artifact.sha256,
+          sizeBytes: artifact.sizeBytes,
+          commitSha: artifact.commitSha,
+          gates: artifact.gateReport.passed,
+          recordedAt: artifact.recordedAt,
+        },
+      );
+      await this.authorizePublish(jobId, signal);
+      // Non-null by construction: `run` only takes this branch when the
+      // publisher has the method.
+      const published = await this.pullRequests.deployArtifact!({
+        projectId: job.projectId,
+        artifact,
+      });
+      await this.store.markHumanQa(jobId, {
+        commitSha: artifact.commitSha,
+        ...published,
+      });
+      await phase('Handed to human QA');
+    } catch (error) {
+      const failureCode =
+        error instanceof LeaseLostError
+          ? BUILD_LEASE_LOST
+          : error instanceof FullSiteBuildFailure
+            ? error.code
+            : 'FULL_SITE_BUILD_FAILED';
+      activity.fail(
+        subjectForFailureCode(failureCode),
+        error instanceof Error ? error.message.slice(0, 300) : undefined,
+      );
+      await say(
+        'log',
+        `Redeploy failed: ${error instanceof Error ? error.message : 'unknown'}`,
+      );
+      await this.recordFailure(jobId, {
+        code: failureCode,
+        detail:
+          error instanceof Error
+            ? error.message.slice(0, 2_000)
+            : 'Unknown redeploy failure',
+        // Still the deploy side, so the artifact stays re-usable and the next
+        // attempt spends the deploy budget again rather than the client's.
+        phase: 'deploying',
+      });
+      throw error;
+    } finally {
+      await log?.flush();
     }
   }
 

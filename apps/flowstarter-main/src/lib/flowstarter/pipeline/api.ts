@@ -16,6 +16,11 @@ import 'server-only';
 import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { ProjectState } from '@flowstarter/agentic-codegen/src/flowstarter/types';
+import {
+  DEPLOY_RESUMABLE_KINDS,
+  parseBuiltArtifact,
+  readAttemptCounters,
+} from '@flowstarter/agentic-codegen/src/flowstarter/build-phase';
 import { requireTeamAuth } from '@/lib/api-auth';
 import type { Json } from '@/lib/database.types';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
@@ -50,6 +55,14 @@ const JOB_COLUMNS =
   'id, workspace_id, kind, status, attempt_count, max_attempts, run_after, ' +
   'created_at, started_at, finished_at, error_code, error_detail, ' +
   'leased_by, lease_expires_at';
+
+/**
+ * The same columns plus the payload, for the one action that has to read what
+ * a previous attempt built. Kept separate so the board's own queries — which
+ * run over every workspace — never pull a manifest-sized JSON column they have
+ * no use for.
+ */
+const JOB_COLUMNS_WITH_PAYLOAD = `${JOB_COLUMNS}, payload`;
 
 const EVENT_COLUMNS = 'id, workspace_id, kind, actor, payload, created_at';
 
@@ -313,7 +326,11 @@ export async function pipelineDetailHandler(
   const [jobsRes, eventsRes, headlinesRes] = await Promise.all([
     db
       .from('flowstarter_agent_jobs')
-      .select(JOB_COLUMNS)
+      // With the payload, unlike the board's query: this is one workspace's
+      // handful of jobs, and whether a build left a deployable artifact behind
+      // is a fact only the payload carries. The board stays narrow — it reads
+      // up to two thousand rows and has no button that needs this.
+      .select(JOB_COLUMNS_WITH_PAYLOAD)
       .eq('workspace_id', workspace.id)
       .order('created_at', { ascending: false }),
     db
@@ -350,7 +367,9 @@ export async function pipelineDetailHandler(
   }
 
   const now = Date.now();
-  const jobs = (jobsRes.data ?? []) as unknown as PipelineJobRow[];
+  const jobs = (jobsRes.data ?? []) as unknown as Array<
+    PipelineJobRow & { payload: unknown }
+  >;
   const events = (eventsRes.data ?? []) as unknown as PipelineEventRow[];
   const headlines = jobHeadlines(
     (headlinesRes.data ?? []) as unknown as JobEventRow[]
@@ -390,6 +409,17 @@ export async function pipelineDetailHandler(
         canCancel: (CANCELLABLE_STATUSES as readonly string[]).includes(
           job.status
         ),
+        // Offered only when there is genuinely something to ship: a kind whose
+        // publish is a pure function of its artifact, an artifact that was
+        // recorded and passed named gates, and a job that is not already
+        // running or already shipped. The endpoint re-checks every one of
+        // these — this flag decides whether a button is *drawn*, never whether
+        // the action is allowed.
+        canRequeueDeploy:
+          DEPLOY_RESUMABLE_KINDS.has(job.kind) &&
+          job.status !== 'succeeded' &&
+          (job.status !== 'running' || abandonedByWorker(job)) &&
+          parseBuiltArtifact(job.payload) !== null,
       })),
       events: events.map((event) => ({
         id: event.id,
@@ -436,7 +466,7 @@ export async function redispatchBuildHandler(
 
   let query = db
     .from('flowstarter_agent_jobs')
-    .select(JOB_COLUMNS)
+    .select(JOB_COLUMNS_WITH_PAYLOAD)
     .eq('workspace_id', workspace.id);
   query = parsed.data.jobId
     ? query.eq('id', parsed.data.jobId)
@@ -454,7 +484,7 @@ export async function redispatchBuildHandler(
     );
   }
 
-  const job = data as unknown as PipelineJobRow | null;
+  const job = data as unknown as (PipelineJobRow & { payload: unknown }) | null;
   if (!job) {
     return NextResponse.json(
       {
@@ -499,10 +529,28 @@ export async function redispatchBuildHandler(
   // on the client having handed us a detached copy.
   const previousStatus = job.status;
   const now = new Date().toISOString();
+  // This button means "build it again", so it takes the previous attempt's
+  // artifact off the row. Leaving it would make the worker plan a deploy of
+  // bytes the operator has just asked to be re-derived — two buttons that read
+  // differently and did the same thing. `requeue-deploy` is the one that keeps
+  // the artifact, and the pair of them is the whole choice an operator has:
+  // build it again, or ship what is already built.
+  const {
+    builtArtifact: _discardedArtifact,
+    buildPhase: _discardedPhase,
+    ...carriedPayload
+  } = (
+    job.payload &&
+    typeof job.payload === 'object' &&
+    !Array.isArray(job.payload)
+      ? (job.payload as Record<string, unknown>)
+      : {}
+  ) as Record<string, unknown>;
   const requeue = db
     .from('flowstarter_agent_jobs')
     .update({
       status: 'queued',
+      payload: carriedPayload as Json,
       run_after: now,
       started_at: null,
       finished_at: null,
@@ -595,6 +643,249 @@ export async function redispatchBuildHandler(
   return NextResponse.json({
     job: { id: job.id, kind: job.kind, status: 'queued', previousStatus },
     /** False when the row was reset but the worker could not be reached. */
+    dispatched,
+    dispatchError,
+    duplicate: false,
+  });
+}
+
+// ─── POST /projects/[id]/pipeline/requeue-deploy ────────────────────────────
+
+const requeueDeploySchema = z.object({
+  /** Omit to act on the workspace's newest FULL_SITE_BUILD. */
+  jobId: z.string().uuid().optional(),
+  reason: z.string().trim().min(1).max(500).optional(),
+});
+
+/**
+ * Finishes a build that is done, and stuck.
+ *
+ * Run 9 of workspace ba3e9323 is the shape of it. The build passed every gate
+ * on its second attempt and packaged a correct 6,711,757-byte artifact; the
+ * deploy then failed twice for reasons that had nothing to do with the site (a
+ * workspace with no host allocated, then a deploy-agent that could not fetch
+ * the tarball), the third attempt re-ran the whole generation and died on its
+ * token budget, and the job went terminal holding a finished site. Nothing in
+ * the product could ship those bytes. This is the button that can.
+ *
+ * It is not a re-dispatch and the difference is the point. `redispatch` says
+ * "build this again", clears the recorded artifact and spends a generation
+ * attempt. This says "ship what is already built": the artifact is kept, the
+ * phase is set to the deploy side, and one deploy attempt is granted on top of
+ * whatever the worker's configured limit is — the same grant `redispatch`
+ * makes against `max_attempts`, against the other budget.
+ *
+ * It refuses when there is no recorded artifact, and that refusal is the whole
+ * safety property. Without one there is nothing to deploy, and the honest
+ * answer is a re-dispatch; an action that silently fell back to building would
+ * be a button whose label lies about what it costs.
+ */
+export async function requeueDeployHandler(
+  req: NextRequest,
+  ctx: Ctx
+): Promise<NextResponse> {
+  const resolved = await resolveWorkspace(ctx);
+  if (!resolved.ok) return resolved.response;
+  const { db, workspace, userId } = resolved;
+
+  const parsed = requeueDeploySchema.safeParse((await readJson(req)) ?? {});
+  if (!parsed.success)
+    return badRequest(zodMessage(parsed.error), 'INVALID_BODY');
+
+  let query = db
+    .from('flowstarter_agent_jobs')
+    .select(JOB_COLUMNS_WITH_PAYLOAD)
+    .eq('workspace_id', workspace.id);
+  query = parsed.data.jobId
+    ? query.eq('id', parsed.data.jobId)
+    : query.eq('kind', 'FULL_SITE_BUILD');
+
+  const { data, error } = await query
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.error('[pipeline] requeue-deploy lookup failed:', error);
+    return NextResponse.json(
+      { error: 'Could not load the job', code: 'DB_ERROR' },
+      { status: 500 }
+    );
+  }
+
+  const job = data as unknown as (PipelineJobRow & { payload: unknown }) | null;
+  if (!job) {
+    return NextResponse.json(
+      {
+        error:
+          'This workspace has no build job to re-deploy. A build is only ' +
+          'enqueued when a deposit is recorded.',
+        code: 'NO_BUILD_JOB',
+      },
+      { status: 409 }
+    );
+  }
+
+  // A build that is genuinely running is left alone, exactly as a re-dispatch
+  // leaves it: it may be about to deploy by itself.
+  if (job.status === 'running' && !abandonedByWorker(job)) {
+    return NextResponse.json(
+      {
+        error:
+          'That build is running and its worker is still checking in. ' +
+          'Cancel it first if it is stuck.',
+        code: 'JOB_ALREADY_RUNNING',
+        job: { id: job.id, status: job.status },
+        duplicate: true,
+      },
+      { status: 409 }
+    );
+  }
+  if (job.status === 'succeeded') {
+    return NextResponse.json(
+      {
+        error: 'That build already shipped. There is nothing to re-deploy.',
+        code: 'JOB_ALREADY_SUCCEEDED',
+        job: { id: job.id, status: job.status },
+        duplicate: true,
+      },
+      { status: 409 }
+    );
+  }
+  if (!DEPLOY_RESUMABLE_KINDS.has(job.kind)) {
+    return NextResponse.json(
+      {
+        error:
+          `A ${job.kind} publishes a site version and a request alongside the ` +
+          'bytes, so it cannot be replayed from an artifact alone. ' +
+          'Re-dispatch it instead.',
+        code: 'KIND_NOT_DEPLOY_RESUMABLE',
+        job: { id: job.id, kind: job.kind },
+      },
+      { status: 409 }
+    );
+  }
+
+  const artifact = parseBuiltArtifact(job.payload);
+  if (!artifact) {
+    return NextResponse.json(
+      {
+        error:
+          'This build never recorded a gate-passed artifact, so there is ' +
+          'nothing to deploy. Re-dispatch it to build the site again.',
+        code: 'NO_BUILT_ARTIFACT',
+        job: { id: job.id, status: job.status },
+      },
+      { status: 409 }
+    );
+  }
+
+  const counters = readAttemptCounters(job.payload, job.attempt_count);
+  const previousStatus = job.status;
+  const now = new Date().toISOString();
+  const payload = {
+    ...(job.payload &&
+    typeof job.payload === 'object' &&
+    !Array.isArray(job.payload)
+      ? (job.payload as Record<string, unknown>)
+      : {}),
+    // Explicit, not assumed. The action's meaning is "deploy this", and saying
+    // so on the row is what makes the worker's claim rule plan a deploy rather
+    // than inferring one from how the last attempt happened to die.
+    buildPhase: 'deploying',
+    attempts: {
+      ...counters,
+      // One more deploy try, never a reset: how many times this has already
+      // failed to reach a host is the useful part of the record.
+      deployMax: counters.deploy + 1,
+    },
+  };
+
+  const update = await db
+    .from('flowstarter_agent_jobs')
+    .update({
+      status: 'queued',
+      run_after: now,
+      started_at: null,
+      finished_at: null,
+      error_code: null,
+      error_detail: null,
+      payload: payload as Json,
+      updated_at: now,
+      leased_by: null,
+      lease_expires_at: null,
+    })
+    .eq('id', job.id)
+    // A worker that claimed the job between the read and the write wins.
+    .eq('status', previousStatus)
+    .select('id, status')
+    .maybeSingle();
+
+  if (update.error) {
+    console.error('[pipeline] requeue-deploy update failed:', update.error);
+    return NextResponse.json(
+      { error: 'Could not re-queue the job', code: 'DB_ERROR' },
+      { status: 500 }
+    );
+  }
+  if (!update.data) {
+    return NextResponse.json(
+      {
+        error:
+          'That build was claimed by a worker while you were looking at it.',
+        code: 'JOB_ALREADY_RUNNING',
+        job: { id: job.id, status: 'running' },
+        duplicate: true,
+      },
+      { status: 409 }
+    );
+  }
+
+  let dispatched = true;
+  let dispatchError: string | null = null;
+  try {
+    await dispatchAgentJob(job.id);
+  } catch (e) {
+    dispatched = false;
+    dispatchError =
+      e instanceof DispatchError || e instanceof Error
+        ? e.message
+        : 'Dispatch failed';
+    console.error(
+      `[pipeline] job ${job.id} re-queued for deploy but not dispatched:`,
+      dispatchError
+    );
+  }
+
+  await recordEvent(db, {
+    workspaceId: workspace.id,
+    kind: 'build_requeued_for_deploy',
+    actor: userId,
+    payload: {
+      jobId: job.id,
+      jobKind: job.kind,
+      previousStatus,
+      /** Named, so the audit row says which bytes this action agreed to ship. */
+      artifactSha256: artifact.sha256,
+      artifactSizeBytes: artifact.sizeBytes,
+      commitSha: artifact.commitSha,
+      gatesPassed: artifact.gateReport.passed,
+      generationAttempts: counters.generation,
+      deployAttempts: counters.deploy,
+      dispatched,
+      dispatchError,
+      reason: parsed.data.reason ?? null,
+    },
+  });
+
+  return NextResponse.json({
+    job: { id: job.id, kind: job.kind, status: 'queued', previousStatus },
+    artifact: {
+      sha256: artifact.sha256,
+      sizeBytes: artifact.sizeBytes,
+      commitSha: artifact.commitSha,
+      gatesPassed: artifact.gateReport.passed,
+      recordedAt: artifact.recordedAt,
+    },
     dispatched,
     dispatchError,
     duplicate: false,

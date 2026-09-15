@@ -27,7 +27,13 @@ import {
   type ArchiveFile,
   type FileMap,
 } from '@flowstarter/agentic-codegen';
-import type { PullRequestPublisher } from '@flowstarter/agentic-codegen';
+import {
+  failureCodeForDeployCode,
+  FullSiteBuildFailure,
+  type BuiltArtifactRecord,
+  type PackagedArtifact,
+  type PullRequestPublisher,
+} from '@flowstarter/agentic-codegen';
 import {
   assertPublicPlatformOrigin,
   isLoopbackUrl,
@@ -62,6 +68,13 @@ interface DeployResponse {
   };
 }
 
+/** The structured half of a refusal from flowstarter-main's deploy route. */
+interface DeployErrorBody {
+  error?: string;
+  /** `DeployError.code` — `workspace_unallocated`, `agent_error`, and so on. */
+  code?: string;
+}
+
 export class LocalSitePublisher implements PullRequestPublisher {
   constructor(private readonly options: LocalSitePublisherOptions) {}
 
@@ -76,6 +89,7 @@ export class LocalSitePublisher implements PullRequestPublisher {
     leadCaptureEndpoint?: string | null;
     changeRequestId?: string | null;
     siteVersion?: number | null;
+    onArtifact?: (artifact: PackagedArtifact) => Promise<void>;
   }): Promise<{ pullRequestUrl: string; stagingUrl: string }> {
     // "The platform host" here means: this build is about to be deployed by
     // asking a *real* flowstarter-main to run `deploySite` — the same check
@@ -143,6 +157,18 @@ export class LocalSitePublisher implements PullRequestPublisher {
       `artifact ${artifact.sizeBytes} bytes, sha256 ${artifact.sha256} (job ${input.projectId})`,
     );
 
+    // Before the deploy, never after it. This is the only moment anything
+    // outside this method knows a complete, gate-passed artifact exists, and
+    // a deploy that fails a line below is exactly the case the record is for:
+    // run 9 lost 6.7 MB of correct, gated output to a 409 and a 502 because
+    // nothing had written this down.
+    await input.onArtifact?.({
+      url: artifact.url,
+      path: artifact.path,
+      sha256: artifact.sha256,
+      sizeBytes: artifact.sizeBytes,
+    });
+
     const siteUrl = await this.deploy({
       workspaceId: input.projectId,
       artifactUrl: artifact.url,
@@ -165,13 +191,55 @@ export class LocalSitePublisher implements PullRequestPublisher {
       // put a dead github.com link on the job. The artifact URL is the honest
       // answer to "what did this build produce".
       pullRequestUrl: artifact.url,
-      stagingUrl:
-        siteUrl ??
-        this.options.stagingUrlTemplate.replace(
-          '{projectId}',
-          input.projectId.toLowerCase(),
-        ),
+      stagingUrl: this.stagingUrl(input.projectId, siteUrl),
     };
+  }
+
+  /**
+   * Deploy bytes a previous attempt already built, gated and packaged.
+   *
+   * Nothing is packed, nothing is injected and nothing is read off disk: the
+   * tarball is already sitting in the artifact store this worker serves, and
+   * the digest travelling with it is the one the gates ran against. The
+   * deploy-agent verifies that digest before it extracts anything, so a
+   * resumed deploy either puts exactly the audited site on the host or puts
+   * nothing there at all.
+   *
+   * The Cal.com and lead-capture reconciliation `create` does is deliberately
+   * absent, and is not missing: both are transforms over the *files*, and
+   * these files already went through them on the attempt that packaged them.
+   * Re-running them would need the file map back, which would need the build
+   * back, which is the cost this whole path exists to avoid.
+   */
+  async deployArtifact(input: {
+    projectId: string;
+    artifact: BuiltArtifactRecord;
+  }): Promise<{ pullRequestUrl: string; stagingUrl: string }> {
+    this.options.onProgress?.(
+      `redeploying artifact sha256 ${input.artifact.sha256} ` +
+        `(${input.artifact.sizeBytes} bytes, job ${input.projectId})`,
+    );
+    const siteUrl = await this.deploy({
+      workspaceId: input.projectId,
+      artifactUrl: input.artifact.url,
+      artifactSha256: input.artifact.sha256,
+      commitSha: input.artifact.commitSha,
+    });
+    return {
+      pullRequestUrl: input.artifact.url,
+      stagingUrl: this.stagingUrl(input.projectId, siteUrl),
+    };
+  }
+
+  /** The deploy's own answer when it gave one, the configured shape when not. */
+  private stagingUrl(projectId: string, siteUrl: string | null): string {
+    return (
+      siteUrl ??
+      this.options.stagingUrlTemplate.replace(
+        '{projectId}',
+        projectId.toLowerCase(),
+      )
+    );
   }
 
   private async deploy(body: {
@@ -196,7 +264,11 @@ export class LocalSitePublisher implements PullRequestPublisher {
         signal: AbortSignal.timeout(this.options.requestTimeoutMs ?? 120_000),
       });
     } catch (error) {
-      throw new LocalPublishError(
+      // A socket that never got an answer names no deploy-side code, and the
+      // honest classification of "we could not reach the deploy at all" is
+      // "try the deploy again".
+      throw deployFailure(
+        null,
         `deploy request to ${url} failed: ${
           error instanceof Error ? error.message : 'unknown transport error'
         }`,
@@ -205,18 +277,26 @@ export class LocalSitePublisher implements PullRequestPublisher {
 
     const text = await response.text();
     if (!response.ok) {
-      throw new LocalPublishError(
-        `flowstarter-main rejected the deploy with ${response.status}: ${text.slice(0, 500)}`,
+      // The route answers a refusal as `{ error, code }`, and the code is the
+      // whole classification. Reading the status or the prose instead is what
+      // made a 409 `workspace_unallocated` — a workspace with no host, which
+      // no number of retries can conjure — look like any other failed build.
+      const code = deployErrorCode(text);
+      throw deployFailure(
+        code,
+        `flowstarter-main rejected the deploy with ${response.status}` +
+          `${code ? ` (${code})` : ''}: ${text.slice(0, 500)}`,
       );
     }
     let parsed: DeployResponse;
     try {
       parsed = JSON.parse(text) as DeployResponse;
     } catch {
-      throw new LocalPublishError('deploy response was not JSON');
+      throw deployFailure(null, 'deploy response was not JSON');
     }
     if (parsed.deployment?.status && parsed.deployment.status !== 'live') {
-      throw new LocalPublishError(
+      throw deployFailure(
+        null,
         `deploy finished as "${parsed.deployment.status}": ${
           parsed.deployment.detail ?? 'no detail'
         }`,
@@ -252,5 +332,43 @@ function withIntegrations(
     file.encoding !== 'base64' && injected[file.path] !== undefined
       ? { path: file.path, content: injected[file.path] as string }
       : file,
+  );
+}
+
+/**
+ * The deploy-side code out of a refusal body, or null when there is not one.
+ *
+ * Null is not a failure of parsing so much as a statement: this refusal did
+ * not name a reason, so the rule treats it as the retryable kind. The
+ * alternative — guessing a category from the status line or the prose — is the
+ * behaviour being removed.
+ */
+function deployErrorCode(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as DeployErrorBody;
+    const code = typeof parsed.code === 'string' ? parsed.code.trim() : '';
+    return code ? code : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One deploy failure, carrying the code the ledger and the retry rule read.
+ *
+ * A `FullSiteBuildFailure` rather than a `LocalPublishError` because the code
+ * is the point: `FullSiteBuildWorker` writes `error.code` straight onto the
+ * job, `failure-policy.ts` decides retryability from it, and
+ * `/api/internal/build/deploy` alerts an operator on the same rule. An
+ * untyped throw would land as `FULL_SITE_BUILD_FAILED` and every one of those
+ * three would be back to reading a message.
+ */
+function deployFailure(
+  deployCode: string | null,
+  message: string,
+): FullSiteBuildFailure {
+  return new FullSiteBuildFailure(
+    failureCodeForDeployCode(deployCode),
+    message,
   );
 }

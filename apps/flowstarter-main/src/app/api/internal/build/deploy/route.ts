@@ -30,6 +30,8 @@ import {
   deployBuildArtifact,
 } from '@/lib/hosting/build-worker-deploy';
 import { notifyChangeRequestLive } from '@/lib/hosting/change-request-live-email';
+import { sendOpsAlert } from '@/lib/ops/send-ops-alert';
+import { deployFailureNeedsOperator } from '@flowstarter/agentic-codegen/src/flowstarter/build-phase';
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -136,6 +138,29 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(result);
   } catch (error) {
     if (error instanceof DeployError) {
+      // A deploy that failed because there is nowhere to deploy *to* is not a
+      // build problem and no amount of retrying fixes it: the workspace has no
+      // host allocated, or the one it names is gone, inactive or unconfigured.
+      // The worker records it as terminal and stops; this is what makes it
+      // reach a person, which is the part run 9 was missing. `sendOpsAlert`
+      // cannot throw, so it can never turn a 409 into a 500.
+      if (deployFailureNeedsOperator(error.code)) {
+        await sendOpsAlert({
+          event: 'deploy_needs_operator',
+          // Per workspace and reason: the same workspace still unallocated an
+          // hour later is the same news, and a second workspace hitting it is
+          // not.
+          discriminator: `${body.workspaceId}:${error.code}`,
+          title: `Deploy blocked for workspace ${body.workspaceId}: ${error.code}`,
+          detail: {
+            workspaceId: body.workspaceId,
+            code: error.code,
+            message: error.message,
+            artifactSha256: body.artifactSha256,
+          },
+          workspaceId: body.workspaceId,
+        });
+      }
       return NextResponse.json(
         { error: error.message, code: error.code },
         { status: DEPLOY_ERROR_STATUS[error.code] ?? 500 }

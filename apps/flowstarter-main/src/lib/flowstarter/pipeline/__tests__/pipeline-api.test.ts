@@ -181,6 +181,7 @@ import {
   pipelineBoardHandler,
   pipelineDetailHandler,
   redispatchBuildHandler,
+  requeueDeployHandler,
 } from '../api';
 import { jobLogHandler } from '../job-log-api';
 
@@ -286,6 +287,7 @@ describe('operator-only access', () => {
     ['GET board', () => pipelineBoardHandler()],
     ['GET detail', () => pipelineDetailHandler(post({}), ctx())],
     ['POST redispatch', () => redispatchBuildHandler(post({}), ctx())],
+    ['POST requeue-deploy', () => requeueDeployHandler(post({}), ctx())],
     [
       'POST state',
       () =>
@@ -1371,5 +1373,195 @@ describe('a request body that is not JSON at all', () => {
     const res = await overrideStateHandler(broken, ctx());
     expect(res.status).toBe(400);
     expect((await res.json()).code).toBe('INVALID_BODY');
+  });
+});
+
+/**
+ * Finishing a build that is done, and stuck.
+ *
+ * The case is run 9 of workspace ba3e9323 on 2026-09-12: a build that passed
+ * every gate and packaged a correct 6,711,757-byte artifact, then failed its
+ * deploy twice on infrastructure and spent its last attempt re-generating a
+ * site it already had. The job went terminal holding a finished site that
+ * nothing in the product could ship. This endpoint is what ships it, and the
+ * assertions below are about the two things it must never get wrong: it must
+ * refuse when there is nothing built, and it must not clear the artifact it is
+ * about to deploy.
+ */
+const BUILT_ARTIFACT = {
+  url: 'http://127.0.0.1:8787/artifacts/job-token.tar.gz',
+  sha256: 'a'.repeat(64),
+  sizeBytes: 6_711_757,
+  commitSha: 'abc123def456',
+  branch: 'client/flowstarter-ba3e9323',
+  gateReport: {
+    passed: ['build', 'page-budget', 'markup-policy', 'acceptable-use'],
+    at: '2026-09-12T20:00:00.000Z',
+  },
+  recordedAt: '2026-09-12T20:00:00.000Z',
+};
+
+/** The row as run 9 left it: terminal, out of attempts, and holding a site. */
+function seedStuckBuild(overrides: Row = {}) {
+  return seedJob({
+    status: 'failed',
+    attempt_count: 3,
+    max_attempts: 3,
+    error_code: 'SITE_DEPLOY_FAILED',
+    error_detail: 'deploy-agent 502: artifact fetch 404',
+    payload: {
+      builtArtifact: BUILT_ARTIFACT,
+      buildPhase: 'deploying',
+      attempts: { generation: 2, deploy: 2 },
+    },
+    ...overrides,
+  });
+}
+
+describe('POST requeue-deploy', () => {
+  it('re-queues a terminal build for deploy and keeps its artifact', async () => {
+    seedWorkspace();
+    const job = seedStuckBuild();
+
+    const res = await requeueDeployHandler(post({}), ctx());
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      job: { id: JOB_ID, status: 'queued', previousStatus: 'failed' },
+      artifact: { sha256: 'a'.repeat(64), sizeBytes: 6_711_757 },
+      duplicate: false,
+    });
+
+    expect(job.status).toBe('queued');
+    expect(job.error_code).toBeNull();
+    const payload = job.payload as Record<string, unknown>;
+    // The whole point: the bytes stay, the phase says deploy, and the worker's
+    // claim rule will plan a redeploy off exactly this.
+    expect(payload.builtArtifact).toEqual(BUILT_ARTIFACT);
+    expect(payload.buildPhase).toBe('deploying');
+    // One more deploy try, granted on top of the worker's configured limit,
+    // with the history of failures left intact.
+    expect(payload.attempts).toEqual({
+      generation: 2,
+      deploy: 2,
+      deployMax: 3,
+    });
+    // Never the generation budget: this action costs no model time at all.
+    expect(job.attempt_count).toBe(3);
+    expect(job.max_attempts).toBe(3);
+
+    const event = tables.project_events.at(-1);
+    expect(event).toMatchObject({
+      kind: 'build_requeued_for_deploy',
+      actor: 'user_operator',
+    });
+    expect(event?.payload).toMatchObject({
+      artifactSha256: 'a'.repeat(64),
+      deployAttempts: 2,
+    });
+  });
+
+  it('refuses when the build never recorded an artifact', async () => {
+    // The safety property. With nothing packaged there is nothing to deploy,
+    // and an action that quietly fell back to building would be a button whose
+    // label lies about what it costs.
+    seedWorkspace();
+    const job = seedJob({
+      status: 'failed',
+      attempt_count: 3,
+      error_code: 'PAGE_BUDGET_EXCEEDED',
+      payload: { buildPhase: 'gating' },
+    });
+
+    const res = await requeueDeployHandler(post({}), ctx());
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: 'NO_BUILT_ARTIFACT',
+    });
+    expect(job.status).toBe('failed');
+  });
+
+  it('refuses an artifact no gate vouched for', async () => {
+    seedWorkspace();
+    seedStuckBuild({
+      payload: {
+        builtArtifact: {
+          ...BUILT_ARTIFACT,
+          gateReport: { passed: [], at: '' },
+        },
+        buildPhase: 'deploying',
+      },
+    });
+
+    const res = await requeueDeployHandler(post({}), ctx());
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: 'NO_BUILT_ARTIFACT',
+    });
+  });
+
+  it('refuses a kind whose publish moves more than bytes', async () => {
+    seedWorkspace();
+    const job = seedStuckBuild({ kind: 'CHANGE_REQUEST_BUILD' });
+
+    const res = await requeueDeployHandler(post({ jobId: JOB_ID }), ctx());
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: 'KIND_NOT_DEPLOY_RESUMABLE',
+    });
+    expect(job.status).toBe('failed');
+  });
+
+  it('leaves a build alone while its worker is still checking in', async () => {
+    seedWorkspace();
+    const job = seedStuckBuild({
+      status: 'running',
+      leased_by: 'builder-1:9:ff',
+      lease_expires_at: new Date(Date.now() + 60_000).toISOString(),
+    });
+
+    const res = await requeueDeployHandler(post({}), ctx());
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: 'JOB_ALREADY_RUNNING',
+      duplicate: true,
+    });
+    expect(job.status).toBe('running');
+  });
+
+  it('refuses a build that already shipped', async () => {
+    seedWorkspace();
+    seedStuckBuild({ status: 'succeeded' });
+
+    const res = await requeueDeployHandler(post({}), ctx());
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({
+      code: 'JOB_ALREADY_SUCCEEDED',
+    });
+  });
+
+  it('says there is no build at all when the workspace has none', async () => {
+    seedWorkspace();
+    const res = await requeueDeployHandler(post({}), ctx());
+    expect(res.status).toBe(409);
+    await expect(res.json()).resolves.toMatchObject({ code: 'NO_BUILD_JOB' });
+  });
+});
+
+describe('re-dispatch and re-deploy are different buttons', () => {
+  it('a re-dispatch drops the artifact, so the site is genuinely built again', async () => {
+    // Two actions that kept the artifact would be two labels for one
+    // behaviour. Re-dispatch means "build it again"; leaving the recorded
+    // bytes on the row would make the worker plan a deploy of exactly what the
+    // operator has just asked to be re-derived.
+    seedWorkspace();
+    const job = seedStuckBuild();
+
+    const res = await redispatchBuildHandler(post({}), ctx());
+    expect(res.status).toBe(200);
+    const payload = job.payload as Record<string, unknown>;
+    expect(payload.builtArtifact).toBeUndefined();
+    expect(payload.buildPhase).toBeUndefined();
+    // And it spends the other budget, the way it always has.
+    expect(job.max_attempts).toBe(4);
   });
 });

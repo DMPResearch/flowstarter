@@ -41,7 +41,9 @@
 import {
   APPROVED_EDIT_DROPPED,
   ASSET_NOT_BINARY,
+  isBuildPhase,
   BUILD_LEASE_LOST,
+  type BuildPhase,
   CAL_PREVIEW_IN_PAID_BUILD,
   CHANGE_REQUEST_NOT_APPLIED,
   CHANGE_REQUEST_REPAIR_DAMAGED_SITE,
@@ -53,6 +55,8 @@ import {
   PAGE_BUDGET_EXCEEDED,
   PLACEHOLDER_COPY_SHIPPED,
   PLACEHOLDER_IMAGE_SHIPPED,
+  SITE_DEPLOY_FAILED,
+  SITE_DEPLOY_NEEDS_OPERATOR,
   TEASER_IN_PAID_BUILD,
 } from '@flowstarter/agentic-codegen';
 
@@ -97,6 +101,13 @@ export const TERMINAL_BUILD_FAILURE_CODES: ReadonlySet<string> = new Set([
   // pressing Ship again in the editor.
   OPERATOR_EDIT_INVALID_STATE,
   OPERATOR_EDIT_MANIFEST_MISSING,
+  // Not a verdict on the site, and terminal all the same. A workspace with no
+  // host allocated, a server that is not active, a deploy-agent nobody
+  // configured: every one of those answers identically on the next attempt and
+  // every one of them is cleared by a person, not by a retry. It reaches an
+  // operator through the alert `/api/internal/build/deploy` raises rather than
+  // by being rediscovered here every fifteen minutes.
+  SITE_DEPLOY_NEEDS_OPERATOR,
 ]);
 
 /**
@@ -112,6 +123,14 @@ export const TERMINAL_BUILD_FAILURE_CODES: ReadonlySet<string> = new Set([
 export const TRANSIENT_BUILD_FAILURE_CODES: ReadonlySet<string> = new Set([
   'BUILD_LEASE_EXPIRED',
   BUILD_LEASE_LOST,
+  // The deploy side said no for a reason that may not be true in a minute: a
+  // busy agent, a 5xx, a socket that died, a tarball the agent could not fetch
+  // yet. Nothing was decided about the site — it has already passed every gate
+  // — so the answer is to try the deploy again. With a recorded artifact that
+  // retry is a deploy and not a build; `leases.ts` charges it to the deploy
+  // budget, which is why a run of these cannot exhaust a client's generation
+  // attempts the way run 9's did.
+  SITE_DEPLOY_FAILED,
 ]);
 
 /**
@@ -188,6 +207,13 @@ export interface FailureLedgerEntry {
   code: string;
   detail: string;
   at: string;
+  /**
+   * Which half of the build this attempt died in. On the ledger entry as well
+   * as on the job, because the job carries only the newest one: an operator
+   * reading why a build took four attempts needs to see that two of them were
+   * deploys of a site that had already passed its gates.
+   */
+  phase?: BuildPhase;
 }
 
 /** How many attempts are kept. A build's budget is three; this is generous. */
@@ -232,6 +258,7 @@ export function readFailureLedger(payload: unknown): FailureLedgerEntry[] {
       code,
       detail: typeof record['detail'] === 'string' ? record['detail'] : '',
       at: typeof record['at'] === 'string' ? record['at'] : '',
+      ...(isBuildPhase(record['phase']) ? { phase: record['phase'] } : {}),
     });
   }
   return entries;

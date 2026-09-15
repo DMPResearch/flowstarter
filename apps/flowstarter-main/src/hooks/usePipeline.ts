@@ -64,6 +64,11 @@ export interface PipelineJobDetail extends PipelineJobSummary {
   runAfter: string;
   canRedispatch: boolean;
   canCancel: boolean;
+  /**
+   * True when this build already produced a gate-passed artifact and only the
+   * deploy failed, so it can be finished without paying to build it again.
+   */
+  canRequeueDeploy: boolean;
   /** The worker's last reported phase, in its own plain words. */
   latestPhase: string | null;
   /** The newest agent reply, trimmed to a headline. */
@@ -199,6 +204,26 @@ export function useRedispatchBuild(id: string | undefined) {
       dispatchError: string | null;
     }
   >(id, 'redispatch', 'Failed to re-dispatch the build');
+}
+
+/**
+ * Ships the artifact a stuck build already produced.
+ *
+ * The sibling of `useRedispatchBuild`, and deliberately a separate call: one
+ * re-builds the site and the other deploys the one that exists. See
+ * `requeueDeployHandler` for the rule, including the refusal when nothing was
+ * ever packaged.
+ */
+export function useRequeueDeploy(id: string | undefined) {
+  return usePipelineAction<
+    { jobId?: string; reason?: string },
+    {
+      job: { id: string; status: string };
+      artifact: { sha256: string; sizeBytes: number; gatesPassed: string[] };
+      dispatched: boolean;
+      dispatchError: string | null;
+    }
+  >(id, 'requeue-deploy', 'Failed to re-queue the build for deploy');
 }
 
 export function useOverrideProjectState(id: string | undefined) {

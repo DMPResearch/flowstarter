@@ -206,7 +206,29 @@ export interface WorkerConfig {
    */
   skipValidation: boolean;
   buildTimeoutMs: number;
+  /**
+   * How many times this job may be *generated*: worktree, agents, gates.
+   * The expensive budget, and the one a paying client's model spend sits in.
+   */
   maxAttempts: number;
+  /**
+   * How many times a site that is already built and already gated may be
+   * handed to the deploy side.
+   *
+   * Separate from `maxAttempts` because the two failures have nothing to do
+   * with each other. A generation attempt costs a full Pi session; a deploy
+   * attempt costs one HTTP request against bytes that already exist. Run 9 of
+   * workspace ba3e9323 spent its entire generation budget on two deploy
+   * failures and one re-generation nobody needed, and ended terminal with a
+   * correct 6.7 MB artifact on disk. Counting them apart is what stops that.
+   *
+   * Higher than the generation budget by default, for the same reason: a
+   * redeploy is cheap, and the failures it retries (a busy agent, a 5xx, a
+   * tarball the agent could not fetch yet) are the kind that clear themselves.
+   * The ones that do not clear themselves never reach this counter — they are
+   * `SITE_DEPLOY_NEEDS_OPERATOR`, which is terminal and alerts a person.
+   */
+  maxDeployAttempts: number;
   concurrency: number;
   queueLimit: number;
   /**
@@ -1051,6 +1073,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
       min: 1,
       max: 10,
     }),
+    maxDeployAttempts: optionalNumber(
+      env,
+      'FLOWSTARTER_BUILD_MAX_DEPLOY_ATTEMPTS',
+      5,
+      { min: 1, max: 20 },
+    ),
     concurrency: optionalNumber(env, 'FLOWSTARTER_BUILD_CONCURRENCY', 1, {
       min: 1,
       max: 4,

@@ -86,6 +86,7 @@ export * from './flowstarter/prompts';
 export * from './flowstarter/template-library-mcp';
 export * from './flowstarter/pi-sdk';
 export * from './flowstarter/worktree';
+export * from './flowstarter/build-phase';
 export * from './flowstarter/workflows';
 export * from './flowstarter/job-log';
 export * from './flowstarter/activity';
