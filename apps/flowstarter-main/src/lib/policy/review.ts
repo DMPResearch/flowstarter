@@ -20,8 +20,23 @@ import 'server-only';
  * `policy_reviews` is server-only (RLS on, zero policies). It is not in the
  * generated `database.types.ts`, so the client is narrowed structurally the
  * same way `src/lib/ai/llm.ts` narrows `llm_usage`.
+ *
+ * One more thing happens here, once a `review` row is actually written: an
+ * operator email goes out (`policyReviewOperatorEmail`, `@/lib/email-
+ * templates`), because before it existed a review sat on the board silently
+ * and the only way to learn it was there was to go and look. `briefText` and
+ * the caller's contact fields are the one exception to the NOT list above --
+ * they pass through this function to the email and nowhere else, never into
+ * the row, the event payload or a log line. Sent once per row: only when the
+ * insert actually created one (a cache hit on a duplicate submission does
+ * not re-notify), and only for `review`, never for `allow` (this function is
+ * never called) or `refuse` (already closed, nothing for a person to decide).
  */
 
+import { publicAppOrigin } from '@flowstarter/platform-config';
+
+import { resolveOperatorNotifyEmail, sendEmail } from '@/lib/email';
+import { policyReviewOperatorEmail } from '@/lib/email-templates';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 
 import type { PolicyVerdict } from './acceptable-use';
@@ -189,12 +204,89 @@ export interface RecordPolicyOutcomeInput {
   workspaceId?: string | null;
   actor?: string;
   db?: PolicyReviewClient;
+  /**
+   * The exact text that was classified, for the operator email only -- see
+   * the module doc's one exception to the NOT list. A caller with no text
+   * handy (or that would rather not thread it here) simply gets an email with
+   * no quoted brief; the row and the hold are unaffected either way.
+   */
+  briefText?: string;
+  /** The visitor's own name and address, when the caller has them. Email only, same as `briefText`. */
+  contactName?: string | null;
+  contactEmail?: string | null;
 }
 
 export interface RecordPolicyOutcomeResult {
   reviewId: string | null;
   /** False when the row could not be written. The hold still stands. */
   recorded: boolean;
+}
+
+/**
+ * The review's own place on the admin board.
+ *
+ * A workspace-scoped review is read on that project's pipeline tab
+ * (`PolicyReviewPanel`, which carries a matching `id="policy-review-<id>"` on
+ * its card), so the link anchors straight to it. A `preview`-surface review
+ * has no workspace by construction -- the visitor is anonymous, there is no
+ * project yet -- and today there is no board card for one to anchor to
+ * either; the link falls back to the pipeline board itself rather than a
+ * 404, on the same reasoning `leadBoardUrl` in `@/lib/flowstarter/scope-gate`
+ * uses for a lead with no id.
+ */
+function reviewBoardUrl(reviewId: string, workspaceId: string | null): string {
+  const origin = publicAppOrigin();
+  return workspaceId
+    ? `${origin}/admin/dashboard/projects/${workspaceId}#policy-review-${reviewId}`
+    : `${origin}/admin/dashboard/pipeline`;
+}
+
+/**
+ * Tell an operator a review row is open.
+ *
+ * Called once, right after a `review` row is actually inserted (never for
+ * `refuse`, which needs nobody, and never for a cache hit on a duplicate
+ * submission, which already notified once). Never throws: the row is already
+ * written and the hold already stands, so a failed send is logged and
+ * swallowed, exactly like `fileCustomWorkLead`'s two sends in
+ * `@/lib/flowstarter/scope-gate`.
+ */
+async function notifyOperatorOfReview(input: {
+  reviewId: string;
+  workspaceId: string | null;
+  verdict: PolicyVerdict;
+  briefText?: string;
+  contactName?: string | null;
+  contactEmail?: string | null;
+}): Promise<void> {
+  const operator = resolveOperatorNotifyEmail();
+  if (!operator) return;
+  try {
+    const rendered = policyReviewOperatorEmail({
+      rule: input.verdict.rule,
+      categoryId: input.verdict.category.id,
+      categoryLabel: input.verdict.category.label,
+      briefText: input.briefText ?? '',
+      contactName: input.contactName,
+      contactEmail: input.contactEmail,
+      reviewUrl: reviewBoardUrl(input.reviewId, input.workspaceId),
+    });
+    const sent = await sendEmail({
+      to: operator,
+      subject: rendered.subject,
+      html: rendered.html,
+      text: rendered.text,
+    });
+    if (!sent.success) {
+      console.warn(
+        `[policy] the review notification did not send: ${
+          sent.error ?? 'unknown error'
+        }`
+      );
+    }
+  } catch (error) {
+    console.error('[policy] review notification threw', error);
+  }
 }
 
 /**
@@ -261,6 +353,20 @@ export async function recordPolicyOutcome(
     }
   } catch (error) {
     console.error('[policy] review insert threw', error);
+  }
+
+  // Once per row, and only for a hold: a duplicate submission (`recorded`
+  // false on a 23505) already notified the first time, and a refusal needs
+  // nobody -- it is already closed.
+  if (recorded && reviewId && verdict.decision === 'review') {
+    await notifyOperatorOfReview({
+      reviewId,
+      workspaceId,
+      verdict,
+      briefText: input.briefText,
+      contactName: input.contactName,
+      contactEmail: input.contactEmail,
+    });
   }
 
   // Only when there is a client to write with. A failure above already logged.

@@ -305,10 +305,21 @@ describe('the audit row', () => {
     const written = recordPolicyOutcome.mock.calls[0]?.[0] as {
       surface: string;
       classification: { evidenceHash: string; evidence: string };
+      briefText: string;
     };
     expect(written.surface).toBe('claim');
     expect(written.classification.evidenceHash).toHaveLength(16);
-    expect(JSON.stringify(written)).not.toContain(fixture.text.slice(0, 40));
+    // `briefText` is `recordPolicyOutcome`'s one deliberate exception to
+    // "never the text" -- its own module doc explains why: it exists only to
+    // reach the operator email, and that function never writes it to the row
+    // or the event payload. This asserts the exception is exactly that one
+    // named field and nothing else on the call: strip it out and the rest of
+    // what crosses this boundary must still never contain the fixture text.
+    expect(written.briefText).toBe(fixture.text);
+    const { briefText: _briefText, ...everythingElse } = written;
+    expect(JSON.stringify(everythingElse)).not.toContain(
+      fixture.text.slice(0, 40)
+    );
   });
 
   it('is not written for a clean business', async () => {

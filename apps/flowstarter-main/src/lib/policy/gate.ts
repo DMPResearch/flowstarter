@@ -110,6 +110,11 @@ export async function screenAcceptableUse(
       workspaceId: input.workspaceId,
       actor: input.actor,
       db: input.db,
+      // The operator email's quoted brief, and only that -- `recordPolicyOutcome`
+      // never writes this to the row, the event payload or a log line. Every
+      // caller of `screenAcceptableUse` already built `text` to classify; this
+      // is the one place that text is spent a second time.
+      briefText: input.text,
     });
     reviewId = outcome.reviewId;
   }

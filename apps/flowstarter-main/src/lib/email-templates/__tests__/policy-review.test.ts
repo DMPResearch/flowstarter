@@ -1,0 +1,273 @@
+/**
+ * The operator's "A brief needs your review" email.
+ *
+ * Before this template existed, `@/lib/policy/review`'s `recordPolicyOutcome`
+ * wrote a `review` row to `policy_reviews` and nothing told anybody: the row
+ * just sat on the board. What is asserted here mirrors
+ * `custom-work.test.ts`'s house style for the sibling email: every rule that
+ * can actually produce a `review` verdict renders one plain sentence and
+ * nothing that looks like a rule id, a tier name or a raw number; the brief
+ * is quoted as it is; and the primary link and button both open the review's
+ * own place on the admin board.
+ */
+import { describe, expect, it } from 'vitest';
+import { policyReviewOperatorEmail } from '../policy-review';
+
+const DECIMAL_NUMBER = /\d+\.\d+/;
+const RAW_FIELD_LABELS = /\bConfidence\b|\bTier\b|\bRule\b/;
+
+const REVIEW_URL =
+  'https://flowstarter.net/admin/dashboard/projects/ws-1#policy-review-review-1';
+
+const BASE = {
+  categoryId: 'none',
+  categoryLabel: 'No policy category',
+  briefText: 'We sell prescription medication online across Romania.',
+  reviewUrl: REVIEW_URL,
+} as const;
+
+describe('policyReviewOperatorEmail, one sentence per rule', () => {
+  it.each([
+    {
+      rule: 'sensitive_lawful',
+      categoryId: 'licensed_pharmacy',
+      categoryLabel: 'Licensed pharmacy or medicine retail',
+      sentence:
+        'The brief describes a licensed pharmacy, which we build only after a person checks it.',
+    },
+    {
+      rule: 'prohibited_uncertain',
+      categoryId: 'illegal_drugs',
+      categoryLabel: 'Illegal drugs and controlled substances',
+      sentence:
+        'The brief may describe illegal drugs, and the classifier was not sure enough to refuse it on its own.',
+    },
+    {
+      rule: 'unknown_category',
+      categoryId: 'none',
+      categoryLabel: 'No policy category',
+      sentence:
+        'The classifier flagged this brief but could not match it to a known category, so a person reads it instead.',
+    },
+    {
+      rule: 'needs_human_flag',
+      categoryId: 'none',
+      categoryLabel: 'No policy category',
+      sentence:
+        'The classifier flagged this brief for a person to check, without naming a category.',
+    },
+    {
+      rule: 'clean_but_abstained',
+      categoryId: 'none',
+      categoryLabel: 'No policy category',
+      sentence:
+        'The classifier could not confidently call this brief clean, so a person checks it before anything is built.',
+    },
+    {
+      rule: 'classifier_failed_closed',
+      categoryId: 'none',
+      categoryLabel: 'No policy category',
+      sentence:
+        'We could not classify this brief automatically, so nothing was generated.',
+    },
+    {
+      // Not wired up anywhere yet (a separate PR in progress adds it
+      // alongside `classifier_failed_closed`); this template already knows
+      // what to say when it lands.
+      rule: 'classifier_unavailable',
+      categoryId: 'none',
+      categoryLabel: 'No policy category',
+      sentence:
+        'We could not classify this brief automatically, so nothing was generated.',
+    },
+    {
+      rule: 'scope_visitor_disagrees_with_classifier',
+      categoryId: 'none',
+      categoryLabel: 'No policy category',
+      sentence:
+        'The visitor says this is a site that presents their business, and the classifier is confident it is software instead.',
+    },
+    {
+      rule: 'scope_unresolved_after_question',
+      categoryId: 'none',
+      categoryLabel: 'No policy category',
+      sentence:
+        'The visitor answered the clarifying question and the brief is still unclear',
+    },
+  ])(
+    '$rule reads as one plain sentence, no code, no number',
+    ({ rule, categoryId, categoryLabel, sentence }) => {
+      const mail = policyReviewOperatorEmail({
+        ...BASE,
+        rule,
+        categoryId,
+        categoryLabel,
+      });
+
+      expect(mail.text).toContain(sentence);
+      expect(mail.text).not.toMatch(DECIMAL_NUMBER);
+      expect(mail.html).not.toMatch(RAW_FIELD_LABELS);
+      expect(mail.text).not.toMatch(RAW_FIELD_LABELS);
+      // The rule id and the raw category id are lookup keys, never copy.
+      expect(mail.html).not.toContain(rule);
+      expect(mail.text).not.toContain(rule);
+      if (categoryId !== 'none') {
+        expect(mail.text).not.toContain(categoryId);
+      }
+    }
+  );
+
+  it('falls back to a true, unspecific sentence for a rule it does not recognise', () => {
+    const mail = policyReviewOperatorEmail({
+      ...BASE,
+      rule: 'someFutureRule',
+      categoryId: 'none',
+      categoryLabel: 'No policy category',
+    });
+    expect(mail.text).toContain(
+      'The policy gate held this brief for a person to check.'
+    );
+    expect(mail.text).not.toContain('someFutureRule');
+  });
+
+  it('falls back to the category label, lowercased, for a category this template has not been taught a mention for', () => {
+    const mail = policyReviewOperatorEmail({
+      ...BASE,
+      rule: 'sensitive_lawful',
+      categoryId: 'some_future_category',
+      categoryLabel: 'Some Future Category',
+    });
+    expect(mail.text).toContain(
+      'The brief describes some future category, which we build only after a person checks it.'
+    );
+  });
+});
+
+describe('policyReviewOperatorEmail, the primary link', () => {
+  it('points the button and primary link at the review on the board', () => {
+    const mail = policyReviewOperatorEmail({
+      ...BASE,
+      rule: 'sensitive_lawful',
+      categoryId: 'licensed_pharmacy',
+      categoryLabel: 'Licensed pharmacy or medicine retail',
+    });
+    expect(mail.html).toContain(`href="${REVIEW_URL}"`);
+    expect(mail.text).toContain(`Open this review: ${REVIEW_URL}`);
+  });
+});
+
+describe('policyReviewOperatorEmail, the brief and contact details', () => {
+  it('quotes the brief as it is', () => {
+    const mail = policyReviewOperatorEmail({
+      ...BASE,
+      rule: 'sensitive_lawful',
+      categoryId: 'licensed_pharmacy',
+      categoryLabel: 'Licensed pharmacy or medicine retail',
+    });
+    expect(mail.text).toContain(BASE.briefText);
+  });
+
+  it('renders no quote block when there is no brief text', () => {
+    const mail = policyReviewOperatorEmail({
+      ...BASE,
+      rule: 'sensitive_lawful',
+      categoryId: 'licensed_pharmacy',
+      categoryLabel: 'Licensed pharmacy or medicine retail',
+      briefText: '',
+    });
+    // The dark-mode stylesheet always defines `.fs-quote` as a CSS rule; only
+    // the rendered block itself proves whether a quote was drawn.
+    expect(mail.html).not.toContain('class="fs-quote"');
+  });
+
+  it('includes contact details when present', () => {
+    const mail = policyReviewOperatorEmail({
+      ...BASE,
+      rule: 'sensitive_lawful',
+      categoryId: 'licensed_pharmacy',
+      categoryLabel: 'Licensed pharmacy or medicine retail',
+      contactName: 'Ana Popescu',
+      contactEmail: 'ana@example.com',
+    });
+    expect(mail.text).toContain('Name: Ana Popescu');
+    expect(mail.text).toContain('Email: ana@example.com');
+  });
+
+  it('omits the facts block entirely when there is no contact to show', () => {
+    const mail = policyReviewOperatorEmail({
+      ...BASE,
+      rule: 'sensitive_lawful',
+      categoryId: 'licensed_pharmacy',
+      categoryLabel: 'Licensed pharmacy or medicine retail',
+    });
+    expect(mail.text).not.toContain('Name:');
+    expect(mail.text).not.toContain('Email:');
+  });
+});
+
+describe('policyReviewOperatorEmail, what happens next', () => {
+  it('states the review stays open until a decision', () => {
+    const mail = policyReviewOperatorEmail({
+      ...BASE,
+      rule: 'sensitive_lawful',
+      categoryId: 'licensed_pharmacy',
+      categoryLabel: 'Licensed pharmacy or medicine retail',
+    });
+    expect(mail.text).toContain(
+      'It stays open until an operator approves or refuses it.'
+    );
+  });
+});
+
+describe('policyReviewOperatorEmail, the subject line', () => {
+  it('summarises the reason in one line', () => {
+    const mail = policyReviewOperatorEmail({
+      ...BASE,
+      rule: 'sensitive_lawful',
+      categoryId: 'licensed_pharmacy',
+      categoryLabel: 'Licensed pharmacy or medicine retail',
+    });
+    expect(mail.subject).toBe(
+      'A brief needs your review: a lawful but sensitive brief'
+    );
+  });
+});
+
+describe('policyReviewOperatorEmail, house style', () => {
+  it('has no em dash, no emoji, and no marketing tone', () => {
+    const mail = policyReviewOperatorEmail({
+      ...BASE,
+      rule: 'sensitive_lawful',
+      categoryId: 'licensed_pharmacy',
+      categoryLabel: 'Licensed pharmacy or medicine retail',
+    });
+    expect(mail.html).not.toMatch(/[—–]/);
+    expect(mail.text).not.toMatch(/[—–]/);
+    expect(mail.html).not.toMatch(/[←-⯿]|️|[\uD83C-\uD83E][\uDC00-\uDFFF]/);
+  });
+
+  it('carries the same brand header every operator email uses', () => {
+    const mail = policyReviewOperatorEmail({
+      ...BASE,
+      rule: 'sensitive_lawful',
+      categoryId: 'licensed_pharmacy',
+      categoryLabel: 'Licensed pharmacy or medicine retail',
+    });
+    expect(mail.html).toContain('Flowstarter');
+    expect(mail.html).toContain('<!DOCTYPE html>');
+  });
+
+  it('renders the pharmacy example end to end (snapshot)', () => {
+    const mail = policyReviewOperatorEmail({
+      rule: 'sensitive_lawful',
+      categoryId: 'licensed_pharmacy',
+      categoryLabel: 'Licensed pharmacy or medicine retail',
+      briefText:
+        'We are Farmacia Sperantei, a licensed pharmacy in Cluj. We want a site where regular customers can reorder their repeat prescriptions.',
+      contactName: 'Ana Popescu',
+      contactEmail: 'ana@farmaciasperantei.ro',
+      reviewUrl: REVIEW_URL,
+    });
+    expect(mail.text).toMatchSnapshot();
+  });
+});

@@ -118,42 +118,184 @@ export function customWorkEnquiryEmail(input: {
  * What Darius reads.
  *
  * Separate from the two above because an operator's email is facts and a
- * client's email is a sentence. This one is the brief, the classifier's own
- * evidence and the route, so the decision can be judged from the inbox without
- * opening the board.
+ * client's email is a sentence. Except it used to be a dump of the routing
+ * machinery instead of facts: a raw cosine margin printed as "Confidence:
+ * 0.13" (meaningless outside the classifier that produced it, and not even on
+ * a 0-to-1-means-sure scale — see `decided` in `../flowstarter/scope-route`),
+ * "Scope: standard" sitting next to "Route: discovery-call" as if they agreed,
+ * and a bullet of the classifier's raw evidence fragments underneath the
+ * quoted brief as though it were a second thing to read. None of that is a
+ * reason to a person; it is the reason encoded for a rule. This function
+ * decodes it once, here, into the one plain sentence `REASON_COPY` below
+ * carries for each `route_rule`, so an operator learns why the lead landed
+ * without opening the board, and only opens it because they chose to, not
+ * because the email left it to them to reverse-engineer.
+ *
+ * `routeRule` selects the sentence; `evidence` supplies the visitor's own
+ * words to quote inside it, when the rule has any. Nothing here ever prints a
+ * rule id, a tier name or a number — see the tests, which assert exactly that.
+ *
+ * The primary link is the lead's own place on the pipeline board
+ * (`leadUrl`, built by the caller from `publicAppOrigin()`), never the
+ * visitor's own site or social profile: an operator reading this email wants
+ * the board, and a lead who happens to run an Instagram account is not the
+ * navigation this email is for. Their link, when they gave one, is a fact
+ * alongside their name and address, labelled for what it is.
  */
+
+/**
+ * The plain reason a lead is on the board, and the short phrase for the
+ * subject line, keyed by `route_rule` — the one thing `decideRoute` in
+ * `../flowstarter/scope-route` already computed deterministically, so this is
+ * a lookup, not a second decision.
+ *
+ * Only the four rules that can actually produce a `discovery-call` route are
+ * listed: `visitorSaysSoftware`, `customAboveThreshold` and `clarifiedCustom`
+ * from `decideRoute`, and `contactForm` from the discovery-call page's own
+ * form. Anything else falls through to `FALLBACK_REASON`, which stays true
+ * without naming whatever rule produced it.
+ */
+interface OperatorReason {
+  /** A few words for the subject line. Never a full sentence. */
+  subjectSummary: string;
+  /** The one sentence the email's body opens with. */
+  sentence: (evidence: readonly string[]) => string;
+}
+
+/**
+ * How much of one evidence fragment this template will quote.
+ *
+ * A named constant rather than a literal at the call site, so the bound is
+ * one number to change and one thing the tests can pin. Long enough for a
+ * short clause ("customers log into their loyalty account"), short enough
+ * that a classifier fragment that ran on is not mistaken for a proper quote.
+ */
+const MAX_QUOTED_EVIDENCE_CHARS = 60;
+
+/**
+ * One evidence fragment, trimmed to whole words within
+ * `MAX_QUOTED_EVIDENCE_CHARS`. Null when there is nothing usable: the
+ * fragment was empty, or even its first word alone would not fit -- a
+ * fragment this template cannot shorten honestly is one it does not quote,
+ * rather than one it cuts off mid-word.
+ */
+function wholeWordFragment(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (trimmed.length <= MAX_QUOTED_EVIDENCE_CHARS) return trimmed;
+  let out = '';
+  for (const word of trimmed.split(/\s+/)) {
+    const next = out ? `${out} ${word}` : word;
+    if (next.length > MAX_QUOTED_EVIDENCE_CHARS) break;
+    out = next;
+  }
+  return out || null;
+}
+
+/**
+ * Up to two of the visitor's own fragments, quoted and joined for a sentence.
+ * Null when the classifier gave none, or none of them survived
+ * `wholeWordFragment`, so the caller falls back to a sentence that asserts
+ * nothing it cannot show.
+ */
+function quotedEvidence(evidence: readonly string[]): string | null {
+  const fragments = evidence
+    .map((fragment) => wholeWordFragment(fragment))
+    .filter((fragment): fragment is string => fragment !== null)
+    .slice(0, 2);
+  if (fragments.length === 0) return null;
+  return fragments.map((fragment) => `"${fragment}"`).join(' and ');
+}
+
+const REASON_COPY: Record<string, OperatorReason> = {
+  visitorSaysSoftware: {
+    subjectSummary: 'needs software built for the business',
+    sentence: () =>
+      'The visitor told us they need software built for the business, not a site that presents it.',
+  },
+  customAboveThreshold: {
+    subjectSummary: 'reads like software to build, not a site',
+    sentence: (evidence) => {
+      const quoted = quotedEvidence(evidence);
+      return quoted
+        ? `The brief mentions ${quoted}, which points to software we do not build self-serve.`
+        : 'The brief reads like software to build rather than a site that presents the business, which is not something we build self-serve.';
+    },
+  },
+  clarifiedCustom: {
+    subjectSummary: 'still reads as software after the question',
+    sentence: (evidence) => {
+      const quoted = quotedEvidence(evidence);
+      return quoted
+        ? `We asked what they needed, and the brief still mentions ${quoted}, which points to software we do not build self-serve.`
+        : 'We asked what they needed, and the brief still reads as software to build rather than a site that presents the business.';
+    },
+  },
+  contactForm: {
+    subjectSummary: 'asked for a call through the contact form',
+    sentence: () =>
+      'The visitor asked directly for a call about custom work, through the contact form.',
+  },
+};
+
+const FALLBACK_REASON: OperatorReason = {
+  subjectSummary: 'was routed to a discovery call',
+  sentence: () =>
+    'The visitor was routed to a discovery call with DMPResearch.',
+};
+
+function operatorReasonFor(routeRule: string): OperatorReason {
+  return REASON_COPY[routeRule] ?? FALLBACK_REASON;
+}
+
 export function customWorkOperatorEmail(input: {
   visitorName: string;
   visitorEmail: string;
   description: string;
+  /** The visitor's own site or social link, when they gave one. Never the primary link. */
   linkUrl?: string | null;
-  scope: string;
-  confidence: number;
+  /** What `linkUrl` is, so the fact row reads right. Defaults to a neutral label. */
+  linkLabel?: string;
+  /** Which rule in `decideRoute` produced the route. Selects the reason sentence. */
+  routeRule: string;
+  /** The classifier's own quoted fragments, when it has any. */
   evidence: readonly string[];
-  route: string;
-  boardUrl: string;
+  /** The brief's language. A Romanian brief gets a one-line note, nothing else changes. */
+  locale?: 'en' | 'ro';
+  /** Null when this environment has no calendar configured; changes the next-step line. */
+  bookingUrl?: string | null;
+  /** The lead's own place on the pipeline board. The primary link and the button's target. */
+  leadUrl: string;
 }): RenderedEmail {
+  const reason = operatorReasonFor(input.routeRule);
+  const sentence = reason.sentence(input.evidence);
+  const briefNote =
+    input.locale === 'ro'
+      ? ' The brief is written in Romanian, quoted below exactly as they sent it.'
+      : '';
+  const nextStep = input.bookingUrl
+    ? 'They can book the call themselves at the link we sent them. Until then, or until you reach out, this sits in the Custom work lane.'
+    : 'There is no calendar for them to book, so this sits in the Custom work lane until you write to them.';
+
   return renderEmail({
-    subject: `Custom work lead: ${input.visitorName}`,
+    subject: `Custom work lead: ${input.visitorName}, ${reason.subjectSummary}`,
     preheader: `${input.visitorEmail} was routed to a discovery call.`,
     blocks: [
       { kind: 'heading', text: 'A custom work lead' },
+      { kind: 'paragraph', content: `${sentence}${briefNote}` },
+      { kind: 'paragraph', content: nextStep },
+      { kind: 'quote', text: input.description },
       {
         kind: 'facts',
         rows: [
           { label: 'Name', value: input.visitorName },
           { label: 'Email', value: input.visitorEmail },
-          ...(input.linkUrl ? [{ label: 'Link', value: input.linkUrl }] : []),
-          { label: 'Scope', value: input.scope },
-          { label: 'Confidence', value: input.confidence.toFixed(2) },
-          { label: 'Route', value: input.route },
+          ...(input.linkUrl
+            ? [{ label: input.linkLabel ?? 'Their link', value: input.linkUrl }]
+            : []),
         ],
       },
-      { kind: 'quote', text: input.description },
-      ...(input.evidence.length > 0
-        ? [{ kind: 'list' as const, items: [...input.evidence] }]
-        : []),
-      { kind: 'button', label: 'Open the board', href: input.boardUrl },
+      { kind: 'button', label: 'Open this lead', href: input.leadUrl },
     ],
   });
 }

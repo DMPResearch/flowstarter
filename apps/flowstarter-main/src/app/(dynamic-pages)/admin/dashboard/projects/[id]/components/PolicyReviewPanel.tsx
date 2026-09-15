@@ -159,6 +159,10 @@ function PolicyReviewCard({
 
   return (
     <li
+      // Matched by `reviewBoardUrl` in `@/lib/policy/review`, which is what
+      // the "A brief needs your review" operator email's button and primary
+      // link point at.
+      id={`policy-review-${review.id}`}
       data-testid="policy-review-card"
       data-review-id={review.id}
       className="rounded-lg border border-[var(--fs-rule)] bg-[var(--fs-glass-bg)] p-3"
