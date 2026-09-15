@@ -17,6 +17,7 @@
 import { useState } from 'react';
 import { Button } from '@flowstarter/flow-design-system';
 import type { ScopeAnswerKey, ScopeRouteState } from '../useScopeRoute';
+import type { PolicyNotice } from '@/lib/policy/copy';
 
 const CARD =
   'rounded-2xl border border-[var(--fs-rule)] bg-[var(--fs-surface)] p-6 sm:p-7';
@@ -45,6 +46,12 @@ const ANSWERS: readonly { key: ScopeAnswerKey; localeKey: string }[] = [
 const FALLBACK_COPY = {
   titleKey: 'landing.discovery.scope.review.title',
   bodyKey: 'landing.discovery.scope.review.body',
+} as const;
+
+/** The same discipline for the hold: if the server named no copy, say the true thing. */
+const HOLD_FALLBACK_COPY = {
+  titleKey: 'landing.discovery.scope.hold.title',
+  bodyKey: 'landing.discovery.scope.hold.body',
 } as const;
 
 function Checking({ t }: { t: (key: string) => string }) {
@@ -204,6 +211,80 @@ function Offer({
   );
 }
 
+/**
+ * The hold: nothing could classify this brief, so a person reads it.
+ *
+ * A fourth face rather than a variant of `Offer`, and the differences are the
+ * reason. `Offer` names DMPResearch and renders a calendar, both of which are
+ * a sales motion; this brief has been read by nobody, so there is nothing to
+ * sell and nobody has decided it is custom work. There is no CTA at all,
+ * which is correct: the next move is ours, not the visitor's.
+ *
+ * Nor does it reuse the review copy. Telling somebody their business "sits
+ * close enough to our acceptable-use policy that a person checks it" when in
+ * truth our classifier timed out is a claim about their business we have no
+ * basis for. `HOLD_COPY` in `scope-route.ts` says what happened instead.
+ */
+function Hold({
+  t,
+  copy,
+  policy,
+}: {
+  t: (key: string) => string;
+  copy?: { titleKey: string; bodyKey: string };
+  policy?: PolicyNotice;
+}) {
+  // The server's notice wins when it sent one: it is already in the visitor's
+  // language and it is the same sentence the preview route would have shown.
+  // The locale keys are the fallback for a response that carried none.
+  const { titleKey, bodyKey } = copy ?? HOLD_FALLBACK_COPY;
+  return (
+    <div className={CARD} role="status" aria-live="polite">
+      <h3 className="text-lg font-bold text-[var(--fs-ink)]">
+        {policy?.title ?? t(titleKey)}
+      </h3>
+      <p className="mt-2 text-sm text-[var(--fs-ink)]">
+        {policy?.message ?? t(bodyKey)}
+      </p>
+      <p className="mt-3 text-sm text-[var(--fs-ink-faint)]">
+        {policy?.next ?? t('landing.discovery.scope.hold.next')}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * The refusal, said here rather than one screen later.
+ *
+ * Every word comes from `@/lib/policy/copy` through the server, which is the
+ * house rule for this copy and the reason there are no locale keys in here:
+ * the policy owns the sentence, the category label inside it, and the
+ * language it is written in. This component owns the card it sits in.
+ *
+ * It renders nothing at all if the notice is missing, which is deliberate.
+ * Inventing a refusal sentence in the browser is how a screen ends up
+ * asserting something the gate never decided; if the server did not say why,
+ * this says nothing rather than guessing.
+ */
+function Refused({ policy }: { policy?: PolicyNotice }) {
+  if (!policy) return null;
+  return (
+    <div className={CARD} role="status" aria-live="polite">
+      <h3 className="text-lg font-bold text-[var(--fs-ink)]">{policy.title}</h3>
+      <p className="mt-2 text-sm text-[var(--fs-ink)]">{policy.message}</p>
+      <p className="mt-3 text-sm text-[var(--fs-ink-faint)]">{policy.next}</p>
+      <div className="mt-4 flex flex-wrap gap-3 text-[12px] font-semibold">
+        <a className="underline" href={policy.termsHref}>
+          {policy.termsLabel}
+        </a>
+        <a className="underline" href={policy.contactHref}>
+          {policy.contactLabel}
+        </a>
+      </div>
+    </div>
+  );
+}
+
 export function ScopeGateStep({
   state,
   pending,
@@ -224,6 +305,12 @@ export function ScopeGateStep({
         onAnswer={onClarify}
       />
     );
+  }
+  if (state.status === 'refused') {
+    return <Refused policy={state.policy} />;
+  }
+  if (state.status === 'hold') {
+    return <Hold t={t} copy={state.copy} policy={state.policy} />;
   }
   if (state.status === 'offer') {
     return <Offer t={t} bookingUrl={state.bookingUrl} copy={state.copy} />;

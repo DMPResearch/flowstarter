@@ -25,6 +25,7 @@
  * unreachable, and the right answer to that is the default product.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { PolicyNotice } from '@/lib/policy/copy';
 import type { DiscoveryData } from './discovery.logic';
 
 /** The answers the question offers, as the keys the rule reads. */
@@ -45,13 +46,34 @@ export type ScopeRouteState =
       bookingUrl: string | null;
       /** Absent when an older response shape arrives. See `ScopeGateStep`. */
       copy?: ScopeOfferCopy;
-    };
+    }
+  /**
+   * Nothing could classify the brief, so a person will read it.
+   *
+   * Its own state and not a flavour of `offer`, because the offer screen
+   * names Darius's studio and shows a calendar, and neither belongs on a
+   * brief nobody has read. Carries no `bookingUrl` by construction: the type
+   * is the guarantee that this screen cannot render one.
+   */
+  | { status: 'hold'; copy?: ScopeOfferCopy; policy?: PolicyNotice }
+  /**
+   * Refused at the gate, with the sentence the policy wrote.
+   *
+   * Like `hold`, this exists so the wizard never mounts `PreviewStep` for a
+   * brief the gate has already answered. It used to fall through to
+   * `self-serve` and let the preview route say no a screen later, which meant
+   * a refused brief was handed to the component that starts generations and
+   * stopped only by a SECOND classifier call over different text.
+   */
+  | { status: 'refused'; policy?: PolicyNotice };
 
 interface ScopeResponse {
   route?: string;
   questionKey?: string;
   bookingUrl?: string | null;
   offerCopy?: ScopeOfferCopy;
+  /** Present on `refused` and `hold`. Written by `@/lib/policy/copy`. */
+  policy?: PolicyNotice;
 }
 
 function stateFrom(json: ScopeResponse): ScopeRouteState {
@@ -61,6 +83,17 @@ function stateFrom(json: ScopeResponse): ScopeRouteState {
       bookingUrl: json.bookingUrl ?? null,
       copy: json.offerCopy,
     };
+  }
+  // Checked before the question and before the default. These are the two
+  // routes the browser may NOT fail open on: falling through to `self-serve`
+  // here would mount `PreviewStep`, and `PreviewStep` starts a generation on
+  // mount. The `bookingUrl` the server sends is deliberately absent on both
+  // and is not read even if a stale deploy sends one.
+  if (json.route === 'refused') {
+    return { status: 'refused', policy: json.policy };
+  }
+  if (json.route === 'hold') {
+    return { status: 'hold', copy: json.offerCopy, policy: json.policy };
   }
   if (json.route === 'ask-one-more-question' && json.questionKey) {
     return { status: 'question', questionKey: json.questionKey };

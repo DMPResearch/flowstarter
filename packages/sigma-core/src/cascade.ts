@@ -27,6 +27,7 @@ import type {
   HeadTrace,
   SemanticResult,
   Tier,
+  TierOutcome,
   TierVerdict,
 } from './types.js';
 
@@ -67,7 +68,57 @@ export interface ClassifyOptions {
   budgetMs?: number;
 }
 
-const DEFAULT_TIER_BUDGET_MS = 3_000;
+/**
+ * The budget for one injected tier call, when the caller does not say.
+ *
+ * Sized for a LOCAL tier — a rules pass, a lookup, a second scorer — and for
+ * nothing else. **A tier that opens a socket must pass its own
+ * `tierBudgetMs`**, because three seconds is not a network budget: it is
+ * roughly one round trip plus a small model's own generation time, with
+ * nothing left for a slow moment at the provider.
+ *
+ * This default is the reason the drugs brief reached `self-serve` on staging
+ * on 2026-09-15. The consumer injected a paid `openai/gpt-4o-mini` call and
+ * never overrode the budget, so the app's own 15 s classifier timeout
+ * (`ACCEPTABLE_USE_TIMEOUT_MS`) was silently replaced by this 3 s one the
+ * moment the embedding tier was switched on — a 5x cut nothing in either
+ * file's diff showed. Measured against OpenRouter with the real prompt, that
+ * call runs 0.7 s to 2.2 s of model time BEFORE the consumer's own usage
+ * ledger round trips, so the budget bit on the slow briefs and held on the
+ * fast ones. See `ACCEPTABLE_USE_LLM_TIER_BUDGET_MS` in the app's
+ * `policy/acceptable-use.ts` for the number a real model call is given.
+ *
+ * Exported so a consumer can see what it is inheriting rather than discover
+ * it from a trace.
+ */
+export const DEFAULT_TIER_BUDGET_MS = 3_000;
+
+/**
+ * Why an `AbortSignal` from this cascade fired.
+ *
+ * `controller.abort()` with no argument gives the tier an `AbortError` that
+ * says nothing about who aborted it or why, so a tier's own catch block
+ * cannot tell "the cascade's budget expired" from "the caller cancelled the
+ * request" from "the provider hung up". Aborting with a cause makes the
+ * reason readable at `signal.reason` inside the tier, which is where the code
+ * that has to log it actually runs.
+ */
+export class TierBudgetExpiredError extends Error {
+  readonly decision: string;
+  readonly budgetMs: number;
+  constructor(decision: string, budgetMs: number) {
+    super(`tier for "${decision}" exceeded its ${budgetMs}ms budget`);
+    this.name = 'TierBudgetExpiredError';
+    this.decision = decision;
+    this.budgetMs = budgetMs;
+  }
+}
+
+/** What `runTier` hands back: the verdict, and always what happened. */
+interface TierRun {
+  verdict: TierVerdict | null;
+  outcome: TierOutcome;
+}
 
 function missingSemantic(reason: SemanticResult['reason']): SemanticResult {
   return {
@@ -90,6 +141,7 @@ function blankHead(decision: string, semantic: SemanticResult, semanticMs: numbe
     semanticAbstained: true,
     injectedAttempted: false,
     injectedAbstained: false,
+    injectedOutcome: null,
     evidence: null,
     timings: { semanticMs, injectedMs: 0 },
   };
@@ -132,6 +184,7 @@ export async function classify(
         semanticAbstained: semantic.abstained,
         injectedAttempted: false,
         injectedAbstained: false,
+        injectedOutcome: null,
         evidence: null,
         timings: { semanticMs, injectedMs: 0 },
       };
@@ -160,7 +213,7 @@ export async function classify(
         const head = heads[decision] as HeadTrace;
         head.injectedAttempted = true;
         const tierStarted = performance.now();
-        const verdict = await runTier(
+        const { verdict, outcome } = await runTier(
           tiers[decision] as Tier,
           text,
           decision,
@@ -168,6 +221,7 @@ export async function classify(
           errors,
         );
         head.timings.injectedMs = performance.now() - tierStarted;
+        head.injectedOutcome = outcome;
         if (!verdict) {
           head.injectedAbstained = true;
           return;
@@ -195,42 +249,77 @@ export async function classify(
   };
 }
 
+/**
+ * Run one injected tier inside its budget, and always say what happened.
+ *
+ * Three things here are load-bearing, and all three were missing until
+ * 2026-09-15:
+ *
+ *   1. **The abort carries a cause.** `controller.abort(new
+ *      TierBudgetExpiredError(...))` rather than `controller.abort()`, so the
+ *      tier's own catch block can read `signal.reason` and log why its call
+ *      died instead of reporting a bare `AbortError`.
+ *   2. **A timeout is recorded in `errors`.** It used to resolve `null` and
+ *      push nothing, which made a blown budget byte-for-byte identical to a
+ *      consumer that had supplied no tier at all. A trace that cannot tell
+ *      those apart cannot be the basis of a safety decision, and a caller
+ *      reading it had no way to know its only intent-reading tier was down.
+ *   3. **The outcome comes back with the verdict.** `errors` is a flat list
+ *      for the whole cascade; a caller that needs to know whether THE HEAD IT
+ *      IS ABOUT TO ACT ON failed should not have to parse strings out of it.
+ */
 async function runTier(
   tier: Tier,
   text: string,
   decision: string,
   budgetMs: number,
   errors: string[],
-): Promise<TierVerdict | null> {
+): Promise<TierRun> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let expired = false;
   try {
     const timeout = new Promise<null>((resolvePromise) => {
       timer = setTimeout(() => {
-        controller.abort();
+        expired = true;
+        controller.abort(new TierBudgetExpiredError(decision, budgetMs));
         resolvePromise(null);
       }, Math.max(1, budgetMs));
     });
     const work = tier(text, decision, controller.signal);
+    // The loser of the race is still a live promise; swallowing its rejection
+    // here keeps a slow tier that eventually throws from becoming an
+    // unhandled rejection that kills the process.
     work.catch(() => undefined);
     const verdict = await Promise.race([work, timeout]);
-    if (verdict === null) return null;
+    if (verdict === null) {
+      // The two ways to arrive here are NOT the same fact, and conflating
+      // them is the bug this function was rewritten to fix.
+      if (expired) {
+        errors.push(`tier:${decision}:timeout:${budgetMs}ms`);
+        return { verdict: null, outcome: 'timeout' };
+      }
+      return { verdict: null, outcome: 'abstained' };
+    }
     if (
       typeof verdict.label !== 'string' ||
       typeof verdict.confidence !== 'number' ||
       !Number.isFinite(verdict.confidence)
     ) {
       errors.push(`tier:${decision}:malformed_verdict`);
-      return null;
+      return { verdict: null, outcome: 'malformed' };
     }
     return {
-      label: verdict.label,
-      confidence: Math.min(1, Math.max(0, verdict.confidence)),
-      evidence: typeof verdict.evidence === 'string' ? verdict.evidence : '',
+      verdict: {
+        label: verdict.label,
+        confidence: Math.min(1, Math.max(0, verdict.confidence)),
+        evidence: typeof verdict.evidence === 'string' ? verdict.evidence : '',
+      },
+      outcome: 'verdict',
     };
   } catch (error) {
     errors.push(`tier:${decision}:${describe(error)}`);
-    return null;
+    return { verdict: null, outcome: 'error' };
   } finally {
     if (timer) clearTimeout(timer);
   }

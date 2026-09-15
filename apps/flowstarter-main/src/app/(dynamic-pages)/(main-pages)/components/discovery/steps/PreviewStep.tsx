@@ -867,8 +867,19 @@ export function PreviewStep({
     !finished && !buildFailure && !deferred && !refusal
   );
 
+  // A refusal is a failure; a hold is not.
+  //
+  // The gate answers this route with the same `reason: 'acceptable-use'` for
+  // both, and `notice.decision` is what tells them apart. `refuse` really is
+  // the end of the road and reads as one. `review` -- a licensed pharmacy
+  // waiting on a licence check, or (since 2026-09-15) a brief our classifier
+  // could not finish reading -- is a promise to come back, and dressing that
+  // in the failed state tells somebody their florist's website broke when in
+  // fact we are still looking at it.
   const nowState: NowState = refusal
-    ? 'failed'
+    ? refusal.decision === 'refuse'
+      ? 'failed'
+      : 'done'
     : deferred
     ? 'done'
     : buildFailure
@@ -976,13 +987,13 @@ export function PreviewStep({
               href={refusal.termsHref}
               className="text-[var(--fs-ink)] underline underline-offset-2 hover:text-[var(--purple-primary)]"
             >
-              Read the acceptable use section of our terms
+              {refusal.termsLabel}
             </a>
             <a
               href={refusal.contactHref}
               className="text-[var(--fs-ink)] underline underline-offset-2 hover:text-[var(--purple-primary)]"
             >
-              Talk to a person
+              {refusal.contactLabel}
             </a>
           </div>
         </ChatBubble>

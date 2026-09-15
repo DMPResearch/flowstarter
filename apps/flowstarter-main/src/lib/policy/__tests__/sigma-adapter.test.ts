@@ -49,6 +49,7 @@ function sigmaDecision(over: Partial<SigmaDecision> = {}): SigmaDecision {
       acceptableUse: 'confident:acceptable_use:prostitution_escort:semantic',
     },
     decided: { acceptableUse: true },
+    tierFailed: { acceptableUse: false },
     trace: {
       heads: {
         acceptable_use: {

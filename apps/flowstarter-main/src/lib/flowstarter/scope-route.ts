@@ -68,8 +68,24 @@
  * emails Darius and hands the visitor a prefilled booking link, which on
  * staging is exactly what happened -- a request to sell drugs and unregistered
  * firearms was offered thirty minutes with Darius, name and email already in
- * the URL. Both of those verdicts now step aside to `self-serve`, where the
- * preview route screens again and answers with the copy `@/lib/policy` owns.
+ * the URL.
+ *
+ * ── `review` was two facts wearing one word ───────────────────────────────
+ * The fix above sent both of those to `self-serve`, on the reasoning that the
+ * preview route screens again and owns the copy. That is true when a
+ * classifier has actually spoken. It is false when none has, and the
+ * difference is what let the same drugs brief through a second time on
+ * 2026-09-15, this time by the front door: the LLM tier was aborted at the
+ * cascade's 3 s default budget, the cascade recorded the abort nowhere, the
+ * rule layer filed the fallback as `needs_human_flag` with no category, and
+ * this table read an uncategorised review as "nothing to act on" and answered
+ * `self-serve` -- three times, each of which is a preview being generated.
+ *
+ * A fail-closed rule that fails open at the route is not a fail-closed rule.
+ * So the gate's answer arrives here as four values rather than three, and
+ * "we could not classify this" (`hold`) is now its own destination, distinct
+ * both from "a person should check this licence" (`review`) and from "the
+ * classifier was merely unsure" (`unsettled`).
  *
  * ── The thresholds ────────────────────────────────────────────────────────
  * Two numbers, both overridable by ops without a deploy, and neither of them
@@ -105,13 +121,84 @@ export type Scope = 'standard' | 'custom' | 'unclear';
  *
  * The gate owns refusal. This owns destination.
  */
-export type AcceptableUse = 'allowed' | 'review' | 'blocked';
+export type AcceptableUse =
+  /** A tier read the brief and nothing in the policy applies. */
+  | 'allowed'
+  /**
+   * A tier read the brief and NAMED a category -- a licensed pharmacy, a
+   * bookmaker, a prohibited category it was not sure enough about to refuse.
+   * #180's behaviour stands: the visitor carries on to a self-serve preview
+   * and an operator reads the row.
+   */
+  | 'review'
+  /**
+   * A `review` with NO category. The classifier worked; it simply was not
+   * confident enough to call the brief clean (`needs_human_flag`,
+   * `clean_but_abstained`). That is not a statement about the business, so it
+   * must not override what the scope head decided -- "I need a website for my
+   * business." still earns its one clarifying question rather than
+   * disappearing into the acceptable-use branch.
+   */
+  | 'unsettled'
+  /**
+   * Nothing classified the brief at all: the tier timed out, threw, or the
+   * classifier is down and we fail closed. Distinct from every value above,
+   * because it is the ABSENCE of a verdict rather than one.
+   */
+  | 'hold'
+  /** Refused. */
+  | 'blocked';
 
-/** The three places the funnel can send somebody at this point. */
+/** The five places the funnel can send somebody at this point. */
 export type ScopeRoute =
   | 'self-serve'
   | 'discovery-call'
-  | 'ask-one-more-question';
+  | 'ask-one-more-question'
+  /**
+   * Refused, and told so here rather than one screen later.
+   *
+   * #180 sent a refusal to `self-serve` on the reasoning that the preview
+   * route screens again and owns the refusal copy, and that the second screen
+   * "costs nothing, because the classifier is cached". The second half of
+   * that is not true, and the first half depends on it.
+   *
+   * The two screens do not classify the same text. `runScopeGate` composes
+   * its subject from the description, the links and the link title;
+   * `/api/discovery/preview/live` composes its own from the full spec --
+   * `businessName`, `industry`, `targetAudience`, `goal`, `offer`,
+   * `services`. Different text is a different content hash, so the second
+   * screen MISSES the cache and makes a fresh paid call, which can abstain,
+   * fail or time out entirely on its own. Routing a refused brief to
+   * `self-serve` therefore hands it to the one component whose job is to
+   * start a generation and relies on a second, independent coin flip to stop
+   * it.
+   *
+   * That is the same shape of mistake as the one that put a drugs and
+   * firearms shop on `self-serve` three times on 2026-09-15, so it gets the
+   * same answer: the funnel stops at the gate. The refusal notice
+   * `@/lib/policy` already produced travels with the decision, so the copy is
+   * still written in exactly one place -- it is just delivered one screen
+   * earlier, by the module that already knows.
+   */
+  | 'refused'
+  /**
+   * Nobody has read this brief and nobody may act on it yet.
+   *
+   * Not `self-serve`, which is this module getting out of the way and letting
+   * a generation start. Not `discovery-call`, which is a sales offer. The
+   * visitor is told, in their own language, that a person will look at it
+   * shortly; `spendsGenerationBudget` is false for it, no booking link is
+   * minted, a `policy_reviews` row is already open against it and the
+   * classifier-outage alert is already counting.
+   *
+   * This route exists because `review` did not distinguish "a person should
+   * check this licence" from "no classifier answered", and #180's table
+   * mapped both to `self-serve`. On staging that turned a fail-closed rule
+   * into a fail-OPEN route: a brief asking for a shop selling recreational
+   * drugs and unregistered firearms for crypto with no ID checks was routed
+   * `self-serve` three times, which is a preview being generated.
+   */
+  | 'hold';
 
 /**
  * The visitor's answer to "is this a site, or software?", as a decided value
@@ -202,6 +289,8 @@ export interface ScopeRouteDecision {
 export type ScopeRouteRuleId =
   | 'acceptableUseNeedsAHuman'
   | 'acceptableUseRefused'
+  | 'acceptableUseUnavailable'
+  | 'acceptableUseUnsettled'
   | 'customAboveThreshold'
   | 'customBelowThreshold'
   | 'standardAboveThreshold'
@@ -248,6 +337,10 @@ const REASONS: Record<ScopeRouteRuleId, string> = {
     'The acceptable use check did not clear this brief, so a person reads it before anything is built. It is not custom work and it is not offered a call.',
   acceptableUseRefused:
     'The acceptable use gate refused this brief. It is not custom work and it is not offered a call; the preview route refuses it in its own words.',
+  acceptableUseUnavailable:
+    'Nothing could classify this brief, so nobody has read it. It is held for a person, no preview is generated and no call is offered.',
+  acceptableUseUnsettled:
+    'The acceptable use check named no category, so it says nothing about this business and does not override what the brief is for.',
   customAboveThreshold:
     'The brief reads as custom work rather than a site that presents a business.',
   customBelowThreshold:
@@ -286,10 +379,16 @@ function decision(
  *
  * Pure, synchronous, no IO. Read top to bottom:
  *
- *   acceptable use    a refusal or a hold ends the decision here, at
- *                     `self-serve`, which means "this module has no opinion
- *                     left" and hands the visitor to the preview route that
- *                     owns the policy copy. Neither is ever offered a call.
+ *   acceptable use    four different answers, and they do four different
+ *                     things. `blocked` and a CATEGORISED `review` end the
+ *                     decision at `self-serve`, which means "this module has
+ *                     no opinion left" and hands the visitor to the preview
+ *                     route that owns the policy copy. `hold` -- nothing
+ *                     classified the brief -- ends it at `hold`, which
+ *                     generates nothing. An UNCATEGORISED `review` ends
+ *                     nothing at all: it says nothing about the business, so
+ *                     the scope rules below decide. None of the four is ever
+ *                     offered a call.
  *   visitor answer    an explicit answer settles the scope, unless the
  *                     classifier's own tier has already decided the opposite,
  *                     which is a disagreement rather than a verdict.
@@ -305,27 +404,93 @@ export function decideRoute(input: ScopeRouteInput): ScopeRouteDecision {
     // a sales call with Darius's studio -- which is exactly what routing it to
     // `discovery-call` would file, email and calendar-invite.
     //
-    // `self-serve` here does not mean "build it". It means this module has no
-    // opinion left and gets out of the way: the visitor falls through to
-    // `/api/discovery/preview/live`, which screens again (the classifier is
-    // cached, so the second screen costs nothing) and answers with the refusal
-    // notice and the copy that `@/lib/policy` owns. Refusal is written in one
-    // place, and it is not this one.
-    return decision('acceptableUseRefused', 'self-serve', input.scope);
+    // And deliberately not `self-serve` either, which is what it used to be.
+    // See the `refused` route's own doc: `self-serve` mounts the component
+    // that starts a generation, and the second screen it was trusting to stop
+    // one classifies DIFFERENT text and can fail on its own. The refusal is
+    // final and already written; there is nothing to gain by taking a second
+    // opinion from a classifier that might not answer.
+    return decision('acceptableUseRefused', 'refused', input.scope);
   }
-  if (acceptableUse !== 'allowed') {
-    // `review`: lawful but sensitive, or the classifier abstained. Same
-    // stepping-aside as a refusal, and for a sharper reason than symmetry.
-    // This branch used to route to the discovery call, and on staging the
-    // embedding tier abstained on nearly every brief, so nearly every brief
-    // became a sales call: a flower shop, and also an escort service and a
-    // firearms seller, each handed a prefilled calendar link. The hold is
-    // real and it is already recorded -- `screenAcceptableUse` wrote the
-    // `policy_reviews` row before this ran -- and the preview route holds the
-    // build on the same verdict. What must not happen is a calendar.
+  if (acceptableUse === 'hold') {
+    // Nothing read this brief. Not the embeddings (they abstained, or their
+    // verdict missed the guard), and not the model (it timed out, threw, or
+    // is down).
+    //
+    // `self-serve` is the one answer that must not appear here, and it is
+    // what this branch used to give. `self-serve` means "this module has no
+    // opinion left, let the preview route screen again" -- which is sound
+    // when a classifier HAS spoken, because the second screen is cached and
+    // reaches the same verdict. It is not sound when no classifier spoke at
+    // all: the second screen re-runs against a DIFFERENT composed subject, so
+    // it misses the cache, and may time out exactly as the first one did. Two
+    // coin flips are not a gate.
+    //
+    // So the funnel stops here instead, in its own words. The row is already
+    // open (`screenAcceptableUse` wrote it before this ran) and the outage
+    // alert is already counting.
+    return decision('acceptableUseUnavailable', 'hold', input.scope, true);
+  }
+  if (acceptableUse === 'review') {
+    // A tier NAMED a category: a licensed pharmacy, a bookmaker, something
+    // prohibited it was not sure enough about to refuse. #180's behaviour,
+    // unchanged -- the visitor carries on and an operator reads the row --
+    // and deliberately not a calendar. This branch used to route to the
+    // discovery call, and on staging the embedding tier abstained on nearly
+    // every brief, so nearly every brief became a sales call: a flower shop,
+    // and also an escort service and a firearms seller, each handed a
+    // prefilled calendar link.
     return decision('acceptableUseNeedsAHuman', 'self-serve', input.scope);
   }
+  // `unsettled` falls through to the scope rules on purpose. A review that
+  // named no category is not a finding about this business, and letting it
+  // end the decision here is what swallowed the clarifying question: the
+  // vague brief was screened, came back `review|none`, and the funnel
+  // answered the acceptable-use branch instead of asking the one question
+  // that would have settled it.
+  //
+  // It falls through to the rules, though, and NOT to the calendar. See
+  // `withoutACalendar` below: "does not override the scope decision" and "may
+  // be sold to" are different permissions, and only the first is granted by a
+  // verdict that came back uncategorised.
+  return acceptableUse === 'unsettled'
+    ? withoutACalendar(scopeDecision(input))
+    : scopeDecision(input);
+}
 
+/**
+ * Strip the discovery call out of a decision the scope rules reached.
+ *
+ * The invariant #180 established, and the one thing that must survive
+ * `unsettled` falling through: **only a clean acceptable-use verdict may
+ * produce a calendar.** `discovery-call` is not a neutral destination. It
+ * files a `custom_work_leads` row with the visitor's name and address, emails
+ * Darius, and hands back a booking URL with both already in the query string.
+ * Doing that on the strength of a verdict that named no category means doing
+ * it for a brief the classifier was not confident was clean -- and on staging
+ * an uncategorised review is exactly what a request to sell drugs and
+ * unregistered firearms produced.
+ *
+ * So the scope rules still decide what the brief IS (which is why the vague
+ * brief still gets its one question, and a standard site still reaches its
+ * preview); they just cannot spend a sales motion on it. `self-serve` is the
+ * substitute for the same reason it substitutes for a refusal: it means this
+ * module has no opinion left, and the preview route screens again and owns
+ * whatever copy is due.
+ */
+function withoutACalendar(scoped: ScopeRouteDecision): ScopeRouteDecision {
+  if (scoped.route !== 'discovery-call') return scoped;
+  return {
+    ...decision('acceptableUseUnsettled', 'self-serve', scoped.scope, true),
+    // Keep the scope the rules settled: an operator reading the row should
+    // see that this WAS custom work, and that the only reason no call was
+    // offered is that acceptable use came back uncategorised.
+    scope: scoped.scope,
+  };
+}
+
+/** The scope half, after acceptable use has had its say. */
+function scopeDecision(input: ScopeRouteInput): ScopeRouteDecision {
   const classifierIsSureItIsCustom =
     input.scope === 'custom' && input.decided === true;
 
@@ -392,6 +557,22 @@ export function decideRoute(input: ScopeRouteInput): ScopeRouteDecision {
 export function spendsGenerationBudget(route: ScopeRoute): boolean {
   return route === 'self-serve';
 }
+
+/**
+ * Which copy a `hold` shows, as locale keys.
+ *
+ * Its own pair rather than reusing `landing.discovery.scope.review.*`,
+ * because the two say different things and only one of them is true here.
+ * The review copy tells a visitor their business "sits close enough to our
+ * acceptable-use policy that a person checks it" -- a sentence about their
+ * business, which we are in no position to write when nothing read it. The
+ * hold copy says what actually happened: we could not finish checking, a
+ * person will look shortly, and nothing has been charged.
+ */
+export const HOLD_COPY: ScopeOfferCopy = {
+  titleKey: 'landing.discovery.scope.hold.title',
+  bodyKey: 'landing.discovery.scope.hold.body',
+};
 
 // ---------------------------------------------------------------------------
 // The copy the decision is allowed to show

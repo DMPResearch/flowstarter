@@ -26,6 +26,7 @@ import {
   getEncoder,
   loadEncoderConfig,
   semanticSettles,
+  tierFailed,
   type DecisionMapping,
   type DecisionThresholds,
   type DecisionTrace,
@@ -70,6 +71,30 @@ export interface Decision {
    * platform's safe default, and honest logging says so.
    */
   decided: { acceptableUse: boolean; scope: boolean };
+  /**
+   * Per head: did the injected tier FAIL, as opposed to decline?
+   *
+   * `decided: false` says only that the fallback produced the action. It does
+   * not say why, and the two reasons are worlds apart: a tier that abstained
+   * has read the brief and had nothing to add, while a tier that timed out or
+   * threw never read it at all. The first is a normal, cheap outcome the
+   * fallback exists to absorb. The second means this head has no intent
+   * reading behind it, and a consumer that cannot see the difference will
+   * record an outage as an ordinary quiet verdict.
+   *
+   * On 2026-09-15 staging did exactly that. The acceptable-use head's LLM
+   * tier was aborted at the cascade's 3 s default budget, the head fell back
+   * to `review` with no category, the app filed it as
+   * `review|none|0.000|needs_human_flag|embedding`, and its funnel read an
+   * uncategorised review as "nothing to act on" and offered the visitor a
+   * self-serve preview. The brief was a request for a shop selling
+   * recreational drugs and unregistered firearms for crypto with no ID
+   * checks.
+   *
+   * True here means: do not treat this head's action as a verdict about the
+   * text. Treat it as "we could not classify this".
+   */
+  tierFailed: { acceptableUse: boolean; scope: boolean };
   trace: DecisionTrace;
 }
 
@@ -336,6 +361,12 @@ export function decide(trace: DecisionTrace, policy: PolicyConfig = loadPolicy()
     decided: {
       acceptableUse: acceptableUse.reason === 'confident',
       scope: scope.reason === 'confident',
+    },
+    tierFailed: {
+      acceptableUse: tierFailed(
+        trace.heads[ACCEPTABLE_USE_HEAD]?.injectedOutcome ?? null,
+      ),
+      scope: tierFailed(trace.heads[SCOPE_HEAD]?.injectedOutcome ?? null),
     },
     trace,
   };

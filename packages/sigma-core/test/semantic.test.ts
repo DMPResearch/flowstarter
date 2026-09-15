@@ -11,6 +11,8 @@ import {
   embedWithinBudget,
   meanVector,
   normalize,
+  TierBudgetExpiredError,
+  tierFailed,
   type CentroidsFile,
   type Encoder,
   type SemanticConfigFile,
@@ -166,7 +168,7 @@ describe('classify', () => {
     });
   });
 
-  it('lets an injected tier abstain', async () => {
+  it('lets an injected tier abstain, and calls that a decline rather than a failure', async () => {
     const trace = await classify('anything', {
       ...base,
       encoder: stubEncoder([0.9, 0.8, 0]),
@@ -175,8 +177,13 @@ describe('classify', () => {
     expect(trace.heads.colour).toMatchObject({
       injectedAttempted: true,
       injectedAbstained: true,
+      injectedOutcome: 'abstained',
       label: null,
     });
+    // A tier that read the text and declined is not a broken tier, so nothing
+    // about it belongs in `errors`.
+    expect(trace.errors).toEqual([]);
+    expect(tierFailed(trace.heads.colour?.injectedOutcome ?? null)).toBe(false);
   });
 
   it('drops a malformed verdict rather than trusting it', async () => {
@@ -186,10 +193,21 @@ describe('classify', () => {
       tiers: { colour: async () => ({ label: 42, confidence: 'high' }) as never },
     });
     expect(trace.heads.colour?.label).toBeNull();
+    expect(trace.heads.colour?.injectedOutcome).toBe('malformed');
     expect(trace.errors).toContain('tier:colour:malformed_verdict');
+    expect(tierFailed(trace.heads.colour?.injectedOutcome ?? null)).toBe(true);
   });
 
-  it('abandons an injected tier that runs past its budget', async () => {
+  /**
+   * The 2026-09-15 defect, pinned.
+   *
+   * A blown budget used to resolve `null`, push nothing into `errors` and
+   * leave the head looking exactly like a head whose tier had declined. The
+   * consumer read that as "the second tier had nothing to add", fell back to
+   * an uncategorised `review`, and its funnel sent a request to sell drugs
+   * and unregistered firearms to the self-serve preview.
+   */
+  it('records a blown budget as a failure, distinguishably from an abstention', async () => {
     const slow: Tier = () => new Promise((resolve) => setTimeout(() => resolve(null), 200));
     const trace = await classify('anything', {
       ...base,
@@ -198,6 +216,60 @@ describe('classify', () => {
       tierBudgetMs: 10,
     });
     expect(trace.heads.colour?.injectedAbstained).toBe(true);
+    expect(trace.heads.colour?.injectedOutcome).toBe('timeout');
+    expect(tierFailed(trace.heads.colour?.injectedOutcome ?? null)).toBe(true);
+    expect(trace.errors).toContain('tier:colour:timeout:10ms');
+  });
+
+  it('aborts a tier over budget with a cause the tier can read', async () => {
+    let reason: unknown;
+    const slow: Tier = (_text, _decision, signal) =>
+      new Promise((resolve) => {
+        signal.addEventListener('abort', () => {
+          reason = signal.reason;
+          resolve(null);
+        });
+        setTimeout(() => resolve(null), 500);
+      });
+    await classify('anything', {
+      ...base,
+      encoder: stubEncoder([0.9, 0.8, 0]),
+      tiers: { colour: slow },
+      tierBudgetMs: 10,
+    });
+    // A bare `controller.abort()` gives the tier an AbortError that says
+    // nothing about who aborted it. The tier is the code that has to log the
+    // failure, so the reason has to reach it.
+    expect(reason).toBeInstanceOf(TierBudgetExpiredError);
+    expect((reason as TierBudgetExpiredError).decision).toBe('colour');
+    expect((reason as TierBudgetExpiredError).budgetMs).toBe(10);
+  });
+
+  it('records a thrown tier as a failure, with the name and never the text', async () => {
+    const trace = await classify('a very identifying sentence', {
+      ...base,
+      encoder: stubEncoder([0.9, 0.8, 0]),
+      tiers: {
+        colour: async () => {
+          throw new TypeError('a very identifying sentence');
+        },
+      },
+    });
+    expect(trace.heads.colour?.injectedOutcome).toBe('error');
+    expect(trace.errors).toContain('tier:colour:TypeError');
+    expect(JSON.stringify(trace)).not.toContain('a very identifying sentence');
+  });
+
+  it('leaves injectedOutcome null when no tier was supplied at all', async () => {
+    const trace = await classify('anything', {
+      ...base,
+      encoder: stubEncoder([0.9, 0.8, 0]),
+    });
+    // The other half of the same distinction: "nobody asked" is not "asked
+    // and it broke", and a caller must be able to tell.
+    expect(trace.heads.colour?.injectedAttempted).toBe(false);
+    expect(trace.heads.colour?.injectedOutcome).toBeNull();
+    expect(tierFailed(trace.heads.colour?.injectedOutcome ?? null)).toBe(false);
   });
 
   it('never puts the text into an error string', async () => {

@@ -44,8 +44,14 @@ import {
   CLEAN_CATEGORY_ID,
   policyLimits,
   type PolicyClassification,
+  type PolicyLimits,
 } from './acceptable-use';
-import { classifyWithLlm, unavailableClassification } from './llm-tier';
+import {
+  classifyWithLlm,
+  noteAcceptableUseClassifierFailure,
+  noteAcceptableUseClassifierSuccess,
+  unavailableClassification,
+} from './llm-tier';
 
 export interface AcceptableUseClassification extends PolicyClassification {
   /**
@@ -238,6 +244,18 @@ export interface SigmaDecision {
    * cannot tell them apart — see `Decision.decided` in the package.
    */
   decided: { acceptableUse: boolean };
+  /**
+   * Whether the injected tier for this head FAILED, rather than declined.
+   *
+   * The field that was missing on 2026-09-15. Without it, `decided: false`
+   * covered both "the LLM tier read the brief and abstained" and "the LLM
+   * tier was aborted at its budget and read nothing", and this adapter had no
+   * choice but to report the second as though it were the first: a `review`
+   * with no category, `needsHuman: true`, and no `failed` flag. The rule
+   * layer then filed it under `needs_human_flag`, which is a sentence about
+   * the text, written about a text nothing had classified.
+   */
+  tierFailed: { acceptableUse: boolean };
   trace: { heads: Record<string, SigmaHeadTrace | undefined> };
 }
 
@@ -252,6 +270,12 @@ interface SigmaModule {
           signal: AbortSignal
         ) => Promise<SigmaTierVerdict | null>;
       };
+      /**
+       * The budget for one injected tier call. Passing this is not optional
+       * for us: the package's own default is sized for a local tier, and what
+       * we inject is a paid model call. See `PolicyLimits.llmTierBudgetMs`.
+       */
+      tierBudgetMs?: number;
     }
   ): Promise<SigmaDecision>;
 }
@@ -282,6 +306,34 @@ export function classificationFromSigmaDecision(
   decision: SigmaDecision
 ): PolicyClassification {
   const head = decision.trace.heads.acceptable_use;
+
+  // A cascade whose DECIDING tier could not answer has not classified
+  // anything, and the honest report of that is a failure, not a quiet
+  // verdict. The injected tier is only ever consulted when nothing else
+  // settled the head, so if it timed out or threw, there is no intent
+  // reading behind this decision at all -- only the centroid geometry that
+  // had already been judged too weak to act on.
+  //
+  // `failed` is what makes the rule layer apply `failsClosed()` and file the
+  // row under `classifier_unavailable`, and what makes `classifyAcceptableUse`
+  // count this toward `CLASSIFIER_FAILURE_ALERT_THRESHOLD`. Before this
+  // branch existed the same event produced `review|none|0.000|
+  // needs_human_flag|embedding`, which the funnel read as an uncategorised
+  // review and answered with a self-serve preview.
+  if (decision.tierFailed.acceptableUse) {
+    return {
+      categoryId: CLEAN_CATEGORY_ID,
+      confidence: 0,
+      evidence:
+        'The acceptable-use classifier did not answer within its budget, so this submission was not classified.',
+      needsHuman: true,
+      tier: 'unavailable',
+      failed: true,
+      // Names the head and the reason the cascade recorded, so the outage
+      // alert says which tier died rather than "could not be reached".
+      failureReason: `acceptable_use tier did not answer: ${decision.reasons.acceptableUse}`,
+    };
+  }
   const categoryId = decision.category
     ? SIGMA_TO_APP[decision.category] ?? decision.category
     : CLEAN_CATEGORY_ID;
@@ -368,7 +420,8 @@ export function sigmaTierFromLlm(
  */
 async function callSigmaClassifier(
   input: ClassifyAcceptableUseInput,
-  text: string
+  text: string,
+  limits: PolicyLimits
 ): Promise<PolicyClassification> {
   const sigma = (await import(
     '@flowstarter/sigma-flowstarter'
@@ -386,6 +439,9 @@ async function callSigmaClassifier(
         })
       ),
     },
+    // Not a detail. Omitting this is what gave a paid model call the
+    // package's 3 s local-tier default and produced the 2026-09-15 defect.
+    tierBudgetMs: limits.llmTierBudgetMs,
   });
 
   return classificationFromSigmaDecision(decision);
@@ -494,7 +550,7 @@ export async function classifyAcceptableUse(
   let classification: PolicyClassification | null = null;
   if (sigmaTierAvailable()) {
     try {
-      classification = await callSigmaClassifier(input, text);
+      classification = await callSigmaClassifier(input, text, limits);
     } catch (error) {
       // A missing encoder, a corrupt centroid file, a native module that will
       // not load. None of those is a verdict, and none of them may stop the
@@ -520,6 +576,24 @@ export async function classifyAcceptableUse(
     });
   }
 
+  // Health accounting, once per SUBMISSION, at the only altitude that can see
+  // whether the submission ended up classified at all.
+  //
+  // `classification.failed` is now set by three different things -- the LLM
+  // call throwing, the per-submission spend cap, and (as of 2026-09-15) a
+  // cascade whose deciding tier timed out or threw -- and every one of them
+  // means the same thing to an operator: this brief was not read. The last of
+  // those never reached the counter before, because the cascade swallowed the
+  // abort and handed back an ordinary-looking fallback, so the alert could
+  // not fire however long the outage ran.
+  if (classification.failed) {
+    await noteAcceptableUseClassifierFailure(
+      classification.failureReason ?? classification.evidence
+    );
+  } else {
+    noteAcceptableUseClassifierSuccess();
+  }
+
   const withMeta = classification as PolicyClassification & {
     promptVersion?: string;
     costEstimateUsd?: number | null;
@@ -532,6 +606,7 @@ export async function classifyAcceptableUse(
     needsHuman: classification.needsHuman,
     tier: classification.tier,
     failed: classification.failed,
+    failureReason: classification.failureReason,
     decidedAction: classification.decidedAction,
     evidenceHash,
     promptVersion: withMeta.promptVersion ?? '',

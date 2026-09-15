@@ -120,6 +120,12 @@ export async function POST(req: NextRequest) {
     // sentence a visitor is shown. A screen that picked its own copy is how
     // "what you have described is software" ended up on top of a recorded
     // scope of `unclear`.
+    //
+    // `policy` goes out on `refused` and `hold` for the same reason, and only
+    // then: it is the notice `@/lib/policy/copy` already wrote for this
+    // verdict, in the visitor's own language, and sending it here is what
+    // lets the funnel stop at the gate instead of routing a refused brief
+    // onward to the step whose job is to start a generation.
     return NextResponse.json(
       {
         route: result.route,
@@ -127,6 +133,7 @@ export async function POST(req: NextRequest) {
         questionKey: result.questionKey,
         bookingUrl: result.bookingUrl,
         offerCopy: result.offerCopy,
+        policy: result.notice ?? undefined,
       },
       { status: 200, headers: { 'Cache-Control': 'private, no-store' } }
     );

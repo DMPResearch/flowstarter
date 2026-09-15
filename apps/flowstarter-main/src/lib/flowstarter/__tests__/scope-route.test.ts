@@ -318,14 +318,18 @@ const TABLE: Row[] = [
     rule: 'acceptableUseNeedsAHuman',
     settled: 'custom',
   },
-  // `refuse` goes nowhere near it. See the rule's own comment: this module
-  // steps aside and the preview route writes the refusal.
+  // `refuse` goes nowhere near it, and as of 2026-09-15 it does not go near
+  // `self-serve` either. It used to, on the reasoning that the preview route
+  // would screen again and write the refusal; but the two screens classify
+  // different text, so the second one is a fresh paid call that can time out
+  // on its own. A refused brief is not handed to the component whose job is
+  // to start a generation.
   {
     scope: 'standard',
     confidence: 1,
     alreadyClarified: false,
     acceptableUse: 'blocked',
-    route: 'self-serve',
+    route: 'refused',
     rule: 'acceptableUseRefused',
     settled: 'standard',
   },
@@ -334,7 +338,7 @@ const TABLE: Row[] = [
     confidence: 1,
     alreadyClarified: false,
     acceptableUse: 'blocked',
-    route: 'self-serve',
+    route: 'refused',
     rule: 'acceptableUseRefused',
     settled: 'custom',
   },
@@ -344,7 +348,7 @@ const TABLE: Row[] = [
     alreadyClarified: true,
     visitorAnswer: 'software',
     acceptableUse: 'blocked',
-    route: 'self-serve',
+    route: 'refused',
     rule: 'acceptableUseRefused',
     settled: 'unclear',
   },
@@ -387,8 +391,10 @@ describe('decideRoute', () => {
   it('never offers a refused brief a discovery call', () => {
     // The property, stated once on its own rather than only as table rows: a
     // business the policy gate refuses must not be filed as a custom-work lead
-    // and must not be emailed a calendar invitation to Darius's studio, which
-    // is what any route but `self-serve` would do here.
+    // and must not be emailed a calendar invitation to Darius's studio, and it
+    // must not reach the preview step either. `refused` is the only route that
+    // is true of, whatever the scope head said and whatever the visitor
+    // answered.
     for (const scope of ['standard', 'custom', 'unclear'] as const) {
       for (const clarified of [false, true]) {
         for (const answer of [
@@ -406,7 +412,7 @@ describe('decideRoute', () => {
                 visitorAnswer: answer,
                 acceptableUse: 'blocked',
               }).route
-            ).toBe('self-serve');
+            ).toBe('refused');
           }
         }
       }

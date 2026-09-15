@@ -25,7 +25,12 @@
  * separate, much larger change to `acceptable-use.ts` this fix does not make.
  */
 
-import type { PolicyCategory, PolicyDecision } from './acceptable-use';
+import {
+  CLEAN_CATEGORY,
+  type PolicyCategory,
+  type PolicyDecision,
+  type PolicyRule,
+} from './acceptable-use';
 
 /** The anchor on `/terms`. The heading there carries this id. */
 export const ACCEPTABLE_USE_ANCHOR = '/terms#acceptable-use';
@@ -49,6 +54,18 @@ export interface PolicyNotice {
   next: string;
   termsHref: string;
   contactHref: string;
+  /**
+   * The words on the two links, in the same language as everything above.
+   *
+   * They live here rather than in the components because they did not, and
+   * the result was a Romanian visitor reading a Romanian refusal under two
+   * English links: `PreviewStep` hardcoded "Read the acceptable use section
+   * of our terms" and "Talk to a person" as literals. A notice that carries
+   * its own language for three sentences and not for the two words a visitor
+   * actually clicks is a notice that is only half translated.
+   */
+  termsLabel: string;
+  contactLabel: string;
   /** Machine-readable, for a client that branches rather than renders. */
   decision: PolicyDecision;
   categoryId: string;
@@ -61,6 +78,18 @@ interface NoticeStrings {
   message: (category: PolicyCategory) => string;
   next: string;
 }
+
+/** The two link labels, once per language, shared by all three notices. */
+const LINK_LABELS: Record<PolicyLocale, { terms: string; contact: string }> = {
+  en: {
+    terms: 'Read the acceptable use section of our terms',
+    contact: 'Talk to a person',
+  },
+  ro: {
+    terms: 'Citiți secțiunea despre utilizarea acceptabilă din termenii noștri',
+    contact: 'Vorbiți cu o persoană',
+  },
+};
 
 const REFUSAL_STRINGS: Record<PolicyLocale, NoticeStrings> = {
   en: {
@@ -111,6 +140,8 @@ export function refusalNotice(
     next: strings.next,
     termsHref: ACCEPTABLE_USE_ANCHOR,
     contactHref: CONTACT_HREF,
+    termsLabel: LINK_LABELS[locale].terms,
+    contactLabel: LINK_LABELS[locale].contact,
     decision: 'refuse',
     categoryId: category.id,
     locale,
@@ -132,22 +163,82 @@ export function reviewNotice(
     next: strings.next,
     termsHref: ACCEPTABLE_USE_ANCHOR,
     contactHref: CONTACT_HREF,
+    termsLabel: LINK_LABELS[locale].terms,
+    contactLabel: LINK_LABELS[locale].contact,
     decision: 'review',
     categoryId: category.id,
     locale,
   };
 }
 
-/** The notice for a verdict, or `null` when the verdict allows. */
+/**
+ * The hold: we could not finish checking, so a person will.
+ *
+ * Its own copy rather than `reviewNotice`'s, and the difference is not
+ * cosmetic. The review copy says "your business sits close enough to our
+ * acceptable-use policy that a person checks it" -- a claim ABOUT THE
+ * BUSINESS, and one we have no standing to make here, because the reason this
+ * notice is showing is that nothing succeeded in reading the business at all.
+ * Telling a florist their brief looked borderline when in fact our classifier
+ * timed out is both untrue and, to the small minority who notice, insulting.
+ *
+ * So it says what happened, in the house voice: the check did not finish, a
+ * person picks it up, nothing has been charged. No category is named because
+ * there is none to name -- `categoryId` is the clean id, which is the honest
+ * value and the one the operator board already knows how to render.
+ */
+const HOLD_STRINGS: Record<PolicyLocale, NoticeStrings> = {
+  en: {
+    title: 'We are still checking this one',
+    message: () =>
+      'Our automatic check did not finish on your brief, so rather than guess we have passed it to a person to read. Nothing has been charged and nothing has been built yet.',
+    next: 'We usually come back the same working day. If you would rather not wait, tell us more about what you do through the contact page.',
+  },
+  ro: {
+    title: 'Încă verificăm',
+    message: () =>
+      'Verificarea automată nu s-a finalizat pentru solicitarea dvs., așa că nu ghicim: am trimis-o unei persoane care o va citi. Nu s-a taxat nimic și nu s-a construit nimic încă.',
+    next: 'De obicei revenim în aceeași zi lucrătoare. Dacă preferați să nu așteptați, spuneți-ne mai multe despre ce faceți prin pagina de contact.',
+  },
+};
+
+export function holdNotice(locale: PolicyLocale = 'en'): PolicyNotice {
+  const strings = HOLD_STRINGS[locale];
+  return {
+    title: strings.title,
+    message: strings.message(CLEAN_CATEGORY),
+    next: strings.next,
+    termsHref: ACCEPTABLE_USE_ANCHOR,
+    contactHref: CONTACT_HREF,
+    termsLabel: LINK_LABELS[locale].terms,
+    contactLabel: LINK_LABELS[locale].contact,
+    decision: 'review',
+    categoryId: CLEAN_CATEGORY.id,
+    locale,
+  };
+}
+
+/**
+ * The notice for a verdict, or `null` when the verdict allows.
+ *
+ * `rule` is read, not just `decision`, because a `review` produced by
+ * `classifier_unavailable` is a different thing to say to a visitor than a
+ * `review` produced by `sensitive_lawful`. Callers that do not pass it keep
+ * exactly today's behaviour.
+ */
 export function noticeFor(input: {
   decision: PolicyDecision;
   category: PolicyCategory;
+  rule?: PolicyRule;
   locale?: PolicyLocale;
 }): PolicyNotice | null {
   if (input.decision === 'refuse')
     return refusalNotice(input.category, input.locale);
-  if (input.decision === 'review')
-    return reviewNotice(input.category, input.locale);
+  if (input.decision === 'review') {
+    return input.rule === 'classifier_unavailable'
+      ? holdNotice(input.locale)
+      : reviewNotice(input.category, input.locale);
+  }
   return null;
 }
 

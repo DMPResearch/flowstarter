@@ -447,6 +447,19 @@ export async function POST(req: NextRequest) {
     // than an error status, because the wizard reads `reason` to decide what
     // to show. `policy` carries the sentence, the terms anchor and the contact
     // link, so the step can render the real refusal instead of a shrug.
+    //
+    // `blocked` is every non-allow verdict, which since 2026-09-15 includes a
+    // HOLD: `classifier_unavailable`, meaning nothing managed to read this
+    // brief. That must return here for the same reason a refusal does -- it
+    // is above `reserveFunnelSpend` and above the run, so no generation
+    // starts and nothing is charged -- and `screening.notice` is already the
+    // hold's own copy rather than the review copy, because `noticeFor` reads
+    // the rule. The client tells the two apart on `policy.decision`.
+    //
+    // The scope gate normally stops a held brief before the wizard ever
+    // mounts the step that calls this route. This is the second lock on the
+    // same door, and it is not redundant: the two screens compose different
+    // subjects, so the second one can reach a verdict the first never saw.
     return NextResponse.json(
       {
         skip: true,

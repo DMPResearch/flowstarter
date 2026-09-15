@@ -46,6 +46,7 @@ function head(over: Partial<HeadTrace>): HeadTrace {
     semanticAbstained: true,
     injectedAttempted: false,
     injectedAbstained: false,
+    injectedOutcome: null,
     evidence: null,
     timings: { semanticMs: 0, injectedMs: 0 },
     ...over,
@@ -652,6 +653,64 @@ describe('regression: 2026-09-15 staging, the whole tier cascade end to end', ()
     expect(decision.acceptableUse).toBe('review');
     expect(decision.decided.acceptableUse).toBe(false);
     expect(decision.reasons.acceptableUse).toContain('guard_not_met');
+  });
+
+  /**
+   * The 2026-09-15 defect at the layer it started on.
+   *
+   * `replay` above stubs the tier to an answer. These two stub it to the two
+   * ways it can fail, over the SAME briefs and the SAME real centroids, and
+   * assert the fact that did not exist before: the decision knows its tier
+   * broke. Without `tierFailed` the consumer sees `acceptableUse: 'review'`,
+   * `decided: false` and nothing else -- indistinguishable from the tier
+   * politely abstaining, which is what let an app read an outage as an
+   * ordinary quiet verdict and route a drugs shop to a preview.
+   */
+  async function replayFailing(
+    id: string,
+    how: 'timeout' | 'throw',
+  ): Promise<Decision> {
+    return classifyAcceptableUse(BRIEFS[id] as string, {
+      tierBudgetMs: 10,
+      tiers: {
+        acceptable_use:
+          how === 'throw'
+            ? async () => {
+                throw new Error('provider connection reset');
+              }
+            : () => new Promise((resolve) => setTimeout(() => resolve(null), 200)),
+      },
+    });
+  }
+
+  for (const how of ['timeout', 'throw'] as const) {
+    it(`reports a tier that ${how}s as a FAILURE, not an abstention`, async () => {
+      // `07-unclear` is the brief that reaches the tier: its centroid verdict
+      // clears the band and then misses the allow guard, so the cascade
+      // escalates. That makes it the one where a broken tier is decisive.
+      const decision = await replayFailing('07-unclear', how);
+      expect(decision.tierFailed.acceptableUse).toBe(true);
+      expect(decision.decided.acceptableUse).toBe(false);
+      // Still the safe action -- the fallback has not changed and must not.
+      expect(decision.acceptableUse).toBe('review');
+      const head = decision.trace.heads[ACCEPTABLE_USE_HEAD];
+      expect(head?.injectedAttempted).toBe(true);
+      expect(head?.injectedOutcome).toBe(how === 'throw' ? 'error' : 'timeout');
+      // And it is written down. A timeout used to record nothing at all.
+      expect(decision.trace.errors.join(' ')).toContain('tier:acceptable_use');
+    });
+  }
+
+  it('does not call a healthy abstention a failure', async () => {
+    // The other side of the distinction, on the same brief. A tier that
+    // answers `null` has read the text and declined; treating that as an
+    // outage would hold every ambiguous brief and page an operator for it.
+    const { decision } = await replay('07-unclear');
+    expect(decision.tierFailed.acceptableUse).toBe(false);
+    expect(decision.trace.heads[ACCEPTABLE_USE_HEAD]?.injectedOutcome).toBe(
+      'abstained',
+    );
+    expect(decision.trace.errors).toEqual([]);
   });
 
   it('still never spends the paid tier where the cheap one settled it', async () => {
