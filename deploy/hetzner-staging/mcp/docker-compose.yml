@@ -1,0 +1,119 @@
+# The Flowstarter template library (MCP server) on the Hetzner sites host,
+# staging slot.
+#
+# WHAT WAS MISSING. The discovery funnel's live preview route asks the
+# template library for a catalog, a template's details and its sources before
+# a coding agent personalises anything
+# (apps/flowstarter-main/src/app/api/discovery/preview/live/route.ts ->
+# FlowstarterMcpTemplateLibrary). On this box FLOWSTARTER_MCP_URL was unset
+# and no MCP server ran, so `missingGenerationPrerequisites` refused every
+# request before a job existed and the route answered
+# `{ skip: true, reason: 'not-configured' }`. The visitor saw "Your preview is
+# on its way — we couldn't start your live preview just now. Nothing is lost:
+# we will build it by hand and email it to you shortly." Staging could not
+# generate a preview at all. This file is the library.
+#
+# ── Why this one is NOT `network_mode: host` ───────────────────────────────
+#
+# Every other container on this box shares the host's network namespace, and
+# each has the same reason: it has to reach a service the host publishes on
+# 127.0.0.1 — the Supabase CLI stack on :54321, flowstarter-main on :3000, the
+# deploy-agents on :8443/:8444. A bridge container cannot, because those are
+# loopback binds (see ../docker-compose.yml and ../editor/docker-compose.yml,
+# which both document the same finding).
+#
+# This service reaches NOTHING. It is a read-only view of template sources
+# baked into its own image: no database, no model provider, no callback. The
+# traffic is entirely inbound, from the app slot on this box's loopback. So it
+# keeps the tighter posture the others had to give up, and the publish rule
+# below — not a bind address inside the process — is what keeps it off the
+# internet:
+#
+#   ports: ['127.0.0.1:3001:3001']
+#
+# With `network_mode: host` the process's own HTTP_HOST would be the only
+# thing between /mcp and the internet, the way it is for the build worker.
+# Here the Docker publish rule is, which is enforced by the daemon rather than
+# by a value in a file someone can edit. `mcp-stack.sh check` asserts the
+# observed listener is loopback either way.
+#
+# WHAT IS ON THE OTHER SIDE OF /mcp. `scaffold_template` returns the complete
+# sources of a template — thousands of lines of this repository's product —
+# to anyone who can call it. The tool layer authenticates every call against
+# FLOWSTARTER_MCP_INTERNAL_TOKEN in constant time
+# (apps/flowstarter-library/mcp-server/src/server.ts, `verifyToolAuth`), and
+# that token must be byte-identical to the app slot's. DISABLE_AUTH=true turns
+# that check off entirely and must never appear in the env file on this box;
+# `check` refuses to pass if it does.
+#
+# Install and drive with ../scripts/mcp-stack.sh.
+
+name: flowstarter-mcp
+
+services:
+  mcp:
+    image: ${MCP_IMAGE:-ghcr.io/dmpresearch/flowstarter-mcp:main}
+    container_name: ${MCP_CONTAINER:-flowstarter-mcp-staging}
+    restart: unless-stopped
+    ports:
+      # Host-side loopback, explicitly, even though /etc/docker/daemon.json on
+      # this box already sets `"ip": "127.0.0.1"` as the default publish
+      # address. The daemon default is a property of the host that a future
+      # rebuild can lose; this line is a property of the deployment.
+      - '127.0.0.1:${MCP_HOST_PORT:-3001}:3001'
+    env_file:
+      - ${MCP_ENV_FILE:-/etc/flowstarter/mcp-staging.env}
+    environment:
+      NODE_ENV: production
+      # The bind inside the container's own namespace. Reachable only through
+      # the publish rule above, so 0.0.0.0 here is the container's interface,
+      # not the box's.
+      HTTP_HOST: '0.0.0.0'
+      HTTP_PORT: '3001'
+      # No browser calls this server: the only client is flowstarter-main,
+      # server-side, over loopback, and a server-to-server call carries no
+      # Origin at all. Empty adds nothing to src/cors.ts's allow-list (which
+      # always ends with the four local-development origins and ignores a `*`
+      # in either variable), so every real cross-origin request is answered
+      # without an Access-Control-Allow-Origin header. Set here rather than
+      # left unset so that the older CORS_ORIGIN cannot be reached for through
+      # the env file by habit.
+      # FLOWSTARTER_MCP_INTERNAL_TOKEN is deliberately NOT here: `environment:`
+      # wins over `env_file:`, and a secret written in a file that is in git is
+      # a secret that is in git.
+      MCP_ALLOWED_ORIGINS: ''
+    # Nothing in the request path writes to disk: the templates are baked into
+    # the image and served read-only. A writable root filesystem would only
+    # ever be somewhere for a future mistake to land.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Blast radius. The catalog is parsed once at boot and held in memory
+    # (five templates, ~8k LOC each); a `scaffold_template` response is capped
+    # at 48MB by the client. 512m is roomy for that and small enough that a
+    # leak here cannot take the box out from under the client sites Caddy is
+    # serving.
+    mem_limit: ${MCP_MEM_LIMIT:-512m}
+    cpus: ${MCP_CPUS:-1}
+    pids_limit: ${MCP_PIDS_LIMIT:-256}
+    healthcheck:
+      # The server's own unauthenticated liveness route, and the same one the
+      # app probes: `generation-availability.ts` replaces FLOWSTARTER_MCP_URL's
+      # pathname with /health (NOT /mcp/health) and refuses to start a
+      # generation run if it does not answer inside
+      # FLOWSTARTER_MCP_HEALTH_TIMEOUT_MS (default 2s).
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:' + (process.env.HTTP_PORT || 3001) + '/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

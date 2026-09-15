@@ -5,23 +5,25 @@ sites, but **isolated** from deploy-agent. Three kinds of slot share one
 compose file and one pair of scripts: `main` and `pr-N` for staging, and `prod`
 for production at `flowstarter.net`.
 
-| Path                           | Owner                                               |
-| ------------------------------ | --------------------------------------------------- |
-| `/var/www/sites/*`             | Client static sites (deploy-agent)                  |
-| `/opt/flowstarter/staging`     | Platform compose + scripts (all slots)              |
-| `/etc/caddy/platform/*.caddy`  | Platform vhosts (`main`, `pr-*`, `prod`)            |
-| `/etc/flowstarter/staging.env` | Staging secrets, mode 600                           |
-| `/etc/flowstarter/prod.env`    | Production secrets, mode 600                        |
-| `/etc/flowstarter/tls/`        | Optional Cloudflare Origin CA cert for prod         |
-| `/etc/flowstarter/backup.env`  | Backup config (retention, encryption, S3), mode 600 |
-| `/var/backups/flowstarter/`    | Nightly backups, see `docs/operations/backups.md`   |
-| `/opt/flowstarter/cal`         | Self-hosted Cal.com compose file + vhost snippet    |
-| `/opt/flowstarter/editor`      | Flowstarter editor compose file + stack script      |
-| `/etc/flowstarter/editor.env`  | Editor secrets, mode 600                            |
-| `/etc/flowstarter/cal.env`     | Cal secrets and admin credentials, mode 600         |
-| `/opt/flowstarter/build-worker` | Build worker compose file                          |
-| `/etc/flowstarter/build-worker-staging.env` | Build worker secrets, mode 600         |
-| `/srv/flowstarter/build-worker` | Build worker state: local sites repo, per-client worktrees, packaged artifacts, exported build output. Bind-mounted into the worker at this same absolute path — see "The build worker" |
+| Path                                         | Owner                                                                                                                                                                     |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `/var/www/sites/*`                            | Client static sites (deploy-agent)                                                                                                                                       |
+| `/opt/flowstarter/staging`                    | Platform compose + scripts (all slots)                                                                                                                                   |
+| `/etc/caddy/platform/*.caddy`                 | Platform vhosts (`main`, `pr-*`, `prod`)                                                                                                                                  |
+| `/etc/flowstarter/staging.env`                | Staging secrets, mode 600                                                                                                                                                |
+| `/etc/flowstarter/prod.env`                   | Production secrets, mode 600                                                                                                                                             |
+| `/etc/flowstarter/tls/`                       | Optional Cloudflare Origin CA cert for prod                                                                                                                              |
+| `/etc/flowstarter/backup.env`                 | Backup config (retention, encryption, S3), mode 600                                                                                                                      |
+| `/var/backups/flowstarter/`                   | Nightly backups, see `docs/operations/backups.md`                                                                                                                        |
+| `/opt/flowstarter/cal`                        | Self-hosted Cal.com compose file + vhost snippet                                                                                                                         |
+| `/opt/flowstarter/editor`                     | Flowstarter editor compose file + stack script                                                                                                                           |
+| `/etc/flowstarter/editor.env`                 | Editor secrets, mode 600                                                                                                                                                 |
+| `/etc/flowstarter/cal.env`                    | Cal secrets and admin credentials, mode 600                                                                                                                              |
+| `/opt/flowstarter/mcp`                        | Template library (MCP) compose file                                                                                                                                      |
+| `/etc/flowstarter/mcp-staging.env`            | Template library secret, mode 600                                                                                                                                        |
+| `/opt/flowstarter/build-worker`               | Build worker compose file                                                                                                                                                |
+| `/etc/flowstarter/build-worker-staging.env`   | Build worker secrets, mode 600                                                                                                                                           |
+| `/srv/flowstarter/build-worker`               | Build worker state: local sites repo, per-client worktrees, packaged artifacts, exported build output. Bind-mounted into the worker at this same absolute path — see "The build worker" |
 
 The directory is still called `staging` so nothing that already references it
 breaks. It holds every slot.
@@ -834,6 +836,166 @@ docker build -f apps/flowstarter-editor/Dockerfile   --build-arg VITE_BASE_PATH=
 SPA emits root-absolute asset URLs and the tenant vhost serves them the static
 site's `index.html` instead, which the SPA reports as *"Unexpected token '<'
 … is not valid JSON"*.
+
+## The template library (MCP)
+
+`apps/flowstarter-library/mcp-server` is the catalog the discovery funnel's
+live preview builds from. The route
+(`apps/flowstarter-main/src/app/api/discovery/preview/live/route.ts`) drives it
+through `FlowstarterMcpTemplateLibrary`: the agent searches the catalog, reads
+a template's details, picks one, and `scaffold_template` returns that
+template's SOURCES, which become the workspace it then personalises.
+
+Until 2026-09-15 `FLOWSTARTER_MCP_URL` was unset on this box and no MCP server
+ran here, so `missingGenerationPrerequisites` refused every request **before a
+job existed** and the route answered `{ skip: true, reason: 'not-configured' }`.
+The visitor got *"Your preview is on its way — we couldn't start your live
+preview just now. Nothing is lost: we will build it by hand and email it to you
+shortly."* Honest, and a funnel that could not generate a single preview.
+
+```
+flowstarter-main (app slot, network_mode: host)   127.0.0.1:3000
+  │  GET  /health              probe, 2s, before a job exists
+  │  POST /mcp                 search_templates → get_template_details
+  │                            → scaffold_template   (bearer: _internalToken)
+  ▼
+flowstarter-mcp (bridge, published on loopback)   127.0.0.1:3001
+     four template source trees, baked into the image, read-only
+```
+
+### It is not redundant with the templates baked into the app image
+
+They are two halves of one thing, and both are needed:
+
+| Half                                                            | Supplies                                                              |
+| --------------------------------------------------------------- | --------------------------------------------------------------------- |
+| App image, `/srv/preview-templates` (`FLOWSTARTER_TEMPLATE_ROOT`) | The pre-installed `node_modules` a generated workspace symlinks to, and the `astro` binary it is compiled with (`static-preview-build.ts`) |
+| This image, over MCP                                            | The workspace's actual CONTENTS — every source file of the chosen template |
+
+Which means the two must be the same four templates **at the same commit**. A
+scaffold whose `package.json` disagrees with the `node_modules` the app
+symlinks in is a preview that dies at `astro build` on an import the template
+plainly declares. `staging-deploy.yml` builds both images from the same
+`github.sha` for that reason, and the library's Dockerfile asserts the catalog
+rather than copying a directory: `demo-coach` (the editor's dev fixture) and
+`dorin-portfolio` (legacy) are kept out, because the app image installs
+`node_modules` for neither and `demo-coach` has no `catalogEnabled: false` to
+hide it from `list_templates`.
+
+### Why this one is not `network_mode: host`
+
+Every other container on this box shares the host's network namespace because
+it has to reach a service the host publishes on 127.0.0.1 — Supabase on
+`:54321`, the app on `:3000`, the deploy-agents on `:8443`/`:8444`. This one
+reaches nothing: it is a read-only view of sources baked into its own image,
+with no database, no model provider and no callback. So it keeps the tighter
+posture the others had to give up, and the thing standing between `/mcp` and
+the internet is a Docker publish rule the daemon enforces —
+`127.0.0.1:3001:3001` — rather than a bind address inside the process.
+`mcp-stack.sh check` asserts the observed listener either way.
+
+It also runs with a read-only root filesystem, `cap_drop: ALL`,
+`no-new-privileges`, as the non-root `node` user, with a 64 MB `/tmp` tmpfs and
+512m/1cpu/256pids caps. Nothing in the request path writes to disk.
+
+### `/etc/flowstarter/mcp-staging.env`
+
+Mode 600, root-owned, written by hand. Copy it from `mcp/mcp.env.example`,
+which documents every key. It holds exactly one:
+
+| Key                              | Why                                                                                                                                                                                                                              |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FLOWSTARTER_MCP_INTERNAL_TOKEN` | Every tool call carries it and the server compares it in constant time. Must be **byte-identical** to the one in `staging.env`: a mismatch boots cleanly, passes every probe, and then fails every preview at its first tool call. |
+
+And three things that must **not** be in it:
+
+- `DISABLE_AUTH=true` — the local-development bypass. It does not weaken the
+  token check, it removes it: `verifyToolAuth` returns an authenticated
+  context for every caller before it looks at a token at all, and
+  `scaffold_template` then serves every template's complete sources to
+  anything that can reach loopback on this box. `check` fails if it finds it.
+- `CLERK_SECRET_KEY` — the server accepts Clerk sessions *or* the internal
+  token. The only client here uses the internal token; configuring Clerk would
+  add a second way in for a caller that does not exist.
+- `SUPABASE_*` — they belong to the project tools (`get_project`,
+  `clone_template`, `scaffold_to_convex`), which nothing in the Flowstarter
+  pipeline calls. They throw a clear "Missing Supabase configuration" instead,
+  which is the honest answer for a surface this deployment does not use.
+
+And in `staging.env`, on the app's side:
+
+```
+FLOWSTARTER_MCP_URL=http://127.0.0.1:3001/mcp
+FLOWSTARTER_MCP_INTERNAL_TOKEN=<the same value>
+```
+
+The URL points at the MCP protocol path. `/health` is at the server's **root**,
+and the app's probe knows it: `generation-availability.ts` *replaces* the
+pathname rather than appending to it, so `/mcp/health` is never requested. The
+client allows plain `http` only on loopback.
+
+### Installing and driving it
+
+`scripts/mcp-stack.sh` is the only thing that should run `docker compose`
+against the library's compose file. It installs itself through the ordinary CI
+sync (`sync-supabase.sh` picks up any new `scripts/*.sh`), and CI also keeps
+`/opt/flowstarter/mcp/docker-compose.yml` current. What is needed once, by
+hand, on a new box:
+
+```bash
+sudo mkdir -p /opt/flowstarter/mcp
+sudo cp deploy/hetzner-staging/mcp/docker-compose.yml /opt/flowstarter/mcp/
+sudo cp deploy/hetzner-staging/scripts/mcp-stack.sh /opt/flowstarter/staging/
+sudo chmod +x /opt/flowstarter/staging/mcp-stack.sh
+sudo install -m 600 /dev/null /etc/flowstarter/mcp-staging.env
+# Fill it in from mcp/mcp.env.example — one secret, the same value you add to
+# staging.env alongside FLOWSTARTER_MCP_URL — then:
+sudo /opt/flowstarter/staging/mcp-stack.sh up
+sudo /opt/flowstarter/staging/mcp-stack.sh check    # must pass before going further
+sudo /opt/flowstarter/staging/mcp-stack.sh health
+# Applying the app slot's new env lines needs the slot recreated:
+sudo /opt/flowstarter/staging/deploy-slot.sh main <current image> 3000
+```
+
+| Subcommand         | What it does                                                                                                                                                                                                                                                       |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `up [image]`       | Pulls, `compose up -d`, waits (bounded, `MCP_HEALTH_TIMEOUT`, default 120s) for healthy, then runs `check`. With no image argument it reuses the image the container is already on, so a hand-run deploy never rolls the library — and with it the template sources it serves — back to whatever `:main` points at. |
+| `recreate [image]` | `docker rm -f` then `up`. This is what applies an env-file change: `docker restart` does **not** re-read `--env-file`.                                                                                                                                              |
+| `down`             | `compose down`. Nothing here has state.                                                                                                                                                                                                                            |
+| `status`           | Container name, health, and the image tag actually running.                                                                                                                                                                                                        |
+| `check`            | Fails unless the listener is loopback, `DISABLE_AUTH` is absent, the shared secret is at least 32 characters **and matches the app slot's** (compared by digest; neither value is printed), the app slot's `FLOWSTARTER_MCP_URL` points here, and the catalog is exactly the four templates with no fixtures. |
+| `health`           | The library answers `/health` on loopback, **and** `/mcp` refuses an untokened `list_templates` with `UNAUTHORIZED`.                                                                                                                                                |
+
+The library's image is built and pushed by `staging-deploy.yml`
+(`ghcr.io/dmpresearch/flowstarter-mcp:<sha>`) and deployed **before** the app
+slot — the opposite of the build worker's ordering, because the dependency runs
+the other way. Nothing in the library calls back into the app, while the app
+asks the library for a template on every live-preview request. Deployed first,
+a failed library deploy stops the job with staging still running a matched pair
+rather than a new app slot pointing at an old library; and the window it opens
+is covered, because the app probes `/health` before it will start a run and
+tells the visitor the honest thing while the library is restarting.
+
+### What production will need
+
+Nothing in this image is environment-specific — it takes no `NEXT_PUBLIC_*`
+build args — so the same image serves both. What `prod` needs is its own slot
+beside this one:
+
+- `/etc/flowstarter/mcp-prod.env` with its own
+  `FLOWSTARTER_MCP_INTERNAL_TOKEN`, and a second container on its own port
+  (`MCP_HOST_PORT=3002`, `MCP_CONTAINER=flowstarter-mcp-prod`). The service is
+  stateless and read-only, so two of them against one box is safe; separate
+  tokens are what keep a leaked staging secret from being a production one.
+- `FLOWSTARTER_MCP_URL=http://127.0.0.1:3002/mcp` plus the matching token in
+  `prod.env`. The client allows plain `http` only on loopback, which this is.
+- **The rest of the generation prerequisites.** `FLOWSTARTER_MCP_URL` is one of
+  four things `generationPrerequisites` wants, and production has none of them
+  today (see `docs/production-generation.md`): a model key
+  (`PI_API_KEY`/`OPENROUTER_API_KEY`), this library, its token, and whatever
+  the resolved preview publisher needs. Adding this one alone changes nothing
+  a visitor can see on `flowstarter.net` — the funnel will still answer
+  `not-configured`, just for a shorter list of reasons.
 
 ## The build worker
 
