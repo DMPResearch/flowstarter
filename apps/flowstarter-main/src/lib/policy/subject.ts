@@ -90,6 +90,35 @@ export function intakeSubject(input: IntakeSubjectInput): string {
   ]);
 }
 
+export interface IntakeLink {
+  /** What the URL actually is, so a fact row reads right instead of a bare link. */
+  label: string;
+  url: string;
+}
+
+/**
+ * The one link a quick intake carries, labelled for a person to read.
+ *
+ * For the operator email's fact row only -- see `policyReviewOperatorEmail`
+ * in `@/lib/email-templates` -- never for the classifier, which reads
+ * `intakeSubject`'s hostname-only line instead. Preference order matches that
+ * line: the visitor's own site first, then Instagram, then LinkedIn. `null`
+ * when the visitor gave none.
+ */
+export function intakeLink(input: {
+  websiteUrl?: string | null;
+  instagramUrl?: string | null;
+  linkedinUrl?: string | null;
+}): IntakeLink | null {
+  const website = (input.websiteUrl ?? '').trim();
+  if (website) return { label: 'Their site', url: website };
+  const instagram = (input.instagramUrl ?? '').trim();
+  if (instagram) return { label: 'Their profile', url: instagram };
+  const linkedin = (input.linkedinUrl ?? '').trim();
+  if (linkedin) return { label: 'Their profile', url: linkedin };
+  return null;
+}
+
 export interface BriefProjectLike {
   name?: string | null;
   line?: string | null;

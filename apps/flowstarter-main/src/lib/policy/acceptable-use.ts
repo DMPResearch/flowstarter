@@ -810,3 +810,46 @@ export function reviewNamesCategory(verdict: PolicyVerdict): boolean {
     category.id !== CLEAN_CATEGORY_ID
   );
 }
+
+/**
+ * The two rules `@/lib/flowstarter/scope-gate`'s `openScopeReview` opens
+ * directly (#180), never through `decide()` above. Their `review` carries no
+ * category -- the acceptable-use verdict on one of these rows is `allow`;
+ * what is in question is the scope of the work, not whether it may be built
+ * -- so `reviewNamesCategory` alone would wrongly call them noise.
+ */
+const SCOPE_GATE_REVIEW_RULES: ReadonlySet<PolicyRule> = new Set<PolicyRule>([
+  'scope_visitor_disagrees_with_classifier',
+  'scope_unresolved_after_question',
+]);
+
+/**
+ * True when this verdict is something an operator can actually act on: a
+ * board row worth opening and, downstream in `@/lib/policy/review`, an email
+ * worth sending.
+ *
+ * A `refuse` always qualifies -- it is already closed, and the row is the
+ * audit trail for a decision already made, not a card asking for one. A
+ * `review` qualifies only when a person has something to check: it names a
+ * real category (`reviewNamesCategory`: `sensitive_lawful`,
+ * `prohibited_uncertain`, or any future rule that names one), the classifier
+ * could not be reached at all (`classifierUnavailable`, PR #193's hold), or
+ * the scope gate opened it itself (`SCOPE_GATE_REVIEW_RULES`, #180).
+ *
+ * Everything else -- `needs_human_flag`, `clean_but_abstained`,
+ * `unknown_category` -- is the classifier's uncertainty about nothing in
+ * particular. `docs/security/acceptable-use.md`'s routing table already
+ * calls this bucket `unsettled` and hands it to the scope head instead, which
+ * asks its own clarifying question when it has one to ask. A row an operator
+ * cannot act on, and an inbox message that names no category and asks for no
+ * decision, is exactly the noise a review queue stops being read over.
+ */
+export function reviewIsActionable(verdict: PolicyVerdict): boolean {
+  if (verdict.decision === 'refuse') return true;
+  if (verdict.decision !== 'review') return false;
+  return (
+    reviewNamesCategory(verdict) ||
+    classifierUnavailable(verdict) ||
+    SCOPE_GATE_REVIEW_RULES.has(verdict.rule)
+  );
+}

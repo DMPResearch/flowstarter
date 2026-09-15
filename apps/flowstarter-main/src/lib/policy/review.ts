@@ -21,16 +21,38 @@ import 'server-only';
  * generated `database.types.ts`, so the client is narrowed structurally the
  * same way `src/lib/ai/llm.ts` narrows `llm_usage`.
  *
+ * Not every `review` verdict writes a row, and this is the other property
+ * PR #193/#194 left undone until now. `blocks(verdict)` at the enforcement
+ * point is true for every non-`allow` decision, including the three rules
+ * that name no category (`needs_human_flag`, `clean_but_abstained`,
+ * `unknown_category`) -- the classifier's own uncertainty about nothing in
+ * particular, already routed to the scope head's `unsettled` bucket
+ * (`docs/security/acceptable-use.md`). Writing THOSE to `policy_reviews` and
+ * mailing an operator gives a person a card with nothing to check, and doing
+ * it on every submission is how a review queue stops being read.
+ * `reviewIsActionable` (`./acceptable-use`) is the one predicate that decides
+ * whether this function does anything at all beyond the log line above: a
+ * `refuse`, a `review` that names a category, `classifier_unavailable`'s
+ * hold, and the scope gate's own two rules (#180) all qualify; the three
+ * categoryless rules do not, and `recordPolicyOutcome` returns
+ * `{ reviewId: null, recorded: false }` for them without touching the table.
+ *
  * One more thing happens here, once a `review` row is actually written: an
  * operator email goes out (`policyReviewOperatorEmail`, `@/lib/email-
  * templates`), because before it existed a review sat on the board silently
- * and the only way to learn it was there was to go and look. `briefText` and
- * the caller's contact fields are the one exception to the NOT list above --
- * they pass through this function to the email and nowhere else, never into
- * the row, the event payload or a log line. Sent once per row: only when the
- * insert actually created one (a cache hit on a duplicate submission does
- * not re-notify), and only for `review`, never for `allow` (this function is
- * never called) or `refuse` (already closed, nothing for a person to decide).
+ * and the only way to learn it was there was to go and look. `briefText`,
+ * `linkUrl`/`linkLabel` and the caller's contact fields are the one exception
+ * to the NOT list above -- they pass through this function to the email and
+ * nowhere else, never into the row, the event payload or a log line.
+ * `briefText` is the visitor's own words, verbatim; it is never the composed
+ * subject a caller classified (`@/lib/policy/subject`'s `intakeSubject`
+ * builds that for a model to reason over, and quoting it to a person is the
+ * defect this comment is here to not let back in). Sent once per row: only
+ * when the insert actually created one (a cache hit on a duplicate
+ * submission does not re-notify, and neither does a verdict this module
+ * declined to write), and only for `review`, never for `allow` (this
+ * function is never called) or `refuse` (already closed, nothing for a
+ * person to decide).
  */
 
 import { publicAppOrigin } from '@flowstarter/platform-config';
@@ -39,7 +61,7 @@ import { resolveOperatorNotifyEmail, sendEmail } from '@/lib/email';
 import { policyReviewOperatorEmail } from '@/lib/email-templates';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 
-import type { PolicyVerdict } from './acceptable-use';
+import { reviewIsActionable, type PolicyVerdict } from './acceptable-use';
 import type { AcceptableUseClassification } from './classifier';
 
 /** Which enforcement point produced the row. */
@@ -205,12 +227,17 @@ export interface RecordPolicyOutcomeInput {
   actor?: string;
   db?: PolicyReviewClient;
   /**
-   * The exact text that was classified, for the operator email only -- see
-   * the module doc's one exception to the NOT list. A caller with no text
-   * handy (or that would rather not thread it here) simply gets an email with
-   * no quoted brief; the row and the hold are unaffected either way.
+   * The visitor's own words, verbatim, for the operator email's quote block
+   * only -- see the module doc's one exception to the NOT list. Never the
+   * composed subject a caller classified. A caller with no text handy (or
+   * that would rather not thread it here) simply gets an email with no
+   * quoted brief; the row and the hold are unaffected either way.
    */
   briefText?: string;
+  /** The visitor's own site or social link, when the caller has one. Email only, same as `briefText`. */
+  linkUrl?: string | null;
+  /** What `linkUrl` is, so the fact row reads right. Email only. */
+  linkLabel?: string;
   /** The visitor's own name and address, when the caller has them. Email only, same as `briefText`. */
   contactName?: string | null;
   contactEmail?: string | null;
@@ -256,6 +283,8 @@ async function notifyOperatorOfReview(input: {
   workspaceId: string | null;
   verdict: PolicyVerdict;
   briefText?: string;
+  linkUrl?: string | null;
+  linkLabel?: string;
   contactName?: string | null;
   contactEmail?: string | null;
 }): Promise<void> {
@@ -267,6 +296,8 @@ async function notifyOperatorOfReview(input: {
       categoryId: input.verdict.category.id,
       categoryLabel: input.verdict.category.label,
       briefText: input.briefText ?? '',
+      linkUrl: input.linkUrl,
+      linkLabel: input.linkLabel,
       contactName: input.contactName,
       contactEmail: input.contactEmail,
       reviewUrl: reviewBoardUrl(input.reviewId, input.workspaceId),
@@ -313,6 +344,12 @@ export async function recordPolicyOutcome(
     `[policy] ${verdict.decision} surface=${input.surface} category=${verdict.category.id} rule=${verdict.rule} tier=${verdict.tier} evidence=${input.classification.evidenceHash}`
   );
 
+  // A review with no category and no other actionable rule is not a row an
+  // operator can do anything with -- see `reviewIsActionable` and the module
+  // doc. The log line above still fires (a developer can grep it); the row,
+  // the email and the timeline entry below all stay quiet.
+  const actionable = reviewIsActionable(verdict);
+
   let reviewId: string | null = null;
   let recorded = false;
   let db: PolicyReviewClient | null = null;
@@ -324,46 +361,55 @@ export async function recordPolicyOutcome(
     // able to refuse. With the call outside, a misconfigured environment
     // turned every held verdict into a 500 at the route instead of a hold,
     // which is the exact opposite of what a fail-closed gate is for.
+    //
+    // Built even when `actionable` is false: the timeline write below still
+    // needs a client, and a non-actionable verdict skips the INSERT only.
     db = input.db ?? policyDb();
-    const { data, error } = await db
-      .from('policy_reviews')
-      .insert({
-        workspace_id: workspaceId,
-        surface: input.surface,
-        decision: verdict.decision,
-        category_id: verdict.category.id,
-        confidence: verdict.confidence,
-        rule: verdict.rule,
-        tier: verdict.tier,
-        prompt_version: input.classification.promptVersion,
-        evidence_hash: input.classification.evidenceHash,
-        evidence: input.classification.evidence,
-        status: verdict.decision === 'refuse' ? 'refused' : 'open',
-        resolved_at:
-          verdict.decision === 'refuse' ? new Date().toISOString() : null,
-        resolved_by: verdict.decision === 'refuse' ? 'system' : null,
-      })
-      .select('id')
-      .maybeSingle();
-    if (error && error.code !== '23505') {
-      console.error('[policy] could not write the review row', error);
-    } else {
-      recorded = !error;
-      reviewId = typeof data?.id === 'string' ? data.id : null;
+    if (actionable) {
+      const { data, error } = await db
+        .from('policy_reviews')
+        .insert({
+          workspace_id: workspaceId,
+          surface: input.surface,
+          decision: verdict.decision,
+          category_id: verdict.category.id,
+          confidence: verdict.confidence,
+          rule: verdict.rule,
+          tier: verdict.tier,
+          prompt_version: input.classification.promptVersion,
+          evidence_hash: input.classification.evidenceHash,
+          evidence: input.classification.evidence,
+          status: verdict.decision === 'refuse' ? 'refused' : 'open',
+          resolved_at:
+            verdict.decision === 'refuse' ? new Date().toISOString() : null,
+          resolved_by: verdict.decision === 'refuse' ? 'system' : null,
+        })
+        .select('id')
+        .maybeSingle();
+      if (error && error.code !== '23505') {
+        console.error('[policy] could not write the review row', error);
+      } else {
+        recorded = !error;
+        reviewId = typeof data?.id === 'string' ? data.id : null;
+      }
     }
   } catch (error) {
     console.error('[policy] review insert threw', error);
   }
 
   // Once per row, and only for a hold: a duplicate submission (`recorded`
-  // false on a 23505) already notified the first time, and a refusal needs
-  // nobody -- it is already closed.
+  // false on a 23505) already notified the first time, a refusal needs
+  // nobody -- it is already closed -- and a verdict this function declined to
+  // write (`actionable` false) never reaches here either, since `recorded`
+  // stays false when nothing was inserted.
   if (recorded && reviewId && verdict.decision === 'review') {
     await notifyOperatorOfReview({
       reviewId,
       workspaceId,
       verdict,
       briefText: input.briefText,
+      linkUrl: input.linkUrl,
+      linkLabel: input.linkLabel,
       contactName: input.contactName,
       contactEmail: input.contactEmail,
     });

@@ -78,6 +78,7 @@ describe('aiModerateContent', () => {
     expect(screenAcceptableUse).toHaveBeenCalledOnce();
     const call = screenAcceptableUse.mock.calls[0][0] as {
       text: string;
+      briefText?: string;
       surface: string;
       actor: string;
     };
@@ -90,6 +91,9 @@ describe('aiModerateContent', () => {
     expect(call.text).toContain('Industry: Food');
     expect(call.text).toContain('Services: Bread, cakes');
     expect(call.text).toContain('Goal for the site: Get more walk-ins');
+    // `briefText`, for the operator review email's quote, is the raw
+    // description -- never `text`, the composed subject just asserted above.
+    expect(call.briefText).toBe('A bakery in Oradea');
   });
 
   it('passes a clean verdict through as approved', async () => {

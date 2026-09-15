@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ALL_CATEGORIES,
+  CLEAN_CATEGORY,
   CLEAN_CATEGORY_ID,
   DEFAULT_THRESHOLDS,
   PROHIBITED_CATEGORIES,
@@ -21,7 +22,9 @@ import {
   failsClosed,
   policyLimits,
   policyThresholds,
+  reviewIsActionable,
   type PolicyClassification,
+  type PolicyVerdict,
 } from '../acceptable-use';
 
 function classification(
@@ -292,5 +295,83 @@ describe('operational limits', () => {
     expect(policyLimits().maxInputChars).toBeGreaterThan(0);
     vi.stubEnv('ACCEPTABLE_USE_SCAN_MAX_CHARS', 'lots');
     expect(policyLimits().scanMaxChars).toBeGreaterThan(0);
+  });
+});
+
+describe('reviewIsActionable', () => {
+  function verdict(over: Partial<PolicyVerdict> = {}): PolicyVerdict {
+    return {
+      decision: 'review',
+      category: CLEAN_CATEGORY,
+      confidence: 0,
+      rule: 'needs_human_flag',
+      tier: 'embedding',
+      needsHuman: true,
+      ...over,
+    };
+  }
+
+  it('is always actionable for a refuse, whatever the rule', () => {
+    expect(
+      reviewIsActionable(
+        verdict({ decision: 'refuse', rule: 'prohibited_confident' })
+      )
+    ).toBe(true);
+  });
+
+  it('is never actionable for an allow', () => {
+    expect(
+      reviewIsActionable(
+        verdict({ decision: 'allow', rule: 'clean_confident' })
+      )
+    ).toBe(false);
+  });
+
+  it.each(['sensitive_lawful', 'prohibited_uncertain'] as const)(
+    'is actionable for %s, which always names a category',
+    (rule) => {
+      expect(
+        reviewIsActionable(
+          verdict({ rule, category: categoryById('licensed_pharmacy')! })
+        )
+      ).toBe(true);
+    }
+  );
+
+  it('is actionable for classifier_unavailable, even though it names no category', () => {
+    expect(
+      reviewIsActionable(verdict({ rule: 'classifier_unavailable' }))
+    ).toBe(true);
+  });
+
+  it.each([
+    'scope_visitor_disagrees_with_classifier',
+    'scope_unresolved_after_question',
+  ] as const)(
+    'is actionable for %s, the scope gate own two rules, even though they name no category',
+    (rule) => {
+      expect(reviewIsActionable(verdict({ rule }))).toBe(true);
+    }
+  );
+
+  it.each([
+    'needs_human_flag',
+    'clean_but_abstained',
+    'unknown_category',
+  ] as const)(
+    'is NOT actionable for %s, a review that names nothing about the business',
+    (rule) => {
+      expect(reviewIsActionable(verdict({ rule }))).toBe(false);
+    }
+  );
+
+  it('is not fooled by a categoryless verdict merely reusing an actionable rule name as a rule string', () => {
+    // `sensitive_lawful` and `prohibited_uncertain` are only actionable
+    // because `decide()` never produces them without a real category. This
+    // guards the predicate itself, in case a future caller builds one by
+    // hand (as the scope gate does for its own two rules) without one.
+    expect(reviewIsActionable(verdict({ rule: 'sensitive_lawful' }))).toBe(
+      false
+    );
   });
 });

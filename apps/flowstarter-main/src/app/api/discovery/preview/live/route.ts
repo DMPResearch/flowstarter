@@ -51,7 +51,7 @@ import {
 } from '@/lib/flowstarter/cal-com';
 import { injectLeadCapturePreviewIntoScaffoldFiles } from '@/lib/flowstarter/lead-capture-scaffold';
 import { screenAcceptableUse } from '@/lib/policy/gate';
-import { intakeSubject } from '@/lib/policy/subject';
+import { intakeLink, intakeSubject } from '@/lib/policy/subject';
 import { createFunnelPreviewPublisher } from '@/lib/discovery/funnel-preview-publisher';
 import { resolvePreviewPublisher } from '@/lib/discovery/preview-publisher-rule';
 import type {
@@ -646,9 +646,15 @@ export async function POST(req: NextRequest) {
   // to refuse a preview it was never going to build. It sits before
   // `reserveFunnelSpend` for the reason that matters more: a refused category
   // must never be charged for, not even against the funnel's own budget.
+  const link = intakeLink(parsed.data);
   const screening = await screenAcceptableUse({
     surface: 'preview',
     text: intakeSubject(parsed.data),
+    // The visitor's own words for the operator review email's quote block,
+    // never the composed `text` above -- see `ScreenInput.briefText`.
+    briefText: parsed.data.description,
+    linkUrl: link?.url,
+    linkLabel: link?.label,
     locale: parsed.data.locale,
   });
   if (screening.blocked && screening.notice) {

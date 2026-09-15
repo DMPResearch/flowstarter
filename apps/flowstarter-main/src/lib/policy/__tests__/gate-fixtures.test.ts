@@ -298,6 +298,13 @@ describe('the audit row', () => {
     await screenAcceptableUse({
       surface: 'claim',
       text: fixture.text,
+      // The caller's own raw text, threaded separately from the composed
+      // `text` above -- see `ScreenInput.briefText`. This fixture has no
+      // intakeSubject composition to strip, so the raw text and the composed
+      // one are the same string here; the point under test is that the call
+      // site's `briefText` is what reaches `recordPolicyOutcome`, not that
+      // the two differ.
+      briefText: fixture.text,
       workspaceId: '00000000-0000-4000-8000-000000000001',
     });
 
@@ -320,6 +327,27 @@ describe('the audit row', () => {
     expect(JSON.stringify(everythingElse)).not.toContain(
       fixture.text.slice(0, 40)
     );
+  });
+
+  it('never falls back to the composed subject when a caller sends no briefText', async () => {
+    // The regression this pins: `screenAcceptableUse` used to default
+    // `briefText` to its own `text` -- the composed classifier subject -- so
+    // a caller that had not been taught to thread the visitor's raw words
+    // got the composed string quoted at an operator instead. A caller with no
+    // `briefText` must now get nothing quoted, not the fallback.
+    const fixture = CASES.find((c) => c.expected === 'weapons_sales')!;
+    callLlmObject.mockResolvedValue(answerFor(fixture));
+
+    await screenAcceptableUse({
+      surface: 'claim',
+      text: fixture.text,
+      workspaceId: '00000000-0000-4000-8000-000000000002',
+    });
+
+    const written = recordPolicyOutcome.mock.calls[0]?.[0] as {
+      briefText?: string;
+    };
+    expect(written.briefText).toBeUndefined();
   });
 
   it('is not written for a clean business', async () => {

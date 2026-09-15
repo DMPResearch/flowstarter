@@ -35,7 +35,7 @@ import {
   policyStatusFor,
   screenAcceptableUse,
 } from '@/lib/policy/gate';
-import { intakeSubject } from '@/lib/policy/subject';
+import { intakeLink, intakeSubject } from '@/lib/policy/subject';
 import { depositAmountMinor } from '@flowstarter/agentic-codegen/src/flowstarter/state-machine';
 import { STRIPE_API_VERSION } from '@/lib/billing/stripe';
 import {
@@ -197,6 +197,9 @@ export async function POST(
   // this endpoint collects almost nothing: a name, an email and a link. The
   // description the visitor actually wrote is on the preview the deposit is
   // for, which is also the thing the build would be made from.
+  const guestWebsiteUrl =
+    spec.websiteUrl ?? preview.intake?.business?.existingWebsiteUrl;
+  const guestLink = intakeLink({ websiteUrl: guestWebsiteUrl });
   const screening = await screenAcceptableUse({
     surface: 'guest_deposit',
     text: intakeSubject({
@@ -206,9 +209,13 @@ export async function POST(
       industry: preview.intake?.business?.niche,
       targetAudience: preview.intake?.business?.targetAudience,
       goal: preview.intake?.business?.primaryGoal,
-      websiteUrl:
-        spec.websiteUrl ?? preview.intake?.business?.existingWebsiteUrl,
+      websiteUrl: guestWebsiteUrl,
     }),
+    // The visitor's own words for the operator review email's quote block,
+    // never the composed `text` above -- see `ScreenInput.briefText`.
+    briefText: preview.intake?.business?.description,
+    linkUrl: guestLink?.url,
+    linkLabel: guestLink?.label,
   });
   if (screening.blocked && screening.notice) {
     return NextResponse.json(policyErrorBody(screening.notice), {

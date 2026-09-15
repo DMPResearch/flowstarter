@@ -188,6 +188,9 @@ vi.mock('@/lib/policy/review', () => ({
   })),
 }));
 
+import { recordPolicyOutcome } from '@/lib/policy/review';
+const recordPolicyOutcomeMock = vi.mocked(recordPolicyOutcome);
+
 function classification(
   overrides: Partial<Parameters<typeof classify>[0]> = {}
 ) {
@@ -310,6 +313,29 @@ describe('POST /api/flowstarter/projects/claim — acceptable-use gate', () => {
 
     expect(response.status).toBe(409);
     expect(db.workspaces).toHaveLength(0);
+  });
+
+  it('quotes the visitor own description to the operator, never the composed classifier subject', async () => {
+    // Same bug, same fix, on the claim route's own screen: `screenAcceptableUse`
+    // is real here, only the classifier and `recordPolicyOutcome` are mocked.
+    classify.mockResolvedValue(
+      classification({ categoryId: 'licensed_pharmacy', confidence: 0.6 })
+    );
+    stashPreview();
+
+    await POST(
+      claimRequest({
+        ...VALID_BODY,
+        websiteUrl: 'https://example-pharmacy.ro',
+      })
+    );
+
+    const written = recordPolicyOutcomeMock.mock.calls.at(-1)?.[0];
+    expect(written?.briefText).toBe('Sourdough, daily.');
+    expect(written?.briefText).not.toContain('What the business does');
+    expect(written?.briefText).not.toContain('Link hostname');
+    expect(written?.linkUrl).toBe('https://example-pharmacy.ro');
+    expect(written?.linkLabel).toBe('Their site');
   });
 
   it('still claims for a clean classification', async () => {

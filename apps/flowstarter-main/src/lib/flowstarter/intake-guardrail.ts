@@ -34,7 +34,7 @@ import 'server-only';
  * person remembering to change both.
  */
 import { screenAcceptableUse } from '@/lib/policy/gate';
-import { intakeSubject } from '@/lib/policy/subject';
+import { intakeLink, intakeSubject } from '@/lib/policy/subject';
 import type { PolicyLocale, PolicyNotice } from '@/lib/policy/copy';
 import { acceptableUseFrom } from './acceptable-use-verdict';
 import { decideRoute, type AcceptableUse } from './scope-route';
@@ -116,6 +116,7 @@ export async function screenIntakeDescription(
 ): Promise<IntakeGuardrailResult> {
   if (!input.description.trim()) return { stop: null, notice: null };
 
+  const link = intakeLink(input);
   const screening = await screenAcceptableUse({
     surface: 'preview',
     text: intakeSubject({
@@ -124,6 +125,11 @@ export async function screenIntakeDescription(
       instagramUrl: input.instagramUrl,
       linkedinUrl: input.linkedinUrl,
     }),
+    // The visitor's own words for the operator review email's quote block,
+    // never the composed `text` above -- see `ScreenInput.briefText`.
+    briefText: input.description,
+    linkUrl: link?.url,
+    linkLabel: link?.label,
     locale: input.locale,
     actor: 'intake-graph',
   });
