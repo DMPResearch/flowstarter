@@ -3600,10 +3600,10 @@ export class FullSiteBuildWorker {
       // scrolls past it, the step timeline that advances. A template ships
       // that layer as markup hooks its own scripts and stylesheets reach for,
       // and an agent rewriting a section to hold the client's words is
-      // exactly the actor able to leave the scripts running against nothing.
-      // That is not a hypothetical: a delivered portfolio shipped three
-      // IntersectionObservers, the reveal selectors, and a homepage whose
-      // expertise column had been rewritten out of its sticky wrapper.
+      // exactly the actor able to leave the scripts running against nothing:
+      // the script still loads, the stylesheet still ships, and no element
+      // answers to either. Every gate above this line reads what the page
+      // says, so all of them pass a site that stopped moving.
       //
       // The contract is derived from `cleaned.files` — the seed this build
       // was materialized from, in memory, before the agent ever ran. Nothing
