@@ -17,11 +17,26 @@ Supabase, sends an email, or reads the real clock — every caller passes
 those in, which is what makes the rules unit-testable without mocking
 anything (`src/lib/ops/__tests__/alerts.test.ts`).
 
-| Event | Severity | Default dedupe window | Env override |
-| --- | --- | --- | --- |
-| `build_job_failed` | critical | 60 minutes | `OPS_ALERT_BUILD_JOB_FAILED_DEDUPE_MINUTES` |
-| `client_email_failed` | warning | 240 minutes | `OPS_ALERT_CLIENT_EMAIL_FAILED_DEDUPE_MINUTES` |
-| `health_check_failed` | critical | 30 minutes | `OPS_ALERT_HEALTH_CHECK_FAILED_DEDUPE_MINUTES` |
+| Event                              | Severity | Default dedupe window | Env override                                                |
+| ---------------------------------- | -------- | --------------------- | ----------------------------------------------------------- |
+| `build_job_failed`                 | critical | 60 minutes            | `OPS_ALERT_BUILD_JOB_FAILED_DEDUPE_MINUTES`                 |
+| `client_email_failed`              | warning  | 240 minutes           | `OPS_ALERT_CLIENT_EMAIL_FAILED_DEDUPE_MINUTES`              |
+| `health_check_failed`              | critical | 30 minutes            | `OPS_ALERT_HEALTH_CHECK_FAILED_DEDUPE_MINUTES`              |
+| `scope_classifier_failed`          | critical | 60 minutes            | `OPS_ALERT_SCOPE_CLASSIFIER_FAILED_DEDUPE_MINUTES`          |
+| `acceptable_use_classifier_failed` | critical | 60 minutes            | `OPS_ALERT_ACCEPTABLE_USE_CLASSIFIER_FAILED_DEDUPE_MINUTES` |
+
+The last two are the classifier outage alerts, and they exist because both
+classifiers fail **closed**: the scope head to `unclear`, the acceptable-use
+head to `review`. Neither failure moves an error rate, changes a status code
+or shows up anywhere a dashboard would look — on 2026-09-15 the scope head
+failed on 100% of calls for a whole evening and the only trace was a
+`console.warn` in a terminal nobody was reading. So the failure branch
+counts, and a run of `CLASSIFIER_FAILURE_ALERT_THRESHOLD` failures (three by
+default, `CLASSIFIER_FAILURE_ALERT_THRESHOLD` overrides it) raises the alert;
+one success resets the run. The rule and the counter are pure and separate,
+in `apps/flowstarter-main/src/lib/ai/classifier-health.ts`, and each head has
+its own key so one going down neither masks nor resets the other. What each
+verdict then means for a visitor is `docs/security/acceptable-use.md`.
 
 The non-pure half, `apps/flowstarter-main/src/lib/ops/send-ops-alert.ts`,
 does what the rules say: read the last time this exact thing fired from the
@@ -80,14 +95,17 @@ daily QA.
 
 ## Configuration
 
-| Env var | Where | Meaning |
-| --- | --- | --- |
-| `OPERATOR_ALERT_EMAIL` | `apps/flowstarter-main` | Where `sendOpsAlert` sends. Unset: alerts are decided and counted (`ops_alerts.occurrence_count` still increments) but nothing is emailed, logged loudly so the gap is easy to close. |
-| `OPS_ALERT_BUILD_JOB_FAILED_DEDUPE_MINUTES` | `apps/flowstarter-main` | Overrides the 60-minute default for `build_job_failed`. |
-| `OPS_ALERT_CLIENT_EMAIL_FAILED_DEDUPE_MINUTES` | `apps/flowstarter-main` | Overrides the 240-minute default for `client_email_failed`. |
-| `OPS_ALERT_HEALTH_CHECK_FAILED_DEDUPE_MINUTES` | `apps/flowstarter-main` | Overrides the 30-minute default for `health_check_failed` (unused today, since prod-synthetic.yml uses the GitHub-issue path instead; kept for a future caller that does route through `ops_alerts`). |
-| `RESEND_API_KEY` | `apps/flowstarter-main` | Already required for every client email; `sendOpsAlert` reuses `lib/email.ts`'s `sendEmail`, the same transport. |
-| `GH_REVIEW_TOKEN` | Depot | Optional. Files the `production-alert` issue under a stable identity; absent, the workflow token does it, same as `daily-qa.yml`. |
+| Env var                                                     | Where                   | Meaning                                                                                                                                                                                               |
+| ----------------------------------------------------------- | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPERATOR_ALERT_EMAIL`                                      | `apps/flowstarter-main` | Where `sendOpsAlert` sends. Unset: alerts are decided and counted (`ops_alerts.occurrence_count` still increments) but nothing is emailed, logged loudly so the gap is easy to close.                 |
+| `OPS_ALERT_BUILD_JOB_FAILED_DEDUPE_MINUTES`                 | `apps/flowstarter-main` | Overrides the 60-minute default for `build_job_failed`.                                                                                                                                               |
+| `OPS_ALERT_CLIENT_EMAIL_FAILED_DEDUPE_MINUTES`              | `apps/flowstarter-main` | Overrides the 240-minute default for `client_email_failed`.                                                                                                                                           |
+| `OPS_ALERT_HEALTH_CHECK_FAILED_DEDUPE_MINUTES`              | `apps/flowstarter-main` | Overrides the 30-minute default for `health_check_failed` (unused today, since prod-synthetic.yml uses the GitHub-issue path instead; kept for a future caller that does route through `ops_alerts`). |
+| `OPS_ALERT_SCOPE_CLASSIFIER_FAILED_DEDUPE_MINUTES`          | `apps/flowstarter-main` | Overrides the 60-minute default for `scope_classifier_failed`.                                                                                                                                        |
+| `OPS_ALERT_ACCEPTABLE_USE_CLASSIFIER_FAILED_DEDUPE_MINUTES` | `apps/flowstarter-main` | Overrides the 60-minute default for `acceptable_use_classifier_failed`.                                                                                                                               |
+| `CLASSIFIER_FAILURE_ALERT_THRESHOLD`                        | `apps/flowstarter-main` | How many classifications in a row must fail before either classifier alert fires. Three by default; a value that is not a positive integer is ignored.                                                |
+| `RESEND_API_KEY`                                            | `apps/flowstarter-main` | Already required for every client email; `sendOpsAlert` reuses `lib/email.ts`'s `sendEmail`, the same transport.                                                                                      |
+| `GH_REVIEW_TOKEN`                                           | Depot                   | Optional. Files the `production-alert` issue under a stable identity; absent, the workflow token does it, same as `daily-qa.yml`.                                                                     |
 
 ## Reading the ledger
 

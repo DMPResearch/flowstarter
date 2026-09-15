@@ -213,6 +213,72 @@ describe('a classifier built from a taxonomy the core has never heard of', () =>
     expect(seen).toEqual([]);
   });
 
+  it('consults an injected tier when the caller says the local verdict cannot be acted on', async () => {
+    // The 2026-09-15 lesson: "the band answered" and "the answer is strong
+    // enough to act on" are two different bars, and only a caller with a
+    // policy boundary knows the second one. A head that clears the first and
+    // fails the second used to end the cascade, so the tier that could have
+    // produced an actionable answer was never asked and the unactionable
+    // verdict was recorded as a decision.
+    const clearText = 'an electric kettle that boils water for tea';
+    const options = {
+      encoder,
+      scorer,
+      centroids,
+      config,
+      encoderConfig: loadEncoderConfig(),
+    };
+    const tier: Tier = async () => ({
+      label: 'blender',
+      confidence: 0.9,
+      evidence: 'the injected tier disagreed',
+    });
+
+    const settled = await classify(clearText, {
+      ...options,
+      tiers: { [DECISION]: tier },
+      settles: { [DECISION]: (semantic) => !semantic.abstained },
+    });
+    expect(settled.heads[DECISION]?.semanticAbstained).toBe(false);
+    expect(settled.heads[DECISION]?.injectedAttempted).toBe(false);
+    expect(settled.heads[DECISION]?.label).toBe('kettle');
+
+    const unsettled = await classify(clearText, {
+      ...options,
+      tiers: { [DECISION]: tier },
+      // Same confident verdict, and a caller whose guard it does not clear.
+      settles: { [DECISION]: () => false },
+    });
+    const head = unsettled.heads[DECISION];
+    expect(head?.semanticAbstained).toBe(false);
+    expect(head?.semantic.label).toBe('kettle');
+    expect(head?.injectedAttempted).toBe(true);
+    // The injected tier answered, so it is the one on the record now — and
+    // the centroid verdict it replaced is still in the trace beside it.
+    expect(head?.tier).toBe('injected');
+    expect(head?.label).toBe('blender');
+  });
+
+  it('keeps the local verdict when an escalated injected tier abstains', async () => {
+    // Escalating may only ADD an answer. A tier that declines to give one
+    // leaves the band's verdict exactly where it was, for the policy
+    // boundary to apply its guard to and fall back on.
+    const trace = await classify('an electric kettle that boils water for tea', {
+      encoder,
+      scorer,
+      centroids,
+      config,
+      encoderConfig: loadEncoderConfig(),
+      tiers: { [DECISION]: async () => null },
+      settles: { [DECISION]: () => false },
+    });
+    const head = trace.heads[DECISION];
+    expect(head?.injectedAttempted).toBe(true);
+    expect(head?.injectedAbstained).toBe(true);
+    expect(head?.tier).toBe('semantic');
+    expect(head?.label).toBe('kettle');
+  });
+
   it('never throws when an injected tier does', async () => {
     const exploding: Tier = async () => {
       throw new Error('the model is on fire');

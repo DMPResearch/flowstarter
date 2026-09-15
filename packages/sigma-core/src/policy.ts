@@ -19,7 +19,7 @@
  *     a test instead of quietly degrading every request.
  */
 
-import type { DecisionTrace, HeadTrace } from './types.js';
+import type { DecisionTrace, HeadTrace, SemanticResult } from './types.js';
 
 /** Extra confidence required before an action that costs somebody something. */
 export interface ActionGuard {
@@ -133,22 +133,58 @@ export function decide<L extends string = string, A extends string = string>(
   }
 }
 
+/**
+ * Would this semantic verdict, ON ITS OWN, settle the decision?
+ *
+ * The abstention band and the action guards are two different bars, and until
+ * 2026-09-15 only the first of them could reach the cascade. A head that
+ * cleared its band and then failed the guard for the action its label maps to
+ * produced the platform's fallback — and produced it AFTER the cascade had
+ * finished, so the injected tier was never asked, even though "this answer is
+ * not strong enough to act on" is precisely the case the injected tier exists
+ * for. Staging read `review, tier=embedding, confidence 0.049` on
+ * "I need a website for my business." and recorded it as a decision; it was
+ * a `clean` that missed the allow guard's similarity floor by a mile.
+ *
+ * So the guards are exported as a question the cascade can ask BEFORE it
+ * decides whether to spend a second tier. Pure, and the same code path
+ * `decide` takes, so the two can never disagree.
+ */
+export function semanticSettles<L extends string = string, A extends string = string>(
+  semantic: SemanticResult<L>,
+  thresholds: DecisionThresholds<A>,
+  mapping: DecisionMapping<L, A>,
+): boolean {
+  if (semantic.abstained || semantic.label === null) return false;
+  const action = mapping.action(semantic.label);
+  if (action === null) return false;
+  const guard = thresholds.guards[action];
+  if (!guard) return true;
+  return guardOf('semantic', semantic, semantic.margin, guard) === null;
+}
+
 function guardFailure(head: HeadTrace, guard: ActionGuard): string | null {
-  if (head.tier === 'semantic') {
-    if (guard.minSimilarity !== undefined && head.semantic.similarity < guard.minSimilarity) {
+  return guardOf(head.tier, head.semantic, head.confidence, guard);
+}
+
+function guardOf(
+  tier: HeadTrace['tier'],
+  semantic: SemanticResult,
+  confidence: number,
+  guard: ActionGuard,
+): string | null {
+  if (tier === 'semantic') {
+    if (guard.minSimilarity !== undefined && semantic.similarity < guard.minSimilarity) {
       return 'min_similarity';
     }
-    if (guard.minMargin !== undefined && head.semantic.margin < guard.minMargin) {
+    if (guard.minMargin !== undefined && semantic.margin < guard.minMargin) {
       return 'min_margin';
     }
     return null;
   }
-  if (head.tier === 'injected') {
+  if (tier === 'injected') {
     if (guard.semanticOnly) return 'semantic_only';
-    if (
-      guard.minTierConfidence !== undefined &&
-      head.confidence < guard.minTierConfidence
-    ) {
+    if (guard.minTierConfidence !== undefined && confidence < guard.minTierConfidence) {
       return 'min_tier_confidence';
     }
     return null;

@@ -435,14 +435,17 @@ export interface PolicyClassification {
   /**
    * An action a tier has ALREADY decided, on its own calibrated bands.
    *
-   * Set only by the sigma tier. Its bands are calibrated against cosine
-   * margins between embedding centroids; `confidence` below is a model's
-   * self-reported probability. The two numbers are not on the same scale, and
-   * re-deriving a verdict from one using thresholds tuned for the other would
-   * silently loosen or tighten the gate with nothing in the diff to show it.
+   * Set only by the sigma tier, and only when one of its tiers really produced
+   * the action. Its bands are calibrated against cosine margins between
+   * embedding centroids; `confidence` below is a model's self-reported
+   * probability. The two numbers are not on the same scale, and re-deriving a
+   * verdict from one using thresholds tuned for the other would silently
+   * loosen or tighten the gate with nothing in the diff to show it.
    *
    * So when a tier that owns its own calibration has decided, `decide()`
-   * honours it. The thresholds below still govern every tier that has not.
+   * honours it. The thresholds below still govern every tier that has not —
+   * INCLUDING the sigma package falling back, which is not a decision and
+   * must not be recorded as one (see `decided` on its `Decision`).
    */
   decidedAction?: PolicyDecision;
 }
@@ -542,9 +545,18 @@ export function decide(
 
   // A tier with its own calibration has already decided. Honoured before the
   // bands below, and deliberately BEFORE the unknown-category check too: the
-  // sigma tier can decide `review` having settled on no category at all
-  // (its embedding tier abstained and nothing overruled it), and that is a
-  // decision, not a model inventing a label.
+  // sigma tier names its categories in its own label space, and an id our
+  // translation has not been taught yet must not turn its decision into a
+  // model inventing a label.
+  //
+  // What may NOT arrive here (2026-09-15) is the sigma package's fallback.
+  // `review` is both a real verdict and the safe default there, and the
+  // adapter used to pass both through as `decidedAction`, so a `clean` that
+  // missed the allow guard by a mile was filed as
+  // `rule=tier_decided, confidence 0.049`. The package now reports
+  // `decided` per head and the adapter only sets this when a tier really
+  // produced the action; a fallback carries `needsHuman` instead and lands on
+  // `needs_human_flag` below, which is what actually happened.
   if (classification.decidedAction) {
     return {
       decision: classification.decidedAction,
