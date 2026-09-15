@@ -84,9 +84,14 @@ export interface TemplateEffectsFile {
  * no testimonial reveal, and no class of either left on the page. Without the
  * marker step this rule would have failed that build for two effects the
  * agent was entitled to remove along with the sections that carried them.
- * Whether removing a section the brief had content for is a defect is a real
- * question; it is a question for the gates that read what the page says, not
- * for this one.
+ *
+ * That boundary is settled rather than provisional (2026-09-15): a section
+ * dropped because the brief has no content for it is the honest outcome, and
+ * a rule that failed the build for it would be asking an agent to invent
+ * testimonials to keep a reveal alive. Dropping content the brief *does*
+ * carry is a different defect with its own gates — the required label blocks
+ * (#142) and `PERSON_ABSENT` (#196) — and they read what the page says. This
+ * one only asks whether the sections that are on the page still move.
  */
 export interface TemplateEffectsSection {
   /** The component, posix, e.g. `src/components/Expertise.astro`. */
