@@ -84,13 +84,84 @@ export function resetScorer(): void {
 }
 
 /**
- * Pay the cold ONNX session cost before traffic. Throws when the model cache
- * is missing, on purpose: a process that could only ever fail open should
- * fail at startup rather than send every brief to a human.
+ * A known-good sentence, classified once at warm-up so a broken pipeline —
+ * a model/centroid mismatch, a stale `SIGMA_CORE_ROOT`/`SIGMA_FLOWSTARTER_ROOT`,
+ * a runtime that loads but scores nonsense, or a cold-start race that lets
+ * traffic in before the encoder has actually finished loading — fails loudly
+ * at startup, the same way a missing model cache already does. Without this,
+ * "the pipeline loaded" and "the pipeline classifies correctly" are two
+ * different facts and only the first one was ever checked: staging 2026-09-15
+ * shipped a byte-identical model and centroid set, warmed without error, and
+ * still abstained on almost every real request, because nothing ever asked it
+ * to prove it could tell a bakery from nothing at all.
+ *
+ * Deliberately its own sentence, not borrowed from `src/training/phrases.ts`
+ * or `test/data/*.json`: those move when the taxonomy or the eval set does,
+ * and this must keep meaning "the pipeline is broken" rather than also
+ * meaning "somebody edited a fixture". Verified against the committed
+ * centroids at margin ~0.19 (acceptable_use) and ~0.13 (scope) — comfortably
+ * clear of both calibrated bands, so ordinary platform noise
+ * (`platform_noise_allowance` in `models/semantic-config.json`) cannot flip it.
+ */
+export const READINESS_FIXTURE: {
+  text: string;
+  acceptableUse: AcceptableUseCategory;
+  scope: ScopeCategory;
+} = {
+  text: 'We run a small neighbourhood bakery and want a simple website with our menu, hours and location.',
+  acceptableUse: 'clean',
+  scope: 'standard-site',
+};
+
+/** Thrown by {@link warmSigma} when the readiness fixture does not classify as expected. */
+export class SigmaNotReadyError extends Error {
+  constructor(detail: string) {
+    super(`sigma readiness check failed: ${detail}`);
+    this.name = 'SigmaNotReadyError';
+  }
+}
+
+/**
+ * Pure half of the readiness check, tested without a model: does this trace
+ * for {@link READINESS_FIXTURE} land where it must?
+ *
+ * Requires a CONFIDENT, semantic-tier match on both heads — an injected tier
+ * is never consulted here (see `warmSigma`, which classifies with no tiers
+ * supplied), so this can only pass if the centroid tier itself is working.
+ */
+export function checkReadiness(trace: DecisionTrace): void {
+  const acceptableUse = trace.heads[ACCEPTABLE_USE_HEAD];
+  const scope = trace.heads[SCOPE_HEAD];
+  const ok =
+    !!acceptableUse &&
+    !acceptableUse.semanticAbstained &&
+    acceptableUse.label === READINESS_FIXTURE.acceptableUse &&
+    !!scope &&
+    !scope.semanticAbstained &&
+    scope.label === READINESS_FIXTURE.scope;
+  if (ok) return;
+  throw new SigmaNotReadyError(
+    `expected acceptable_use=${READINESS_FIXTURE.acceptableUse} scope=${READINESS_FIXTURE.scope}, ` +
+      `got acceptable_use=${JSON.stringify(acceptableUse?.label ?? null)} ` +
+      `(abstained=${acceptableUse?.semanticAbstained ?? true}) ` +
+      `scope=${JSON.stringify(scope?.label ?? null)} (abstained=${scope?.semanticAbstained ?? true})`,
+  );
+}
+
+/**
+ * Pay the cold ONNX session cost before traffic, then prove the whole
+ * pipeline actually works by classifying {@link READINESS_FIXTURE}. Throws
+ * when the model cache is missing OR when the fixture does not classify
+ * confidently and correctly, on purpose: a process that could only ever fail
+ * open should fail at startup rather than send every brief to a human (or,
+ * worse, quietly abstain on almost all of them with nothing in the trace to
+ * say why).
  */
 export async function warmSigma(): Promise<void> {
   getScorer();
   await getEncoder().warm();
+  const trace = await classifyRequest(READINESS_FIXTURE.text);
+  checkReadiness(trace);
 }
 
 /** Both heads, one embedding, full trace. Never throws for a classification reason. */

@@ -15,7 +15,16 @@ import {
   SENSITIVE_CATEGORIES,
   categoryClass,
 } from '../src/taxonomy.js';
-import { classifyAcceptableUse, classifyScope, decide, getScorer } from '../src/gate.js';
+import {
+  checkReadiness,
+  classifyAcceptableUse,
+  classifyScope,
+  decide,
+  getScorer,
+  READINESS_FIXTURE,
+  SigmaNotReadyError,
+  warmSigma,
+} from '../src/gate.js';
 import { loadCentroids, loadPolicy, loadProvenance, loadSemanticConfig } from '../src/config.js';
 import { acceptableUseCosts, scopeCosts } from '../src/costs.js';
 
@@ -198,6 +207,54 @@ describe('decide', () => {
   });
 });
 
+describe('regression: 2026-09-15 staging false negative (flower shop)', () => {
+  // The exact composed text `apps/flowstarter-main/src/lib/policy/subject.ts`'s
+  // `intakeSubject` built on staging for scenario 1 of
+  // `e2e/support/scen-0915-lib.mjs` (Ana Dumitrescu, "Floraria Viorica" --
+  // a family flower shop in Timisoara), replayed via `docker exec` against
+  // the real deployed package on 2026-09-15 and reproduced verbatim here.
+  // `POST /api/discovery/scope` with this exact body returned
+  // `route: "discovery-call"` on staging -- a flower shop sent to a sales
+  // call instead of a preview -- with the `policy_reviews` row reading
+  // `abstained:acceptable_use:encoder_timeout`, confidence 0.000, sixteen
+  // minutes after boot. This is not a text problem: replayed cold (a fresh
+  // `LocalSentenceEncoder`, never warmed) it is slow enough to blow the
+  // 400ms embed budget every time; replayed against the shared, warmed
+  // `getEncoder()` singleton it classifies confidently in ~20ms. The
+  // `getEncoder()` globalThis fix (`packages/sigma-core/src/encoder.ts`) is
+  // what makes "warmed once at boot" and "the singleton real traffic reads"
+  // the same guarantee; this test is what makes sure the classification
+  // itself was always going to be right once that guarantee holds.
+  const FLOWER_SHOP_TEXT =
+    'What the business does: Floraria Viorica, a family flower shop in ' +
+    'Timisoara. We do wedding flowers, funeral wreaths and weekly ' +
+    'deliveries to offices, and we want people to order online.\n' +
+    'Link hostname: instagram.com\n' +
+    'Link page title: Instagram';
+
+  it('classifies the flower shop as a confident, allowed clean business', async () => {
+    const decision = await classifyAcceptableUse(FLOWER_SHOP_TEXT);
+    expect(decision.acceptableUse).toBe('allow');
+    expect(decision.category).toBe('clean');
+    const head = decision.trace.heads[ACCEPTABLE_USE_HEAD];
+    expect(head?.semanticAbstained).toBe(false);
+    expect(head?.semantic.reason).toBe('confident');
+  });
+
+  it('reaches the same verdict through the shared getEncoder() singleton, not just a fresh instance', async () => {
+    // The bug was never "the model gets it wrong" -- a brand new,
+    // never-warmed encoder classifies this text fine too, just slowly
+    // enough to blow the request budget. What must hold is that the
+    // SINGLETON everything else on the process shares is already warm by
+    // the time real traffic reaches it, which `classifyAcceptableUse`
+    // (through `getScorer()`/`getEncoder()`) exercises directly.
+    const first = await classifyAcceptableUse(FLOWER_SHOP_TEXT);
+    const second = await classifyAcceptableUse(FLOWER_SHOP_TEXT);
+    expect(first.acceptableUse).toBe('allow');
+    expect(second.acceptableUse).toBe('allow');
+  });
+});
+
 describe('the entry points', () => {
   it('return the whole decision, with the trace attached', async () => {
     const decision = await classifyAcceptableUse('a dental clinic taking new patients');
@@ -235,6 +292,87 @@ describe('the entry points', () => {
     if (decision.trace.errors.includes('encoder:encoder_timeout')) {
       expect(decision.acceptableUse).toBe('review');
     }
+  });
+});
+
+describe('warm-up readiness', () => {
+  // The bug this guards against, reproduced 2026-09-15: staging shipped a
+  // byte-identical model and a byte-identical centroid set (verified with
+  // sha256 against the repo, in the image AND in the image built by #172
+  // specifically), the encoder warmed without error, `/api/health` reported
+  // `sigma: "ready"` — and real `/api/discovery/scope` traffic still
+  // abstained on almost every submission (`policy_reviews` rows read
+  // `decision=review, rule=tier_decided, tier=embedding`, confidence 0.000
+  // for all but one of seven real requests, one of the seven an outright
+  // `encoder_timeout`). Nothing before this check ever classified anything
+  // at warm-up; it only confirmed the encoder could produce *a* vector, not
+  // that the vector landed anywhere sane. `checkReadiness` is the pure half
+  // of that check — same shape as `decide`'s own tests above, a
+  // hand-built trace — so a regression here fails in under a second with no
+  // model involved.
+  it('passes a trace that lands exactly on the fixture labels', () => {
+    expect(() =>
+      checkReadiness(
+        traceWith(
+          confident(READINESS_FIXTURE.acceptableUse, 0.25, 0.19),
+          confident(READINESS_FIXTURE.scope, 0.12, 0.13),
+        ),
+      ),
+    ).not.toThrow();
+  });
+
+  it('fails when the acceptable-use head abstained', () => {
+    expect(() =>
+      checkReadiness(traceWith({}, confident(READINESS_FIXTURE.scope, 0.12, 0.13))),
+    ).toThrow(SigmaNotReadyError);
+  });
+
+  it('fails when the scope head abstained', () => {
+    expect(() =>
+      checkReadiness(traceWith(confident(READINESS_FIXTURE.acceptableUse, 0.25, 0.19), {})),
+    ).toThrow(SigmaNotReadyError);
+  });
+
+  it('fails when a head is confident but lands on the wrong label', () => {
+    // Exactly the shape a model/centroid mismatch produces: every tier
+    // "works" (no abstention, no error), it is just scoring off a manifold
+    // the calibrated band was never built against.
+    expect(() =>
+      checkReadiness(
+        traceWith(
+          confident('adult_adjacent_retail', 0.25, 0.19),
+          confident(READINESS_FIXTURE.scope, 0.12, 0.13),
+        ),
+      ),
+    ).toThrow(SigmaNotReadyError);
+  });
+
+  it('fails when a head decided through the injected tier, not the semantic one', () => {
+    // `classifyRequest` inside `warmSigma` supplies no tiers, so this should
+    // never happen in practice -- but the check itself must not be fooled by
+    // a confident label that did not come from the centroids being warmed.
+    expect(() =>
+      checkReadiness(
+        traceWith(
+          {
+            tier: 'injected',
+            label: READINESS_FIXTURE.acceptableUse,
+            confidence: 0.99,
+            semanticAbstained: true,
+          },
+          confident(READINESS_FIXTURE.scope, 0.12, 0.13),
+        ),
+      ),
+    ).toThrow(SigmaNotReadyError);
+  });
+
+  // The other half: proof the fixture is not a fiction. `warmSigma` classifies
+  // it with the real model and the real committed centroids and must not
+  // throw -- if this one goes red, `READINESS_FIXTURE` itself needs
+  // reconsidering (or the model/centroids genuinely regressed, which is
+  // exactly what this whole check exists to catch in production).
+  it('warmSigma resolves against the real committed model and centroids', async () => {
+    await expect(warmSigma()).resolves.toBeUndefined();
   });
 });
 

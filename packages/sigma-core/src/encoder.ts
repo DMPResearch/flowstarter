@@ -178,12 +178,49 @@ export class LocalSentenceEncoder implements Encoder {
   }
 }
 
-let shared: LocalSentenceEncoder | undefined;
+/**
+ * `getEncoder()`'s singleton, on `globalThis` rather than a plain module-level
+ * `let` — reproduced and fixed 2026-09-15 (staging, `flowstarter-staging-main`):
+ * `src/instrumentation.ts` warms the encoder at boot through
+ * `warmSigmaOrWarn()` and logs "[sigma] warm: model ready" (and `/api/health`
+ * agreed, `sigma: "ready"`), yet the FIRST real `/api/discovery/scope` request
+ * against a genuinely NEW, never-before-classified brief still abstained with
+ * `encoder_timeout` — sixteen minutes after boot, nowhere near a cold-start
+ * race. A `docker exec` replay on the box (composing the exact request text
+ * with the app's own `intakeSubject`) showed the composed text was fine and
+ * classified confidently (`clean`, margin 0.13) once run against the
+ * warmed-in-that-process singleton; a **second, independently constructed**
+ * `LocalSentenceEncoder` in the SAME script paid the full cold ONNX-session
+ * cost again (~2s, comfortably over the 400ms per-call budget) — proving two
+ * distinct encoder instances existed where the design assumes one.
+ *
+ * `apps/flowstarter-main/src/lib/sigma/warm.ts` documents the identical
+ * failure shape for its own module state (`getSigmaHealth()` stuck at
+ * `'missing'` while a sibling copy of the same file had already warmed) and
+ * fixes it exactly this way: Turbopack's production build can give a route
+ * handler's chunk and `src/instrumentation.ts`'s chunk their own independent
+ * copies of a module's top-level state, so `warmSigma()` warming ONE copy's
+ * singleton leaves every OTHER copy — including whichever one real request
+ * traffic actually reaches — cold. `globalThis` is the one thing every
+ * module-graph copy shares regardless of how a bundler split the code that
+ * reaches it; `Symbol.for` (not a bare object key) so this survives even a
+ * `globalThis` that itself got re-initialised per chunk.
+ */
+const GLOBAL_ENCODER_KEY = Symbol.for('flowstarter.sigma-core.encoder');
+
+type GlobalWithEncoder = typeof globalThis & {
+  [GLOBAL_ENCODER_KEY]?: LocalSentenceEncoder;
+};
+
+function getGlobal(): GlobalWithEncoder {
+  return globalThis as GlobalWithEncoder;
+}
 
 /** The process-wide encoder. */
 export function getEncoder(config?: EncoderConfig): LocalSentenceEncoder {
-  shared ??= new LocalSentenceEncoder(config);
-  return shared;
+  const global = getGlobal();
+  global[GLOBAL_ENCODER_KEY] ??= new LocalSentenceEncoder(config);
+  return global[GLOBAL_ENCODER_KEY];
 }
 
 /** Load the model and run one embed, off the request path. */
@@ -193,7 +230,7 @@ export async function warmEncoder(config?: EncoderConfig): Promise<void> {
 
 /** Tests only. */
 export function resetEncoder(): void {
-  shared = undefined;
+  delete getGlobal()[GLOBAL_ENCODER_KEY];
 }
 
 /**

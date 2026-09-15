@@ -77,6 +77,32 @@ describe('sigma warm-up', () => {
     );
   });
 
+  it('reports missing and warns, without throwing, when the readiness fixture misclassifies', async () => {
+    // The 2026-09-15 staging incident, reduced to this module's contract:
+    // the model loaded, `warmSigma()` still rejects because
+    // `@flowstarter/sigma-flowstarter`'s own readiness fixture (see
+    // packages/sigma-flowstarter/src/gate.ts, `checkReadiness`) did not
+    // classify correctly, and that must degrade the SAME way a missing
+    // model cache does -- `sigma: 'missing'` on `/api/health`, a warning in
+    // the logs naming why, never a crashed boot and never a silent 'ready'.
+    warmSigmaMock.mockRejectedValue(
+      new Error(
+        'sigma readiness check failed: expected acceptable_use=clean scope=standard-site, ' +
+          'got acceptable_use="none" (abstained=true) scope="unclear" (abstained=true)'
+      )
+    );
+    const writeSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+
+    await expect(warmSigmaOrWarn()).resolves.toBeUndefined();
+
+    expect(getSigmaHealth()).toBe('missing');
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining('sigma readiness check failed')
+    );
+  });
+
   it('reports missing and warns, without throwing, on a non-Error rejection', async () => {
     // Not every failure mode is a thrown Error — a broken native binding can
     // reject with a string or a plain object. The catch must not assume.
