@@ -41,8 +41,8 @@ function projectPhrase(businessName?: string | null): string {
 function greeting(clientName?: string | null): Block {
   const trimmed = clientName?.trim();
   return {
-    kind: 'paragraph',
-    content: trimmed ? `Hi ${trimmed},` : 'Hi there,',
+    kind: 'greeting',
+    text: trimmed ? `Hi ${trimmed},` : 'Hi there,',
   };
 }
 
@@ -154,7 +154,7 @@ export function depositReceivedEmail(input: {
       { kind: 'heading', text: 'Your build has started' },
       greeting(input.clientName),
       {
-        kind: 'paragraph',
+        kind: 'lede',
         content: amount
           ? [
               'Your deposit of ',
@@ -205,7 +205,7 @@ export function briefIncompleteEmail(input: {
       { kind: 'heading', text: 'We are waiting on a few things' },
       greeting(input.clientName),
       {
-        kind: 'paragraph',
+        kind: 'lede',
         content: `Your deposit is in and the build of ${projectPhrase(
           input.businessName
         )} is queued. Before it can start we need a short list of things from you, because they are the parts of the site only you can write.`,
@@ -255,7 +255,7 @@ export function previewReadyEmail(input: {
       { kind: 'heading', text: 'Your preview is ready' },
       greeting(input.clientName),
       {
-        kind: 'paragraph',
+        kind: 'lede',
         content: `We finished a first version of ${projectPhrase(
           input.businessName
         )}. It is a real site, not a mockup, and you can open it now.`,
@@ -305,7 +305,7 @@ export function balanceInvoiceEmail(input: {
       { kind: 'heading', text: 'Your balance invoice is ready' },
       greeting(input.clientName),
       {
-        kind: 'paragraph',
+        kind: 'lede',
         content: [
           'Your site is approved, so the remaining balance of ',
           { strong: input.amount },
@@ -356,7 +356,7 @@ export function newBookingEmail(input: {
       { kind: 'heading', text: 'New booking on your site' },
       greeting(input.clientName),
       {
-        kind: 'paragraph',
+        kind: 'lede',
         content: `${who} booked time through the calendar on ${projectPhrase(
           input.businessName
         )}.`,
@@ -413,7 +413,7 @@ export function newEnquiryEmail(input: {
       { kind: 'heading', text: 'New enquiry from your site' },
       greeting(input.clientName),
       {
-        kind: 'paragraph',
+        kind: 'lede',
         content: `${
           input.fromName
         } sent this through the contact form on ${projectPhrase(
@@ -428,6 +428,11 @@ export function newEnquiryEmail(input: {
           { label: 'Phone', value: input.phone?.trim() ?? '' },
         ],
       },
+      // The action, then the small print. It used to be the other way round,
+      // which left the one button in the email sitting below a footnote and
+      // under the footer's own rule, where it read as an afterthought rather
+      // than as the thing to press.
+      { kind: 'button', label: 'See your enquiries', href: input.enquiriesUrl },
       {
         kind: 'note',
         content:
@@ -435,7 +440,6 @@ export function newEnquiryEmail(input: {
           'keeps every enquiry, so nothing depends on this message surviving ' +
           'your inbox.',
       },
-      { kind: 'button', label: 'See your enquiries', href: input.enquiriesUrl },
     ],
   });
 }
@@ -462,7 +466,7 @@ export function siteLiveEmail(input: {
       { kind: 'heading', text: 'Your site is live' },
       greeting(input.clientName),
       {
-        kind: 'paragraph',
+        kind: 'lede',
         content: `${projectPhrase(
           input.businessName
         )} is published and anyone can reach it now.`,
@@ -515,7 +519,7 @@ export function buildNeedsReviewEmail(input: {
       { kind: 'heading', text: 'Your build needs a second look' },
       greeting(input.clientName),
       {
-        kind: 'paragraph',
+        kind: 'lede',
         content: `The build of ${projectPhrase(
           input.businessName
         )} stopped before it was finished, so one of us is going through it now.`,
@@ -567,7 +571,7 @@ export function changeRequestLiveEmail(input: {
       { kind: 'heading', text: 'Your change is live' },
       greeting(input.clientName),
       {
-        kind: 'paragraph',
+        kind: 'lede',
         content: `The change you asked for on ${projectPhrase(
           input.businessName
         )} is done and published. This is what you asked for, in your words:`,
@@ -622,7 +626,7 @@ export function bookingPageReadyEmail(input: {
       { kind: 'heading', text: 'Your booking page is ready' },
       greeting(input.clientName),
       {
-        kind: 'paragraph',
+        kind: 'lede',
         content: `The booking page on ${projectPhrase(
           input.businessName
         )} is live. Anyone can pick a time with you on it now, and it takes bookings on weekdays until you say otherwise.`,
@@ -684,7 +688,7 @@ export function refundIssuedEmail(input: {
       { kind: 'heading', text: `We have refunded ${input.amount}` },
       greeting(input.clientName),
       {
-        kind: 'paragraph',
+        kind: 'lede',
         content: [
           'We have sent ',
           { strong: input.amount },

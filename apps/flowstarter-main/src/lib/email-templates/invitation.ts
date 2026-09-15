@@ -25,7 +25,7 @@ export function invitationEmail({
     blocks: [
       { kind: 'heading', text: "You're invited to join Flowstarter" },
       {
-        kind: 'paragraph',
+        kind: 'lede',
         content: [
           { strong: inviterName },
           ` (${inviterEmail}) invited you to join their team on Flowstarter.`,

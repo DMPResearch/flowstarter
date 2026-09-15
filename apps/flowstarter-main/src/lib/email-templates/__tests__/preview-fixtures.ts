@@ -19,7 +19,9 @@ import {
   changeRequestLiveEmail,
   depositReceivedEmail,
   newBookingEmail,
+  newEnquiryEmail,
   previewReadyEmail,
+  refundIssuedEmail,
   siteLiveEmail,
 } from '../client-notices';
 import { customWorkOperatorEmail } from '../custom-work';
@@ -301,6 +303,42 @@ export function emailFixtures(): EmailFixture[] {
       textContains: ['ana@luminadental.ro', 'We did not change your password'],
     },
     {
+      // The client's own copy of the enquiry, distinct from the operator's
+      // `lead-notification`. It had no fixture, so nothing checked it.
+      name: 'new-enquiry',
+      mail: newEnquiryEmail({
+        enquiriesUrl: `${DASHBOARD}/enquiries`,
+        fromName: 'Mihai Ionescu',
+        fromEmail: 'mihai@example.com',
+        message:
+          'Hello, I broke a filling on Sunday and it is sore. Do you have ' +
+          'anything this week, preferably in the morning?',
+        phone: '+40 722 000 111',
+        page: 'the contact page',
+        businessName: 'Lumina Dental',
+        clientName: 'Ana',
+      }),
+      button: `${DASHBOARD}/enquiries`,
+      textContains: [
+        'mihai@example.com',
+        '+40 722 000 111',
+        'I broke a filling on Sunday',
+      ],
+    },
+    {
+      // The one email in the set with no button, and the one nothing was
+      // checking. A refund is the message a client reads most carefully.
+      name: 'refund-issued',
+      mail: refundIssuedEmail({
+        amount: '€159.80',
+        dashboardUrl: DASHBOARD,
+        clientName: 'Ana',
+        businessName: 'Lumina Dental',
+      }),
+      button: null,
+      textContains: ['€159.80', 'The work stays yours', DASHBOARD],
+    },
+    {
       name: 'custom-work-lead',
       mail: customWorkOperatorEmail({
         visitorName: ELENA.discovery.fullName,
@@ -371,6 +409,16 @@ export function lintEmailHtml(html: string): string[] {
     [/linear-gradient|radial-gradient/i, 'gradient'],
     [/\bvar\(--/, 'CSS custom property'],
     [/:\s*-?\d+(\.\d+)?rem\b/, 'rem unit (Outlook ignores it)'],
+    // Every leading in `../design` is a pixel count now. A template that
+    // drops the unit turns `line-height: 16` into sixteen times the font
+    // size, which is a 190px line box around a 12px label: catastrophic, and
+    // invisible in the plain-text part and in every assertion about copy.
+    // This happened once, to the callout's label, and the previews are the
+    // only reason anybody saw it.
+    [
+      /line-height\s*:\s*\d+(\.\d+)?\s*[;"]/,
+      'unitless line-height (a pixel scale read as a ratio)',
+    ],
   ];
   for (const [re, why] of rules) {
     if (re.test(html)) problems.push(why);

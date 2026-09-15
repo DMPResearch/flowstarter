@@ -66,6 +66,10 @@ describe('every template', () => {
       'lead-notification',
       'guest-deposit-welcome',
       'guest-deposit-welcome-existing',
+      // The client's own enquiry notice, and the refund. Neither had a
+      // fixture, and a refund is the email a client reads most carefully.
+      'new-enquiry',
+      'refund-issued',
       // The two operator emails. They shipped in #191 without a fixture, so
       // for four weeks nothing here checked their preheader, their text
       // part, their CSS or their size; the per-template suites next door
@@ -246,6 +250,8 @@ describe('subjects', () => {
       'guest-deposit-welcome': 'Your Flowstarter account and your build',
       'guest-deposit-welcome-existing':
         'Your deposit is in and your build has started',
+      'new-enquiry': 'New enquiry from your site',
+      'refund-issued': 'We have refunded €159.80',
       'custom-work-lead':
         'Custom work lead: Elena Dobre, reads like software to build, not a site',
       'policy-review':

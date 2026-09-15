@@ -31,8 +31,8 @@ const OPERATOR_QUEUE = 'Custom work';
 function greeting(name?: string | null) {
   const trimmed = (name ?? '').trim();
   return {
-    kind: 'paragraph' as const,
-    content: trimmed ? `Hi ${trimmed},` : 'Hi,',
+    kind: 'greeting' as const,
+    text: trimmed ? `Hi ${trimmed},` : 'Hi,',
   };
 }
 

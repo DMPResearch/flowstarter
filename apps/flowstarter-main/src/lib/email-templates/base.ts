@@ -39,11 +39,18 @@ import {
   EMAIL_COLORS,
   EMAIL_FONTS,
   EMAIL_LAYOUT,
+  EMAIL_SPACE,
   EMAIL_TYPE,
   emailFontFace,
 } from './design';
 
-export { EMAIL_COLORS, EMAIL_LAYOUT, EMAIL_TYPE, EMAIL_FONTS } from './design';
+export {
+  EMAIL_COLORS,
+  EMAIL_LAYOUT,
+  EMAIL_SPACE,
+  EMAIL_TYPE,
+  EMAIL_FONTS,
+} from './design';
 
 /** Short names, because every string below is built from these. */
 const C = EMAIL_COLORS.light;
@@ -112,6 +119,13 @@ export type Inline =
 export type Block =
   /** The one h1. Every email has exactly one, first. */
   | { kind: 'heading'; text: string }
+  /**
+   * The address line. Its own kind rather than a paragraph, because it
+   * belongs to the sentence under it: set as a paragraph it took a
+   * paragraph's gap, and "Hi Ana," floated between the heading and the news
+   * as though it were a thought of its own.
+   */
+  | { kind: 'greeting'; text: string }
   /**
    * The standfirst: the single sentence that says why this email exists, set
    * in the display face above a hairline. One per email, directly under the
@@ -200,26 +214,37 @@ function tidy(value: string): string {
  * Outlook drops margins on tables, and a stack of blocks with no space
  * between them is the failure mode that is invisible in every other client.
  */
-function blockTable(cell: string, gap: number = L.blockGap): string {
+function blockTable(cell: string, gap: number): string {
+  const spacer = gap
+    ? `\n  <tr><td style="height:${gap}px;line-height:${gap}px;font-size:1px;">&nbsp;</td></tr>`
+    : '';
   return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;">
-  <tr>${cell}</tr>
-  <tr><td style="height:${gap}px;line-height:${gap}px;font-size:1px;">&nbsp;</td></tr>
+  <tr>${cell}</tr>${spacer}
 </table>`;
 }
 
+/**
+ * The serif, and the class that lets Word find it.
+ *
+ * Word-rendered Outlook does not walk a font stack the way a browser does; it
+ * reads the first name and gives up. So every element set in the display face
+ * also carries `fs-display`, and a conditional-comment stylesheet in the head
+ * points that class at Georgia, which Word has always had. Postmark ships the
+ * same device in reverse, forcing Arial on its webfont class.
+ */
 const DISPLAY = `font-family:${EMAIL_FONTS.display};`;
 const BODY_FACE = `font-family:${EMAIL_FONTS.body};`;
-const P_STYLE = `margin:0 0 ${L.blockGap}px;${BODY_FACE}font-size:${T.body.size}px;line-height:${T.body.leading};color:${C.ink};`;
-const NOTE_STYLE = `margin:0 0 ${L.blockGap}px;${BODY_FACE}font-size:${T.note.size}px;line-height:${T.note.leading};color:${C.inkDim};`;
+const P_STYLE = `margin:0;${BODY_FACE}font-size:${T.body.size}px;line-height:${T.body.leading}px;color:${C.ink};`;
+const NOTE_STYLE = `margin:0;${BODY_FACE}font-size:${T.note.size}px;line-height:${T.note.leading}px;color:${C.inkDim};`;
 /** The letterhead's queue line and every label above a value. */
-const MICRO_STYLE = `${BODY_FACE}font-size:${T.micro.size}px;line-height:${T.micro.leading};font-weight:${T.micro.weight};letter-spacing:${T.micro.tracking};text-transform:uppercase;color:${C.inkDim};`;
+const MICRO_STYLE = `${BODY_FACE}font-size:${T.micro.size}px;line-height:${T.micro.leading}px;font-weight:${T.micro.weight};letter-spacing:${T.micro.tracking};text-transform:uppercase;color:${C.inkDim};`;
 
 /**
  * Outlook ignores padding and border-radius on a link, so the button is drawn
  * twice: a VML rounded rectangle for Word-rendered Outlook, and a padded
  * anchor for everything else. Only one of the two is ever visible.
  */
-function buttonHtml(label: string, href: string): string {
+function buttonHtml(label: string, href: string, gap: number): string {
   const url = safeHref(href);
   const safeLabel = escapeHtml(label);
   // Word needs the box in points before it can centre the text in it, and it
@@ -231,7 +256,7 @@ function buttonHtml(label: string, href: string): string {
       label.length * L.button.perChar + L.button.padding
     )
   );
-  const cell = `<td align="left" style="padding:${L.buttonGap.top}px 0 0;">
+  const cell = `<td align="left" style="padding:0;">
     <!--[if mso]>
     <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="${url}" style="height:${L.button.height}px;v-text-anchor:middle;width:${width}px;" arcsize="20%" stroke="f" fillcolor="${C.accent}">
       <w:anchorlock/>
@@ -242,50 +267,105 @@ function buttonHtml(label: string, href: string): string {
     <a class="fs-button" href="${url}" style="display:inline-block;padding:${L.buttonPadding};background-color:${C.accent};color:${C.accentInk};font-size:${T.button.size}px;font-weight:${T.button.weight};line-height:${T.button.leading}px;text-decoration:none;border-radius:${L.radius.button}px;${BODY_FACE}">${safeLabel}</a>
     <!--<![endif]-->
   </td>`;
-  return blockTable(cell, L.buttonGap.bottom);
+  return blockTable(cell, gap);
 }
 
-function blockHtml(block: Block): string {
+/**
+ * How much air goes between one block and the next.
+ *
+ * A rule rather than a margin on each block, because the right gap is a fact
+ * about the PAIR, not about either one of them. The first version of this
+ * layout gave every block the same eighteen pixels and read as a wall: the
+ * heading, the greeting, the news, an aside and the button were all exactly
+ * as far apart as each other, so there was nothing for the eye to group by
+ * and nowhere for it to stop.
+ *
+ * Four gaps, in order of how hard they separate. `tight` after a greeting,
+ * which belongs to the sentence under it rather than standing on its own.
+ * `text` between paragraphs of one passage. `group` around anything with
+ * edges, and after the heading and the standfirst, which end a section by
+ * ending it. `zone` on both sides of the primary button, the one place that
+ * has to read as a boundary rather than as a gap.
+ */
+const WITH_EDGES: ReadonlyArray<Block['kind']> = [
+  'quote',
+  'facts',
+  'panel',
+  'callout',
+];
+
+function gapBetween(before: Block, after: Block | undefined): number {
+  // The card's own bottom padding closes the stack.
+  if (!after) return 0;
+  // The action gets a zone to itself, whatever sits either side of it.
+  if (before.kind === 'button' || after.kind === 'button') {
+    return EMAIL_SPACE.zone;
+  }
+  // Small print hangs off its own rule, and the rule carries the space.
+  if (after.kind === 'note') return EMAIL_SPACE.group;
+  if (before.kind === 'greeting') return EMAIL_SPACE.tight;
+  if (before.kind === 'heading' || before.kind === 'lede') {
+    return EMAIL_SPACE.group;
+  }
+  if (WITH_EDGES.indexOf(before.kind) >= 0) return EMAIL_SPACE.group;
+  if (WITH_EDGES.indexOf(after.kind) >= 0) return EMAIL_SPACE.group;
+  return EMAIL_SPACE.text;
+}
+
+function blockHtml(block: Block, gap: number): string {
   switch (block.kind) {
     case 'heading':
-      return `<h1 class="fs-ink" style="margin:0 0 ${
-        L.blockGap
-      }px;${DISPLAY}font-size:${T.heading.size}px;line-height:${
-        T.heading.leading
-      };font-weight:${T.heading.weight};letter-spacing:${
-        T.heading.tracking
-      };color:${C.ink};">${escapeHtml(block.text)}</h1>`;
+      return `<h1 class="fs-ink fs-display" style="margin:0 0 ${gap}px;${DISPLAY}font-size:${
+        T.heading.size
+      }px;line-height:${T.heading.leading}px;font-weight:${
+        T.heading.weight
+      };letter-spacing:${T.heading.tracking};color:${C.ink};">${escapeHtml(
+        block.text
+      )}</h1>`;
+    case 'greeting':
+      return `<p class="fs-ink" style="${P_STYLE}margin-bottom:${gap}px;">${escapeHtml(
+        block.text
+      )}</p>`;
     case 'lede': {
-      // The one sentence an operator reads before deciding whether to open
-      // anything, set apart the way a standfirst is: the display face, a step
-      // up from body, and a hairline under it that ends the summary and
-      // starts the detail.
+      // The standfirst, and the reason this email can be triaged from a
+      // preview pane without being opened: the one sentence that says what
+      // happened, in the display face, a step up from body, over a hairline
+      // that ends the summary and starts the detail.
       const cell = `<td class="fs-rule" style="padding:0 0 ${
-        L.ledeGap
+        EMAIL_SPACE.group
       }px;border-bottom:${L.hairline}px solid ${
         C.rule
-      };"><p class="fs-ink" style="margin:0;${DISPLAY}font-size:${
+      };"><p class="fs-ink fs-display" style="margin:0;${DISPLAY}font-size:${
         T.lede.size
-      }px;line-height:${T.lede.leading};font-weight:${T.lede.weight};color:${
+      }px;line-height:${T.lede.leading}px;font-weight:${T.lede.weight};color:${
         C.ink
       };">${inlineHtml(block.content)}</p></td>`;
-      return blockTable(cell, L.ledeGap);
+      return blockTable(cell, gap);
     }
     case 'paragraph':
-      return `<p class="fs-ink" style="${P_STYLE}">${inlineHtml(
+      return `<p class="fs-ink" style="${P_STYLE}margin-bottom:${gap}px;">${inlineHtml(
         block.content
       )}</p>`;
-    case 'note':
-      return `<p class="fs-dim" style="${NOTE_STYLE}">${inlineHtml(
+    case 'note': {
+      // Small print, the way a transactional email has always set it: under a
+      // hairline with real space above, so it reads as a footnote to the
+      // message rather than as the message trailing off.
+      const cell = `<td class="fs-rule" style="padding:${
+        EMAIL_SPACE.group
+      }px 0 0;border-top:${L.hairline}px solid ${
+        C.rule
+      };"><p class="fs-dim" style="${NOTE_STYLE}">${inlineHtml(
         block.content
-      )}</p>`;
+      )}</p></td>`;
+      return blockTable(cell, gap);
+    }
     case 'button':
-      return buttonHtml(block.label, block.href);
+      return buttonHtml(block.label, block.href, gap);
     case 'hero': {
       const label = block.label ?? block.href;
-      return `<p style="margin:0 0 ${L.blockGap}px;${BODY_FACE}font-size:${
+      return `<p style="margin:0 0 ${gap}px;${BODY_FACE}font-size:${
         T.hero.size
-      }px;line-height:${T.hero.leading};font-weight:${
+      }px;line-height:${T.hero.leading}px;font-weight:${
         T.hero.weight
       };word-break:break-all;"><a class="fs-link" href="${safeHref(
         block.href
@@ -303,12 +383,12 @@ function blockHtml(block: Block): string {
         C.quoteRule
       };border-radius:0 ${L.radius.panel}px ${L.radius.panel}px 0;padding:${
         L.quotePadding
-      };"><p class="fs-ink" style="margin:0;${DISPLAY}font-size:${
+      };"><p class="fs-ink fs-display" style="margin:0;${DISPLAY}font-size:${
         T.quote.size
-      }px;line-height:${T.quote.leading};color:${C.ink};">${escapeHtml(
+      }px;line-height:${T.quote.leading}px;color:${C.ink};">${escapeHtml(
         block.text
       )}</p></td>`;
-      return blockTable(cell);
+      return blockTable(cell, gap);
     }
     case 'list': {
       if (block.items.length === 0) return '';
@@ -320,12 +400,14 @@ function blockHtml(block: Block): string {
             )}</li>`
         )
         .join('');
-      return `<ul class="fs-ink" style="margin:0 0 ${L.blockGap}px;padding-left:${L.listIndent}px;${BODY_FACE}font-size:${T.body.size}px;line-height:${T.body.leading};color:${C.ink};">${items}</ul>`;
+      return `<ul class="fs-ink" style="margin:0 0 ${gap}px;padding-left:${L.listIndent}px;${BODY_FACE}font-size:${T.body.size}px;line-height:${T.body.leading}px;color:${C.ink};">${items}</ul>`;
     }
     case 'facts': {
-      // A label column and a value column under one hairline, the way a
-      // delivery note sets them. The label is the micro style the panel uses,
-      // so the two blocks read as the same family of object.
+      // The summary block: a label column and a value column under one
+      // hairline, the way a receipt sets the facts it is a receipt for. The
+      // label is the micro style the panel uses, so the two read as the same
+      // family of object, and the value is body ink, because the value is the
+      // thing being looked for.
       const rows = block.rows
         .filter((row) => row.value.trim().length > 0)
         .map(
@@ -348,48 +430,48 @@ function blockHtml(block: Block): string {
         )
         .join('');
       if (!rows) return '';
-      const cell = `<td class="fs-rule" style="padding:${L.factRowGap}px 0 0;border-top:${L.hairline}px solid ${C.rule};"><table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;">${rows}</table></td>`;
-      return blockTable(cell);
+      const cell = `<td class="fs-rule" style="padding:${EMAIL_SPACE.text}px 0 0;border-top:${L.hairline}px solid ${C.rule};"><table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;">${rows}</table></td>`;
+      return blockTable(cell, gap);
     }
     case 'panel': {
       const rows = block.rows
         .map(
           (row, index) =>
             `<p class="fs-dim" style="margin:${
-              index === 0 ? '0' : '14px'
+              index === 0 ? '0' : `${EMAIL_SPACE.text}px`
             } 0 3px;${MICRO_STYLE}">${escapeHtml(
               row.label
             )}</p><p class="fs-ink" style="margin:0;font-family:${
               EMAIL_FONTS.mono
             };font-size:${T.fact.size}px;line-height:${
               T.fact.leading
-            };font-weight:${T.micro.weight};word-break:break-all;color:${
+            }px;font-weight:${T.micro.weight};word-break:break-all;color:${
               C.ink
             };">${escapeHtml(row.value)}</p>`
         )
         .join('');
       const cell = `<td class="fs-panel fs-rule" style="background-color:${C.panel};border:${L.hairline}px solid ${C.rule};border-radius:${L.radius.panel}px;padding:${L.panelPadding};">${rows}</td>`;
-      return blockTable(cell, L.ledeGap);
+      return blockTable(cell, gap);
     }
     case 'callout': {
-      const cell = `<td class="fs-panel fs-rule" style="background-color:${
-        C.panel
-      };border:${L.hairline}px solid ${C.rule};border-radius:${
-        L.radius.panel
-      }px;padding:${
-        L.panelPadding
-      };"><p class="fs-ink" style="margin:0 0 6px;${DISPLAY}font-size:${
-        T.note.size + 3
-      }px;font-weight:${T.button.weight};line-height:${T.micro.leading};color:${
-        C.ink
-      };">${escapeHtml(
+      // An aside, and much quieter than it was. It used to carry the panel's
+      // fill, its border and its radius, and it usually sat directly above
+      // the button, where a filled slab four lines deep simply outweighed the
+      // one thing the reader was being asked to press. Now it is a rule down
+      // its left, a micro label, and body copy: still a distinct object,
+      // no longer the loudest one on the page.
+      const cell = `<td class="fs-quote" style="border-left:${
+        L.hairline * 3
+      }px solid ${C.rule};padding:2px 0 2px ${
+        L.calloutIndent
+      }px;"><p class="fs-dim" style="margin:0 0 6px;${MICRO_STYLE}">${escapeHtml(
         block.title
       )}</p><p class="fs-ink" style="margin:0;${BODY_FACE}font-size:${
         T.fact.size
-      }px;line-height:${T.body.leading};color:${C.ink};">${inlineHtml(
+      }px;line-height:${T.fact.leading}px;color:${C.ink};">${inlineHtml(
         block.content
       )}</p></td>`;
-      return blockTable(cell);
+      return blockTable(cell, gap);
     }
   }
 }
@@ -397,6 +479,7 @@ function blockHtml(block: Block): string {
 function blockText(block: Block): string {
   switch (block.kind) {
     case 'heading':
+    case 'greeting':
       return block.text;
     case 'lede':
     case 'paragraph':
@@ -442,17 +525,40 @@ const FOOTER_TRANSACTIONAL =
   'nothing to unsubscribe from. Reply to this email and a person will read it.';
 const FOOTER_EMAIL = 'hello@flowstarter.net';
 
+/**
+ * The footer, and it is a footer rather than two more grey lines.
+ *
+ * A hairline across the shell, a zone of space above it and room under it,
+ * which is the device every transactional template in the wild uses to end a
+ * message: Postmark's own ship a rule plus twenty-five pixels either side to
+ * close off the fine print. Without the rule, small grey type directly under
+ * the card reads as the message continuing in a quieter voice, which is
+ * exactly what it must not read as.
+ */
 function footerHtml(): string {
-  const footerStyle = `margin:0;${BODY_FACE}font-size:${T.footer.size}px;line-height:${T.footer.leading};color:${C.inkDim};`;
+  const footerStyle = `margin:0;${BODY_FACE}font-size:${T.footer.size}px;line-height:${T.footer.leading}px;color:${C.inkDim};`;
+  // Nested inside the gutter, not padded within it, so the rule lands on the
+  // same two verticals as the letterhead's. A border on a padded cell spans
+  // the cell, not the content, and the two would have disagreed by the eight
+  // pixels of the gutter.
   return `
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;">
-  <tr><td class="fs-pad" style="padding:${L.footerGap}px ${L.gutter}px 0;">
-    <p class="fs-dim" style="${footerStyle}margin-bottom:6px;">${FOOTER_LOCATION} &nbsp;&middot;&nbsp; <a class="fs-link" href="mailto:${FOOTER_EMAIL}" style="color:${
+  <tr><td class="fs-pad" style="padding:0 ${L.gutter}px;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;">
+      <tr><td class="fs-rule" style="height:${L.footer.above}px;line-height:${
+    L.footer.above
+  }px;font-size:1px;border-bottom:${L.hairline}px solid ${
+    C.rule
+  };">&nbsp;</td></tr>
+      <tr><td style="padding:${L.footer.belowRule}px 0 0;">
+        <p class="fs-dim" style="${footerStyle}margin-bottom:6px;">${FOOTER_LOCATION} &nbsp;&middot;&nbsp; <a class="fs-link" href="mailto:${FOOTER_EMAIL}" style="color:${
     C.accent
   };text-decoration:underline;">${FOOTER_EMAIL}</a></p>
-    <p class="fs-dim" style="${footerStyle}">${escapeHtml(
+        <p class="fs-dim" style="${footerStyle}">${escapeHtml(
     FOOTER_TRANSACTIONAL
   )}</p>
+      </td></tr>
+    </table>
   </td></tr>
 </table>`;
 }
@@ -632,7 +738,13 @@ export function renderEmail(input: {
    */
   masthead?: string;
 }): RenderedEmail {
-  const body = input.blocks.map(blockHtml).join('\n');
+  // The gap under each block is decided by what follows it, not by the block
+  // itself. See `gapBetween`.
+  const body = input.blocks
+    .map((block, at) =>
+      blockHtml(block, gapBetween(block, input.blocks[at + 1]))
+    )
+    .join('\n');
   const text = [
     ...(input.masthead ? [`${FOOTER_LOCATION} / ${input.masthead}`] : []),
     ...input.blocks.map(blockText).filter((part) => part.trim().length > 0),
@@ -652,6 +764,7 @@ export function renderEmail(input: {
 <title>${escapeHtml(input.subject)}</title>
 <!--[if mso]>
 <noscript><xml><o:OfficeDocumentSettings><o:AllowPNG/><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+<style>.fs-display { font-family: Georgia, 'Times New Roman', serif !important; }</style>
 <![endif]-->
 <style>
 :root { color-scheme: light dark; supported-color-schemes: light dark; }
@@ -665,6 +778,9 @@ img { border: 0; line-height: 100%; outline: none; text-decoration: none; -ms-in
     L.gutterMobile
   }px !important; }
   .fs-card-pad { padding: ${L.cardPaddingMobile} !important; }
+}
+@media only screen and (max-width: ${L.buttonBreakpoint}px) {
+  .fs-button { display: block !important; text-align: center !important; }
 }
 ${darkCss()}
 </style>

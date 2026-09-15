@@ -32,7 +32,19 @@
 export const EMAIL_COLORS = {
   light: {
     page: '#fbf7ef',
-    card: '#ffffff',
+    /**
+     * Near-white, not white, and the one character matters.
+     *
+     * Apple Mail's dark mode inverts a message by heuristic, and pure
+     * `#ffffff` is the value that trips it hardest: a card painted with it
+     * comes back as a flat dark slab with our own dark variant fighting it.
+     * One step off the corner of the colour space is invisible to a reader
+     * and enough for the heuristic to leave the card alone and let the
+     * `prefers-color-scheme` block below do the work. Email on Acid
+     * documents the same dodge at the other end, which is why `dark.page` is
+     * not `#000000` either.
+     */
+    card: '#fffffe',
     ink: '#120a22',
     inkDim: '#565073',
     rule: '#e8e1d3',
@@ -141,21 +153,50 @@ export function emailFontFace(): string {
  * away half the styling.
  */
 export const EMAIL_TYPE = {
-  heading: { size: 28, leading: 1.2, tracking: '-0.012em', weight: 600 },
+  heading: { size: 28, leading: 34, tracking: '-0.012em', weight: 600 },
   /** The standfirst: the one sentence that says why this email exists. */
-  lede: { size: 19, leading: 1.5, weight: 400 },
+  lede: { size: 19, leading: 30, weight: 400 },
   /** A URL that is itself the news. */
-  hero: { size: 19, leading: 1.4, weight: 600 },
+  hero: { size: 19, leading: 26, weight: 600 },
   /** The client's own words, quoted back. */
-  quote: { size: 18, leading: 1.55, weight: 400 },
-  body: { size: 16, leading: 1.65, weight: 400 },
-  fact: { size: 15, leading: 1.5, weight: 400 },
-  note: { size: 14, leading: 1.6, weight: 400 },
-  footer: { size: 13, leading: 1.6, weight: 400 },
+  quote: { size: 18, leading: 28, weight: 400 },
+  body: { size: 16, leading: 26, weight: 400 },
+  fact: { size: 15, leading: 22, weight: 400 },
+  note: { size: 14, leading: 22, weight: 400 },
+  footer: { size: 13, leading: 21, weight: 400 },
   /** Labels above a value, and the letterhead's queue line. Never prose. */
-  micro: { size: 12, leading: 1.4, weight: 600, tracking: '0.07em' },
+  micro: { size: 12, leading: 16, weight: 600, tracking: '0.07em' },
   button: { size: 16, leading: 20, weight: 600 },
   wordmark: { size: 21, tracking: '-0.025em', weight: 700 },
+} as const;
+
+/**
+ * The vertical rhythm, in pixels, all of it a multiple of four.
+ *
+ * Every gap in an email used to be the same eighteen pixels, and that is what
+ * made the first version of this layout read as a wall: a heading, a
+ * greeting, the news, an aside and the button were all exactly as far apart
+ * as each other, so the eye had nothing to group by and no reason to stop
+ * anywhere. Rhythm is not decoration here, it is the only grouping mechanism
+ * a mail client can be trusted with.
+ *
+ * Four steps, used for four jobs:
+ *
+ * `tight` holds a pair together, a greeting and the sentence it belongs to, a
+ * label and its value. `text` is one paragraph to the next inside a passage.
+ * `group` separates one thing from a different thing, prose from a summary,
+ * a summary from the action. `zone` is reserved for the two edges that need
+ * to read as edges: around the primary button, and above the footer rule.
+ *
+ * Line heights above are pixels for the same reason: Word does the arithmetic
+ * on a unitless line-height differently from every browser, and a rhythm that
+ * only holds in three clients out of five is not a rhythm.
+ */
+export const EMAIL_SPACE = {
+  tight: 8,
+  text: 16,
+  group: 24,
+  zone: 32,
 } as const;
 
 /**
@@ -171,29 +212,42 @@ export const EMAIL_LAYOUT = {
   shellWidth: 600,
   /** Below this the shell goes fluid and the card's padding comes in. */
   mobileBreakpoint: 620,
+  /**
+   * And below this the button goes full width.
+   *
+   * A second, tighter breakpoint on purpose, the way Postmark's shipped
+   * templates do it: at 600 the layout still has room either side of a
+   * normal-length label, and a button that spans the card there looks like a
+   * banner. By 500 it does not, and a full-width target is the easier thing
+   * to hit with a thumb.
+   */
+  buttonBreakpoint: 500,
   /** The letterhead and footer sit inside the card's edge by this much. */
   gutter: 8,
   gutterMobile: 22,
   radius: { card: 16, panel: 12, button: 10, mark: 8 },
-  /** Between one block and the next. */
-  blockGap: 18,
-  /** After the standfirst's rule, which needs more air than a paragraph. */
-  ledeGap: 22,
-  /** Above and below the one primary button. */
-  buttonGap: { top: 10, bottom: 24 },
-  cardPadding: '36px 36px 28px',
-  cardPaddingMobile: '28px 22px 22px',
+  cardPadding: '40px 40px 32px',
+  cardPaddingMobile: '28px 24px 24px',
   pagePadding: '32px 12px 40px',
   /** The letterhead's mark tile, and the space between it and the wordmark. */
   mark: { size: 34, gap: 10 },
   /** Between the letterhead's rule and the card below it. */
-  letterheadGap: 16,
-  letterheadPadding: 14,
-  footerGap: 24,
+  letterheadGap: 24,
+  letterheadPadding: 16,
+  /**
+   * The footer.
+   *
+   * A hairline above it, and a zone of space either side. A footer that is
+   * only smaller and greyer than the body still reads as more body; the rule
+   * is what makes it a footer.
+   */
+  footer: { above: 32, belowRule: 16 },
   hairline: 1,
   quoteRuleWidth: 3,
-  quotePadding: '14px 18px',
-  panelPadding: '16px 18px',
+  quotePadding: '16px 20px',
+  /** How far a callout's text sits from the rule it hangs off. */
+  calloutIndent: 18,
+  panelPadding: '16px 20px',
   /** The label column in a facts table. Wide enough for "Their site". */
   factLabelWidth: 88,
   factRowGap: 10,
@@ -208,6 +262,15 @@ export const EMAIL_LAYOUT = {
   factLineHeight: 22,
   listIndent: 22,
   listItemGap: 8,
+  /**
+   * The action's own zone.
+   *
+   * More space above the button than between any two paragraphs, and the same
+   * below, so the one thing the reader is being asked to press is the one
+   * thing with room around it. When the button had a paragraph's gap on
+   * either side it read as another paragraph that happened to be blue.
+   */
+  buttonZone: { above: 32, below: 32 },
   /**
    * Word cannot measure a string, so the VML button's box is estimated from
    * the label: this many points per character plus the padding, clamped.

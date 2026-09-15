@@ -28,7 +28,7 @@ export function verificationEmail({
       blocks: [
         { kind: 'heading', text: 'Verify your email' },
         {
-          kind: 'paragraph',
+          kind: 'lede',
           content:
             'Enter this code in the tab you started from to finish signing up.',
         },
@@ -47,7 +47,7 @@ export function verificationEmail({
     blocks: [
       { kind: 'heading', text: 'Verify your email' },
       {
-        kind: 'paragraph',
+        kind: 'lede',
         content:
           'Confirm this is your address and your Flowstarter account is ready.',
       },
