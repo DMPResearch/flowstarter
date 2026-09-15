@@ -21,6 +21,7 @@ import 'server-only';
 import { publicAppOrigin } from '@flowstarter/platform-config';
 import { resolveOperatorNotifyEmail, sendEmail } from '@/lib/email';
 import { screenAcceptableUse } from '@/lib/policy/gate';
+import type { PolicyLocale } from '@/lib/policy/copy';
 import { intakeSubject } from '@/lib/policy/subject';
 import {
   customWorkEnquiryEmail,
@@ -71,6 +72,12 @@ export interface ScopeGateInput {
    * one call and one cached verdict per brief.
    */
   acceptableUse?: AcceptableUse;
+  /**
+   * The visitor's language, for the acceptable-use screen's notice only --
+   * `decideRoute` and the route table stay locale-blind on purpose. Defaults
+   * to `'en'` inside `screenAcceptableUse` when this is left unset.
+   */
+  locale?: PolicyLocale;
 }
 
 export interface ScopeGateResult {
@@ -158,6 +165,7 @@ async function screenedVerdict(
       linkedinUrl: input.linkedinUrl,
       linkTitle,
     }),
+    locale: input.locale,
   });
   if (screening.verdict.decision === 'refuse') return 'blocked';
   if (screening.verdict.decision === 'review') return 'review';

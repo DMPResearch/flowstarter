@@ -157,6 +157,13 @@ const SpecSchema = z.object({
   calComUrl: z.string().max(400).optional().default(''),
   /** Free-text integrations; may still contain a cal.com URL as fallback. */
   customIntegrations: z.string().max(2000).optional().default(''),
+  /**
+   * The visitor's language, the same field `intake-graph`, `intake-chat` and
+   * `business-names` already accept. Read only by the acceptable-use gate
+   * below, so a refusal or review notice reads in the visitor's own
+   * language instead of always falling back to English.
+   */
+  locale: z.enum(['en', 'ro']).optional().default('en'),
 });
 
 /**
@@ -433,6 +440,7 @@ export async function POST(req: NextRequest) {
   const screening = await screenAcceptableUse({
     surface: 'preview',
     text: intakeSubject(parsed.data),
+    locale: parsed.data.locale,
   });
   if (screening.blocked && screening.notice) {
     // The funnel's own vocabulary: this route answers 200 with `skip` rather

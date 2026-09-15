@@ -205,6 +205,39 @@ describe('POST /api/discovery/preview/live — acceptable-use gate', () => {
     expect(reserveFunnelSpendMock).not.toHaveBeenCalled();
   });
 
+  it('answers the refusal in Romanian when the intake says locale: ro', async () => {
+    classify.mockResolvedValue(
+      classification({ categoryId: 'illegal_drugs', confidence: 0.95 })
+    );
+
+    const res = await POST(previewRequest({ locale: 'ro' }));
+
+    expect(res.status).toBe(200);
+    const responseBody = (await res.json()) as {
+      skip?: boolean;
+      reason?: string;
+      policy?: { title?: string; message?: string; locale?: string };
+    };
+    expect(responseBody.skip).toBe(true);
+    expect(responseBody.policy?.locale).toBe('ro');
+    expect(responseBody.policy?.title).toBe('Nu putem construi acest site');
+    expect(responseBody.policy?.message).toContain('utilizare acceptabilă');
+  });
+
+  it('still answers English when the intake sends no locale at all', async () => {
+    classify.mockResolvedValue(
+      classification({ categoryId: 'illegal_drugs', confidence: 0.95 })
+    );
+
+    const res = await POST(previewRequest());
+
+    const responseBody = (await res.json()) as {
+      policy?: { title?: string; locale?: string };
+    };
+    expect(responseBody.policy?.locale).toBe('en');
+    expect(responseBody.policy?.title).toBe('We cannot build this one');
+  });
+
   it('does not answer the acceptable-use skip for a clean classification', async () => {
     classify.mockResolvedValue(
       classification({ categoryId: 'none', confidence: 0.95 })

@@ -17,7 +17,7 @@ import {
   classifyAcceptableUse,
   type AcceptableUseClassification,
 } from './classifier';
-import { noticeFor, type PolicyNotice } from './copy';
+import { noticeFor, type PolicyLocale, type PolicyNotice } from './copy';
 import {
   recordPolicyOutcome,
   type PolicyReviewClient,
@@ -32,6 +32,12 @@ export interface ScreenInput {
   projectId?: string | null;
   /** Who triggered this, for the timeline. Defaults to 'system'. */
   actor?: string;
+  /**
+   * The visitor's language, for `notice` only -- classification itself is
+   * language-agnostic. Defaults to `'en'`, so a caller that has not been
+   * taught to pass this yet keeps returning English exactly as before.
+   */
+  locale?: PolicyLocale;
   /**
    * Skip the audit row. Set only where the caller writes its own row with
    * more context, never to make a gate quieter.
@@ -114,6 +120,7 @@ export async function screenAcceptableUse(
     notice: noticeFor({
       decision: verdict.decision,
       category: verdict.category,
+      locale: input.locale,
     }),
     reviewId,
     blocked,

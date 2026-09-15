@@ -233,6 +233,51 @@ describe('what a blocked visitor is told', () => {
     );
   });
 
+  it('answers a refusal in Romanian when the caller passes locale: ro', async () => {
+    const fixture = CASES.find((c) => c.expected === 'sexual_services')!;
+    callLlmObject.mockResolvedValue(answerFor(fixture));
+
+    const screening = await screenAcceptableUse({
+      surface: 'preview',
+      text: fixture.text,
+      locale: 'ro',
+    });
+
+    expect(screening.verdict.decision).toBe('refuse');
+    const notice = screening.notice!;
+    expect(notice.locale).toBe('ro');
+    expect(notice.title).toBe('Nu putem construi acest site');
+    expect(notice.message).toContain('utilizare acceptabilă');
+    expect(notice.message).toContain('nu s-a taxat nimic');
+  });
+
+  it('answers a review in Romanian when the caller passes locale: ro', async () => {
+    const fixture = CASES.find((c) => c.expected === 'licensed_pharmacy')!;
+    callLlmObject.mockResolvedValue(answerFor(fixture));
+
+    const screening = await screenAcceptableUse({
+      surface: 'preview',
+      text: fixture.text,
+      locale: 'ro',
+    });
+
+    expect(screening.verdict.decision).toBe('review');
+    expect(screening.notice!.locale).toBe('ro');
+    expect(screening.notice!.title).toBe('Trebuie mai întâi să verificăm');
+  });
+
+  it('defaults to English when a caller does not pass a locale', async () => {
+    const fixture = CASES.find((c) => c.expected === 'sexual_services')!;
+    callLlmObject.mockResolvedValue(answerFor(fixture));
+
+    const screening = await screenAcceptableUse({
+      surface: 'preview',
+      text: fixture.text,
+    });
+
+    expect(screening.notice!.locale).toBe('en');
+  });
+
   it('never quotes the visitor back at them', async () => {
     const fixture = CASES.find((c) => c.expected === 'illegal_drugs')!;
     callLlmObject.mockResolvedValue(answerFor(fixture));

@@ -42,6 +42,14 @@ const Schema = z.object({
   websiteUrl: z.string().max(300).optional().default(''),
   /** Set only on the second pass. Its presence is what "clarified" means. */
   clarification: z.string().max(500).optional(),
+  /**
+   * The visitor's language, the same field `intake-graph`, `intake-chat` and
+   * `business-names` already accept. Read only by the acceptable-use screen
+   * inside `runScopeGate`, so a refused or held brief's notice comes back in
+   * the visitor's own language rather than always English. Does not touch
+   * `decideRoute` or the route table.
+   */
+  locale: z.enum(['en', 'ro']).optional().default('en'),
 });
 
 /**
@@ -91,6 +99,7 @@ export async function POST(req: NextRequest) {
       linkedinUrl: parsed.data.linkedinUrl,
       websiteUrl: parsed.data.websiteUrl,
       clarification: parsed.data.clarification,
+      locale: parsed.data.locale,
     });
     // `evidence` and `leadId` stay on the server: the evidence is for the
     // operator's card and the id is an internal handle, and neither is
