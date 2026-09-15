@@ -21,6 +21,7 @@ import {
   MAX_DESCRIPTION_NAME_WORDS,
   businessNameFromDescription,
   deriveBusinessName,
+  isUnderivableBusinessName,
   goalFromDescription,
   guessedFields,
   industryFromDescription,
@@ -352,12 +353,53 @@ describe('deriveBusinessName', () => {
   });
 
   it('derives a name from the website link once it is confirmed as their own, stripped of www and the TLD, title-cased', () => {
+    // Deliberately not `flowstarter.net`, which this rule now refuses to
+    // derive from at all. See the platform-name test below.
+    expect(
+      deriveBusinessName({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Ana Pop',
+        websiteUrl: 'https://www.sablefig.net',
+        websiteIsOwnSite: 'yes',
+      })
+    ).toBe('Sablefig');
+  });
+
+  it("refuses to derive this platform's own name, however the string arrives", () => {
+    // The incident. A portfolio shipped under the name "Flowstarter", which
+    // is us: the visitor had described their work by mentioning the tool they
+    // build with, the description extractor read a business name out of it,
+    // and nothing asked whether the name a rule had just produced was our
+    // own. It is refused from both derivations, and the fallback is the
+    // client's own name, which is always safer than our brand on their site.
+    expect(isUnderivableBusinessName('Flowstarter')).toBe(true);
+    expect(isUnderivableBusinessName('  flowstarter  ')).toBe(true);
+    expect(isUnderivableBusinessName('Flowstarter Studio')).toBe(false);
+
+    expect(
+      deriveBusinessName({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Ana Pop',
+        description: 'Flowstarter, the thing I build client sites with',
+      })
+    ).toBe('Ana Pop');
+
     expect(
       deriveBusinessName({
         ...EMPTY_DISCOVERY,
         fullName: 'Ana Pop',
         websiteUrl: 'https://www.flowstarter.net',
         websiteIsOwnSite: 'yes',
+      })
+    ).toBe('Ana Pop');
+
+    // A client who actually trades under it may still say so on the brief,
+    // and that answer is honoured: this list rejects derived names only.
+    expect(
+      deriveBusinessName({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Ana Pop',
+        businessName: 'Flowstarter',
       })
     ).toBe('Flowstarter');
   });
@@ -421,10 +463,10 @@ describe('deriveBusinessName', () => {
       deriveBusinessName({
         ...EMPTY_DISCOVERY,
         fullName: 'Ana Pop',
-        websiteUrl: 'flowstarter.net',
+        websiteUrl: 'sablefig.net',
         websiteIsOwnSite: 'yes',
       })
-    ).toBe('Flowstarter');
+    ).toBe('Sablefig');
   });
 
   it('falls back to the visitor’s own name for an Instagram or LinkedIn profile', () => {

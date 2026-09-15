@@ -17,6 +17,12 @@ import {
 import type { TemplateClassifier } from './template-classifier';
 import { buildIntakeText } from './template-classifier';
 import {
+  candidatesForKind,
+  isPersonalPortfolio,
+  ruleMaySettleTemplate,
+  templateKindFor,
+} from './template-kind';
+import {
   injectPreviewTeaser,
   type PreviewTeaserOptions,
 } from './preview-teaser';
@@ -77,6 +83,7 @@ import {
   INVENTED_PROJECT,
   type InventedProjectOptions,
 } from './invented-project';
+import { judgePersonAbsent, PERSON_ABSENT } from './person-absent';
 import {
   describePlaceholderImageIssue,
   describePlaceholderImageRepair,
@@ -382,7 +389,7 @@ export class PreviewGenerationPipeline {
     ]);
 
     announce('Choosing the best starting design');
-    const template =
+    const chosen =
       classified ??
       (await this.agents.selectTemplate({
         intake: input.intake,
@@ -390,6 +397,17 @@ export class PreviewGenerationPipeline {
         library: this.library,
         ...(onTool ? { onActivity: onTool } : {}),
       }));
+    // The same rule, applied once more after the model has spoken.
+    //
+    // `classifyTemplate` already narrows the deterministic path, and this is
+    // the other door into the same room: a deployment with no classifier
+    // configured, or a library search that returned no portfolio template to
+    // the classifier, reaches the model with the whole library and no reason
+    // not to pick a studio layout. That is exactly what happened. A model's
+    // answer is evidence, not an override, and a personal site being built
+    // from `professional-services` is the one outcome this whole change
+    // exists to prevent.
+    const template = await this.correctTemplateKind(input.intake, chosen);
     announce('Preparing your selected design');
     // The page set is decided here, deterministically, before a model ever
     // sees the workspace. A template ships seven pages and a booking page
@@ -824,6 +842,44 @@ export class PreviewGenerationPipeline {
   }
 
   /**
+   * A chosen template, swapped for a portfolio one when the site is about a
+   * person and the choice was not.
+   *
+   * A no-op for a company brief, for a personal brief that already landed on
+   * a portfolio template, and for a library that has no portfolio template to
+   * offer. It only ever fires on the one combination that produced the
+   * incident: a personal site pointed at a studio layout.
+   *
+   * The reason string says the rule corrected the choice rather than hiding
+   * it, because an operator reading the job needs to know the model's answer
+   * was overruled and why.
+   */
+  private async correctTemplateKind(
+    intake: BusinessIntakePayload,
+    chosen: TemplateSelection,
+  ): Promise<TemplateSelection> {
+    if (!isPersonalPortfolio(intake)) return chosen;
+    const found = await this.library.search(
+      buildIntakeText(intake.business).slice(0, 280),
+    );
+    const picked = found.find((candidate) => candidate.slug === chosen.slug);
+    if (picked && templateKindFor(picked) === 'portfolio') return chosen;
+    const portfolio = candidatesForKind(found, true).filter(
+      (candidate) => templateKindFor(candidate) === 'portfolio',
+    );
+    const replacement = portfolio[0];
+    if (!replacement) return chosen;
+    return {
+      slug: replacement.slug,
+      reason:
+        `personal portfolio: ${chosen.slug} is not a portfolio template, so ` +
+        `the rule chose ${replacement.slug} instead. Original reason: ${chosen.reason}`,
+      matchedSignals: ['personal-portfolio', ...chosen.matchedSignals],
+      confidence: chosen.confidence,
+    };
+  }
+
+  /**
    * The deterministic half of template selection: intake text only, so it can
    * run while the brand agent is still looking at images. Returns undefined
    * when nothing clears the confidence gate, leaving the decision to the model.
@@ -833,21 +889,58 @@ export class PreviewGenerationPipeline {
   ): Promise<TemplateSelection | undefined> {
     if (!this.templateClassifier) return undefined;
     const intakeText = buildIntakeText(intake.business);
-    const candidates = await this.library.search(intakeText.slice(0, 280));
+    const found = await this.library.search(intakeText.slice(0, 280));
+
+    // The narrowing that closes the incident. A site whose subject is one
+    // person is chosen from the portfolio templates and from nothing else:
+    // the delivered portfolio that started this was built from
+    // `professional-services`, which was the right answer to the wrong
+    // question, because the brief read as a studio. `isPersonalPortfolio`
+    // reads the same classification the intake already made rather than
+    // making a second one.
+    const personal = isPersonalPortfolio(intake);
+    const candidates = candidatesForKind(found, personal);
+    if (candidates.length === 0) return undefined;
+
     const classified = await this.templateClassifier.classify(
       intakeText,
       candidates,
     );
-    if (!classified.autoSelect) return undefined;
-    const { slug, score, margin } = classified.autoSelect;
-    return {
-      slug,
-      reason: `sigma classifier auto-selection (cosine ${score.toFixed(
-        3,
-      )}, margin ${margin.toFixed(3)} over runner-up)`,
-      matchedSignals: ['sigma-embedding'],
-      confidence: Math.min(0.99, score),
-    };
+
+    if (classified.autoSelect) {
+      const { slug, score, margin } = classified.autoSelect;
+      return {
+        slug,
+        reason: `sigma classifier auto-selection (cosine ${score.toFixed(
+          3,
+        )}, margin ${margin.toFixed(3)} over runner-up)`,
+        matchedSignals: ['sigma-embedding'],
+        confidence: Math.min(0.99, score),
+      };
+    }
+
+    // The confidence gate exists to hand a murky choice to a model. It should
+    // not hand over a choice that is already narrow: every candidate left
+    // here is a portfolio template, so the runner-up being close is a reason
+    // to take the top one rather than a reason to let a model reconsider the
+    // whole library. Without this, a personal site whose two portfolio
+    // templates score within the margin falls through to the model path, and
+    // the model path is the one that picked a studio layout.
+    if (ruleMaySettleTemplate(candidates, personal)) {
+      const top = classified.ranked[0];
+      if (top) {
+        return {
+          slug: top.slug,
+          reason:
+            'personal portfolio: chosen by rule from the portfolio templates, ' +
+            `top match cosine ${top.score.toFixed(3)}`,
+          matchedSignals: ['personal-portfolio'],
+          confidence: Math.min(0.99, Math.max(top.score, 0)),
+        };
+      }
+    }
+
+    return undefined;
   }
 }
 
@@ -3474,6 +3567,49 @@ export class FullSiteBuildWorker {
         }
         recordGate('invented-project');
       }
+
+      // The opposite defect, and on the evidence the more common one: a
+      // personal site with no person on it. `INVENTED_PROJECT` above refuses
+      // a site that says something untrue about the client; this refuses one
+      // that says nothing about them at all, which is how a portfolio shipped
+      // with a stock hero, studio boilerplate and an empty box where a face
+      // should be. Only a portfolio is judged, by the same `siteKindFor` rule
+      // that ordered the pages, and only when the brief was actually asked.
+      await phase('Checking the site carries the person');
+      const personVerdict = () =>
+        builtSiteText().then((files) =>
+          judgePersonAbsent(files, {
+            businessType: `${job.intake.business.niche} ${
+              job.intake.business.description ?? ''
+            }`,
+            person: job.briefInput?.person ?? null,
+            portraitPath: job.briefInput?.portrait?.publicPath ?? null,
+          }),
+        );
+      let personJudgement = await personVerdict();
+      if (personJudgement.verdict === 'fail') {
+        // One repair pass, the same as every other copy gate: the material
+        // exists and putting it on the page is exactly what an agent can do.
+        await say('log', personJudgement.issue);
+        await pass(
+          'Putting the client back on their own site',
+          withApproved(personJudgement.issue),
+        );
+        await check();
+        personJudgement = await personVerdict();
+      }
+      if (personJudgement.verdict === 'fail') {
+        throw new FullSiteBuildFailure(PERSON_ABSENT, personJudgement.issue);
+      }
+      if (personJudgement.verdict === 'hold') {
+        // Nothing an agent can write fixes an empty brief, so this never gets
+        // a repair pass and never gets a retry: `failure-policy.ts` files
+        // PERSON_ABSENT as terminal, which is what turns this into a job
+        // waiting on the client with a concrete ask rather than three more
+        // paid attempts at guessing who they are.
+        throw new FullSiteBuildFailure(PERSON_ABSENT, personJudgement.ask);
+      }
+      if (personJudgement.verdict === 'pass') recordGate('person-present');
 
       // Same shape, over images rather than words: a client whose brief had
       // no photo and no project screenshot must get a site that says so

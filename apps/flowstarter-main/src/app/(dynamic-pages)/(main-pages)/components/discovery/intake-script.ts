@@ -29,6 +29,12 @@
  * new front end over exactly the same fields the form wrote, so everything
  * downstream of it (the preview, the claim, the generator) is unaffected.
  */
+import { MAX_TONE_WORDS } from '@flowstarter/agentic-codegen/src/flowstarter/person';
+import {
+  PERSON_BLOCK_IDS,
+  personQuestionApplies,
+  type PersonQuestionId,
+} from './person-questions';
 import {
   type DiscoveryData,
   type PageCount,
@@ -55,6 +61,7 @@ export type IntakeQuestionId =
   | 'links'
   | 'websiteIsOwnSite'
   | 'connectPortrait'
+  | PersonQuestionId
   | 'goal'
   | 'brandTone'
   | 'pageCount'
@@ -138,8 +145,16 @@ export interface IntakeQuestion {
   options?: readonly IntakeOption[];
   /** A choice question that also accepts words the chips do not cover. */
   freeText?: boolean;
-  /** Asked only when this holds. Absent means always. */
-  when?: (data: DiscoveryData) => boolean;
+  /**
+   * Asked only when this holds. Absent means always.
+   *
+   * `answered` is passed as well as `data` because one rule genuinely needs
+   * it: the person block stops asking after `PERSON_BLOCK_SKIP_LIMIT`
+   * consecutive skips, and a skip is an answered question with nothing
+   * stored against it. That is invisible in `data` alone -- a skipped
+   * question and an unasked one both read as an empty string.
+   */
+  when?: (data: DiscoveryData, answered: readonly string[]) => boolean;
   /** null when the answer is acceptable, else a locale key for the correction. */
   validate?: (raw: string) => string | null;
   /** The answer, folded into the wizard's data. Pure. */
@@ -407,6 +422,30 @@ const TONE_OPTIONS: readonly IntakeOption[] = TONE_PRESETS.map((label) => ({
 const Q = 'landing.discovery.chat.q.';
 
 /**
+ * The `when` predicate for one question in the person block.
+ *
+ * Wrapped rather than inlined eleven times so that the rule lives in exactly
+ * one place (`person-questions.ts`) and this file only names which question
+ * is being asked about. `storedPersonAnswer` is passed in because the skip
+ * rule needs to read what is stored against an id, and the script is the only
+ * thing that knows how to do that.
+ */
+function personBlockRule(
+  id: PersonQuestionId
+): (data: DiscoveryData, answered: readonly string[]) => boolean {
+  return (data, answered) =>
+    personQuestionApplies(id, data, answered, (questionId) =>
+      storedPersonAnswer(questionId, data)
+    );
+}
+
+/** What is stored against one person-block id, or '' for a skip. */
+function storedPersonAnswer(id: PersonQuestionId, data: DiscoveryData): string {
+  const question = INTAKE_SCRIPT.find((entry) => entry.id === id);
+  return question ? question.value(data) : '';
+}
+
+/**
  * The questions, in the order the agent asks them.
  *
  * `required` here is exactly `canProceed`'s definition of a passable step, so
@@ -596,6 +635,173 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
         ? data.portraitConnect.provider
         : '',
   },
+  // ── The person block ──────────────────────────────────────────────────
+  //
+  // Asked only when the site is about a person, which `person-questions.ts`
+  // decides and this file never second-guesses. Every one of them is
+  // `required: false`, so `quickRequiredCount` is still four and a visitor
+  // can reach a preview without answering any of them; and the block stops
+  // itself after two consecutive skips, so a visitor who does not want to
+  // write is never asked nine more times.
+  //
+  // These eleven answers are the material the about page, the services page
+  // and the process section are written from. Before them, a portfolio was
+  // built from a name, an email, one sentence and a link, which is why one
+  // shipped with a stock graph for a hero and an empty box for a face.
+  {
+    id: 'personStory',
+    phase: 'quick',
+    step: 4,
+    kind: 'longtext',
+    promptKey: `${Q}personStory.prompt`,
+    placeholderKey: `${Q}personStory.placeholder`,
+    required: false,
+    when: personBlockRule('personStory'),
+    apply: textApplier('personStory'),
+    value: (data) => data.personStory ?? '',
+  },
+  {
+    id: 'personHowIWork',
+    phase: 'quick',
+    step: 4,
+    kind: 'longtext',
+    promptKey: `${Q}personHowIWork.prompt`,
+    placeholderKey: `${Q}personHowIWork.placeholder`,
+    required: false,
+    when: personBlockRule('personHowIWork'),
+    apply: textApplier('personHowIWork'),
+    value: (data) => data.personHowIWork ?? '',
+  },
+  {
+    id: 'personFeel',
+    phase: 'quick',
+    step: 4,
+    kind: 'text',
+    promptKey: `${Q}personFeel.prompt`,
+    placeholderKey: `${Q}personFeel.placeholder`,
+    required: false,
+    when: personBlockRule('personFeel'),
+    apply: textApplier('personFeel'),
+    value: (data) => data.personFeel ?? '',
+  },
+  {
+    id: 'personProudest',
+    phase: 'quick',
+    step: 4,
+    kind: 'longtext',
+    promptKey: `${Q}personProudest.prompt`,
+    placeholderKey: `${Q}personProudest.placeholder`,
+    required: false,
+    when: personBlockRule('personProudest'),
+    apply: textApplier('personProudest'),
+    value: (data) => data.personProudest ?? '',
+  },
+  {
+    id: 'personLinks',
+    phase: 'quick',
+    step: 4,
+    kind: 'text',
+    // The prompt says in plain words what answering does: we will read those
+    // pages for a bio and a photograph. That is what makes an answer consent
+    // rather than a URL we happen to hold, and it is why the consent flag is
+    // written here by rule instead of being asked as a twelfth question.
+    promptKey: `${Q}personLinks.prompt`,
+    placeholderKey: `${Q}personLinks.placeholder`,
+    required: false,
+    when: personBlockRule('personLinks'),
+    apply: (data, raw) => {
+      const links = trimmed(raw);
+      // Skipping is a refusal, and it is recorded as one. An empty answer
+      // must never leave a stale `yes` behind from an earlier edit.
+      if (!links) return { ...data, personLinks: '', personLinksConsent: 'no' };
+      return { ...data, personLinks: links, personLinksConsent: 'yes' };
+    },
+    value: (data) => data.personLinks ?? '',
+  },
+  {
+    id: 'personToneWords',
+    phase: 'quick',
+    step: 4,
+    kind: 'multi',
+    promptKey: `${Q}personToneWords.prompt`,
+    placeholderKey: `${Q}personToneWords.placeholder`,
+    required: false,
+    options: TONE_OPTIONS,
+    when: personBlockRule('personToneWords'),
+    // Three words, because three is what the question asks for. A longer list
+    // is not a stronger steer, it is a contradiction, so the extra chips are
+    // dropped rather than stored and quietly ignored later.
+    apply: (data, raw) => ({
+      ...data,
+      personToneWords: raw
+        .split(',')
+        .map((word) => trimmed(word))
+        .filter(Boolean)
+        .slice(0, MAX_TONE_WORDS)
+        .join(', '),
+    }),
+    value: (data) => data.personToneWords ?? '',
+  },
+  {
+    id: 'activityWhat',
+    phase: 'quick',
+    step: 4,
+    kind: 'longtext',
+    promptKey: `${Q}activityWhat.prompt`,
+    placeholderKey: `${Q}activityWhat.placeholder`,
+    required: false,
+    when: personBlockRule('activityWhat'),
+    apply: textApplier('activityWhat'),
+    value: (data) => data.activityWhat ?? '',
+  },
+  {
+    id: 'activityWho',
+    phase: 'quick',
+    step: 4,
+    kind: 'text',
+    promptKey: `${Q}activityWho.prompt`,
+    placeholderKey: `${Q}activityWho.placeholder`,
+    required: false,
+    when: personBlockRule('activityWho'),
+    apply: textApplier('activityWho'),
+    value: (data) => data.activityWho ?? '',
+  },
+  {
+    id: 'activityTypical',
+    phase: 'quick',
+    step: 4,
+    kind: 'longtext',
+    promptKey: `${Q}activityTypical.prompt`,
+    placeholderKey: `${Q}activityTypical.placeholder`,
+    required: false,
+    when: personBlockRule('activityTypical'),
+    apply: textApplier('activityTypical'),
+    value: (data) => data.activityTypical ?? '',
+  },
+  {
+    id: 'activityKnownFor',
+    phase: 'quick',
+    step: 4,
+    kind: 'text',
+    promptKey: `${Q}activityKnownFor.prompt`,
+    placeholderKey: `${Q}activityKnownFor.placeholder`,
+    required: false,
+    when: personBlockRule('activityKnownFor'),
+    apply: textApplier('activityKnownFor'),
+    value: (data) => data.activityKnownFor ?? '',
+  },
+  {
+    id: 'activityYears',
+    phase: 'quick',
+    step: 4,
+    kind: 'text',
+    promptKey: `${Q}activityYears.prompt`,
+    placeholderKey: `${Q}activityYears.placeholder`,
+    required: false,
+    when: personBlockRule('activityYears'),
+    apply: textApplier('activityYears'),
+    value: (data) => data.activityYears ?? '',
+  },
   {
     id: 'goal',
     phase: 'brief',
@@ -742,9 +948,12 @@ export function questionsInPhase(phase: IntakePhase): IntakeQuestion[] {
  * the form cannot grow back by somebody adding a field and forgetting which
  * side of the paywall it belongs on.
  */
-export function applicableQuestions(data: DiscoveryData): IntakeQuestion[] {
+export function applicableQuestions(
+  data: DiscoveryData,
+  answered: readonly string[] = []
+): IntakeQuestion[] {
   return questionsInPhase('quick').filter(
-    (question) => question.when?.(data) ?? true
+    (question) => question.when?.(data, answered) ?? true
   );
 }
 
@@ -764,6 +973,18 @@ export function applicableQuestions(data: DiscoveryData): IntakeQuestion[] {
 export function quickRequiredCount(): number {
   return questionsInPhase('quick').filter((question) => question.required)
     .length;
+}
+
+/**
+ * The person block, in script order, for a surface that wants to show it as a
+ * group: the Brief form's "about you" section asks the same eleven things in
+ * the same order, so a client who answered them in the conversation sees
+ * their own words rather than a second, differently worded interrogation.
+ */
+export function personBlockQuestions(): IntakeQuestion[] {
+  return PERSON_BLOCK_IDS.map((id) => questionById(id)).filter(
+    (question): question is IntakeQuestion => question !== undefined
+  );
 }
 
 /** The questions the dashboard's Brief form asks, after the deposit. */
@@ -789,7 +1010,7 @@ export function nextQuestion(
   data: DiscoveryData,
   answered: readonly string[]
 ): IntakeQuestion | null {
-  const pool = applicableQuestions(data);
+  const pool = applicableQuestions(data, answered);
   return pool.find((question) => !answered.includes(question.id)) ?? null;
 }
 
@@ -803,7 +1024,7 @@ export function answeredQuestions(
   data: DiscoveryData,
   answered: readonly string[]
 ): IntakeQuestion[] {
-  const applicable = applicableQuestions(data);
+  const applicable = applicableQuestions(data, answered);
   return answered
     .map((id) => applicable.find((question) => question.id === id))
     .filter((question): question is IntakeQuestion => question !== undefined);
@@ -818,7 +1039,7 @@ export function conversationProgress(
   data: DiscoveryData,
   answered: readonly string[]
 ): { done: number; total: number } {
-  const pool = applicableQuestions(data);
+  const pool = applicableQuestions(data, answered);
   return {
     done: pool.filter((question) => answered.includes(question.id)).length,
     total: pool.length,

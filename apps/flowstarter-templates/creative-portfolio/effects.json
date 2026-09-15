@@ -196,6 +196,7 @@
         "about-intro-section__heading",
         "about-intro-section__icon",
         "about-intro-section__media",
+        "about-intro-section__monogram",
         "about-intro-section__text"
       ],
       "hooks": [

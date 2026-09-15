@@ -222,6 +222,52 @@ export interface DiscoveryData {
    * connect step's fields are: a draft saved before this existed has none.
    */
   websiteIsOwnSite?: 'yes' | 'no' | '';
+
+  // The person block, asked only when the site is about a person
+  // (`person-questions.ts` holds that rule). Every field is optional for the
+  // same reason the info agent's are: a draft saved before the block existed
+  // has none of them, a visitor who is a plumbing company is never asked, and
+  // a visitor who is asked may skip every one. Read them with `?? ''`.
+  //
+  // These are the client's own words and they are the only thing on this
+  // object that a generated about page may be written from. Nothing derives
+  // them, nothing improves them, and nothing fills them in when they are
+  // empty.
+  /** Who they are, in one or two sentences. The about page. */
+  personStory?: string;
+  /** How they work and what they stand for. The process section. */
+  personHowIWork?: string;
+  /** What they want a visitor to feel. Steers tone; never quoted. */
+  personFeel?: string;
+  /** The work they are proudest of, and why. */
+  personProudest?: string;
+  /**
+   * Profile links offered for reading, comma-joined as pasted.
+   *
+   * Distinct from `instagramUrl`/`linkedinUrl`/`websiteUrl`, which are the
+   * quick intake's one-link answer: those are addresses to put in a footer.
+   * This is a separate, explicit offer to go and READ those pages for a bio
+   * and a portrait, and `personLinksConsent` is the answer to that question.
+   */
+  personLinks?: string;
+  /** 'yes' when the visitor agreed we may read the pages above. */
+  personLinksConsent?: 'yes' | 'no' | '';
+  /** Up to three words the writing should hit, comma-joined. */
+  personToneWords?: string;
+
+  // What they actually do. These write the services and process sections, and
+  // they are why a site can say the thing the person was hired for last week
+  // rather than "bespoke solutions".
+  /** Their trade or profession, the way they say it out loud. */
+  activityWhat?: string;
+  /** Who they do it for. */
+  activityWho?: string;
+  /** What a typical engagement, project or day looks like. */
+  activityTypical?: string;
+  /** What they are known for, or asked for most often. */
+  activityKnownFor?: string;
+  /** How long they have done it, in their own words. */
+  activityYears?: string;
 }
 
 /** Mirrors `PaletteColour` in `lib/flowstarter/brand-palette.ts`. */
@@ -303,6 +349,18 @@ export const EMPTY_DISCOVERY: DiscoveryData = {
   intakeChat: [],
   intakeChatDocuments: [],
   intakeChatStatus: '',
+  personStory: '',
+  personHowIWork: '',
+  personFeel: '',
+  personProudest: '',
+  personLinks: '',
+  personLinksConsent: '',
+  personToneWords: '',
+  activityWhat: '',
+  activityWho: '',
+  activityTypical: '',
+  activityKnownFor: '',
+  activityYears: '',
 };
 
 /**

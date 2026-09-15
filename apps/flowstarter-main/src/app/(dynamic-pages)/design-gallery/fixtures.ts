@@ -499,6 +499,47 @@ export const briefGallery = {
     // Null on purpose: the gallery is the shape a client sees before they
     // have touched the control, which is the one the derived value fills.
     pageCount: null,
+    // Half answered, which is the interesting state to draw: a story and a
+    // way of working in hand, a sourced bio still waiting on the client's
+    // approval, and the activity section empty so the gallery shows both the
+    // filled and the outstanding halves of the section at once.
+    person: {
+      name: 'Ilie Rusu',
+      headline: 'I build small software products, on my own',
+      story:
+        'I have built software on my own for nine years, mostly for people who already tried a big tool and found it did nine things they did not want. I would rather ship one screen that works than five that demo well.',
+      howIWork:
+        'One project at a time, a working thing in front of you inside two weeks, and no invoice until you have used it.',
+      values: 'Small tools, plain language, no lock in.',
+      feel: 'That somebody finally built the simple version.',
+      toneWords: ['plain', 'dry', 'exact'],
+      links: [
+        {
+          kind: 'github' as const,
+          url: 'https://github.com/ilierusu',
+          consented: true,
+        },
+      ],
+      proudestWork:
+        'Ereno, because three people told me it was the first inbox they did not dread.',
+      activity: {
+        what: '',
+        who: '',
+        typical: '',
+        knownFor: '',
+        years: '',
+      },
+      sourcedBio: {
+        excerpt:
+          'Builds small, sharp software products. Nine years solo, mostly tools for people who found the big ones did too much.',
+        source: 'github-bio' as const,
+        sourceUrl: 'https://github.com/ilierusu',
+        fetchedAt: '2026-09-15T09:00:00.000Z',
+        // Not adopted: this is the state the approval control exists for, and
+        // a gallery that only ever drew the approved state would not show it.
+        adoptedAt: null,
+      },
+    },
   },
   assets: [
     {

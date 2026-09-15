@@ -38,6 +38,11 @@ function briefInput(overrides: Partial<BriefInput> = {}): BriefInput {
     designReferences: [],
     photos: [],
     portrait: null,
+    // `null` for the same reason the rest of this fixture is empty: this
+    // suite pins the parked-to-queued state machine, not the person section,
+    // and `null` is what a brief taken before the person block existed
+    // carries.
+    person: null,
     ...overrides,
   };
 }

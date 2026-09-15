@@ -91,6 +91,9 @@ export default async function ClientBriefPage({
     readyAt: row?.ready_at ?? null,
     overrideAt: row?.override_at ?? null,
     pageCount: row?.page_count ?? null,
+    // Never asked. A fixture and a preview both predate the person
+    // section, and `null` is the state that keeps the gate silent.
+    person: null,
   };
 
   const readiness = evaluateBriefReadiness({

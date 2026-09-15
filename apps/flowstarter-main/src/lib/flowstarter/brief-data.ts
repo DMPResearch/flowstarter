@@ -29,10 +29,16 @@ import {
 import { withTenant } from '@/lib/tenancy';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
 import {
+  parsePerson,
+  type BriefPerson,
+} from '@flowstarter/agentic-codegen/src/flowstarter/person';
+import {
   deriveBriefPages,
   pageCountAnswerFor,
   resolvePageCountAnswer,
+  siteKindFor,
   type PageCountAnswer,
+  type SiteKind,
 } from '@flowstarter/agentic-codegen/src/flowstarter/page-set';
 
 export interface BriefProjectView {
@@ -72,6 +78,15 @@ export interface BriefView {
    * and `effectiveBriefPageCount` falls back the same way for the build.
    */
   pageCount: string | null;
+  /**
+   * Who the client is, in their own words, or null when nobody has asked.
+   *
+   * Null is not the same as a section full of empty strings and the
+   * difference decides whether a build can be blocked: null is every brief
+   * taken before the question existed, and the readiness rule leaves those
+   * alone. See `packages/agentic-codegen/src/flowstarter/person.ts`.
+   */
+  person: BriefPerson | null;
 }
 
 /** A first visit has no row, and that is not an error. */
@@ -86,6 +101,7 @@ export const EMPTY_BRIEF: BriefView = {
   readyAt: null,
   overrideAt: null,
   pageCount: null,
+  person: null,
 };
 
 export interface BriefRow {
@@ -98,10 +114,11 @@ export interface BriefRow {
   ready_at: string | null;
   override_at: string | null;
   page_count: string | null;
+  person: unknown;
 }
 
 export const BRIEF_ROW_COLUMNS =
-  'offer, business_name, projects, no_projects, design_reference_asset_ids, photo_asset_ids, ready_at, override_at, page_count';
+  'offer, business_name, projects, no_projects, design_reference_asset_ids, photo_asset_ids, ready_at, override_at, page_count, person';
 
 /**
  * `projects` is a jsonb column, so what comes back is whatever was put in.
@@ -174,7 +191,30 @@ export function briefViewFromRow(
     readyAt: row.ready_at,
     overrideAt: row.override_at,
     pageCount: row.page_count,
+    // `person` is a jsonb column an operator can edit, so it is re-validated
+    // on the way out of the database by the same parser the build worker uses
+    // on the way into a prompt. One shape, one reader, no drift.
+    person: parsePerson(row.person),
   };
+}
+
+/**
+ * Whether this brief describes a site about a person.
+ *
+ * The funnel only ever asks the person block of a visitor it classified as a
+ * person-site, so the presence of the section IS that classification, carried
+ * in the data rather than recomputed from a sentence. The text rule is the
+ * fallback for a brief filled in by an operator or by a client whose intake
+ * predates the block, and it is `siteKindFor` -- the same rule that decides
+ * the page order -- so a site cannot be a portfolio for the page set and a
+ * services business for the readiness gate.
+ */
+export function briefSiteKind(
+  brief: BriefView,
+  businessType?: string | null
+): SiteKind {
+  if (brief.person) return 'portfolio';
+  return siteKindFor(businessType ?? '');
 }
 
 /**
@@ -219,10 +259,13 @@ export function effectiveBriefPageCount(
 /** The pure rule, fed from a stored brief and the workspace's files. */
 export function judgeBrief(
   brief: BriefView,
-  assets: ClientAsset[]
+  assets: ClientAsset[],
+  businessType?: string | null
 ): BriefReadiness {
   return evaluateBriefReadiness({
     offer: brief.offer,
+    siteKind: briefSiteKind(brief, businessType),
+    person: brief.person,
     projects: brief.projects,
     noProjects: brief.noProjects,
     designReferenceAssetIds: brief.designReferenceAssetIds,

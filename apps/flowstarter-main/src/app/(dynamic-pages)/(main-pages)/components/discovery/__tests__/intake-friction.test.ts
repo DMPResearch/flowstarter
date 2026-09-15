@@ -23,6 +23,7 @@ import {
   STEPS,
   canProceed,
 } from '../discovery.logic';
+import { PERSON_BLOCK_IDS, PERSON_BLOCK_SKIP_LIMIT } from '../person-questions';
 import {
   CONVERSATION_LAST_STEP,
   INTAKE_SCRIPT,
@@ -47,7 +48,7 @@ describe('the friction budget', () => {
     expect(quickRequiredCount()).toBe(4);
   });
 
-  it('asks for who you are, where to send it, what you do, and one link, then offers the own-site check and the photo', () => {
+  it('asks for who you are, where to send it, what you do, and one link, then offers the own-site check, the photo and the person block', () => {
     expect(questionsInPhase('quick').map((question) => question.id)).toEqual([
       'fullName',
       'email',
@@ -55,31 +56,50 @@ describe('the friction budget', () => {
       'links',
       'websiteIsOwnSite',
       'connectPortrait',
+      ...PERSON_BLOCK_IDS,
     ]);
   });
 
-  it('allows exactly two optional questions in front of the preview: the own-site check and the photo', () => {
-    // The ceiling that replaces "everything here is required". `websiteIsOwnSite`
-    // is the one addition since this ceiling was written, and it earns its
-    // place the same way the connect offer did: it is a single tap, it
-    // follows directly from an answer already given, and it closes a real
-    // incident (a pasted reference site naming the workspace after somebody
-    // else's trademark) rather than asking for more information for its own
-    // sake. A third optional question would need the same bar to clear.
-    const optional = questionsInPhase('quick').filter(
-      (question) => !question.required
-    );
-    expect(optional.map((question) => question.id)).toEqual([
-      'websiteIsOwnSite',
+  it('shows a visitor who is not a person exactly the six it always did', () => {
+    // The ceiling that replaces "everything here is required", restated for
+    // the person block. The block is eleven questions long and it is
+    // invisible to anybody whose site is not about them: a plumbing company
+    // sees the same six questions it saw before the block existed, and that
+    // is what makes "the intake did not get longer" a fact rather than a
+    // claim.
+    const company = {
+      ...EMPTY_DISCOVERY,
+      fullName: 'Dave Sutton',
+      businessName: 'Orchard Plumbing',
+      description: 'Orchard Plumbing, a two van plumbing company in Leeds.',
+    };
+    expect(applicableQuestions(company).map((q) => q.id)).toEqual([
+      'fullName',
+      'email',
+      'description',
+      'links',
+      'connectPortrait',
+    ]);
+    // And a visitor who has answered nothing yet, which is where every
+    // conversation starts.
+    expect(applicableQuestions(EMPTY_DISCOVERY).map((q) => q.id)).toEqual([
+      'fullName',
+      'email',
+      'description',
+      'links',
       'connectPortrait',
     ]);
   });
 
-  it('makes every one of the four required, and the other two skippable', () => {
+  it('makes every one of the four required, and everything else skippable', () => {
     const quick = questionsInPhase('quick');
-    const skippable = ['websiteIsOwnSite', 'connectPortrait'];
+    const skippable = [
+      'websiteIsOwnSite',
+      'connectPortrait',
+      ...PERSON_BLOCK_IDS,
+    ];
     for (const question of quick.filter(
-      (entry) => !skippable.includes(entry.id)
+      (entry) => !skippable.includes(entry.id as never)
     )) {
       expect(question.required).toBe(true);
     }
@@ -88,7 +108,9 @@ describe('the friction budget', () => {
     // cannot be built without, so it never gates anything. Nor does the
     // own-site check: it only ever narrows a guess, and a visitor who skips
     // it gets the safe default (the hostname is not used) rather than a
-    // blocked preview.
+    // blocked preview. The person block is the same bargain eleven times
+    // over: every one of its questions makes the site better and not one of
+    // them stands between anybody and a preview.
     for (const id of skippable) {
       expect(quick.find((entry) => entry.id === id)?.required).toBe(false);
     }
@@ -150,7 +172,18 @@ describe('the stages', () => {
     // read as one more thing standing between them and the preview, which is
     // exactly what the stage list exists to prevent.
     const quick = questionsInPhase('quick');
-    expect(quick.map((question) => question.step)).toEqual([1, 2, 3, 4, 4, 4]);
+    expect(quick.map((question) => question.step)).toEqual([
+      1,
+      2,
+      3,
+      4,
+      4,
+      4,
+      // The person block shares the links stage for the same reason the other
+      // two do: it follows from answers already given, and a stage of its own
+      // would draw a progress bar that grows while the visitor answers it.
+      ...PERSON_BLOCK_IDS.map(() => 4),
+    ]);
   });
 
   it('names every stage in the catalogue', () => {
@@ -166,7 +199,10 @@ describe('the quick gate', () => {
   function walk(answers: Record<string, string>) {
     let data = EMPTY_DISCOVERY;
     let answered: string[] = [];
-    for (let guard = 0; guard < 8; guard += 1) {
+    // Long enough to reach the end of the person block even if every rule in
+    // it stopped trimming, so a runaway `when` fails as a test rather than
+    // hanging the suite.
+    for (let guard = 0; guard < INTAKE_SCRIPT.length * 2; guard += 1) {
       const question = nextQuestion(data, answered);
       if (!question) break;
       data = question.apply(data, answers[question.id] ?? '');
@@ -182,8 +218,12 @@ describe('the quick gate', () => {
     links: 'instagram.com/ionescudental',
   };
 
-  it('is spent after four answers and one offer, and only then', () => {
-    const { data, answered } = walk(FOUR);
+  it('is spent after four answers and one offer for a business with a name', () => {
+    const { data, answered } = walk({
+      ...FOUR,
+      description:
+        'Ionescu Dental, a boutique clinic in Cluj doing cosmetic work.',
+    });
     expect(answered).toEqual([
       'fullName',
       'email',
@@ -195,30 +235,37 @@ describe('the quick gate', () => {
     expect(nextQuestion(data, answered.slice(0, -1))).not.toBeNull();
   });
 
+  it('asks a person the block, and stops asking the moment they stop answering', () => {
+    // The same walk, by somebody who named no business: the rule reads them
+    // as the business, so the block is offered. `walk` answers nothing, which
+    // is a skip every time, and the block gives up after the skip limit
+    // rather than asking nine more. That bound is the friction budget for
+    // this block and it is why eleven optional questions cost a disengaged
+    // visitor two taps.
+    const { data, answered } = walk(FOUR);
+    const blockAsked = answered.filter((id) =>
+      (PERSON_BLOCK_IDS as readonly string[]).includes(id)
+    );
+    expect(blockAsked.length).toBe(PERSON_BLOCK_SKIP_LIMIT);
+    expect(nextQuestion(data, answered)).toBeNull();
+  });
+
   it('lets a visitor who skips the connect offer reach the preview anyway', () => {
-    // The whole of what "optional" has to mean. Four answers and a skipped
-    // fifth is a spent script: nothing downstream waits on a photograph, and
-    // somebody who declines gets there at exactly the same speed as somebody
-    // who connects.
+    // The whole of what "optional" has to mean. Nothing downstream waits on a
+    // photograph, and somebody who declines gets to the preview at exactly
+    // the same speed as somebody who connects. The person block is the same:
+    // `canProceed` is the gate, and no optional question can close it.
     const { data } = walk(FOUR);
-    const answered = [
-      'fullName',
-      'email',
-      'description',
-      'links',
-      'connectPortrait',
-    ];
     // Skipped, so nothing about a portrait was ever written into the draft.
     expect(data.portraitConnect).toBeUndefined();
     expect(data.portraitPreviewId).toBeUndefined();
-    expect(nextQuestion(data, answered)).toBeNull();
     expect(canProceed(4, data)).toBe(true);
   });
 
   it('matches canProceed exactly, stage by stage', () => {
     let data = EMPTY_DISCOVERY;
     let answered: string[] = [];
-    for (let guard = 0; guard < 8; guard += 1) {
+    for (let guard = 0; guard < INTAKE_SCRIPT.length * 2; guard += 1) {
       const question = nextQuestion(data, answered);
       if (!question) break;
       const leaving = question.step;

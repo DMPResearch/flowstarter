@@ -1,3 +1,9 @@
+import {
+  hasActivity,
+  hasPersonStory,
+  type BriefPerson,
+} from '@flowstarter/agentic-codegen/src/flowstarter/person';
+
 /**
  * When is the in-depth brief complete enough to build from.
  *
@@ -33,6 +39,23 @@
  * Everything else degrades. Photographs make the site better and their absence
  * does not make it dishonest, so a missing portrait is worth asking for and is
  * not worth stopping for.
+ *
+ * WITH ONE EXCEPTION, ADDED 2026-09-15, AND IT IS A THIRD BLOCKING THING.
+ *
+ * On a portfolio -- a site whose entire subject is one person -- having
+ * neither a photograph of them nor a word from them about themselves is not a
+ * degradation. There is nothing left to build from. The site that prompted
+ * this shipped with 0.4 completeness, four cheerful `degrades` notes and a
+ * hero made of stock artwork, because every single thing that would have made
+ * it about a human being was filed as optional. So for a portfolio, no
+ * portrait AND no story blocks, and the ask it blocks with names both ways
+ * out: write a few sentences, or send one photograph. Either one is enough.
+ *
+ * It stays a `degrades` for a services business, because a plumber's site is
+ * about a trade and a catchment area and a first-person life story on one is
+ * a genre mistake rather than a missing feature. `siteKind` is the caller's,
+ * read from the same `siteKindFor` rule that orders the pages, so a site
+ * cannot be a portfolio for the page set and not for this.
  */
 
 // ---------------------------------------------------------------------------
@@ -53,6 +76,8 @@ export const BRIEF_MISSING_CODES = [
   'brief_photos_missing',
   'brief_portrait_missing',
   'brief_design_reference_missing',
+  'brief_person_missing',
+  'brief_activity_missing',
 ] as const;
 
 export type BriefMissingCode = (typeof BRIEF_MISSING_CODES)[number];
@@ -100,6 +125,19 @@ export interface BriefPhotoInput {
 
 export interface BriefInput {
   offer?: string | null;
+  /**
+   * What kind of site this is. Absent means `'services'`, which is the
+   * behaviour every caller had before the person rule existed: a caller that
+   * does not know cannot be made to block on a person.
+   */
+  siteKind?: 'portfolio' | 'services' | null;
+  /**
+   * The person section, or null when the client was never asked. Null and an
+   * all-empty section are different inputs: the first is a brief taken before
+   * the question existed, the second is a client who skipped it. Only the
+   * second can block, because only the second has been asked.
+   */
+  person?: BriefPerson | null;
   projects?: readonly BriefProjectInput[] | null;
   /** The explicit "I have no past work to show". */
   noProjects?: boolean | null;
@@ -165,6 +203,17 @@ export const BRIEF_MISSING_MESSAGES: Record<BriefMissingCode, string> = {
   brief_portrait_missing:
     'One portrait of you, for the about section. Looking at the camera, ' +
     'shoulders up, in reasonable light. At least 1600 pixels on the long edge.',
+  brief_person_missing:
+    'Something of you, for a site that is about you. A few sentences on who ' +
+    'you are and how you work, in your own words, or one photograph of you. ' +
+    'Either one is enough to start, and both is better. We quote what you ' +
+    'write rather than rewrite it, and we will not invent a life story to ' +
+    'fill the gap.',
+  brief_activity_missing:
+    'What you actually do, in the words you use out loud: the work itself, ' +
+    'who you do it for, and what people ask you for most. This is what the ' +
+    'services page is written from, and without it that page can only say ' +
+    'something general and true of anybody.',
   brief_design_reference_missing:
     'One or two screenshots of sites you like, so we aim at the look you ' +
     'have in mind rather than the one we would have guessed. These are ' +
@@ -223,6 +272,17 @@ function item(
 const COMPLETENESS_PARTS = 5;
 
 /**
+ * A portfolio has a sixth: the person.
+ *
+ * Counted only for a portfolio, so no existing services brief suddenly reads
+ * as less finished than it did yesterday for failing to answer a question it
+ * was never asked. Named rather than inline for the same reason
+ * `COMPLETENESS_PARTS` is: a reviewer should be able to see the denominator
+ * change rather than find it inside an expression.
+ */
+const PORTFOLIO_COMPLETENESS_PARTS = COMPLETENESS_PARTS + 1;
+
+/**
  * Decides what is still missing. Pure: no I/O, no randomness, no model.
  *
  * Ordering is declaration order below and is stable, so two runs over the same
@@ -278,6 +338,27 @@ export function evaluateBriefReadiness(input: BriefInput): BriefReadiness {
     missing.push(item('brief_design_reference_missing', 'degrades'));
   }
 
+  // ── The person ──────────────────────────────────────────────────────────
+  //
+  // Only for a portfolio, and only once the client has actually been asked.
+  // `person: null` is a brief taken before the question existed, and a gate
+  // that blocked those would stop every build in the backlog over a form
+  // field nobody ever saw.
+  const portfolio = input.siteKind === 'portfolio';
+  const asked = input.person !== null && input.person !== undefined;
+  const storyDone = hasPersonStory(input.person ?? null);
+  const personDone = storyDone || portraitDone;
+  if (portfolio && asked && !personDone) {
+    // The one new blocking thing. Neither a word from them nor a picture of
+    // them, on a site whose only subject is them.
+    missing.push(item('brief_person_missing', 'blocking'));
+  }
+  if (portfolio && asked && !hasActivity(input.person ?? null)) {
+    // Degrades, not blocks: the offer already says what they sell, and this
+    // makes the services page specific rather than possible.
+    missing.push(item('brief_activity_missing', 'degrades'));
+  }
+
   const done = [
     offerDone,
     answered,
@@ -289,7 +370,9 @@ export function evaluateBriefReadiness(input: BriefInput): BriefReadiness {
   return {
     ready: missing.every((entry) => entry.severity !== 'blocking'),
     missing,
-    completeness: done / COMPLETENESS_PARTS,
+    completeness: portfolio
+      ? (done + (personDone ? 1 : 0)) / PORTFOLIO_COMPLETENESS_PARTS
+      : done / COMPLETENESS_PARTS,
   };
 }
 

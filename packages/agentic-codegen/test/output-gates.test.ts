@@ -3,7 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  BRIEF_INPUT_VERSION,
   EMPTY_IMAGE_SHIPPED,
+  PERSON_ABSENT,
+  PERSON_ABSENT_ASK,
   findInventedProjectIssue,
   findPlaceholderCopyIssue,
   FullSiteBuildWorker,
@@ -17,6 +20,8 @@ import {
   prunedScaffold,
   derivePageSet,
   type BrandConfig,
+  type BriefInput,
+  type BriefPerson,
   type BusinessIntakePayload,
   type FullSiteBuildJobStore,
   type PiSdkFlowstarterAgents,
@@ -364,6 +369,15 @@ describe('the full-site build gates its own output', () => {
     seed?: TemplateScaffoldFile[];
     /** The real projects the brief lists, if it was asked at all. */
     projects?: BusinessIntakePayload['projects'];
+    /**
+     * The person section on the brief the job carries, or absent when the
+     * client was never asked. The `PERSON_ABSENT` gate reads this off
+     * `job.briefInput`, not off the intake, because the brief is where the
+     * client wrote it.
+     */
+    person?: BriefPerson | null;
+    /** Site-rooted path of the client's portrait, when the brief has one. */
+    portraitPath?: string;
   }) {
     const agents = {
       buildFullSite: async (pass: { feedback?: string; pageSet?: string }) => {
@@ -400,6 +414,14 @@ describe('the full-site build gates its own output', () => {
         approvedPreviewFiles: input.seed ?? templateFiles(),
         requiredIntegrations: [],
         ...(input.calComUrl ? { calComUrl: input.calComUrl } : {}),
+        ...(input.person !== undefined || input.portraitPath
+          ? {
+              briefInput: briefInputWith(
+                input.person ?? null,
+                input.portraitPath,
+              ),
+            }
+          : {}),
       }),
       markAgentWorking: async () => {
         input.calls.push('store:agents-working');
@@ -612,6 +634,175 @@ describe('the full-site build gates its own output', () => {
     // One build pass, then exactly one repair pass carrying the verdict.
     expect(feedbacks).toHaveLength(2);
     expect(feedbacks[1]).toContain('Northwind Bank');
+  });
+
+  // ── PERSON_ABSENT ───────────────────────────────────────────────────────
+  //
+  // Four legs, because the gate has four answers and they are not variations
+  // of one another: it can pass, it can fail and be repaired, it can fail and
+  // stay failed, and it can decline to fail at all because there is nothing
+  // an agent could write that would help. That last one is the reason the
+  // gate is not just another copy check.
+
+  const STORY =
+    'I have designed for founders for eleven years, and I would still ' +
+    'rather sit in a support queue for an afternoon than run a workshop.';
+
+  it('ships a portfolio whose about page carries the client story', async () => {
+    const calls: string[] = [];
+    const feedbacks: Array<string | undefined> = [];
+    const { worker } = workerFor({
+      calls,
+      feedbacks,
+      person: personWith({ name: 'Ana Pop', story: STORY }),
+      dist: () => ({
+        'index.html': '<h1>Ana Pop</h1>',
+        'work/index.html': '<h1>Work</h1>',
+        'about/index.html': `<h1>Ana Pop</h1><p>${STORY}</p>`,
+        'contact/index.html': '<h1>Contact</h1>',
+      }),
+    });
+
+    await worker.run('job-1');
+    expect(calls).toContain('store:human-qa');
+    // No repair pass: the agent put the person on the page first time.
+    expect(feedbacks).toHaveLength(1);
+  });
+
+  it('repairs a portfolio that had the story and wrote boilerplate instead', async () => {
+    const calls: string[] = [];
+    const feedbacks: Array<string | undefined> = [];
+    let pass = 0;
+    const { worker } = workerFor({
+      calls,
+      feedbacks,
+      person: personWith({ name: 'Ana Pop', story: STORY }),
+      dist: () => {
+        pass += 1;
+        return {
+          'index.html': '<h1>Ana Pop</h1>',
+          'work/index.html': '<h1>Work</h1>',
+          // The first build is studio boilerplate; the repair pass writes the
+          // client's own sentences, which is exactly what the feedback asked
+          // for and exactly what an agent can do.
+          'about/index.html':
+            pass === 1
+              ? '<h1>About the studio</h1><p>We deliver bespoke digital experiences for ambitious brands.</p>'
+              : `<h1>Ana Pop</h1><p>${STORY}</p>`,
+          'contact/index.html': '<h1>Contact</h1>',
+        };
+      },
+    });
+
+    await worker.run('job-1');
+    expect(calls).toContain('store:human-qa');
+    expect(calls).not.toContain(`store:failed:${PERSON_ABSENT}`);
+    // One build pass, then exactly one repair pass carrying the verdict, and
+    // the verdict carries the client's sentences rather than a code.
+    expect(feedbacks).toHaveLength(2);
+    expect(feedbacks[1]).toContain(STORY);
+  });
+
+  it('fails the job with PERSON_ABSENT when the repair pass does not put the person back', async () => {
+    const calls: string[] = [];
+    const feedbacks: Array<string | undefined> = [];
+    const { worker } = workerFor({
+      calls,
+      feedbacks,
+      person: personWith({ name: 'Ana Pop', story: STORY }),
+      portraitPath: '/flowstarter-media/ana-portrait.jpg',
+      dist: () => ({
+        'index.html': '<h1>Ana Pop</h1>',
+        'work/index.html': '<h1>Work</h1>',
+        'about/index.html':
+          '<h1>About the studio</h1><p>We deliver bespoke digital experiences for ambitious brands.</p>',
+        'contact/index.html': '<h1>Contact</h1>',
+      }),
+    });
+
+    await expect(worker.run('job-1')).rejects.toThrow(
+      new RegExp(PERSON_ABSENT),
+    );
+    expect(calls).toContain(`store:failed:${PERSON_ABSENT}`);
+    expect(calls).not.toContain('store:human-qa');
+    expect(feedbacks).toHaveLength(2);
+    // Both halves are named: the words that were dropped and the photograph
+    // that was never placed.
+    expect(feedbacks[1]).toContain(STORY);
+    expect(feedbacks[1]).toContain('/flowstarter-media/ana-portrait.jpg');
+  });
+
+  it('holds with the client ask, and spends no repair pass, when the brief had nothing', async () => {
+    const calls: string[] = [];
+    const feedbacks: Array<string | undefined> = [];
+    const { worker } = workerFor({
+      calls,
+      feedbacks,
+      // Asked, and every answer skipped. Not the same as never asked, and it
+      // is the difference this leg exists to prove.
+      person: personWith({}),
+      dist: () => ({
+        'index.html': '<h1>Ana Pop</h1>',
+        'work/index.html': '<h1>Work</h1>',
+        'about/index.html': '<h1>About</h1>',
+        'contact/index.html': '<h1>Contact</h1>',
+      }),
+    });
+
+    await expect(worker.run('job-1')).rejects.toThrow(
+      new RegExp(PERSON_ABSENT_ASK.slice(0, 40)),
+    );
+    expect(calls).toContain(`store:failed:${PERSON_ABSENT}`);
+    // THE ASSERTION. No second agent run: nothing an agent could write fixes
+    // an empty brief, so the build does not pay for a pass at guessing.
+    expect(feedbacks).toHaveLength(1);
+  });
+
+  it('passes a portfolio whose client sent a photograph and no story', async () => {
+    // The real case this rule is shaped around: a personal trainer who would
+    // not write three sentences about himself but did send a face. A
+    // photograph is something of him, so the site is about somebody, and the
+    // build runs. Placing it is all the gate asks for.
+    const calls: string[] = [];
+    const feedbacks: Array<string | undefined> = [];
+    const { worker } = workerFor({
+      calls,
+      feedbacks,
+      person: personWith({ name: 'Tom Brennan' }),
+      portraitPath: '/flowstarter-media/tom-portrait.jpg',
+      dist: () => ({
+        'index.html': '<h1>Tom Brennan</h1>',
+        'work/index.html': '<h1>Work</h1>',
+        'about/index.html':
+          '<h1>Tom Brennan</h1><img src="/flowstarter-media/tom-portrait.jpg" alt="Tom Brennan">',
+        'contact/index.html': '<h1>Contact</h1>',
+      }),
+    });
+
+    await worker.run('job-1');
+    expect(calls).toContain('store:human-qa');
+    expect(feedbacks).toHaveLength(1);
+  });
+
+  it('has no opinion at all about a brief nobody was ever asked', async () => {
+    const calls: string[] = [];
+    const feedbacks: Array<string | undefined> = [];
+    const { worker } = workerFor({
+      calls,
+      feedbacks,
+      // Every workspace taken before the person section existed.
+      person: null,
+      dist: () => ({
+        'index.html': '<h1>Calm Path</h1>',
+        'work/index.html': '<h1>Work</h1>',
+        'about/index.html': '<h1>About the studio</h1>',
+        'contact/index.html': '<h1>Contact</h1>',
+      }),
+    });
+
+    await worker.run('job-1');
+    expect(calls).toContain('store:human-qa');
+    expect(feedbacks).toHaveLength(1);
   });
 
   it('fails the job with GENERATED_HTML_UNSAFE when the built site runs a script the policy does not allow', async () => {
@@ -835,6 +1026,60 @@ function intakeWith(
     submittedAt: '2026-09-11T10:00:00.000Z',
     consent: { publicProfileAnalysis: false, acceptedAt: '' },
     ...brief,
+  };
+}
+
+/**
+ * A brief carrying a person, for the gate that reads one.
+ *
+ * Minimal on purpose: every other field is the empty answer, so a test that
+ * changes the verdict changes exactly one thing. `person: null` is a real and
+ * different input from an all-empty section, and both are exercised below.
+ */
+function briefInputWith(
+  person: BriefPerson | null,
+  portraitPath?: string,
+): BriefInput {
+  return {
+    version: BRIEF_INPUT_VERSION,
+    composedAt: '2026-09-15T09:00:00.000Z',
+    reason: 'brief_ready',
+    offer: 'Design work for founders, one project at a time.',
+    projects: [],
+    noProjects: true,
+    designReferences: [],
+    photos: [],
+    portrait: portraitPath
+      ? {
+          assetId: '0d1f3a21-5b6c-4d7e-8f90-1a2b3c4d5e6f',
+          publicPath: portraitPath,
+          manifestPath: `public${portraitPath}`,
+          role: 'portrait',
+          caption: 'The client',
+          mime: 'image/jpeg',
+          width: 1600,
+          height: 2000,
+        }
+      : null,
+    person,
+  };
+}
+
+/** A person section with only the fields a test cares about filled in. */
+function personWith(fields: Partial<BriefPerson>): BriefPerson {
+  return {
+    name: '',
+    headline: '',
+    story: '',
+    howIWork: '',
+    values: '',
+    feel: '',
+    toneWords: [],
+    links: [],
+    proudestWork: '',
+    activity: { what: '', who: '', typical: '', knownFor: '', years: '' },
+    sourcedBio: null,
+    ...fields,
   };
 }
 

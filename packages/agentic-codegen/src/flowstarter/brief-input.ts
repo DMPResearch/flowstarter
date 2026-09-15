@@ -36,6 +36,12 @@
  */
 
 import { resolvePageCountAnswer } from './page-set';
+import {
+  describePerson,
+  isPersonEmpty,
+  parsePerson,
+  type BriefPerson,
+} from './person';
 import type {
   BriefAsset,
   BriefPhoto,
@@ -117,6 +123,15 @@ export interface BriefInput {
   pageCount?: string;
   /** Three adjectives and a voice line, when the funnel derived them. */
   tone?: BriefTone;
+  /**
+   * Who the client is, in their own words, when the brief asked.
+   *
+   * `null` means the question was never put to them: every workspace taken
+   * before the person section existed is in that state, and the
+   * `PERSON_ABSENT` gate stays silent for it. A section present but empty is
+   * the different, louder answer "asked, and they skipped it".
+   */
+  person: BriefPerson | null;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -292,6 +307,7 @@ export function parseBriefInput(payload: unknown): BriefInput | null {
     ...(safeTone(raw['tone'])
       ? { tone: safeTone(raw['tone']) as BriefTone }
       : {}),
+    person: parsePerson(raw['person']),
   };
 }
 
@@ -388,6 +404,11 @@ export function mergeBriefIntoIntake(
     // The funnel's tone, when the intake did not already carry one. The brief
     // page never asks for a tone, so this can only ever fill a gap.
     ...(brief.tone && !intake.tone ? { tone: brief.tone } : {}),
+    // Always set when the brief carries a section, including to an all-empty
+    // one. `null` and "asked and skipped" are different answers and the
+    // `PERSON_ABSENT` gate reads the difference, so the merge must not
+    // collapse them by omitting the key.
+    ...(brief.person ? { person: brief.person } : {}),
   };
 }
 
@@ -547,6 +568,13 @@ export function describeBriefInput(brief: BriefInput | null): string {
     lines.push(
       `TONE: ${adjectives}${brief.tone.voice ? `. ${brief.tone.voice}` : ''}`,
     );
+  }
+
+  // Last and longest on purpose. The person is the thing the previous shape
+  // of this paragraph had nothing to say about, and an agent reads the end of
+  // a block as the thing it was just told.
+  if (brief.person && !isPersonEmpty(brief.person)) {
+    lines.push(describePerson(brief.person));
   }
 
   if (lines.length === 0) return NOTHING_TO_SAY;

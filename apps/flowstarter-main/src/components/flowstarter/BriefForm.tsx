@@ -44,6 +44,17 @@ import { cn } from '@/lib/utils';
 import { AssetUploader } from './AssetUploader';
 import { CURRENT_RIGHTS_STATEMENT_VERSION } from './rights-statement';
 import { SourcedPortrait } from './SourcedPortrait';
+import {
+  MAX_TONE_WORDS,
+  MIN_STORY_CHARS,
+  PERSON_FIELD_CAPS,
+  PERSON_LINK_KINDS,
+  type BriefPerson,
+  type PersonActivity,
+  type PersonLink,
+  type PersonLinkKind,
+  type PersonSourcedBio,
+} from '@flowstarter/agentic-codegen/src/flowstarter/person';
 
 // ───────────────────────────────────────────────────────────────────────────
 // The shape the API speaks
@@ -68,6 +79,17 @@ export interface BriefView {
   readyAt: string | null;
   overrideAt: string | null;
   pageCount: string | null;
+  /**
+   * Who the client is, in their own words, or null when nobody has asked.
+   *
+   * Mirrors `BriefView['person']` in `lib/flowstarter/brief-data.ts` exactly,
+   * because the two must never disagree about what "nobody asked" means: an
+   * intake taken before this section existed and a client who was asked and
+   * skipped every question are different inputs, and only the second is a
+   * section this form may render as answered-but-empty. See
+   * `packages/agentic-codegen/src/flowstarter/person.ts`.
+   */
+  person: BriefPerson | null;
 }
 
 /** The wizard's own answers, mirrored so this file needs no import from the
@@ -224,6 +246,26 @@ export function BriefForm({
   // card has to look busy for both of them, not just for the save at the end.
   const [portraitBusy, setPortraitBusy] = useState(false);
 
+  // Fixed at mount, like `derivedPageCount`. `initialBrief.person === null`
+  // covers two different clients — an intake taken before this section
+  // existed, and a services business the funnel never asked — and both get
+  // the same treatment: no "About you" section at all. Eleven questions
+  // about somebody's inner life on a plumber's brief is exactly the genre
+  // mistake `brief-readiness.ts` already refuses to make for the readiness
+  // gate; this form would be undoing that refusal if it grew the section
+  // anyway. Nothing here ever creates a person section the funnel decided
+  // there wasn't one, so this never needs to flip from false to true.
+  const hasPerson = initialBrief.person !== null;
+  const [person, setPerson] = useState<BriefPerson | null>(initialBrief.person);
+  // Same quiet-hint pattern as `offerLeft`: a character count under a
+  // sentence somebody is still writing is a comment on their typing speed,
+  // not useful information.
+  const [storyLeft, setStoryLeft] = useState(false);
+  // The sourced-bio proposal is a single PUT, unlike a sourced photograph:
+  // there is no rights confirmation to write first, so one flag covering the
+  // request is enough.
+  const [bioBusy, setBioBusy] = useState(false);
+
   // "Replace" has to put the client somewhere they can actually replace the
   // photo, which is the photos uploader a few lines further down.
   const photosUploader = useRef<HTMLDivElement | null>(null);
@@ -310,6 +352,62 @@ export function BriefForm({
     []
   );
 
+  // `current ? { ...current, ...patch } : current` rather than assuming
+  // `person` is set: these handlers are only ever wired to inputs that exist
+  // when `hasPerson` is true, but the state itself stays typed as
+  // `BriefPerson | null` for the client whose brief has none, and a patch
+  // function that crashed on that client's render would be worse than one
+  // that quietly does nothing.
+  const updatePerson = useCallback((patch: Partial<BriefPerson>) => {
+    setPerson((current) => (current ? { ...current, ...patch } : current));
+    setSaved(false);
+  }, []);
+
+  const updateActivity = useCallback((patch: Partial<PersonActivity>) => {
+    setPerson((current) =>
+      current
+        ? { ...current, activity: { ...current.activity, ...patch } }
+        : current
+    );
+    setSaved(false);
+  }, []);
+
+  const updateToneWord = useCallback((index: number, value: string) => {
+    setPerson((current) => {
+      if (!current) return current;
+      // A fixed row of `MAX_TONE_WORDS` boxes needs a slot for each one, or
+      // typing into the third box before the second has ever been touched
+      // would silently write into the wrong index.
+      const words = [...current.toneWords];
+      while (words.length <= index) words.push('');
+      words[index] = value;
+      return { ...current, toneWords: words };
+    });
+    setSaved(false);
+  }, []);
+
+  const updateLink = useCallback(
+    (kind: PersonLinkKind, patch: Partial<PersonLink>) => {
+      setPerson((current) => {
+        if (!current) return current;
+        const existing = current.links.find((link) => link.kind === kind) ?? {
+          kind,
+          url: '',
+          consented: false,
+        };
+        return {
+          ...current,
+          links: [
+            ...current.links.filter((link) => link.kind !== kind),
+            { ...existing, ...patch },
+          ],
+        };
+      });
+      setSaved(false);
+    },
+    []
+  );
+
   /**
    * Saves the brief.
    *
@@ -317,9 +415,17 @@ export function BriefForm({
    * it in the same gesture, and a `setPortraitId` a line earlier has not
    * reached this closure yet. Passing the id explicitly is the difference
    * between saving what the client just chose and saving what they had before.
+   * `adoptSourcedBio` is the same trick for the bio proposal's "Use it" and
+   * "Dismiss": the client's verdict travels on the very save that follows the
+   * click, rather than waiting on a `person` that has not re-rendered yet.
    */
   const save = useCallback(
-    async (overrides: { portraitAssetId?: string | null } = {}) => {
+    async (
+      overrides: {
+        portraitAssetId?: string | null;
+        adoptSourcedBio?: boolean;
+      } = {}
+    ) => {
       setSaving(true);
       setSaved(false);
       setError(null);
@@ -342,6 +448,41 @@ export function BriefForm({
                 ? overrides.portraitAssetId
                 : portraitId,
             pageCount,
+            // Absent entirely when there is no person section at all, so a
+            // save on a services brief never sends a `person` key the route
+            // would have to interpret. `sourcedBio` is never part of this:
+            // the excerpt, its page and the instant we read it are the
+            // server's record, and only the approval — `adoptSourcedBio`,
+            // sent solely when a button was actually pressed — travels back.
+            ...(person
+              ? {
+                  person: {
+                    name: person.name,
+                    headline: person.headline,
+                    story: person.story,
+                    howIWork: person.howIWork,
+                    values: person.values,
+                    feel: person.feel,
+                    // An empty box is not a tone word the client chose; the
+                    // schema does not filter blanks itself, so a slot nobody
+                    // typed into must not be sent as one.
+                    toneWords: person.toneWords.filter(
+                      (word) => word.trim().length > 0
+                    ),
+                    // Same reasoning for a link row nobody filled in: an
+                    // empty address with an unticked box beside it is an
+                    // unused row, not an answer.
+                    links: person.links.filter(
+                      (link) => link.url.trim().length > 0
+                    ),
+                    proudestWork: person.proudestWork,
+                    activity: person.activity,
+                    ...(overrides.adoptSourcedBio !== undefined
+                      ? { adoptSourcedBio: overrides.adoptSourcedBio }
+                      : {}),
+                  },
+                }
+              : {}),
           }),
         });
         const payload = (await response
@@ -363,6 +504,7 @@ export function BriefForm({
         setPhotoIds(payload.brief.photoAssetIds);
         setPortraitId(payload.brief.portraitAssetId);
         setPageCount(payload.brief.pageCount);
+        if (hasPerson) setPerson(payload.brief.person);
         setReadiness(payload.readiness);
         setAssets(payload.assets ?? []);
         setLinkErrors({});
@@ -376,14 +518,36 @@ export function BriefForm({
     [
       businessName,
       endpoint,
+      hasPerson,
       noProjects,
       offer,
       pageCount,
+      person,
       photoIds,
       portraitId,
       projects,
       referenceIds,
     ]
+  );
+
+  /**
+   * "Use it" or "Dismiss" on the bio proposal. Unlike the sourced photograph
+   * below, there is no rights confirmation to write first: a sentence read
+   * off a public LinkedIn headline needs the client's yes to be published,
+   * not a separate confirmation that we are allowed to hold the bytes. So
+   * this is one request, the save itself, with the verdict riding along as
+   * `adoptSourcedBio`.
+   */
+  const decideSourcedBio = useCallback(
+    async (adopt: boolean) => {
+      setBioBusy(true);
+      try {
+        await save({ adoptSourcedBio: adopt });
+      } finally {
+        setBioBusy(false);
+      }
+    },
+    [save]
   );
 
   /**
@@ -467,6 +631,11 @@ export function BriefForm({
   const sourcedPortrait =
     photos.find((asset) => asset.source !== 'upload') ?? null;
   const offerChars = offer.replace(/\s+/g, ' ').trim().length;
+  // Same collapsed-length rule `MIN_STORY_CHARS` is measured against
+  // everywhere else it matters (`person.ts`'s `proseLength`, and the
+  // readiness rule this hint is a preview of), so a client who clears the
+  // quiet-hint threshold here clears it on the server too.
+  const storyChars = (person?.story ?? '').replace(/\s+/g, ' ').trim().length;
   const blocking = readiness.missing.filter(
     (entry) => entry.severity === 'blocking'
   );
@@ -890,7 +1059,404 @@ export function BriefForm({
         </div>
       </GlassSurface>
 
-      {/* ── 6. What is still missing ───────────────────────────────────── */}
+      {/* ── 6. About you ───────────────────────────────────────────────── */}
+      {/*
+        Rendered only when `initialBrief.person !== null`. A null person is
+        not "unanswered", it is "never asked" -- either the intake predates
+        this block, or the funnel classified the site as a services business
+        rather than a portfolio. Showing eleven questions about somebody's
+        inner life on a plumber's brief is exactly the genre mistake
+        `brief-readiness.ts` refuses to make when it decides what blocks a
+        build; this form would be undoing that refusal if it asked anyway.
+        `hasPerson` is fixed at mount (see its declaration above), so this
+        section cannot appear partway through a session -- there is no
+        gesture on this form that turns a services brief into a portfolio.
+      */}
+      {hasPerson && person ? (
+        <GlassSurface as="section" variant="card">
+          <div className="flex flex-col gap-5">
+            <SectionHeading
+              title="About you"
+              hint="A site with one subject writes well only when it knows who that subject is. Every answer here is optional, and every one is your own words: we quote you, we do not rewrite you."
+            />
+
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <div className="flex flex-1 flex-col gap-1.5">
+                <label
+                  className="text-xs font-semibold text-[var(--fs-ink-dim)]"
+                  htmlFor="brief-person-name"
+                >
+                  Your name
+                </label>
+                <input
+                  id="brief-person-name"
+                  type="text"
+                  data-testid="brief-person-name"
+                  value={person.name}
+                  maxLength={PERSON_FIELD_CAPS.name}
+                  onChange={(event) =>
+                    updatePerson({ name: event.target.value })
+                  }
+                  className="w-full rounded-lg border border-[var(--fs-rule)] bg-[var(--fs-glass-bg)] px-4 py-2.5 text-sm text-[var(--fs-ink)] outline-none transition-colors focus:border-[var(--purple-primary)]"
+                />
+              </div>
+              <div className="flex flex-1 flex-col gap-1.5">
+                <label
+                  className="text-xs font-semibold text-[var(--fs-ink-dim)]"
+                  htmlFor="brief-person-headline"
+                >
+                  One line about you
+                </label>
+                <input
+                  id="brief-person-headline"
+                  type="text"
+                  data-testid="brief-person-headline"
+                  value={person.headline}
+                  maxLength={PERSON_FIELD_CAPS.headline}
+                  placeholder="What you do, the way you'd introduce yourself"
+                  onChange={(event) =>
+                    updatePerson({ headline: event.target.value })
+                  }
+                  className="w-full rounded-lg border border-[var(--fs-rule)] bg-[var(--fs-glass-bg)] px-4 py-2.5 text-sm text-[var(--fs-ink)] outline-none transition-colors focus:border-[var(--purple-primary)]"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <SectionHeading
+                title="Who you are"
+                hint="Who you are, in a sentence or two. This becomes your about page: we quote you here, we do not rewrite you."
+              />
+              <textarea
+                data-testid="brief-person-story"
+                aria-label="Who you are"
+                value={person.story}
+                rows={4}
+                maxLength={PERSON_FIELD_CAPS.story}
+                onChange={(event) =>
+                  updatePerson({ story: event.target.value })
+                }
+                onBlur={() => setStoryLeft(true)}
+                className="w-full rounded-xl border border-[var(--fs-rule)] bg-[var(--fs-glass-bg)] px-4 py-3 text-sm leading-relaxed text-[var(--fs-ink)] outline-none transition-colors focus:border-[var(--purple-primary)]"
+              />
+              {/* Same quiet-hint rule the offer field uses: a red message
+                  under a sentence somebody is still writing is a message
+                  about their typing speed, not about their answer. */}
+              <p
+                data-testid="brief-person-story-count"
+                className={cn(
+                  'text-xs',
+                  storyLeft && storyChars < MIN_STORY_CHARS
+                    ? 'font-medium text-[var(--fs-ink)]'
+                    : 'text-[var(--fs-ink-faint)]'
+                )}
+              >
+                {storyChars >= MIN_STORY_CHARS
+                  ? `${storyChars} characters. That is enough to write your about page from.`
+                  : `${storyChars} of about ${MIN_STORY_CHARS} characters. A sentence or two is plenty.`}
+              </p>
+            </div>
+
+            {person.sourcedBio ? (
+              <SourcedBioCard
+                bio={person.sourcedBio}
+                busy={bioBusy}
+                onUse={() => void decideSourcedBio(true)}
+                onDismiss={() => void decideSourcedBio(false)}
+              />
+            ) : null}
+
+            <div className="flex flex-col gap-1.5">
+              <label
+                className="text-xs font-semibold text-[var(--fs-ink-dim)]"
+                htmlFor="brief-person-how-i-work"
+              >
+                How you work
+              </label>
+              <p className="text-xs leading-relaxed text-[var(--fs-ink-dim)]">
+                How you work, the way you would tell a new client.
+              </p>
+              <textarea
+                id="brief-person-how-i-work"
+                data-testid="brief-person-how-i-work"
+                aria-label="How you work"
+                value={person.howIWork}
+                rows={3}
+                maxLength={PERSON_FIELD_CAPS.howIWork}
+                onChange={(event) =>
+                  updatePerson({ howIWork: event.target.value })
+                }
+                className="w-full rounded-xl border border-[var(--fs-rule)] bg-[var(--fs-glass-bg)] px-4 py-3 text-sm leading-relaxed text-[var(--fs-ink)] outline-none transition-colors focus:border-[var(--purple-primary)]"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label
+                className="text-xs font-semibold text-[var(--fs-ink-dim)]"
+                htmlFor="brief-person-values"
+              >
+                What you stand for
+              </label>
+              <p className="text-xs leading-relaxed text-[var(--fs-ink-dim)]">
+                What you stand for, in your own words.
+              </p>
+              <textarea
+                id="brief-person-values"
+                data-testid="brief-person-values"
+                aria-label="What you stand for"
+                value={person.values}
+                rows={3}
+                maxLength={PERSON_FIELD_CAPS.values}
+                onChange={(event) =>
+                  updatePerson({ values: event.target.value })
+                }
+                className="w-full rounded-xl border border-[var(--fs-rule)] bg-[var(--fs-glass-bg)] px-4 py-3 text-sm leading-relaxed text-[var(--fs-ink)] outline-none transition-colors focus:border-[var(--purple-primary)]"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label
+                className="text-xs font-semibold text-[var(--fs-ink-dim)]"
+                htmlFor="brief-person-feel"
+              >
+                What you want a visitor to feel
+              </label>
+              <input
+                id="brief-person-feel"
+                type="text"
+                data-testid="brief-person-feel"
+                value={person.feel}
+                maxLength={PERSON_FIELD_CAPS.feel}
+                onChange={(event) => updatePerson({ feel: event.target.value })}
+                className="w-full rounded-lg border border-[var(--fs-rule)] bg-[var(--fs-glass-bg)] px-4 py-2.5 text-sm text-[var(--fs-ink)] outline-none transition-colors focus:border-[var(--purple-primary)]"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-semibold text-[var(--fs-ink-dim)]">
+                Three words
+              </span>
+              <p className="text-xs leading-relaxed text-[var(--fs-ink-dim)]">
+                {`Up to ${MAX_TONE_WORDS} words the writing should hit. Every heading and every sentence is chosen to hit these.`}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {Array.from({ length: MAX_TONE_WORDS }, (_, index) => (
+                  <input
+                    key={index}
+                    type="text"
+                    aria-label={`Tone word ${index + 1}`}
+                    data-testid="brief-person-tone-word"
+                    value={person.toneWords[index] ?? ''}
+                    maxLength={PERSON_FIELD_CAPS.toneWord}
+                    onChange={(event) =>
+                      updateToneWord(index, event.target.value)
+                    }
+                    className="w-32 rounded-lg border border-[var(--fs-rule)] bg-[var(--fs-glass-bg)] px-3 py-2 text-sm text-[var(--fs-ink)] outline-none transition-colors focus:border-[var(--purple-primary)]"
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label
+                className="text-xs font-semibold text-[var(--fs-ink-dim)]"
+                htmlFor="brief-person-proudest-work"
+              >
+                Work you are proudest of
+              </label>
+              <p className="text-xs leading-relaxed text-[var(--fs-ink-dim)]">
+                What you are proudest of, and why.
+              </p>
+              <textarea
+                id="brief-person-proudest-work"
+                data-testid="brief-person-proudest-work"
+                aria-label="Work you are proudest of"
+                value={person.proudestWork}
+                rows={3}
+                maxLength={PERSON_FIELD_CAPS.proudestWork}
+                onChange={(event) =>
+                  updatePerson({ proudestWork: event.target.value })
+                }
+                className="w-full rounded-xl border border-[var(--fs-rule)] bg-[var(--fs-glass-bg)] px-4 py-3 text-sm leading-relaxed text-[var(--fs-ink)] outline-none transition-colors focus:border-[var(--purple-primary)]"
+              />
+            </div>
+
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-1">
+                <span className="text-xs font-semibold text-[var(--fs-ink-dim)]">
+                  Your profiles
+                </span>
+                <p className="text-xs leading-relaxed text-[var(--fs-ink-dim)]">
+                  Your LinkedIn, Instagram, GitHub or your own site, entirely
+                  optional. Tick the box next to a link only if you want us to
+                  read that page: we will suggest a short bio and a photograph
+                  from it, and show you both for approval before anything is
+                  published.
+                </p>
+              </div>
+              <div className="flex flex-col gap-3">
+                {PERSON_LINK_KINDS.map((kind) => {
+                  const link = person.links.find(
+                    (entry) => entry.kind === kind
+                  ) ?? { kind, url: '', consented: false };
+                  return (
+                    <div
+                      key={kind}
+                      data-testid="brief-person-link-row"
+                      data-kind={kind}
+                      className="flex flex-col gap-2 rounded-xl border border-[var(--fs-rule)] px-4 py-3"
+                    >
+                      <span className="text-xs font-semibold capitalize text-[var(--fs-ink)]">
+                        {kind}
+                      </span>
+                      <input
+                        type="url"
+                        aria-label={`${kind} link`}
+                        data-testid="brief-person-link-url"
+                        value={link.url}
+                        maxLength={PERSON_FIELD_CAPS.linkUrl}
+                        placeholder="https://"
+                        onChange={(event) =>
+                          updateLink(kind, { url: event.target.value })
+                        }
+                        className="w-full rounded-lg border border-[var(--fs-rule)] bg-transparent px-3 py-2 text-sm text-[var(--fs-ink)] outline-none focus:border-[var(--purple-primary)]"
+                      />
+                      <label className="flex items-start gap-2 text-xs text-[var(--fs-ink-dim)]">
+                        <input
+                          type="checkbox"
+                          aria-label={`Let us read your ${kind} page`}
+                          data-testid="brief-person-link-consent"
+                          checked={link.consented}
+                          onChange={(event) =>
+                            updateLink(kind, {
+                              consented: event.target.checked,
+                            })
+                          }
+                          className="mt-0.5 size-4 shrink-0 rounded border-[var(--fs-rule)] accent-[var(--purple-primary)]"
+                        />
+                        <span>
+                          You may read this page to suggest a bio and a
+                          photograph. We will show you both before anything goes
+                          on your site.
+                        </span>
+                      </label>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-3 rounded-xl border border-[var(--fs-rule)] px-4 py-4">
+              <SectionHeading
+                title="What you actually do"
+                hint="This is what the services page is written from. A general answer here is a general page: the same page anyone in your line of work would get."
+              />
+              <div className="flex flex-col gap-1.5">
+                <label
+                  className="text-xs font-semibold text-[var(--fs-ink-dim)]"
+                  htmlFor="brief-person-activity-what"
+                >
+                  What you do
+                </label>
+                <textarea
+                  id="brief-person-activity-what"
+                  data-testid="brief-person-activity-what"
+                  aria-label="What you do"
+                  value={person.activity.what}
+                  rows={2}
+                  maxLength={PERSON_FIELD_CAPS.activityWhat}
+                  placeholder="The way you'd say it if someone asked you at a party"
+                  onChange={(event) =>
+                    updateActivity({ what: event.target.value })
+                  }
+                  className="w-full rounded-lg border border-[var(--fs-rule)] bg-transparent px-3 py-2 text-sm text-[var(--fs-ink)] outline-none focus:border-[var(--purple-primary)]"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label
+                  className="text-xs font-semibold text-[var(--fs-ink-dim)]"
+                  htmlFor="brief-person-activity-who"
+                >
+                  Who you do it for
+                </label>
+                <input
+                  id="brief-person-activity-who"
+                  type="text"
+                  data-testid="brief-person-activity-who"
+                  value={person.activity.who}
+                  maxLength={PERSON_FIELD_CAPS.activityWho}
+                  onChange={(event) =>
+                    updateActivity({ who: event.target.value })
+                  }
+                  className="w-full rounded-lg border border-[var(--fs-rule)] bg-transparent px-3 py-2 text-sm text-[var(--fs-ink)] outline-none focus:border-[var(--purple-primary)]"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label
+                  className="text-xs font-semibold text-[var(--fs-ink-dim)]"
+                  htmlFor="brief-person-activity-typical"
+                >
+                  A typical engagement
+                </label>
+                <textarea
+                  id="brief-person-activity-typical"
+                  data-testid="brief-person-activity-typical"
+                  aria-label="A typical engagement"
+                  value={person.activity.typical}
+                  rows={2}
+                  maxLength={PERSON_FIELD_CAPS.activityTypical}
+                  placeholder="What a typical project, engagement or day looks like"
+                  onChange={(event) =>
+                    updateActivity({ typical: event.target.value })
+                  }
+                  className="w-full rounded-lg border border-[var(--fs-rule)] bg-transparent px-3 py-2 text-sm text-[var(--fs-ink)] outline-none focus:border-[var(--purple-primary)]"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label
+                  className="text-xs font-semibold text-[var(--fs-ink-dim)]"
+                  htmlFor="brief-person-activity-known-for"
+                >
+                  What you are known for
+                </label>
+                <input
+                  id="brief-person-activity-known-for"
+                  type="text"
+                  data-testid="brief-person-activity-known-for"
+                  value={person.activity.knownFor}
+                  maxLength={PERSON_FIELD_CAPS.activityKnownFor}
+                  placeholder="What people ask you for most"
+                  onChange={(event) =>
+                    updateActivity({ knownFor: event.target.value })
+                  }
+                  className="w-full rounded-lg border border-[var(--fs-rule)] bg-transparent px-3 py-2 text-sm text-[var(--fs-ink)] outline-none focus:border-[var(--purple-primary)]"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label
+                  className="text-xs font-semibold text-[var(--fs-ink-dim)]"
+                  htmlFor="brief-person-activity-years"
+                >
+                  How long you have done it
+                </label>
+                <input
+                  id="brief-person-activity-years"
+                  type="text"
+                  data-testid="brief-person-activity-years"
+                  value={person.activity.years}
+                  maxLength={PERSON_FIELD_CAPS.activityYears}
+                  onChange={(event) =>
+                    updateActivity({ years: event.target.value })
+                  }
+                  className="w-full rounded-lg border border-[var(--fs-rule)] bg-transparent px-3 py-2 text-sm text-[var(--fs-ink)] outline-none focus:border-[var(--purple-primary)]"
+                />
+              </div>
+            </div>
+          </div>
+        </GlassSurface>
+      ) : null}
+
+      {/* ── 7. What is still missing ───────────────────────────────────── */}
       <GlassSurface as="section" variant="card">
         <div className="flex flex-col gap-3">
           <SectionHeading title="What is still missing" />
@@ -991,6 +1557,88 @@ function SectionHeading({ title, hint }: { title: string; hint?: string }) {
           {hint}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * A bio excerpt read off one of the client's own pages, shown as a proposal
+ * rather than a fact.
+ *
+ * The excerpt, the page it came from and when we read it are the same three
+ * things whether or not the client has approved it yet; what changes is the
+ * verdict underneath and which of the two actions is offered. Approving it
+ * never rewrites this card into looking like the client's own typing, and it
+ * never reaches into the story textarea above -- `story` is what the client
+ * wrote, this is a suggestion sitting beside it, and collapsing that
+ * distinction is the entire failure `sourcedBio` exists to prevent. See
+ * `SourcedPortrait`, which this follows for shape: a found thing, offered
+ * back, with the provenance never out of view.
+ */
+function SourcedBioCard({
+  bio,
+  busy,
+  onUse,
+  onDismiss,
+}: {
+  bio: PersonSourcedBio;
+  busy: boolean;
+  onUse: () => void;
+  onDismiss: () => void;
+}) {
+  const adopted = bio.adoptedAt !== null;
+  return (
+    <div
+      data-testid="brief-person-sourced-bio"
+      data-adopted={adopted}
+      className="flex flex-col gap-2 rounded-xl border border-[var(--fs-rule)] px-4 py-4"
+    >
+      <p className="text-xs font-semibold text-[var(--fs-ink)]">
+        {adopted
+          ? 'A bio you approved, read from one of your own pages.'
+          : 'We found this on one of your own pages. Read it over before it goes anywhere.'}
+      </p>
+      <p
+        data-testid="brief-person-sourced-bio-excerpt"
+        className="rounded-lg bg-[var(--fs-glass-bg)] px-3 py-2 text-sm italic leading-relaxed text-[var(--fs-ink)]"
+      >
+        {bio.excerpt}
+      </p>
+      <p className="text-xs text-[var(--fs-ink-dim)]">
+        Read from{' '}
+        <a
+          href={bio.sourceUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid="brief-person-sourced-bio-source"
+          className="font-medium text-[var(--purple-primary)] underline"
+        >
+          {bio.sourceUrl}
+        </a>{' '}
+        on {bio.fetchedAt}.
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        {adopted ? null : (
+          <button
+            type="button"
+            data-testid="brief-person-sourced-bio-use"
+            disabled={busy}
+            onClick={onUse}
+            className="rounded-lg bg-[linear-gradient(135deg,var(--landing-btn-from),var(--landing-btn-via))] px-4 py-2 text-xs font-semibold text-white shadow-md shadow-[var(--purple-primary-lightest)] transition-all duration-200 hover:-translate-y-0.5 active:translate-y-0 disabled:pointer-events-none disabled:opacity-40"
+          >
+            {busy ? 'Saving…' : 'Use it'}
+          </button>
+        )}
+        <button
+          type="button"
+          data-testid="brief-person-sourced-bio-dismiss"
+          disabled={busy}
+          onClick={onDismiss}
+          className="rounded-lg border border-[var(--fs-rule)] px-4 py-2 text-xs font-semibold text-[var(--fs-ink)] transition-colors hover:border-[var(--purple-primary)]/40 disabled:pointer-events-none disabled:opacity-40"
+        >
+          Dismiss
+        </button>
+      </div>
     </div>
   );
 }

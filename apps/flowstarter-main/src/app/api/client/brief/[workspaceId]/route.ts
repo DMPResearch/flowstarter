@@ -23,7 +23,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireWorkspaceAccess } from '@/lib/api-auth';
 import {
+  PERSON_FIELD_CAPS,
+  MAX_TONE_WORDS,
+  PERSON_LINK_KINDS,
+  hasPersonStory,
+  parsePerson,
+  type BriefPerson,
+} from '@flowstarter/agentic-codegen/src/flowstarter/person';
+import { readSourcedBio } from '@/lib/flowstarter/person-source';
+import {
   BRIEF_ROW_COLUMNS,
+  EMPTY_BRIEF,
+  briefSiteKind,
   briefViewFromRow,
   judgeBrief,
   photosFor,
@@ -94,14 +105,18 @@ export async function GET(
 
   try {
     const supabase = createSupabaseServiceRoleClient();
-    const { data, error } = await withTenant(supabase, access.workspaceId)
+    const tenant = withTenant(supabase, access.workspaceId);
+    const { data, error } = await tenant
       .from('workspace_briefs')
       .select(BRIEF_ROW_COLUMNS)
       .maybeSingle<BriefRow>();
     if (error) throw error;
 
     const assets = await listWorkspaceAssets(access.workspaceId);
-    const brief = briefViewFromRow(data, assets);
+    const stored = briefViewFromRow(data, assets);
+    // Read once, on the visit where it can actually be shown to them, and
+    // filed so the next visit costs nothing. See `withProposedBio`.
+    const brief = await withProposedBio(tenant, stored);
     return NextResponse.json({
       brief,
       readiness: judgeBrief(brief, assets),
@@ -112,9 +127,140 @@ export async function GET(
   }
 }
 
+/**
+ * The brief, with a bio proposal attached when there is one to make.
+ *
+ * Four conditions, and each one is a reason not to make a request:
+ *
+ *   - the client was asked the person questions at all;
+ *   - they have not already written their own story, because a proposal
+ *     underneath somebody's own sentences is noise, not help;
+ *   - they consented to at least one link being read (`person-source.ts`
+ *     enforces this again, and would read nothing here either way);
+ *   - nothing has been proposed yet, so a client who dismissed one is not
+ *     shown it again on every visit.
+ *
+ * Best effort in the strongest sense: the read cannot throw, a failure to
+ * store the result is logged and swallowed, and the brief renders either way.
+ * A client's own page being down must not be the reason their dashboard 500s.
+ *
+ * It runs on GET rather than on save because this is the one moment the
+ * proposal can be put in front of the person whose bio it is. Nothing is
+ * published from it: `adoptedAt` is null until they press the button, and the
+ * builder is told in as many words not to use an unapproved one.
+ */
+async function withProposedBio(
+  tenant: ReturnType<typeof withTenant>,
+  brief: BriefView
+): Promise<BriefView> {
+  const person = brief.person;
+  if (!person) return brief;
+  if (person.sourcedBio) return brief;
+  if (hasPersonStory(person)) return brief;
+  if (person.links.every((link) => !link.consented)) return brief;
+
+  const sourcedBio = await readSourcedBio({
+    links: person.links,
+    fullName: person.name,
+    now: new Date(),
+  });
+  if (!sourcedBio) return brief;
+
+  const withBio: BriefView = { ...brief, person: { ...person, sourcedBio } };
+  const { error } = await tenant
+    .from('workspace_briefs')
+    .update({ person: withBio.person })
+    .select('workspace_id');
+  if (error) {
+    // The proposal is still shown; it will simply be read again next time.
+    console.error(
+      '[api/client/brief] could not file the bio proposal: ' + error.message
+    );
+  }
+  return withBio;
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // PUT
 // ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * The person section, validated as the client's own words and nothing else.
+ *
+ * Every cap is the one `person.ts` declares, imported rather than restated,
+ * so the form, this route and the build worker's defensive parse can never
+ * disagree about how long an answer may be.
+ *
+ * `sourcedBio` is deliberately NOT accepted from the browser. It is a
+ * quotation read off somebody's public page together with the record of where
+ * it came from; a client may approve it or reject it, but they may not post
+ * one, because a bio the server never fetched has no provenance and
+ * provenance is the entire point of the field.
+ */
+const PersonSchema = z.object({
+  name: z.string().max(PERSON_FIELD_CAPS.name).optional().default(''),
+  headline: z.string().max(PERSON_FIELD_CAPS.headline).optional().default(''),
+  story: z.string().max(PERSON_FIELD_CAPS.story).optional().default(''),
+  howIWork: z.string().max(PERSON_FIELD_CAPS.howIWork).optional().default(''),
+  values: z.string().max(PERSON_FIELD_CAPS.values).optional().default(''),
+  feel: z.string().max(PERSON_FIELD_CAPS.feel).optional().default(''),
+  toneWords: z
+    .array(z.string().max(PERSON_FIELD_CAPS.toneWord))
+    .max(MAX_TONE_WORDS)
+    .optional()
+    .default([]),
+  links: z
+    .array(
+      z.object({
+        kind: z.enum(PERSON_LINK_KINDS),
+        url: z.string().max(PERSON_FIELD_CAPS.linkUrl),
+        consented: z.boolean().optional().default(false),
+      })
+    )
+    .max(PERSON_LINK_KINDS.length)
+    .optional()
+    .default([]),
+  proudestWork: z
+    .string()
+    .max(PERSON_FIELD_CAPS.proudestWork)
+    .optional()
+    .default(''),
+  activity: z
+    .object({
+      what: z
+        .string()
+        .max(PERSON_FIELD_CAPS.activityWhat)
+        .optional()
+        .default(''),
+      who: z.string().max(PERSON_FIELD_CAPS.activityWho).optional().default(''),
+      typical: z
+        .string()
+        .max(PERSON_FIELD_CAPS.activityTypical)
+        .optional()
+        .default(''),
+      knownFor: z
+        .string()
+        .max(PERSON_FIELD_CAPS.activityKnownFor)
+        .optional()
+        .default(''),
+      years: z
+        .string()
+        .max(PERSON_FIELD_CAPS.activityYears)
+        .optional()
+        .default(''),
+    })
+    .optional()
+    .default({}),
+  /**
+   * The client's verdict on a bio we proposed from one of their own pages.
+   *
+   * A boolean, not the text: the excerpt, its source and its URL stay exactly
+   * as the server wrote them and only the approval moves. `true` stamps
+   * `adoptedAt` and lets the words be published; `false` clears it back to a
+   * proposal. Absent leaves the verdict alone.
+   */
+  adoptSourcedBio: z.boolean().optional(),
+});
 
 /**
  * The whole brief, every time. A patch endpoint would mean deciding what an
@@ -162,6 +308,18 @@ const BodySchema = z.object({
     .enum(['lt-5', '5-7', '8-15', '15+', 'unsure'])
     .nullable()
     .optional(),
+  /**
+   * Who the client is, in their own words.
+   *
+   * Optional and nullable, and the three states are three different answers:
+   * `undefined` leaves whatever is stored alone (a caller that predates the
+   * section, or a save of only the photographs), `null` clears it back to
+   * "never asked", and an object is the client's answers including the empty
+   * ones. The readiness rule blocks a portfolio that has been asked and has
+   * neither a story nor a portrait, so collapsing absent into empty here
+   * would start blocking every brief taken before today.
+   */
+  person: PersonSchema.nullable().optional(),
 });
 
 export async function PUT(
@@ -270,14 +428,29 @@ export async function PUT(
       );
     }
 
+    // One instant for the whole save, so `updated_at`, a `ready_at`
+    // transition and a bio approval all agree about when this happened.
+    const now = new Date().toISOString();
+
     // The current row is read before the write because `ready_at` is a
     // transition, not a value: it must keep the instant the brief first became
     // complete rather than moving every time a comma is saved.
+    // `person` comes back with `ready_at` because the merge below has to keep
+    // the parts of it the browser is not allowed to send: a sourced bio, the
+    // page it was read from and the instant it was fetched. A save that
+    // dropped those would silently destroy the provenance of a quotation
+    // already on somebody's website.
     const { data: current, error: currentError } = await tenant
       .from('workspace_briefs')
-      .select('ready_at, override_at')
-      .maybeSingle<{ ready_at: string | null; override_at: string | null }>();
+      .select('ready_at, override_at, person')
+      .maybeSingle<{
+        ready_at: string | null;
+        override_at: string | null;
+        person: unknown;
+      }>();
     if (currentError) throw currentError;
+
+    const person = mergePerson(parsePerson(current?.person), body.person, now);
 
     if (body.portraitAssetId !== undefined) {
       await applyPortrait(tenant, body.portraitAssetId, body.photoAssetIds);
@@ -289,13 +462,19 @@ export async function PUT(
     const projects = body.projects.map(normaliseProject);
     const readiness = evaluateBriefReadiness({
       offer: body.offer,
+      // A brief that carries a person section is a brief whose intake
+      // classified this visitor as a person-site: the funnel only ever asks
+      // the person block of one. `briefSiteKind` is that rule, stated once,
+      // so the readiness gate and the page-set rule cannot disagree about
+      // what kind of site this is.
+      siteKind: briefSiteKind({ ...EMPTY_BRIEF, person }),
+      person,
       projects,
       noProjects: body.noProjects,
       designReferenceAssetIds: body.designReferenceAssetIds,
       photos: photosFor(body.photoAssetIds, assets),
     });
 
-    const now = new Date().toISOString();
     // `ready_at` is the flag the build worker waits on, which is the whole
     // reason a client cannot write this column directly: a form post must not
     // be able to start a build. It is set the first time the rule says the
@@ -314,6 +493,7 @@ export async function PUT(
         design_reference_asset_ids: body.designReferenceAssetIds,
         photo_asset_ids: body.photoAssetIds,
         page_count: body.pageCount ?? null,
+        person,
         ready_at: readyAt,
         updated_at: now,
       },
@@ -350,6 +530,12 @@ export async function PUT(
       noProjects: body.noProjects,
       designReferenceCount: body.designReferenceAssetIds.length,
       photoCount: body.photoAssetIds.length,
+      // Flags, never the sentences. The story is what the client wrote about
+      // their own life and an audit trail does not need a copy of it.
+      personAsked: person !== null,
+      personStoryChars: (person?.story ?? '').trim().length,
+      personToneWords: person?.toneWords.length ?? 0,
+      sourcedBioAdopted: Boolean(person?.sourcedBio?.adoptedAt),
       ready: readiness.ready,
       completeness: readiness.completeness,
       missing: readiness.missing.map((entry) => entry.code),
@@ -406,6 +592,7 @@ export async function PUT(
         readyAt,
         overrideAt: current?.override_at ?? null,
         pageCount: body.pageCount ?? null,
+        person,
       },
       readiness,
       assets: refreshed,
@@ -422,6 +609,60 @@ export async function PUT(
 // ───────────────────────────────────────────────────────────────────────────
 // Helpers
 // ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * The person section the row should now hold.
+ *
+ * Three rules, and every one of them exists because of a way a naive save
+ * would lose something the client cannot get back:
+ *
+ * - **Absent leaves it alone.** A browser that predates the section, or a
+ *   save of only the photographs, sends no `person` key. Treating that as
+ *   "clear it" would wipe an answered section on an unrelated save.
+ * - **The provenance is the server's.** `sourcedBio` is never accepted from
+ *   the browser: the excerpt, the page it was read from and the instant it
+ *   was fetched are carried over from the stored row untouched. Only the
+ *   client's verdict moves, and it moves through `adoptSourcedBio`.
+ * - **Null is an answer.** An explicit `null` clears the section back to
+ *   "never asked", which is the only way a client who was asked by mistake
+ *   can stop being blocked by a rule meant for somebody else.
+ */
+function mergePerson(
+  stored: BriefPerson | null,
+  submitted: z.infer<typeof PersonSchema> | null | undefined,
+  now: string
+): BriefPerson | null {
+  if (submitted === undefined) return stored;
+  if (submitted === null) return null;
+
+  const bio = stored?.sourcedBio ?? null;
+  const adopted =
+    submitted.adoptSourcedBio === undefined
+      ? bio?.adoptedAt ?? null
+      : submitted.adoptSourcedBio
+      ? bio?.adoptedAt ?? now
+      : null;
+
+  return {
+    name: submitted.name,
+    headline: submitted.headline,
+    story: submitted.story,
+    howIWork: submitted.howIWork,
+    values: submitted.values,
+    feel: submitted.feel,
+    toneWords: submitted.toneWords,
+    links: submitted.links,
+    proudestWork: submitted.proudestWork,
+    activity: {
+      what: submitted.activity.what,
+      who: submitted.activity.who,
+      typical: submitted.activity.typical,
+      knownFor: submitted.activity.knownFor,
+      years: submitted.activity.years,
+    },
+    sourcedBio: bio ? { ...bio, adoptedAt: adopted } : null,
+  };
+}
 
 /**
  * Put the workspace on the operator's desk.

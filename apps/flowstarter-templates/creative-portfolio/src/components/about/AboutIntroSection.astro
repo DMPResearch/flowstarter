@@ -1,6 +1,7 @@
 ---
 import ActionButton from '../design-system/ActionButton.astro';
 import SocialIcon from '../design-system/SocialIcon.astro';
+import { siteName } from '../../lib/site-data';
 
 interface Props {
   intro: {
@@ -17,13 +18,45 @@ const { intro } = Astro.props;
 // See AboutFreeTimeSection: no photo means no <img>, never src="".
 const introImage =
   typeof intro.imageSrc === 'string' ? intro.imageSrc.trim() : '';
+
+/**
+ * What goes in the portrait slot when there is no portrait.
+ *
+ * It used to be nothing: the media column rendered an empty grid cell, the
+ * page collapsed into a lopsided half, and a build once shipped with a box
+ * captioned "A photograph of me will follow here" because an agent tried to
+ * fill the hole with a sentence. Neither is a design.
+ *
+ * So the empty state is drawn instead of hidden. The client's own initials,
+ * set large in the heading face on a brand-tinted panel, is a monogram: it
+ * reads as a deliberate choice on a site that has not got a photograph yet
+ * rather than as a missing image. Nothing here is invented, because the only
+ * content is the name the client already gave us.
+ *
+ * The initials come from `siteName()` for the same reason the page title
+ * does: it is the one place the client's own name reaches the content layer,
+ * and a component that hardcoded anything else would be wrong on every
+ * personalized site.
+ */
+const MAX_MONOGRAM_LETTERS = 2;
+
+const monogram = siteName()
+  .split(/\s+/)
+  .filter(Boolean)
+  .slice(0, MAX_MONOGRAM_LETTERS)
+  .map((word) => word.charAt(0).toUpperCase())
+  .join('');
 ---
 
 <section class="about-intro-section container" data-zigzag-section>
   <div class="about-intro-section__media" data-zigzag-part="left">
     {introImage ? (
       <img src={introImage} alt={intro.imageAlt} loading="eager" />
-    ) : null}
+    ) : (
+      <div class="about-intro-section__monogram" aria-hidden="true">
+        <span>{monogram}</span>
+      </div>
+    )}
   </div>
   <div class="about-intro-section__content" data-zigzag-part="right">
     <h2 class="about-intro-section__heading">{intro.eyebrow}</h2>
@@ -58,6 +91,29 @@ const introImage =
     width: 100%;
     height: auto;
     object-fit: cover;
+  }
+
+  /*
+   * The no-portrait panel. Same footprint as the photograph it stands in for,
+   * so the zigzag rhythm of the page is unchanged whether a client sent a
+   * picture or not: an about page that reflows into one narrow column the
+   * moment a photo is missing looks broken rather than restrained.
+   */
+  .about-intro-section__monogram {
+    display: grid;
+    place-items: center;
+    aspect-ratio: 4 / 5;
+    width: 100%;
+    background: color-mix(in srgb, var(--brand-primary) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--bg-dark) 12%, transparent);
+  }
+
+  .about-intro-section__monogram span {
+    font-family: var(--font-heading, inherit);
+    font-size: clamp(4rem, 12vw, 9rem);
+    line-height: 1;
+    letter-spacing: 0.04em;
+    color: color-mix(in srgb, var(--brand-primary) 70%, var(--bg-dark));
   }
 
   .about-intro-section__heading {

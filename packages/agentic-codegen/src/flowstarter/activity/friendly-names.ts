@@ -200,6 +200,7 @@ const GATE_BY_CODE: Record<string, ActivitySubject> = {
   PAGE_BUDGET_EXCEEDED: 'gate.pages',
   PLACEHOLDER_COPY_SHIPPED: 'gate.copy',
   INVENTED_PROJECT: 'gate.copy',
+  PERSON_ABSENT: 'gate.copy',
   PLACEHOLDER_IMAGE_SHIPPED: 'gate.images',
   PORTRAIT_MISPLACED: 'gate.images',
   GENERATED_HTML_UNSAFE: 'gate.markup',

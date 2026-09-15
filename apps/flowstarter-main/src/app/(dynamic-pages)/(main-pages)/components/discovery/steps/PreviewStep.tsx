@@ -30,6 +30,7 @@ import {
 // growing its own, slightly different, version of the refusal.
 import type { PolicyNotice } from '@/lib/policy/copy';
 import { deriveBusinessName, withQuickDefaults } from '../quick-defaults';
+import { asksPersonQuestions, intakeSiteKind } from '../person-questions';
 import { usePreviewProgress } from '../usePreviewProgress';
 import { AgentActivityPanel } from '@/components/flowstarter/AgentActivityPanel';
 import { formatPreviewExpiry } from '@/components/flowstarter/site-link';
@@ -215,6 +216,33 @@ export function previewPayload(raw: DiscoveryData) {
     ...(data.pageCount ? { pageCount: data.pageCount } : {}),
     calComUrl: data.calComUrl,
     customIntegrations: data.customIntegrations,
+    // The funnel's own classification of who this site is about, so the
+    // route and the eventual brief never have to re-derive it from a
+    // shorter, evidence-poorer copy of the same text. Always sent: even a
+    // 'services' visitor's answer is useful downstream.
+    siteKind: intakeSiteKind(data),
+    // Only a visitor `asksPersonQuestions` classified as a person site was
+    // ever shown this block, so only they send a `person` key at all — a
+    // 'services' visitor must send no key, not an all-empty one, or the
+    // route would read "asked and skipped" for someone who was never asked.
+    ...(asksPersonQuestions(data)
+      ? {
+          person: {
+            personStory: data.personStory ?? '',
+            personHowIWork: data.personHowIWork ?? '',
+            personFeel: data.personFeel ?? '',
+            personProudest: data.personProudest ?? '',
+            personLinks: data.personLinks ?? '',
+            personLinksConsent: data.personLinksConsent ?? '',
+            personToneWords: data.personToneWords ?? '',
+            activityWhat: data.activityWhat ?? '',
+            activityWho: data.activityWho ?? '',
+            activityTypical: data.activityTypical ?? '',
+            activityKnownFor: data.activityKnownFor ?? '',
+            activityYears: data.activityYears ?? '',
+          },
+        }
+      : {}),
   };
 }
 
