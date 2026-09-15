@@ -47,7 +47,7 @@
  * somebody's actual sentences.
  */
 
-import { readableText } from './html-scan';
+import { readableTextFromMarkup } from './acceptable-use';
 import { hasPersonStory, personStoryText, type BriefPerson } from './person';
 import { siteKindFor } from './page-set';
 
@@ -171,21 +171,27 @@ const NOT_A_WORD_CHARACTER =
 /**
  * Visible words, with markup, entities and punctuation taken out.
  *
- * The markup half is `readableText` in `html-scan.ts` and not four
- * `.replace()` calls here, for reasons that are about this gate specifically
- * rather than about tidiness. It reads pages an agent wrote from a brief a
- * stranger typed, so `<script[\s\S]*?</script>` was two defects at once: it
- * does not close `</script >`, which means a page could be written that this
- * gate and a browser read differently, and its lazy quantifier is quadratic
- * in the number of `<script` openings on the page. The shared scanner is
- * linear and closes a tag the way the spec does.
+ * The markup half is `readableTextFromMarkup`, which is parse5, and it is the
+ * SAME reader the acceptable-use gate uses. That matters more than it looks:
+ * two gates reading one built page differently is the failure this whole
+ * family of bugs is made of, and a second hand-written stripper is a second
+ * opinion about what a page says.
  *
- * Entities are decoded rather than deleted, which is a behaviour change and
- * the right one: the old line replaced `&amp;` with a space, so a page saying
- * "Sam &amp; Co" and a brief saying "Sam & Co" did not match each other.
+ * The first version of this function was four `.replace()` calls, and CodeQL
+ * named all three defects #158 had already found in the stripper parse5
+ * replaced: `<script[\s\S]*?</script>` does not close `</script >`, so a page
+ * could be written that this gate and a browser read differently; its lazy
+ * quantifier is polynomial on a page full of `<script`, which is reachable
+ * from a built site; and deleting `&amp;` rather than decoding it meant a
+ * brief saying "Sam & Co" did not match a page saying `Sam &amp; Co`, so the
+ * gate would have failed a correct build over an ampersand.
+ *
+ * `html-scan.ts` still exists and is still the right tool for the other
+ * input: `template-effects.ts` scans `.astro` SOURCE, which is not a document
+ * parse5 can parse, and a scanner is the only honest way to read it.
  */
 export function visibleText(html: string): string {
-  return readableText(html)
+  return readableTextFromMarkup(html)
     .toLowerCase()
     .replace(NOT_A_WORD_CHARACTER, ' ')
     .replace(/\s+/g, ' ')

@@ -1,11 +1,24 @@
 /**
- * Reading HTML without a regular expression.
+ * Reading markup without a regular expression, where a parser will not do.
  *
- * Three gates in this package now read a built page: the invented-project
- * check, the person check, and the template-effects check. Every one of them
- * started with the same four lines, and every one of them was wrong in the
- * same two ways, which is why the scanning lives here once instead of three
- * times.
+ * WHEN NOT TO USE THIS. If the input is a built HTML page, use
+ * `readableTextFromMarkup` in `acceptable-use.ts` instead: it is parse5, it
+ * decodes references exactly once per the spec, it decides where a script
+ * ends the way a browser does, and it is already what the acceptable-use and
+ * person gates read a page with. Two readers over one page is how two gates
+ * come to disagree about what a page says, which is the whole family of bugs
+ * this file's header is about.
+ *
+ * This module is for the input parse5 cannot take: `.astro` SOURCE.
+ * `template-effects.ts` reads component files with frontmatter fences and
+ * template expressions in them, which are not a document, and a scanner is
+ * the only honest way to find a `<style>` block in one. `person-source.ts`
+ * uses it too, because it lives in flowstarter-main and that app does not
+ * carry a parse5 dependency; the reading it does is a paragraph extraction
+ * off a remote page rather than a gate two other gates must agree with.
+ *
+ * Whatever the input, the three defects below are the ones being avoided, and
+ * they are the same three CodeQL named on #158 and again on #196.
  *
  * **`<script[\s\S]*?</script>` does not close a script tag.** A browser closes
  * `</script >` and that pattern does not, so a gate using it reads whatever
@@ -216,9 +229,10 @@ export function decodeHtmlEntities(text: string): string {
  * What a reader sees: scripts and styles gone, tags gone, references
  * resolved, whitespace collapsed.
  *
- * The one function every gate in this package should call, so that "what the
- * page says" has a single definition and two gates can never disagree about
- * whether a sentence is on a page.
+ * For a built HTML page prefer `readableTextFromMarkup` in
+ * `acceptable-use.ts`, which is parse5 and is what the gates use. This is the
+ * scanner's equivalent, for a caller that cannot take that dependency or is
+ * not reading a document.
  */
 export function readableText(html: string): string {
   return decodeHtmlEntities(
