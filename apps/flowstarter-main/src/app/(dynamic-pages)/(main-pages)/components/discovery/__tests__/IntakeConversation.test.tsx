@@ -80,19 +80,37 @@ async function say(user: User, text: string) {
 }
 
 /**
- * Declines the connect-photo offer, which is the fifth and only optional turn
- * of the quick conversation and the last thing between the visitor and the
- * preview. A panel, so there is no composer to type into: the way past it is
- * the skip, and that it is one tap is the point of the question being
- * optional at all. `ConnectPortrait.test.tsx` covers the panel itself.
+ * Declines everything the conversation offers after the four required
+ * questions: the connect-photo panel, and the person block when the visitor
+ * is somebody the rule reads as being the business themselves.
+ *
+ * Clicks Skip until there is no Skip left, rather than counting the turns.
+ * Counting would make this helper a second copy of the friction rule, and
+ * `intake-friction.test.ts` is where that rule is asserted; what these tests
+ * care about is that declining everything optional still reaches the preview,
+ * which is the entire promise of the word "optional".
+ *
+ * `findByRole` for the first one, because the panel arrives asynchronously;
+ * `queryByRole` after that, because "there is no Skip any more" has to be
+ * observable rather than a four-second timeout. `ConnectPortrait.test.tsx`
+ * covers the panel itself.
  */
 async function skipConnect(user: User) {
-  await user.click(
-    await screen.findByRole('button', {
-      name: t('landing.discovery.chat.skip'),
-    })
-  );
+  const label = t('landing.discovery.chat.skip');
+  await user.click(await screen.findByRole('button', { name: label }));
+  for (let guard = 0; guard < MAX_OPTIONAL_TURNS; guard += 1) {
+    const skip = screen.queryByRole('button', { name: label });
+    if (!skip) return;
+    await user.click(skip);
+  }
 }
+
+/**
+ * A ceiling on the loop above, so a rule that never stops offering a skip
+ * fails as a test rather than hanging the suite. Not a product number: the
+ * product number is `PERSON_BLOCK_SKIP_LIMIT` in `person-questions.ts`.
+ */
+const MAX_OPTIONAL_TURNS = 12;
 
 beforeEach(() => {
   window.sessionStorage.clear();

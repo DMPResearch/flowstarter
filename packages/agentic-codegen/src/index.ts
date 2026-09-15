@@ -112,6 +112,8 @@ export * from './flowstarter/placeholder-images';
 export * from './flowstarter/seed-placeholders';
 export * from './flowstarter/portrait-slot';
 export * from './flowstarter/invented-project';
+export * from './flowstarter/person';
+export * from './flowstarter/person-absent';
 export * from './flowstarter/theme-tokens';
 export * from './flowstarter/brief-input';
 export * from './flowstarter/site-export';

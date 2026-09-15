@@ -50,6 +50,7 @@ export function scriptedAsk(
   data: DiscoveryData,
   t: Translate
 ): IntakeGraphAsk {
+  const note = standingNote(question.id, t);
   return {
     type: question.kind === 'panel' ? 'panel' : 'ask',
     questionId: question.id,
@@ -63,7 +64,37 @@ export function scriptedAsk(
       value: option.value,
       label: optionLabel(option, t),
     })),
+    ...(note ? { note } : {}),
   };
+}
+
+/**
+ * The two lines the conversation says once, attached to the question they are
+ * about rather than sent as a message of their own.
+ *
+ * A turn that is only an explanation is a turn the visitor has to dismiss, so
+ * neither of these is one: the "these next questions are about you" line rides
+ * on the first person question, and the sentence about what we do with a
+ * profile link rides on the question that asks for one. Both are in the
+ * catalogue, so both are in the visitor's language.
+ *
+ * Keyed by question id rather than by position, because the person block's
+ * first question is not always `personStory`: the selection rule drops any
+ * question the visitor has already answered elsewhere, and a note pinned to a
+ * position would then land on the wrong turn or on none.
+ */
+const STANDING_NOTES: Readonly<Record<string, string>> = {
+  personStory: 'landing.discovery.chat.person.intro',
+  personLinks: 'landing.discovery.chat.person.sourcing',
+};
+
+function standingNote(questionId: string, t: Translate): string | undefined {
+  const key = STANDING_NOTES[questionId];
+  if (!key) return undefined;
+  const text = t(key);
+  // A catalogue miss returns the key itself. Saying a dotted key out loud to
+  // a visitor is worse than saying nothing.
+  return text && text !== key ? text : undefined;
 }
 
 /** Compact catalogue the model may fill from one visitor turn. */

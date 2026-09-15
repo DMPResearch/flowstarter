@@ -53,6 +53,7 @@ import {
   OPERATOR_EDIT_INVALID_STATE,
   OPERATOR_EDIT_MANIFEST_MISSING,
   PAGE_BUDGET_EXCEEDED,
+  PERSON_ABSENT,
   PLACEHOLDER_COPY_SHIPPED,
   PLACEHOLDER_IMAGE_SHIPPED,
   SITE_DEPLOY_FAILED,
@@ -87,6 +88,12 @@ export const TERMINAL_BUILD_FAILURE_CODES: ReadonlySet<string> = new Set([
   GENERATED_HTML_UNSAFE,
   INVENTED_PROJECT,
   PAGE_BUDGET_EXCEEDED,
+  // Both halves of the gate are terminal, and for opposite reasons. When the
+  // site failed to carry material the brief had, one repair pass has already
+  // run inside the build and a second attempt would repeat it. When the brief
+  // had nothing to carry, no attempt can invent it: the job waits with the
+  // ask, which is the point.
+  PERSON_ABSENT,
   PLACEHOLDER_COPY_SHIPPED,
   PLACEHOLDER_IMAGE_SHIPPED,
   TEASER_IN_PAID_BUILD,

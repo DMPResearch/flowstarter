@@ -59,6 +59,14 @@ import type {
   ScrapeCorpus,
   SiteValidator,
 } from '@flowstarter/agentic-codegen';
+import {
+  PERSON_FIELD_CAPS,
+  MAX_PERSON_LINKS,
+  MAX_TONE_WORDS,
+  parsePerson,
+  type BriefPerson,
+  type PersonLinkKind,
+} from '@flowstarter/agentic-codegen/src/flowstarter/person';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -85,6 +93,44 @@ const BriefPaletteSchema = z.object({
 const BriefToneSchema = z.object({
   adjectives: z.array(z.string().max(24)).max(3),
   voice: z.string().max(200),
+});
+
+/**
+ * A raw, comma-joined answer bounds itself by how many things it could ever
+ * hold: at most `MAX_PERSON_LINKS` pasted URLs, each no longer than a stored
+ * link, with two characters of slack per entry for the comma and the space a
+ * visitor types between them.
+ */
+const PERSON_LINKS_RAW_CAP = MAX_PERSON_LINKS * (PERSON_FIELD_CAPS.linkUrl + 2);
+/** Same reasoning, for the raw "warm, precise, playful" tone-word answer. */
+const PERSON_TONE_WORDS_RAW_CAP =
+  MAX_TONE_WORDS * (PERSON_FIELD_CAPS.toneWord + 2);
+
+/**
+ * The person block, as the wizard's `person-questions.ts` collects it.
+ *
+ * Every field is optional and left unsanitised beyond a length cap: this is
+ * the wire shape, not the stored shape. `buildPiEvidence` runs the whole
+ * section through `parsePerson` — the one parser the brief and the build
+ * worker also use — rather than repeating its rules here, so a cap or a link
+ * rule can only ever drift in one place.
+ */
+const PersonSpecSchema = z.object({
+  personStory: z.string().max(PERSON_FIELD_CAPS.story).optional(),
+  personHowIWork: z.string().max(PERSON_FIELD_CAPS.howIWork).optional(),
+  personFeel: z.string().max(PERSON_FIELD_CAPS.feel).optional(),
+  personProudest: z.string().max(PERSON_FIELD_CAPS.proudestWork).optional(),
+  personLinks: z.string().max(PERSON_LINKS_RAW_CAP).optional(),
+  personLinksConsent: z.enum(['yes', 'no', '']).optional(),
+  personToneWords: z.string().max(PERSON_TONE_WORDS_RAW_CAP).optional(),
+  activityWhat: z.string().max(PERSON_FIELD_CAPS.activityWhat).optional(),
+  activityWho: z.string().max(PERSON_FIELD_CAPS.activityWho).optional(),
+  activityTypical: z.string().max(PERSON_FIELD_CAPS.activityTypical).optional(),
+  activityKnownFor: z
+    .string()
+    .max(PERSON_FIELD_CAPS.activityKnownFor)
+    .optional(),
+  activityYears: z.string().max(PERSON_FIELD_CAPS.activityYears).optional(),
 });
 
 const SpecSchema = z.object({
@@ -164,6 +210,24 @@ const SpecSchema = z.object({
    * language instead of always falling back to English.
    */
   locale: z.enum(['en', 'ro']).optional().default('en'),
+  /**
+   * The person block, sent only when `asksPersonQuestions` decided this
+   * visitor's site is about them. Absent means the funnel never asked, not
+   * that they were asked and answered nothing — see `buildPiEvidence` below,
+   * which is the one place that distinction is preserved onto the evidence.
+   */
+  person: PersonSpecSchema.optional(),
+  /**
+   * The funnel's own classification of who this site is about
+   * (`intakeSiteKind` in `person-questions.ts`). Carried through rather than
+   * re-derived from `industry`/`description` alone here, because
+   * `visitorIsTheBusiness` reads signals — the business name matching the
+   * visitor's own name, a lone personal profile link — that this route's
+   * evidence never otherwise sees. The brief-build side re-derives its own
+   * copy of this from the stored intake rather than trusting this value
+   * verbatim; see `carriedIntakeFields` in `brief-build-input.ts`.
+   */
+  siteKind: z.enum(['portfolio', 'services']).optional(),
 });
 
 /**
@@ -263,6 +327,121 @@ const GLM_53_FLASH = {
   thinkingLevelMap: { xhigh: 'xhigh' },
 } as const;
 
+/**
+ * Which kind of profile a pasted URL is, for `BriefPerson.links`.
+ *
+ * Only three platforms are named; anything else is the person's own site,
+ * which is what `PERSON_LINK_KINDS` in `person.ts` documents ("anything else
+ * is their own site"). `parsePerson`'s own `safeLinks` still does the real
+ * validation — scheme, credentials, dedupe by kind, the `MAX_PERSON_LINKS`
+ * cap — this only decides which of the four kinds a URL is.
+ */
+function personLinkKindFromUrl(url: URL): PersonLinkKind {
+  const host = url.hostname.toLowerCase().replace(/^www\./, '');
+  if (host === 'linkedin.com' || host.endsWith('.linkedin.com'))
+    return 'linkedin';
+  if (host === 'instagram.com' || host.endsWith('.instagram.com'))
+    return 'instagram';
+  if (host === 'github.com' || host.endsWith('.github.com')) return 'github';
+  return 'website';
+}
+
+/**
+ * The person section of the Pi evidence, or `undefined` when the funnel
+ * never asked.
+ *
+ * `undefined` here, not an empty object: the spec carrying no `person` key at
+ * all means nobody was ever asked, and `BusinessIntakePayload.person`'s own
+ * contract is that absence and an asked-and-skipped answer must never read
+ * the same. Every value that IS present is handed to `parsePerson` — the same
+ * parser the brief and the build worker use — rather than re-sanitised here,
+ * so a cap or a link rule can only ever be changed in one place.
+ */
+function personEvidence(
+  spec: z.infer<typeof SpecSchema>
+): BriefPerson | undefined {
+  const person = spec.person;
+  if (!person) return undefined;
+
+  // Consent is asked once, for the whole offered set of profiles: the ones
+  // pasted into the person block's own links question, and the ones already
+  // given at the quick intake's links question. Splitting consent per link
+  // would ask the same visitor the same question twice in two different
+  // places on the form.
+  const consented = person.personLinksConsent === 'yes';
+  const linkCandidates: Array<{
+    kind: PersonLinkKind;
+    url: string;
+    consented: boolean;
+  }> = [];
+  for (const raw of (person.personLinks ?? '').split(',')) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    try {
+      linkCandidates.push({
+        kind: personLinkKindFromUrl(new URL(trimmed)),
+        url: trimmed,
+        consented,
+      });
+    } catch {
+      // Not a URL at all. `parsePerson` would drop it too; it is simply
+      // never a candidate.
+    }
+  }
+  // The quick intake's own one-link answers count as offered profiles too —
+  // a visitor who pasted their Instagram at step 2 should not have to paste
+  // it again at the person block to have it read.
+  if (spec.instagramUrl.trim()) {
+    linkCandidates.push({
+      kind: 'instagram',
+      url: spec.instagramUrl.trim(),
+      consented,
+    });
+  }
+  if (spec.linkedinUrl.trim()) {
+    linkCandidates.push({
+      kind: 'linkedin',
+      url: spec.linkedinUrl.trim(),
+      consented,
+    });
+  }
+  if (spec.websiteUrl.trim()) {
+    linkCandidates.push({
+      kind: 'website',
+      url: spec.websiteUrl.trim(),
+      consented,
+    });
+  }
+
+  return (
+    parsePerson({
+      // The spec's own full name, when it gave one. `BriefPerson.name`'s own
+      // contract is that this is the default business name for a personal
+      // portfolio, so it is read from `fullName`, never from `businessName`.
+      name: spec.fullName.trim(),
+      headline: '',
+      story: person.personStory ?? '',
+      howIWork: person.personHowIWork ?? '',
+      values: '',
+      feel: person.personFeel ?? '',
+      toneWords: (person.personToneWords ?? '')
+        .split(',')
+        .map((word) => word.trim())
+        .filter(Boolean),
+      links: linkCandidates,
+      proudestWork: person.personProudest ?? '',
+      activity: {
+        what: person.activityWhat ?? '',
+        who: person.activityWho ?? '',
+        typical: person.activityTypical ?? '',
+        knownFor: person.activityKnownFor ?? '',
+        years: person.activityYears ?? '',
+      },
+      sourcedBio: null,
+    }) ?? undefined
+  );
+}
+
 function buildPiEvidence(
   demoId: string,
   spec: z.infer<typeof SpecSchema>
@@ -290,6 +469,10 @@ function buildPiEvidence(
     tone: spec.tone
       ? { adjectives: spec.tone.adjectives, voice: spec.tone.voice }
       : undefined,
+    // Set only when the spec carried a `person` key at all — see
+    // `personEvidence`'s own doc comment for why `undefined` here is load
+    // bearing and must never collapse into an empty object.
+    person: personEvidence(spec),
     socialMedia: targets,
     locale: 'en',
     submittedAt,
@@ -303,6 +486,31 @@ function buildPiEvidence(
       acceptedAt: targets.length > 0 ? submittedAt : '',
     },
   };
+  // The person block's own answers, in the client's words, added to the same
+  // document the brand/tone derivation already reads. Unlike the fields
+  // above, an empty answer here is skipped rather than printed as "Not
+  // provided": those lines are asked of everyone and a placeholder for each
+  // is honest, but the person block is optional and most of the twelve
+  // fields are unanswered on any given visitor, so ten "Not provided" lines
+  // would drown out the ones they actually wrote.
+  const personCorpusLines: string[] = [];
+  if (spec.person) {
+    const person = spec.person;
+    const addIfPresent = (label: string, value: string | undefined) => {
+      if (value?.trim()) personCorpusLines.push(`${label}: ${value.trim()}`);
+    };
+    addIfPresent('Who they are', person.personStory);
+    addIfPresent('How they work', person.personHowIWork);
+    addIfPresent('What a visitor should feel', person.personFeel);
+    addIfPresent('The work they are proudest of', person.personProudest);
+    addIfPresent('Tone words they chose', person.personToneWords);
+    addIfPresent('What they do', person.activityWhat);
+    addIfPresent('Who they do it for', person.activityWho);
+    addIfPresent('A typical engagement', person.activityTypical);
+    addIfPresent('What they are known for', person.activityKnownFor);
+    addIfPresent('How long they have done it', person.activityYears);
+  }
+
   const corpus: ScrapeCorpus = {
     projectId: demoId,
     completedAt: submittedAt,
@@ -320,6 +528,7 @@ function buildPiEvidence(
           `Goal: ${spec.goal.trim() || 'Not provided'}`,
           `Desired tone: ${spec.brandTone.trim() || 'Not provided'}`,
           `Derived voice: ${spec.tone?.voice?.trim() || 'Not provided'}`,
+          ...personCorpusLines,
         ].join('\n'),
       },
     ],

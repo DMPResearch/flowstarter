@@ -67,9 +67,17 @@ async function say(user: User, text: string) {
 }
 
 /**
- * The four required quick questions, plus the two one-tap turns that hang off
- * the links answer: "is this your own site?" (PR #155, asked because the answer
- * below includes a website) and the optional connect-photo offer.
+ * The four required quick questions, plus every optional turn that hangs off
+ * the links answer: "is this your own site?" (PR #155, asked because the
+ * answer below includes a website), the connect-photo offer, and the person
+ * block, which this visitor is offered because she named no business and is
+ * therefore read as being the business.
+ *
+ * The optional tail is skipped by clicking Skip until there is nothing left
+ * to skip, rather than by counting the turns. Counting would make this helper
+ * a second copy of the friction rule, and `intake-friction.test.ts` is where
+ * that rule is asserted; here the only thing that matters is reaching the
+ * preview, which every optional question is required to allow.
  */
 async function walkTheQuickIntake(user: User) {
   await say(user, 'Sarah Smith');
@@ -80,12 +88,34 @@ async function walkTheQuickIntake(user: User) {
   );
   await say(user, 'https://acme.example.com');
   await say(user, 'No');
-  await user.click(
-    await screen.findByRole('button', {
-      name: t('landing.discovery.chat.skip'),
-    })
-  );
+  await skipTheRest(user);
 }
+
+/**
+ * Clicks Skip until the conversation stops offering it.
+ *
+ * Bounded, so a rule that never stops offering a skip fails as a test rather
+ * than hanging the suite. `findByRole` waits; `queryByRole` does not, which is
+ * what makes "there is no Skip any more" observable instead of a timeout.
+ */
+async function skipTheRest(user: User) {
+  const label = t('landing.discovery.chat.skip');
+  for (let guard = 0; guard < MAX_OPTIONAL_TURNS; guard += 1) {
+    const skip =
+      guard === 0
+        ? await screen.findByRole('button', { name: label })
+        : screen.queryByRole('button', { name: label });
+    if (!skip) return;
+    await user.click(skip);
+  }
+}
+
+/**
+ * A ceiling on the optional tail, for the loop above only. Not a product
+ * number: the product number is `PERSON_BLOCK_SKIP_LIMIT`, and it lives in
+ * `person-questions.ts` where the rule is.
+ */
+const MAX_OPTIONAL_TURNS = 12;
 
 function renderWizard() {
   render(

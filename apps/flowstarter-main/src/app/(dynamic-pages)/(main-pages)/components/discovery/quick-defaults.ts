@@ -244,6 +244,30 @@ export type QuickBusinessNameAnswers = Pick<
 >;
 
 /**
+ * Names this rule will never derive, however plausibly a string suggests one.
+ *
+ * This product's own name is on the list because of the incident this change
+ * exists to fix: a portfolio shipped under the name "Flowstarter", which is
+ * us, not the client. It got there through `businessNameFromDescription`, out
+ * of a visitor who described their work by mentioning the tool they build
+ * with, and nothing anywhere asked whether the name a rule had just extracted
+ * was our own.
+ *
+ * A client who genuinely trades under one of these may still type it into the
+ * brief's business-name field, and it is honoured: this list rejects DERIVED
+ * names only. A rule guessing our own name onto a client's site is never
+ * right; a client asserting it might be.
+ */
+export const UNDERIVABLE_BUSINESS_NAMES: readonly string[] = ['flowstarter'];
+
+/** True when a derived candidate is one this rule refuses to produce. */
+export function isUnderivableBusinessName(candidate: string): boolean {
+  return UNDERIVABLE_BUSINESS_NAMES.includes(
+    candidate.trim().toLowerCase().replace(/\s+/g, ' ')
+  );
+}
+
+/**
  * A business name from the quick answers, for the one consumer that cannot
  * work without one: a generated site has to be introduced as *something*. The
  * quick intake stopped asking for a business name directly (it moved to the
@@ -287,17 +311,65 @@ export function deriveBusinessName(answers: QuickBusinessNameAnswers): string {
   const briefName = answers.businessName?.trim();
   if (briefName) return briefName;
 
+  const personName = (answers.fullName ?? '').trim();
+
   const fromDescription = businessNameFromDescription(
     answers.description ?? ''
   );
-  if (fromDescription) return fromDescription;
+  // Step 2, with the guard that was missing. A name extracted from a sentence
+  // is a guess, and a guess that lands on this product's own name is one we
+  // would rather not make at all: the client's own name is both truer and
+  // safer than putting our brand on their website.
+  if (fromDescription && !isUnderivableBusinessName(fromDescription)) {
+    return fromDescription;
+  }
+
+  // Step 3, but only for a business that is not simply a person. For a
+  // one-person portfolio the business IS the person, so their own name
+  // outranks a hostname: "Darius Mihai" beats "Dmpresearch", which is a
+  // subdomain their preview happens to sit on rather than anything they
+  // trade under. `visitorIsTheBusiness` in `person-questions.ts` is defined
+  // as "this rule landed on their own name", so the intake's question set and
+  // the site's name are decided by one reading rather than two that can
+  // disagree.
+  const personal = personalSiteAnswers(answers);
+
+  if (!personal && answers.websiteIsOwnSite === 'yes') {
+    const fromWebsite = businessNameFromHostname(answers.websiteUrl ?? '');
+    if (fromWebsite && !isUnderivableBusinessName(fromWebsite)) {
+      return fromWebsite;
+    }
+  }
+
+  if (personal && personName) return personName;
 
   if (answers.websiteIsOwnSite === 'yes') {
     const fromWebsite = businessNameFromHostname(answers.websiteUrl ?? '');
-    if (fromWebsite) return fromWebsite;
+    if (fromWebsite && !isUnderivableBusinessName(fromWebsite)) {
+      return fromWebsite;
+    }
   }
 
-  return (answers.fullName ?? '').trim();
+  return personName;
+}
+
+/**
+ * Whether these answers describe a person rather than a company.
+ *
+ * A local reading rather than a call into `person-questions.ts`, and
+ * deliberately so: that module imports the codegen package's site-kind
+ * classifier, this one is imported by the wizard's own client components, and
+ * a cycle between the two would be paid for on every page load. The rule is
+ * the narrow half of `visitorIsTheBusiness` -- no business name given, and no
+ * website they have claimed as their own -- which is exactly the condition
+ * under which a hostname is the wrong thing to name somebody after.
+ */
+function personalSiteAnswers(answers: QuickBusinessNameAnswers): boolean {
+  if ((answers.businessName ?? '').trim()) return false;
+  const ownSite =
+    (answers.websiteUrl ?? '').trim() && answers.websiteIsOwnSite === 'yes';
+  if (ownSite) return false;
+  return Boolean((answers.fullName ?? '').trim());
 }
 
 /**

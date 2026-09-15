@@ -2483,6 +2483,61 @@ const en = {
     'instagram.com/yourbusiness, linkedin.com/in/you, yoursite.com',
   'landing.discovery.chat.q.websiteIsOwnSite.prompt':
     'Quick check: is that site yours? If it is, I will use its name for the business; if it is a reference, I will leave it out of the name.',
+
+  // ─── The person block: asked only when the site is about one person ──────
+  //
+  // `person-questions.ts` decides when these run; this file only supplies
+  // the words. `person.intro` is said once, before the first question below;
+  // `person.sourcing` is the plain-words consent for what happens with
+  // `personLinks`, an answer to which is a yes to reading those pages, never
+  // a yes to publishing from them unseen.
+  'landing.discovery.chat.person.intro':
+    "A few questions about you now, not the business. Every one is optional, skip whatever you'd rather not answer, and this is what keeps your site from sounding like everyone else's.",
+  'landing.discovery.chat.person.sourcing':
+    "Anything I read off your public pages, I'll show you first. Nothing goes on the site without your yes.",
+  'landing.discovery.chat.q.personStory.prompt':
+    "Now something about you, not just the business: who are you, in a sentence or two? This becomes your about page, and I'll quote you here rather than rewrite you.",
+  'landing.discovery.chat.q.personStory.placeholder':
+    "I started out fixing bikes in my dad's garage, and I still love a good repair.",
+  'landing.discovery.chat.q.personHowIWork.prompt':
+    "How do you work, and what do you stand for? Tell me the way you'd tell a new client.",
+  'landing.discovery.chat.q.personHowIWork.placeholder':
+    "I answer my own emails, I never rush a first meeting, and I'd rather say no than do a rushed job.",
+  'landing.discovery.chat.q.personFeel.prompt':
+    'When someone lands on your site, what do you want them to feel?',
+  'landing.discovery.chat.q.personFeel.placeholder':
+    'Like they just met someone who knows exactly what they are doing.',
+  'landing.discovery.chat.q.personProudest.prompt':
+    "What's the work you're proudest of, and why?",
+  'landing.discovery.chat.q.personProudest.placeholder':
+    "A kitchen renovation for a family who'd been saving for years, because I got to watch them use it.",
+  'landing.discovery.chat.q.personLinks.prompt':
+    "One more, and it's entirely optional: your LinkedIn, Instagram, GitHub or your own site. If you give me these, I'll read the public pages and suggest a short bio and a photo, you'll see both and approve them before anything is published, and skipping is completely fine.",
+  'landing.discovery.chat.q.personLinks.placeholder':
+    'linkedin.com/in/you, instagram.com/you, yoursite.com',
+  'landing.discovery.chat.q.personToneWords.prompt':
+    'Pick three words the writing should hit, or add your own.',
+  'landing.discovery.chat.q.personToneWords.placeholder':
+    'Add a word of your own…',
+  'landing.discovery.chat.q.activityWhat.prompt':
+    "What do you actually do, in the words you'd use if someone asked you at a party?",
+  'landing.discovery.chat.q.activityWhat.placeholder':
+    'I build custom furniture, mostly tables and shelving, all from reclaimed wood.',
+  'landing.discovery.chat.q.activityWho.prompt': 'Who do you do it for?',
+  'landing.discovery.chat.q.activityWho.placeholder':
+    'Young families renovating their first home.',
+  'landing.discovery.chat.q.activityTypical.prompt':
+    'What does a typical project, engagement or day look like?',
+  'landing.discovery.chat.q.activityTypical.placeholder':
+    'A first call to understand what you need, a plan within a week, then a few weeks of work.',
+  'landing.discovery.chat.q.activityKnownFor.prompt':
+    'What do people ask you for most, or what are you known for?',
+  'landing.discovery.chat.q.activityKnownFor.placeholder':
+    'Turning around a full project in under a month.',
+  'landing.discovery.chat.q.activityYears.prompt':
+    'How long have you been doing this?',
+  'landing.discovery.chat.q.activityYears.placeholder': 'About eight years.',
+
   'landing.discovery.chat.q.goal.prompt':
     'What should the site actually do for you? Pick as many as fit, or add your own.',
   'landing.discovery.chat.q.goal.placeholder':
@@ -2545,6 +2600,53 @@ const en = {
     "Good to know. I'll take the business name from that site.",
   'landing.discovery.chat.q.websiteIsOwnSite.reflect.no':
     "Noted, that one is a reference, not yours. I'll name the business from what you told me instead.",
+
+  // ─── The person block's reflections ────────────────────────────────────
+  'landing.discovery.chat.q.personStory.reflect':
+    '"{quote}." That\'s what your about page will say, in your own words.',
+  'landing.discovery.chat.q.personStory.reflect.skipped':
+    "No story yet, that's fine. I'll keep the about page short and let your work speak for itself.",
+  'landing.discovery.chat.q.personHowIWork.reflect':
+    '"{quote}." That\'s the promise the site will make on your behalf.',
+  'landing.discovery.chat.q.personHowIWork.reflect.skipped':
+    "Fair enough, I'll let the rest of what you've told me carry that instead.",
+  'landing.discovery.chat.q.personFeel.reflect':
+    '{answer}. Every line on the site will aim for that feeling.',
+  'landing.discovery.chat.q.personFeel.reflect.skipped':
+    "That works too, I'll aim for warm and capable unless you tell me otherwise.",
+  'landing.discovery.chat.q.personProudest.reflect':
+    '"{quote}." That\'s the story I\'ll lead with.',
+  'landing.discovery.chat.q.personProudest.reflect.skipped':
+    "That's alright, I'll pick from what you've already told me about your work.",
+  'landing.discovery.chat.q.personLinks.reflect':
+    "Thanks, I'll read those and bring back a short bio and a photo for you to look at. Nothing goes on the site before you say yes.",
+  'landing.discovery.chat.q.personLinks.reflect.skipped':
+    "Skipping is fine, I'll write your bio from your own words instead.",
+  'landing.discovery.chat.q.personToneWords.reflect':
+    "{list}: that's the voice I'll write your part of the site in.",
+  'landing.discovery.chat.q.personToneWords.reflect.skipped':
+    "No words picked, that's fine, I'll take the tone from how you've described yourself.",
+  'landing.discovery.chat.q.activityWhat.reflect':
+    '"{quote}." That\'s how the site will describe what you do.',
+  'landing.discovery.chat.q.activityWhat.reflect.skipped':
+    "Understood, I'll go by what you've already told me about the business.",
+  'landing.discovery.chat.q.activityWho.reflect':
+    "So you work with {answer}. I'll write every page with them in mind.",
+  'landing.discovery.chat.q.activityWho.reflect.skipped':
+    "Fine, I'll write for the audience you've already described.",
+  'landing.discovery.chat.q.activityTypical.reflect':
+    '"{quote}." That\'s the process I\'ll put on the site.',
+  'landing.discovery.chat.q.activityTypical.reflect.skipped':
+    "Nothing to add, I'll keep the process general for now.",
+  'landing.discovery.chat.q.activityKnownFor.reflect':
+    "{answer}, noted. That's what I'll lead with.",
+  'landing.discovery.chat.q.activityKnownFor.reflect.skipped':
+    "That's fine, I'll leave that unclaimed and let the work speak for itself.",
+  'landing.discovery.chat.q.activityYears.reflect':
+    "{answer}. I'll mention that where it earns you trust, not everywhere.",
+  'landing.discovery.chat.q.activityYears.reflect.skipped':
+    "Leave it blank if you like, I'll skip mentioning your experience for now.",
+
   'landing.discovery.chat.q.goal.reflect':
     'So its job is to {list}. That decides what goes above the fold.',
   'landing.discovery.chat.q.brandTone.reflect':

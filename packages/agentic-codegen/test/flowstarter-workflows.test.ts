@@ -981,6 +981,7 @@ describe('Flowstarter preview-to-build orchestration', () => {
       'Checking the build',
       'Checking the site matches the brief',
       'Checking for placeholder copy',
+      'Checking the site carries the person',
       'Checking for placeholder images',
       'Checking what the site asks the browser to do',
       'Checking the template’s effects survived',
@@ -2920,6 +2921,9 @@ describe('CHANGE_REQUEST_BUILD: the paid change that used to ship nothing', () =
       designReferences: [],
       photos: [],
       portrait: null,
+      // Never asked: this fixture predates the person section and the
+      // PERSON_ABSENT gate must stay silent for it.
+      person: null,
     };
   }
 
@@ -4236,6 +4240,9 @@ describe('the in-depth brief reaches generation', () => {
         width: 1600,
         height: 1600,
       },
+      // Never asked. This fixture predates the person section, and the
+      // PERSON_ABSENT gate has to stay silent for a brief in that state.
+      person: null,
     };
   }
 

@@ -70,6 +70,10 @@ function brief(overrides: Partial<BriefView> = {}): BriefView {
     overrideAt: null,
     // The shape a brief has until the client touches the page-count control.
     pageCount: null,
+    // The shape a brief has until the client is ever asked -- most fixtures
+    // here are pre-person-block briefs, and `null` is the value that means
+    // that.
+    person: null,
     ...overrides,
   };
 }

@@ -45,6 +45,11 @@ function brief(overrides: Partial<BriefView> = {}): BriefView {
     // Null until the client touches the page-count control; the derived value
     // is what they are shown until then.
     pageCount: null,
+    // Never asked. Every assertion in this file is about a brief whose intake
+    // predates the person section, which is also the state that keeps the
+    // "About you" section off the form entirely; the tests that do exercise
+    // it live in `brief-form-person.test.tsx` and pass their own object.
+    person: null,
     ...overrides,
   };
 }

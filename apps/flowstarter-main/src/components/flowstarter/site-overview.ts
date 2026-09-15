@@ -151,6 +151,8 @@ const BRIEF_SUBJECTS: Record<BriefMissingCode, string> = {
   brief_photos_missing: 'photos for your site',
   brief_portrait_missing: 'a portrait of you',
   brief_design_reference_missing: 'a site you like the look of',
+  brief_person_missing: 'something of you, in words or a photo',
+  brief_activity_missing: 'what you actually do',
 };
 
 /** The five things a complete brief has; `completeness` is the share of them. */

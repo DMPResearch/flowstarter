@@ -1,3 +1,5 @@
+import type { BriefPerson } from './person';
+
 export enum ProjectState {
   INTAKE = 'INTAKE',
   PREVIEW_READY = 'PREVIEW_READY',
@@ -60,6 +62,14 @@ export interface BusinessIntakePayload {
   palette?: BriefPalette;
   /** Three adjectives and a one-line voice note. */
   tone?: BriefTone;
+  /**
+   * Who the client is and what they actually do, in their own words.
+   *
+   * Absent means nobody was ever asked, which is every workspace taken
+   * before the person section existed. Present and empty means they were
+   * asked and skipped, which is a different answer and a stricter input.
+   */
+  person?: BriefPerson;
 }
 
 /**

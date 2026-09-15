@@ -35,7 +35,15 @@ import {
   type BriefInputAsset,
   type BriefInputProject,
 } from '@flowstarter/agentic-codegen/src/flowstarter/brief-input';
-import { resolvePageCountAnswer } from '@flowstarter/agentic-codegen/src/flowstarter/page-set';
+import {
+  resolvePageCountAnswer,
+  siteKindFor,
+  type SiteKind,
+} from '@flowstarter/agentic-codegen/src/flowstarter/page-set';
+import {
+  parsePerson,
+  type BriefPerson,
+} from '@flowstarter/agentic-codegen/src/flowstarter/person';
 import type { BriefTone } from '@flowstarter/agentic-codegen/src/flowstarter/types';
 import { withTenant } from '@/lib/tenancy';
 import { createSupabaseServiceRoleClient } from '@/supabase-clients/server';
@@ -104,6 +112,14 @@ export interface ComposeBriefInputArgs {
   pageCount?: string | null;
   /** The funnel's derived tone, when the workspace has one. */
   tone?: BriefTone | null;
+  /**
+   * The person section as the FUNNEL collected it, carried the same way
+   * `pageCount` and `tone` are: as a fallback for when the brief row has
+   * none of its own. `composeBriefInput` prefers `brief.person` over this
+   * whenever the brief has one — the client edited and approved it on the
+   * dashboard, which makes it the newer and more trusted of the two.
+   */
+  intakePerson?: BriefPerson | null;
   now?: Date;
 }
 
@@ -182,6 +198,14 @@ export function composeBriefInput(args: ComposeBriefInputArgs): BriefInput {
       intakePageCount: args.pageCount,
     }),
     ...(args.tone ? { tone: args.tone } : {}),
+    // The brief's own person section wins whenever it has one: the client
+    // wrote and approved it on the dashboard, after seeing the preview,
+    // which makes it the same kind of "later and more trusted" answer that
+    // rule 8 of the page set already gives the brief over the intake. Only a
+    // brief with NO section of its own falls back to what the funnel
+    // collected. `BriefInput.person` is not optional, so this always sets
+    // the key — `null` is itself the answer "nobody has ever supplied one".
+    person: brief.person ?? args.intakePerson ?? null,
   };
 }
 
@@ -245,6 +269,7 @@ export async function loadBriefBuildInput(
         reason,
         ...(carried.pageCount ? { pageCount: carried.pageCount } : {}),
         ...(carried.tone ? { tone: carried.tone } : {}),
+        ...(carried.person ? { intakePerson: carried.person } : {}),
       }),
       reason: '',
     };
@@ -260,7 +285,7 @@ export async function loadBriefBuildInput(
 type SupabaseServiceClient = ReturnType<typeof createSupabaseServiceRoleClient>;
 
 /**
- * The two intake fields the payload carries forward so it is self-describing.
+ * The intake fields the payload carries forward so it is self-describing.
  *
  * The tone is still not the brief's to own -- it comes from the funnel's
  * brand signals, and the brief page never asks for one. The page count used
@@ -268,14 +293,30 @@ type SupabaseServiceClient = ReturnType<typeof createSupabaseServiceRoleClient>;
  * (`workspace_briefs.page_count`), and this intake value is a fallback
  * `composeBriefInput` reaches for only when the brief has not made an
  * explicit choice and rule 7 (`derivedBriefPageCount`) found nothing to
- * derive either. Both are here so an operator reading one job payload can see
- * the whole shape of what was asked for without joining two tables. Failure
- * is not an error: the payload simply omits them.
+ * derive either. `person` is the same shape of fallback, for the same reason:
+ * the brief's own person section (asked again, after the client has seen a
+ * preview) always wins over this one in `composeBriefInput`. All of these are
+ * here so an operator reading one job payload can see the whole shape of what
+ * was asked for without joining two tables. Failure is not an error: the
+ * payload simply omits them.
+ *
+ * `siteKind` is not threaded onto the brief input -- there is no field for it
+ * there, and none is needed: a `person` section on the merged `BriefInput` IS
+ * the classification, the same way `briefSiteKind` in `brief-data.ts` reads it
+ * off a stored brief. It is still computed and returned here, because the
+ * caller has no other cheap way to answer "was this visitor ever asked" for
+ * its own logging, and because deriving it once, next to `person`, is the
+ * only way to guarantee the two can never disagree.
  */
 async function carriedIntakeFields(
   supabase: SupabaseServiceClient,
   workspaceId: string
-): Promise<{ pageCount: string | null; tone: BriefTone | null }> {
+): Promise<{
+  pageCount: string | null;
+  tone: BriefTone | null;
+  person: BriefPerson | null;
+  siteKind: SiteKind | null;
+}> {
   try {
     const { data, error } = await withTenant(supabase, workspaceId)
       .from('flowstarter_project_artifacts')
@@ -288,7 +329,8 @@ async function carriedIntakeFields(
       !Array.isArray(data.intake_payload)
         ? (data.intake_payload as Record<string, unknown>)
         : null;
-    if (!intake) return { pageCount: null, tone: null };
+    if (!intake)
+      return { pageCount: null, tone: null, person: null, siteKind: null };
     const business =
       intake['business'] && typeof intake['business'] === 'object'
         ? (intake['business'] as Record<string, unknown>)
@@ -297,6 +339,25 @@ async function carriedIntakeFields(
       intake['tone'] && typeof intake['tone'] === 'object'
         ? (intake['tone'] as Record<string, unknown>)
         : null;
+    // `parsePerson` returns `null` for exactly the payloads that never had a
+    // `person` key -- an absent section and a malformed one both mean "this
+    // workspace was never asked" to a reader downstream, which is the right
+    // degradation for a jsonb column nothing revalidates on the way in.
+    const person = parsePerson(intake['person']);
+    const businessType =
+      `${typeof business['niche'] === 'string' ? business['niche'] : ''} ` +
+      `${
+        typeof business['description'] === 'string'
+          ? business['description']
+          : ''
+      }`;
+    // The funnel only ever asks the person block of a visitor it already
+    // classified as a person-site (`asksPersonQuestions` in
+    // `person-questions.ts`), so a stored section is that classification,
+    // carried in the data rather than recomputed from a sentence that may
+    // have since been edited. `siteKindFor` is the fallback, for every
+    // workspace taken before the person block existed.
+    const siteKind: SiteKind = person ? 'portfolio' : siteKindFor(businessType);
     return {
       pageCount:
         typeof business['pageCount'] === 'string'
@@ -312,9 +373,11 @@ async function carriedIntakeFields(
             voice: typeof rawTone['voice'] === 'string' ? rawTone['voice'] : '',
           }
         : null,
+      person,
+      siteKind,
     };
   } catch {
-    return { pageCount: null, tone: null };
+    return { pageCount: null, tone: null, person: null, siteKind: null };
   }
 }
 

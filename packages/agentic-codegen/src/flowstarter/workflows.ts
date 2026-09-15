@@ -77,6 +77,7 @@ import {
   INVENTED_PROJECT,
   type InventedProjectOptions,
 } from './invented-project';
+import { judgePersonAbsent, PERSON_ABSENT } from './person-absent';
 import {
   describePlaceholderImageIssue,
   describePlaceholderImageRepair,
@@ -3474,6 +3475,49 @@ export class FullSiteBuildWorker {
         }
         recordGate('invented-project');
       }
+
+      // The opposite defect, and on the evidence the more common one: a
+      // personal site with no person on it. `INVENTED_PROJECT` above refuses
+      // a site that says something untrue about the client; this refuses one
+      // that says nothing about them at all, which is how a portfolio shipped
+      // with a stock hero, studio boilerplate and an empty box where a face
+      // should be. Only a portfolio is judged, by the same `siteKindFor` rule
+      // that ordered the pages, and only when the brief was actually asked.
+      await phase('Checking the site carries the person');
+      const personVerdict = () =>
+        builtSiteText().then((files) =>
+          judgePersonAbsent(files, {
+            businessType: `${job.intake.business.niche} ${
+              job.intake.business.description ?? ''
+            }`,
+            person: job.briefInput?.person ?? null,
+            portraitPath: job.briefInput?.portrait?.publicPath ?? null,
+          }),
+        );
+      let personJudgement = await personVerdict();
+      if (personJudgement.verdict === 'fail') {
+        // One repair pass, the same as every other copy gate: the material
+        // exists and putting it on the page is exactly what an agent can do.
+        await say('log', personJudgement.issue);
+        await pass(
+          'Putting the client back on their own site',
+          withApproved(personJudgement.issue),
+        );
+        await check();
+        personJudgement = await personVerdict();
+      }
+      if (personJudgement.verdict === 'fail') {
+        throw new FullSiteBuildFailure(PERSON_ABSENT, personJudgement.issue);
+      }
+      if (personJudgement.verdict === 'hold') {
+        // Nothing an agent can write fixes an empty brief, so this never gets
+        // a repair pass and never gets a retry: `failure-policy.ts` files
+        // PERSON_ABSENT as terminal, which is what turns this into a job
+        // waiting on the client with a concrete ask rather than three more
+        // paid attempts at guessing who they are.
+        throw new FullSiteBuildFailure(PERSON_ABSENT, personJudgement.ask);
+      }
+      if (personJudgement.verdict === 'pass') recordGate('person-present');
 
       // Same shape, over images rather than words: a client whose brief had
       // no photo and no project screenshot must get a site that says so
