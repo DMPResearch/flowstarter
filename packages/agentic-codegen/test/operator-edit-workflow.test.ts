@@ -288,6 +288,7 @@ describe('OPERATOR_EDIT_BUILD, end to end', () => {
       'Checking for placeholder images',
       'Checking what the site asks the browser to do',
       'Checking for empty image elements',
+      'Checking for links to pages the build does not have',
       'Checking the site against the acceptable-use policy',
       'Committing the site',
       'Saving the new version of the site',
@@ -300,9 +301,9 @@ describe('OPERATOR_EDIT_BUILD, end to end', () => {
       .map((event) => event.body);
     // The operator's note is on the record, on a line of its own, never
     // folded into a sentence the product speaks in its own voice.
-    expect(
-      logs.some((line) => line.startsWith("The operator's note:")),
-    ).toBe(true);
+    expect(logs.some((line) => line.startsWith("The operator's note:"))).toBe(
+      true,
+    );
     expect(logs.some((line) => line.includes('No agent runs here'))).toBe(true);
   });
 

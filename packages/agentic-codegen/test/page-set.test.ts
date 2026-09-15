@@ -171,6 +171,13 @@ describe('applyPageSetToScaffold', () => {
     ...TEMPLATE_PAGES.map((path) => file(path, '<html></html>')),
     file('src/content/site-labels.md', NAV_YAML()),
     file('src/components/Header.astro', "const ctaHref = '/book';"),
+    // The real defect this covers: a home-page teaser section's "view all
+    // services" button, hardcoded in component source rather than read from
+    // `site-labels.md` — so the YAML nav rewrite above never touches it.
+    file(
+      'src/components/Services.astro',
+      '<ActionButton href="/services" label="Explore our services" />',
+    ),
     file('public/images/hero.png', 'AAAA'),
   ];
 
@@ -219,6 +226,43 @@ describe('applyPageSetToScaffold', () => {
     );
     expect(header?.content).toBe("const ctaHref = '/contact';");
     expect(pruned.rewrittenPaths).toContain('src/components/Header.astro');
+  });
+
+  it('points a surviving hardcoded /services call to action at the contact page too', () => {
+    // Not just /book: any page this brief dropped, repointed the same way —
+    // the delivered-site defect was /services, hardcoded in Services.astro
+    // rather than read from site-labels.md, which page-set's YAML rewrite
+    // never reaches.
+    const pageSet = derivePageSet({
+      pageCount: 'lt-5',
+      businessType: 'Creative & design',
+      hasBookingLink: false,
+    });
+    expect(pageSet.dropped).toContain('services');
+    const pruned = applyPageSetToScaffold(scaffold, pageSet);
+    const services = pruned.files.find(
+      (entry) => entry.path === 'src/components/Services.astro',
+    );
+    expect(services?.content).toBe(
+      '<ActionButton href="/contact" label="Explore our services" />',
+    );
+    expect(pruned.rewrittenPaths).toContain('src/components/Services.astro');
+  });
+
+  it('leaves a surviving hardcoded href alone when its page was not dropped', () => {
+    const pageSet = derivePageSet({
+      pageCount: '8-15',
+      businessType: 'Dental clinic',
+      hasBookingLink: true,
+    });
+    expect(pageSet.dropped).toEqual([]);
+    const pruned = applyPageSetToScaffold(scaffold, pageSet);
+    const services = pruned.files.find(
+      (entry) => entry.path === 'src/components/Services.astro',
+    );
+    expect(services?.content).toBe(
+      '<ActionButton href="/services" label="Explore our services" />',
+    );
   });
 
   it('removes nav entries pointing at pages that no longer exist', () => {

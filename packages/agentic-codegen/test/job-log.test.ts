@@ -327,6 +327,7 @@ describe('a full build reports the agents running work', () => {
       'Checking what the site asks the browser to do',
       'Checking the template’s effects survived',
       'Checking for empty image elements',
+      'Checking for links to pages the build does not have',
       'Checking the site against the acceptable-use policy',
       'Committing the site',
       'Publishing for review',

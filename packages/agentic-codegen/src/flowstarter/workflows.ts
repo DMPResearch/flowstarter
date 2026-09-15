@@ -126,6 +126,11 @@ import {
   findEmptyImageFindings,
   EMPTY_IMAGE_SHIPPED,
 } from './empty-image';
+import {
+  describeDeadLinkIssue,
+  findDeadLinkFindings,
+  DEAD_LINK,
+} from './dead-link';
 import { applyIntegrationsToWorkspace } from '../integrations';
 import {
   isClientEditablePath,
@@ -2357,6 +2362,27 @@ function assertNoEmptyImages(
   }
 }
 
+/**
+ * The `DEAD_LINK` gate, run identically by every leg that produces a
+ * `dist/` — the full build, a change request, and an operator's own edit.
+ * `page-set.ts` prunes a dropped page's own file and its YAML-shaped nav
+ * entries before the agent ever runs, but a component can carry a hardcoded
+ * internal `href` no YAML rewrite touches (`Services.astro`'s home-page
+ * "view all services" button was exactly this, on a delivered site). No
+ * repair pass, same reasoning as `assertNoEmptyImages`: there is no brief
+ * text that fixes a stale link baked into a template, only a template edit,
+ * so this fails the build the same way a mechanical integrity gate does
+ * elsewhere in this file.
+ */
+function assertNoDeadLinks(
+  files: readonly { path: string; content: string }[],
+): void {
+  const deadLinks = findDeadLinkFindings(files);
+  if (deadLinks.length > 0) {
+    throw new FullSiteBuildFailure(DEAD_LINK, describeDeadLinkIssue(deadLinks));
+  }
+}
+
 /** The ledger code a build stopped under because it no longer held its job. */
 export const BUILD_LEASE_LOST = 'BUILD_LEASE_LOST';
 
@@ -3643,6 +3669,12 @@ export class FullSiteBuildWorker {
       assertNoEmptyImages(await builtSiteText());
       recordGate('empty-images');
 
+      // See `assertNoDeadLinks`: a page the budget dropped must not still be
+      // linked from somewhere the pruning rewrite does not reach.
+      await phase('Checking for links to pages the build does not have');
+      assertNoDeadLinks(await builtSiteText());
+      recordGate('dead-links');
+
       // The last gate, and the only one with no repair pass. See
       // `assertAcceptableUse`. It runs after every other check so that the
       // text it reads is the text that would have shipped, and before the
@@ -4332,6 +4364,13 @@ export class FullSiteBuildWorker {
         await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
       );
 
+      // Same shape again — see `assertNoDeadLinks`. A change request can add
+      // a link of its own, not only edit an existing one.
+      await phase('Checking for links to pages the build does not have');
+      assertNoDeadLinks(
+        await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
+      );
+
       // The acceptable-use gate, on the site as the change left it. A change
       // request is the one way a site that passed every gate can be asked to
       // become something else, and the client already paid for this one, so
@@ -4679,6 +4718,9 @@ export class FullSiteBuildWorker {
 
       await phase('Checking for empty image elements');
       assertNoEmptyImages(await builtSiteText());
+
+      await phase('Checking for links to pages the build does not have');
+      assertNoDeadLinks(await builtSiteText());
 
       // The acceptable-use gate covers this leg too, and the argument for it
       // is the rebuild leg's, only stronger: an operator's session is the one
