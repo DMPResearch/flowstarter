@@ -51,13 +51,13 @@ describe('customWorkOperatorEmail, one sentence per route_rule', () => {
       routeRule: 'customAboveThreshold',
       evidence: ['customers log into'],
       sentence:
-        'The brief describes "customers log into", which is not something we build self-serve.',
+        'The brief mentions "customers log into", which points to software we do not build self-serve.',
     },
     {
       routeRule: 'clarifiedCustom',
       evidence: ['staff logins'],
       sentence:
-        'We asked what they needed, and the brief still describes "staff logins", which is not something we build self-serve.',
+        'We asked what they needed, and the brief still mentions "staff logins", which points to software we do not build self-serve.',
     },
     {
       routeRule: 'contactForm',
@@ -95,6 +95,48 @@ describe('customWorkOperatorEmail, one sentence per route_rule', () => {
       'The visitor was routed to a discovery call with DMPResearch.'
     );
     expect(mail.text).not.toContain('someFutureRule');
+  });
+
+  it('quotes an evidence fragment whole, up to the length bound, never cut mid-word', () => {
+    // 60 chars is the bound (`MAX_QUOTED_EVIDENCE_CHARS`). This fragment is
+    // longer, so only whole words that fit are kept.
+    const mail = customWorkOperatorEmail({
+      ...BASE,
+      routeRule: 'customAboveThreshold',
+      evidence: [
+        'customers log into their account to track orders and reschedule delivery',
+      ],
+    });
+    expect(mail.text).toContain(
+      'The brief mentions "customers log into their account to track orders and", which points to software we do not build self-serve.'
+    );
+    // No fragment word was cut in half.
+    expect(mail.text).not.toContain('resched');
+  });
+
+  it('falls back to the generic sentence when the fragment is empty', () => {
+    const mail = customWorkOperatorEmail({
+      ...BASE,
+      routeRule: 'customAboveThreshold',
+      evidence: ['   ', ''],
+    });
+    expect(mail.text).toContain(
+      'The brief reads like software to build rather than a site that presents the business, which is not something we build self-serve.'
+    );
+    expect(mail.text).not.toContain('mentions ""');
+  });
+
+  it('falls back to the generic sentence when even one whole word is too long to quote', () => {
+    // A single "word" (no spaces) longer than the bound cannot be shortened
+    // to anything honest, so it is dropped rather than half-quoted.
+    const mail = customWorkOperatorEmail({
+      ...BASE,
+      routeRule: 'clarifiedCustom',
+      evidence: ['a'.repeat(61)],
+    });
+    expect(mail.text).toContain(
+      'We asked what they needed, and the brief still reads as software to build rather than a site that presents the business.'
+    );
   });
 });
 

@@ -2,7 +2,7 @@
 /**
  * The review queue's own contract, against a hand-rolled Postgrest double.
  *
- * Four properties this file exists to hold:
+ * Five properties this file exists to hold:
  *
  *   1. The gate can always refuse. `recordPolicyOutcome` never throws, so a
  *      database that is down cannot turn a refusal into an exception the route
@@ -11,8 +11,12 @@
  *      when it cannot answer at all, because the alternative is that a blip in
  *      the ledger is how a parked workspace gets built anyway.
  *   3. The submission is never written down. Not in the row, not in the event
- *      payload. The hash is the identifier.
+ *      payload. The hash is the identifier -- except in the operator email,
+ *      which is the one exception to this rule (see the module doc).
  *   4. Two operators cannot both believe they resolved the same review.
+ *   5. The operator email goes out once per row, only for a `review` verdict:
+ *      never for `allow` (this function is never called), never for `refuse`
+ *      (already closed), and never twice for the same row.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -20,6 +24,22 @@ vi.mock('@/supabase-clients/server', () => ({
   createSupabaseServiceRoleClient: () => {
     throw new Error('supabaseUrl is required.');
   },
+}));
+
+interface SentEmail {
+  to: string;
+  subject: string;
+  html: string;
+  text: string;
+  replyTo?: string;
+}
+const sendEmail = vi.fn<
+  (input: SentEmail) => Promise<{ success: boolean; error?: string }>
+>(async () => ({ success: true }));
+const operatorEmail = { value: 'ops@flowstarter.net' };
+vi.mock('@/lib/email', () => ({
+  sendEmail: (input: SentEmail) => sendEmail(input),
+  resolveOperatorNotifyEmail: () => operatorEmail.value,
 }));
 
 import { categoryById, type PolicyVerdict } from '../acceptable-use';
@@ -182,6 +202,9 @@ beforeEach(() => {
   vi.restoreAllMocks();
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  sendEmail.mockReset();
+  sendEmail.mockResolvedValue({ success: true });
+  operatorEmail.value = 'ops@flowstarter.net';
 });
 
 describe('recording an outcome', () => {
@@ -370,6 +393,162 @@ describe('recording an outcome', () => {
       '[policy] could not write the review row',
       expect.anything()
     );
+  });
+});
+
+describe('notifying an operator', () => {
+  it('sends "A brief needs your review" for a review verdict', async () => {
+    await recordPolicyOutcome({
+      surface: 'brief',
+      verdict: verdict(),
+      classification,
+      workspaceId: WORKSPACE,
+      briefText: 'We import and resell prescription medication.',
+      db: fake.client,
+    });
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    const sent = sendEmail.mock.calls[0][0];
+    expect(sent.to).toBe('ops@flowstarter.net');
+    expect(sent.subject).toContain('A brief needs your review');
+    expect(sent.text).toContain(
+      'We import and resell prescription medication.'
+    );
+  });
+
+  it('never sends anything for a refuse verdict, closed or not', async () => {
+    await recordPolicyOutcome({
+      surface: 'preview',
+      verdict: verdict({ decision: 'refuse', confidence: 0.96 }),
+      classification,
+      briefText: SECRET,
+      db: fake.client,
+    });
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('never sends anything for an allow verdict', async () => {
+    await recordPolicyOutcome({
+      surface: 'preview',
+      verdict: verdict({ decision: 'allow' }),
+      classification,
+      briefText: 'A bakery in Cluj',
+      db: fake.client,
+    });
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('does not re-notify on a duplicate submission', async () => {
+    // Same reasoning as "the index doing its job" above: a client hammering
+    // save must not turn into a second email for the same row.
+    const client = {
+      from: () => ({
+        insert: () => ({
+          select: () => ({
+            maybeSingle: async () => ({ data: null, error: { code: '23505' } }),
+          }),
+          then: (onfulfilled: (v: unknown) => unknown) =>
+            Promise.resolve(onfulfilled({ data: null, error: null })),
+        }),
+      }),
+    } as unknown as PolicyReviewClient;
+
+    await recordPolicyOutcome({
+      surface: 'brief',
+      verdict: verdict(),
+      classification,
+      briefText: 'A brief',
+      db: client,
+    });
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('sends nowhere when no operator address is configured', async () => {
+    operatorEmail.value = '';
+    await recordPolicyOutcome({
+      surface: 'brief',
+      verdict: verdict(),
+      classification,
+      workspaceId: WORKSPACE,
+      db: fake.client,
+    });
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('links to the review on the project’s policy panel when there is a workspace', async () => {
+    const result = await recordPolicyOutcome({
+      surface: 'brief',
+      verdict: verdict(),
+      classification,
+      workspaceId: WORKSPACE,
+      db: fake.client,
+    });
+    const sent = sendEmail.mock.calls[0][0];
+    expect(sent.html).toContain(
+      `/admin/dashboard/projects/${WORKSPACE}#policy-review-${result.reviewId}`
+    );
+  });
+
+  it('falls back to the pipeline board when there is no workspace to link into', async () => {
+    await recordPolicyOutcome({
+      surface: 'preview',
+      verdict: verdict(),
+      classification,
+      db: fake.client,
+    });
+    const sent = sendEmail.mock.calls[0][0];
+    expect(sent.html).toContain('/admin/dashboard/pipeline');
+    expect(sent.html).not.toContain('#policy-review-');
+  });
+
+  it('passes the contact fields through to the email and nowhere else', async () => {
+    await recordPolicyOutcome({
+      surface: 'brief',
+      verdict: verdict(),
+      classification,
+      workspaceId: WORKSPACE,
+      contactName: 'Ana Popescu',
+      contactEmail: 'ana@example.com',
+      db: fake.client,
+    });
+    const sent = sendEmail.mock.calls[0][0];
+    expect(sent.text).toContain('Ana Popescu');
+    expect(sent.text).toContain('ana@example.com');
+    // Never the row, never the event payload -- same discipline as the
+    // brief text.
+    const row = fake.rows.policy_reviews[0];
+    expect(JSON.stringify(row)).not.toContain('Ana Popescu');
+    const event = fake.rows.project_events[0];
+    expect(JSON.stringify(event)).not.toContain('Ana Popescu');
+  });
+
+  it('never writes the brief text to the row or the event payload', async () => {
+    await recordPolicyOutcome({
+      surface: 'brief',
+      verdict: verdict(),
+      classification,
+      workspaceId: WORKSPACE,
+      briefText: SECRET,
+      db: fake.client,
+    });
+    const row = fake.rows.policy_reviews[0];
+    expect(JSON.stringify(row)).not.toContain(SECRET);
+    const event = fake.rows.project_events[0];
+    expect(JSON.stringify(event)).not.toContain(SECRET);
+    // It did reach the email, which is the one place it is allowed to.
+    const sent = sendEmail.mock.calls[0][0];
+    expect(sent.text).toContain(SECRET);
+  });
+
+  it('still records the outcome and never throws when the send fails', async () => {
+    sendEmail.mockResolvedValue({ success: false, error: 'mailbox full' });
+    const result = await recordPolicyOutcome({
+      surface: 'brief',
+      verdict: verdict(),
+      classification,
+      workspaceId: WORKSPACE,
+      db: fake.client,
+    });
+    expect(result.recorded).toBe(true);
   });
 });
 

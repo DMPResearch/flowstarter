@@ -401,6 +401,12 @@ export async function runScopeGate(
           : 'scope_unresolved_after_question',
       classification,
       subject: classifierText,
+      // The gate's own fields, not the classifier text: the operator email
+      // quotes the brief the visitor actually typed, and `scopeClassifierText`
+      // is a longer prompt built for a model, link title and all.
+      briefText: input.description,
+      contactName: input.fullName,
+      contactEmail: input.email,
     });
   }
 
@@ -463,6 +469,9 @@ async function openScopeReview(input: {
   rule: PolicyRule;
   classification: ScopeClassification;
   subject: string;
+  briefText: string;
+  contactName: string;
+  contactEmail: string;
 }): Promise<void> {
   const tier = input.classification.classifier.startsWith('sigma')
     ? ('embedding' as const)
@@ -490,6 +499,9 @@ async function openScopeReview(input: {
       evidenceHash: createHash('sha256').update(input.subject).digest('hex'),
       promptVersion: input.classification.classifier,
     },
+    briefText: input.briefText,
+    contactName: input.contactName,
+    contactEmail: input.contactEmail,
     actor: 'scope-gate',
   });
 }

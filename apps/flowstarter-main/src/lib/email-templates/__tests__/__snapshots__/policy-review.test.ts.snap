@@ -1,0 +1,22 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`policyReviewOperatorEmail, house style > renders the pharmacy example end to end (snapshot) 1`] = `
+"A brief needs your review
+
+The brief describes a licensed pharmacy, which we build only after a person checks it.
+
+It stays open until an operator approves or refuses it.
+
+  We are Farmacia Sperantei, a licensed pharmacy in Cluj. We want a site where regular customers can reorder their repeat prescriptions.
+
+Name: Ana Popescu
+Email: ana@farmaciasperantei.ro
+
+Open this review: https://flowstarter.net/admin/dashboard/projects/ws-1#policy-review-review-1
+
+--
+
+Flowstarter
+hello@flowstarter.net
+This is a service message about your project, not marketing, so there is nothing to unsubscribe from. Reply to this email and a person will read it."
+`;

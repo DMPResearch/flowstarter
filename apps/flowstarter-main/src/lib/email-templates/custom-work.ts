@@ -163,14 +163,45 @@ interface OperatorReason {
 }
 
 /**
+ * How much of one evidence fragment this template will quote.
+ *
+ * A named constant rather than a literal at the call site, so the bound is
+ * one number to change and one thing the tests can pin. Long enough for a
+ * short clause ("customers log into their loyalty account"), short enough
+ * that a classifier fragment that ran on is not mistaken for a proper quote.
+ */
+const MAX_QUOTED_EVIDENCE_CHARS = 60;
+
+/**
+ * One evidence fragment, trimmed to whole words within
+ * `MAX_QUOTED_EVIDENCE_CHARS`. Null when there is nothing usable: the
+ * fragment was empty, or even its first word alone would not fit -- a
+ * fragment this template cannot shorten honestly is one it does not quote,
+ * rather than one it cuts off mid-word.
+ */
+function wholeWordFragment(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (trimmed.length <= MAX_QUOTED_EVIDENCE_CHARS) return trimmed;
+  let out = '';
+  for (const word of trimmed.split(/\s+/)) {
+    const next = out ? `${out} ${word}` : word;
+    if (next.length > MAX_QUOTED_EVIDENCE_CHARS) break;
+    out = next;
+  }
+  return out || null;
+}
+
+/**
  * Up to two of the visitor's own fragments, quoted and joined for a sentence.
- * Null when the classifier gave none, so the caller can fall back to a
- * sentence that asserts nothing it cannot show.
+ * Null when the classifier gave none, or none of them survived
+ * `wholeWordFragment`, so the caller falls back to a sentence that asserts
+ * nothing it cannot show.
  */
 function quotedEvidence(evidence: readonly string[]): string | null {
   const fragments = evidence
-    .map((fragment) => fragment.trim())
-    .filter(Boolean)
+    .map((fragment) => wholeWordFragment(fragment))
+    .filter((fragment): fragment is string => fragment !== null)
     .slice(0, 2);
   if (fragments.length === 0) return null;
   return fragments.map((fragment) => `"${fragment}"`).join(' and ');
@@ -187,7 +218,7 @@ const REASON_COPY: Record<string, OperatorReason> = {
     sentence: (evidence) => {
       const quoted = quotedEvidence(evidence);
       return quoted
-        ? `The brief describes ${quoted}, which is not something we build self-serve.`
+        ? `The brief mentions ${quoted}, which points to software we do not build self-serve.`
         : 'The brief reads like software to build rather than a site that presents the business, which is not something we build self-serve.';
     },
   },
@@ -196,7 +227,7 @@ const REASON_COPY: Record<string, OperatorReason> = {
     sentence: (evidence) => {
       const quoted = quotedEvidence(evidence);
       return quoted
-        ? `We asked what they needed, and the brief still describes ${quoted}, which is not something we build self-serve.`
+        ? `We asked what they needed, and the brief still mentions ${quoted}, which points to software we do not build self-serve.`
         : 'We asked what they needed, and the brief still reads as software to build rather than a site that presents the business.';
     },
   },

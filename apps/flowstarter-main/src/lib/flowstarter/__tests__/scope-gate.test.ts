@@ -453,6 +453,12 @@ describe('the clarifying question', () => {
       surface: 'preview',
       rule: 'scope_unresolved_after_question',
     });
+    // And the operator hears about it by email too, not just on the board.
+    const notification = sendEmail.mock.calls.find((call) =>
+      call[0]?.subject?.startsWith('A brief needs your review:')
+    );
+    expect(notification).toBeDefined();
+    expect(notification![0].text).toContain('the brief is still unclear');
   });
 
   it('lets the visitor answer settle the scope when the classifier is down', async () => {
@@ -548,13 +554,14 @@ describe('the clarifying question', () => {
       category_id: 'none',
       status: 'open',
     });
-    // No lead, no email: this is a visitor continuing to their preview, not a
-    // custom-work enquiry.
+    // No lead: this is a visitor continuing to their preview, not a
+    // custom-work enquiry. An operator does still hear about it, through the
+    // review notification rather than a custom-work lead -- see the next
+    // test.
     expect(insertedRows).toHaveLength(0);
-    expect(sendEmail).not.toHaveBeenCalled();
   });
 
-  it('never sends the custom-work operator email for a review outcome', async () => {
+  it('never sends the custom-work operator email for a review outcome, but does send the review notification', async () => {
     // The requirement in full: a brief that opens an acceptable-use or scope
     // review row is a different thing from a custom-work lead, and it must go
     // to a person through the review queue, not through
@@ -564,7 +571,10 @@ describe('the clarifying question', () => {
     // the route it produces is `self-serve`, never `discovery-call`. Structurally,
     // `customWorkOperatorEmail` is only ever reached from `fileCustomWorkLead`,
     // which only runs on a `discovery-call` route -- so this line is the proof
-    // that stays true even if that wiring changes.
+    // that stays true even if that wiring changes. `recordPolicyOutcome`
+    // (`@/lib/policy/review`) does send its own "A brief needs your review"
+    // email for this row now, which is the point of PR #191's second
+    // follow-up: the row used to sit on the board silently.
     setScopeClassifier(async () =>
       classifierSaying({ scope: 'custom', confidence: 0.99 })
     );
@@ -578,12 +588,16 @@ describe('the clarifying question', () => {
     );
     expect(result.operatorReview).toBe(true);
     expect(result.route).not.toBe('discovery-call');
-    expect(sendEmail).not.toHaveBeenCalled();
     expect(
       sendEmail.mock.calls.some((call) =>
         call[0]?.subject?.startsWith('Custom work lead:')
       )
     ).toBe(false);
+    const notification = sendEmail.mock.calls.find((call) =>
+      call[0]?.subject?.startsWith('A brief needs your review:')
+    );
+    expect(notification).toBeDefined();
+    expect(notification![0].to).toBe('ops@flowstarter.net');
   });
 
   it('lets a clarified standard answer through to the preview', async () => {
