@@ -18,9 +18,9 @@ import { useState } from 'react';
 import { Button } from '@flowstarter/flow-design-system';
 import type { ScopeAnswerKey, ScopeRouteState } from '../useScopeRoute';
 import type { PolicyNotice } from '@/lib/policy/copy';
+import { POLICY_CARD, PolicyNoticeCard } from './PolicyNoticeCard';
 
-const CARD =
-  'rounded-2xl border border-[var(--fs-rule)] bg-[var(--fs-surface)] p-6 sm:p-7';
+const CARD = POLICY_CARD;
 
 /**
  * The two answers that settle the question, plus an escape hatch.
@@ -261,28 +261,15 @@ function Hold({
  * the policy owns the sentence, the category label inside it, and the
  * language it is written in. This component owns the card it sits in.
  *
- * It renders nothing at all if the notice is missing, which is deliberate.
- * Inventing a refusal sentence in the browser is how a screen ends up
- * asserting something the gate never decided; if the server did not say why,
- * this says nothing rather than guessing.
+ * The card itself is `PolicyNoticeCard`, shared with the intake conversation:
+ * both surfaces stop a visitor on the same verdict from the same gate, and
+ * two near-identical refusal cards are how two screens come to disagree about
+ * what the policy said. It renders nothing at all if the notice is missing,
+ * which is deliberate -- inventing a refusal sentence in the browser is how a
+ * screen ends up asserting something the gate never decided.
  */
 function Refused({ policy }: { policy?: PolicyNotice }) {
-  if (!policy) return null;
-  return (
-    <div className={CARD} role="status" aria-live="polite">
-      <h3 className="text-lg font-bold text-[var(--fs-ink)]">{policy.title}</h3>
-      <p className="mt-2 text-sm text-[var(--fs-ink)]">{policy.message}</p>
-      <p className="mt-3 text-sm text-[var(--fs-ink-faint)]">{policy.next}</p>
-      <div className="mt-4 flex flex-wrap gap-3 text-[12px] font-semibold">
-        <a className="underline" href={policy.termsHref}>
-          {policy.termsLabel}
-        </a>
-        <a className="underline" href={policy.contactHref}>
-          {policy.contactLabel}
-        </a>
-      </div>
-    </div>
-  );
+  return <PolicyNoticeCard policy={policy} testId="scope-policy-notice" />;
 }
 
 export function ScopeGateStep({

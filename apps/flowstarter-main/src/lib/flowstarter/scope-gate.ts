@@ -51,13 +51,8 @@ import {
   type ScopeOfferCopy,
   type ScopeRoute,
 } from './scope-route';
-import {
-  CLEAN_CATEGORY,
-  classifierUnavailable,
-  reviewNamesCategory,
-  type PolicyRule,
-  type PolicyVerdict,
-} from '@/lib/policy/acceptable-use';
+import { CLEAN_CATEGORY, type PolicyRule } from '@/lib/policy/acceptable-use';
+import { acceptableUseFrom } from './acceptable-use-verdict';
 import { recordPolicyOutcome } from '@/lib/policy/review';
 import { createHash } from 'node:crypto';
 
@@ -226,21 +221,14 @@ async function screenedVerdict(
 /**
  * One `PolicyVerdict`, narrowed onto the four things the routing table needs.
  *
- * The one place the policy's vocabulary and the funnel's meet, exported so
- * the table-driven test can replay a verdict through both halves without a
- * classifier. The narrowing is where the 2026-09-15 defect lived: `review`
- * collapsed three unrelated facts into one value, and the route table could
- * only act on the word.
+ * Re-exported, not defined here. The implementation moved to
+ * `./acceptable-use-verdict.ts` when the intake route needed the same
+ * narrowing and could not afford to import this module to get it: everything
+ * above reaches Supabase, Resend and a classifier at import time. The export
+ * stays so the outcome-table test and every existing caller keep their path,
+ * and so there is still exactly one implementation.
  */
-export function acceptableUseFrom(verdict: PolicyVerdict): AcceptableUse {
-  if (verdict.decision === 'refuse') return 'blocked';
-  if (verdict.decision !== 'review') return 'allowed';
-  // Order matters: a classifier that never answered has no category either,
-  // so the unavailable check has to come first or every hold would be read as
-  // a merely-unsure review and fall through to the scope rules.
-  if (classifierUnavailable(verdict)) return 'hold';
-  return reviewNamesCategory(verdict) ? 'review' : 'unsettled';
-}
+export { acceptableUseFrom };
 
 function boardUrl(): string {
   return `${publicAppOrigin()}/admin/dashboard/pipeline`;

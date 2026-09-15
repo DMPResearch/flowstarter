@@ -42,14 +42,30 @@ import {
   type BubblePosition,
 } from './ConciergePanes';
 import { ConnectPortrait } from './ConnectPortrait';
+import { PolicyNoticeCard } from './PolicyNoticeCard';
 import { RecommendationStep } from './RecommendationStep';
 import { SubscriptionStep } from './SubscriptionStep';
 import { useAutosizeTextarea } from '../useAutosizeTextarea';
+import { useOptionalI18n } from '@/lib/i18n';
+import type { PolicyNotice } from '@/lib/policy/copy';
 import type {
   IntakeGraphAsk,
   IntakeGraphResume,
   IntakeGraphTurnResult,
 } from '@/lib/flowstarter/intake-graph/types';
+
+/**
+ * The gate stopped this intake, and with which sentence.
+ *
+ * `refused` and `hold` are the scope gate's own two words -- the server sends
+ * them straight through from `decideRoute` -- so one screen serves both
+ * surfaces rather than each learning a private vocabulary for the same two
+ * verdicts.
+ */
+export interface IntakePolicyStop {
+  stop: 'refused' | 'hold';
+  policy: PolicyNotice | null;
+}
 
 /** See `IntakeConversation`'s own copy of this constant for why `min-h-11`. */
 const composerClass =
@@ -80,7 +96,8 @@ export function IntakeGraphConversation({
   update,
   answered,
   onState,
-  locale = 'en',
+  onPolicyStop,
+  locale,
   t,
 }: {
   data: DiscoveryData;
@@ -93,10 +110,29 @@ export function IntakeGraphConversation({
     data: DiscoveryData;
     answered: IntakeQuestionId[];
   }) => void;
+  /**
+   * The acceptable-use gate ended the intake. The wizard needs to know so it
+   * stops advancing; this component needs to know so it stops asking.
+   */
+  onPolicyStop?: (stop: IntakePolicyStop) => void;
+  /**
+   * Overridden only by a caller that knows better than the page does. Left
+   * unset it reads the dictionary above, which is what makes a Romanian
+   * visitor's refusal arrive in Romanian: the notice is written server-side
+   * by `@/lib/policy/copy`, in whatever language this field names.
+   */
   locale?: 'en' | 'ro';
   t: (key: string) => string;
 }) {
+  // `useOptionalI18n` rather than `useI18n`: the wizard is mounted on surfaces
+  // that thread `t` down as a prop instead of mounting a provider, and this
+  // component must not take the page down by being one of them.
+  const pageLocale = useOptionalI18n()?.locale;
+  const spokenLocale: 'en' | 'ro' =
+    locale ?? (pageLocale === 'ro' ? 'ro' : 'en');
+
   const [threadId, setThreadId] = useState<string | null>(null);
+  const [policyStop, setPolicyStop] = useState<IntakePolicyStop | null>(null);
   const [ask, setAsk] = useState<IntakeGraphAsk | null>(null);
   const [agentPrompt, setAgentPrompt] = useState<string | null>(null);
   const [errorKey, setErrorKey] = useState<string | null>(null);
@@ -120,12 +156,24 @@ export function IntakeGraphConversation({
       setAsk(result.ask);
       setAgentPrompt(result.ask?.prompt ?? null);
       setErrorKey(result.errorKey ?? null);
+      // The visitor's answer is applied whether or not the gate stopped them.
+      // The moderator this replaced returned the state from before the turn,
+      // so a refused brief was also a discarded one and the preview pane went
+      // on reading "You do: Not yet" with nothing said about why.
       onState({
         data: result.data,
         answered: result.answered,
       });
+      if (result.policyStop) {
+        const stop: IntakePolicyStop = {
+          stop: result.policyStop,
+          policy: result.policy ?? null,
+        };
+        setPolicyStop(stop);
+        onPolicyStop?.(stop);
+      }
     },
-    [onState]
+    [onState, onPolicyStop]
   );
 
   useEffect(() => {
@@ -138,7 +186,7 @@ export function IntakeGraphConversation({
       action: 'start',
       data,
       answered,
-      locale,
+      locale: spokenLocale,
     })
       .then((result) => {
         if (cancelled) return;
@@ -171,7 +219,7 @@ export function IntakeGraphConversation({
 
   const resume = useCallback(
     async (payload: IntakeGraphResume) => {
-      if (!threadId || busy) return;
+      if (!threadId || busy || policyStop) return;
       setBusy(true);
       setErrorKey(null);
       try {
@@ -181,7 +229,7 @@ export function IntakeGraphConversation({
           resume: payload,
           data,
           answered,
-          locale,
+          locale: spokenLocale,
         });
         applyTurn(result);
       } catch {
@@ -190,7 +238,7 @@ export function IntakeGraphConversation({
         setBusy(false);
       }
     },
-    [threadId, busy, data, answered, locale, applyTurn]
+    [threadId, busy, policyStop, data, answered, spokenLocale, applyTurn]
   );
 
   const submit = useCallback(
@@ -220,11 +268,16 @@ export function IntakeGraphConversation({
   // they asked back, or a natural nudge in place of the raw validation
   // message) and the question itself are one graph turn, so they read as one
   // message: reaction first, then the question, in the same bubble.
-  const showsNote = booted && Boolean(ask?.note);
-  const showsPrompt = booted && Boolean(agentPrompt) && Boolean(current);
+  // Once the gate has stopped the intake there is no next question, so the
+  // last agent line and the typing indicator both go: the notice below is the
+  // whole of what happens next, and leaving a half-finished question above it
+  // reads as though the conversation is still going.
+  const showsNote = booted && Boolean(ask?.note) && !policyStop;
+  const showsPrompt =
+    booted && Boolean(agentPrompt) && Boolean(current) && !policyStop;
   const showsCombined = showsNote || showsPrompt;
-  const showsTyping = busy && !agentPrompt;
-  const showsErrorBubble = Boolean(errorKey) && !ask?.note;
+  const showsTyping = busy && !agentPrompt && !policyStop;
+  const showsErrorBubble = Boolean(errorKey) && !ask?.note && !policyStop;
 
   // Every agent-side bubble in on-screen order, so consecutive ones group
   // (rounded outer corners, squared seams) and the avatar/name show once per
@@ -307,7 +360,7 @@ export function IntakeGraphConversation({
           </AgentMessageRow>
         )}
 
-        {errorKey && !ask?.note && (
+        {showsErrorBubble && (
           <AgentMessageRow
             position={positionAt(errorSlotIndex)}
             agentName={agentName}
@@ -318,13 +371,30 @@ export function IntakeGraphConversation({
               animate
               fitWidth
             >
-              {t(errorKey)}
+              {t(errorKey ?? '')}
             </ChatBubble>
           </AgentMessageRow>
         )}
       </ConversationLog>
 
-      {current && ask && !busy && (
+      {/*
+        The gate's answer, in the gate's own words, where the next question
+        would have been. This is the whole of finding 1 from the 2026-09-15
+        showcase run: the intake used to end a prohibited brief with
+        `status: 'complete'`, `ask: null` and nothing on screen, so the visitor
+        sat at "2 of 5 questions answered" with no notice, no refusal and no
+        way forward. An answer that cannot be processed now says why.
+      */}
+      {policyStop && (
+        <PolicyNoticeCard
+          policy={policyStop.policy}
+          testId={`intake-policy-${policyStop.stop}`}
+        />
+      )}
+
+      {/* No composer once the gate has stopped: the intake is over, and an
+          input box that still accepts text is a promise we cannot keep. */}
+      {current && ask && !busy && !policyStop && (
         <Composer
           key={current.id}
           question={current}

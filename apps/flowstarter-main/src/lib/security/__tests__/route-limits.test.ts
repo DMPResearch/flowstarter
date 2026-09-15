@@ -5,10 +5,11 @@
  * `FLOWSTARTER_ALLOW_LOCAL_RATE_LIMIT=1` override production is expected to
  * honour once #141's startup gate lands). See docs/security/rate-limits.md.
  *
- * The Arcjet SDK is mocked at its module boundary (`@/lib/arcjet`'s `aj`
- * export, and `@arcjet/next`'s `slidingWindow`) rather than reimplemented —
- * this suite is about `routeLimiter`'s own priority order, characteristic
- * wiring, and error handling, not Arcjet's rate-limit algorithm.
+ * The Arcjet SDK is mocked at its module boundary (`@/lib/arcjet`'s
+ * `ajRouteLimit` export, and `@arcjet/next`'s `slidingWindow`) rather than
+ * reimplemented — this suite is about `routeLimiter`'s own priority order,
+ * characteristic wiring, and error handling, not Arcjet's rate-limit
+ * algorithm.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
@@ -18,7 +19,10 @@ vi.mock('server-only', () => ({}));
 const protectMock = vi.fn();
 const withRuleMock = vi.fn((_rule: unknown) => ({ protect: protectMock }));
 vi.mock('@/lib/arcjet', () => ({
-  aj: { withRule: withRuleMock },
+  // `ajRouteLimit` and not `aj`: the route limiter runs on a client with no
+  // shield and no bot rule, so a denial it sees can only ever be a rate
+  // limit. See that client's doc for the 2026-09-15 defect behind the change.
+  ajRouteLimit: { withRule: withRuleMock },
 }));
 vi.mock('@arcjet/next', () => ({
   // Identity: the real `slidingWindow` just builds the rule-config object
@@ -29,8 +33,11 @@ vi.mock('@arcjet/next', () => ({
 
 const fetchMock = vi.fn();
 
-function request(): NextRequest {
-  return new NextRequest('http://localhost/api/test', { method: 'POST' });
+function request(headers: Record<string, string> = {}): NextRequest {
+  return new NextRequest('http://localhost/api/test', {
+    method: 'POST',
+    headers,
+  });
 }
 
 function allowDecision() {
@@ -237,6 +244,119 @@ describe('routeLimiter — Arcjet errors', () => {
 
     expect(result).toEqual({ ok: true, retryAfter: 0 });
     warnSpy.mockRestore();
+  });
+});
+
+/**
+ * The showcase recorder's allowance, extended from the bot rule to the rate
+ * limit.
+ *
+ * #178 let the recorder past `detectBot` in the middleware. It did not let it
+ * past the route's own limit, and on 2026-09-15 that stopped the run: five
+ * scenarios could not be filmed because `discovery-scope` answers ten per
+ * minute per IP and one browser take plus its probes spends more than that
+ * from a single address.
+ *
+ * The policy is not re-decided here -- `isRecorderRequestAllowed` is the same
+ * function the middleware asks, and `packages/platform-config/test` owns its
+ * own cases. What this pins is that the limiter asks it, that a hit is
+ * audible, and that production is closed.
+ */
+describe('routeLimiter — the showcase recorder allowance', () => {
+  const HEADER = 'x-flowstarter-recorder';
+  const SECRET = 'recorder-secret-value';
+
+  it('lets the recorder past the limit on staging, and says so', async () => {
+    vi.stubEnv('FLOWSTARTER_ENV', 'staging');
+    vi.stubEnv('FLOWSTARTER_RECORDER_SECRET', SECRET);
+    vi.stubEnv('ARCJET_KEY', 'test-key');
+    protectMock.mockResolvedValue(rateLimitDenyDecision(60_000));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { routeLimiter } = await import('../route-limits');
+
+    const result = await routeLimiter('discovery-scope').check(
+      request({ [HEADER]: SECRET }),
+      '1.2.3.4'
+    );
+
+    expect(result).toEqual({ ok: true, retryAfter: 0 });
+    // Ahead of every backend, so Arcjet is never even asked.
+    expect(protectMock).not.toHaveBeenCalled();
+    // `console.warn`, not `info`: `next.config.mjs` compiles `info` out of a
+    // production bundle, and staging builds with `NODE_ENV=production`. An
+    // audit line that is stripped is not an audit line.
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('security.recorder_allowance')
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('limit=discovery-scope')
+    );
+    // And never the secret itself.
+    expect(warnSpy.mock.calls.flat().join(' ')).not.toContain(SECRET);
+    warnSpy.mockRestore();
+  });
+
+  it('refuses the same header in production', async () => {
+    // Belt: even with a secret wrongly set in a production env file.
+    vi.stubEnv('FLOWSTARTER_ENV', 'production');
+    vi.stubEnv('FLOWSTARTER_RECORDER_SECRET', SECRET);
+    vi.stubEnv('ARCJET_KEY', 'test-key');
+    vi.stubEnv('NODE_ENV', 'production');
+    protectMock.mockResolvedValue(rateLimitDenyDecision(60_000));
+    const { routeLimiter } = await import('../route-limits');
+
+    const result = await routeLimiter('discovery-scope').check(
+      request({ [HEADER]: SECRET }),
+      '1.2.3.4'
+    );
+
+    expect(result.ok).toBe(false);
+    expect(protectMock).toHaveBeenCalled();
+  });
+
+  it('refuses a wrong header value on staging', async () => {
+    vi.stubEnv('FLOWSTARTER_ENV', 'staging');
+    vi.stubEnv('FLOWSTARTER_RECORDER_SECRET', SECRET);
+    vi.stubEnv('ARCJET_KEY', 'test-key');
+    protectMock.mockResolvedValue(rateLimitDenyDecision(60_000));
+    const { routeLimiter } = await import('../route-limits');
+
+    const result = await routeLimiter('discovery-scope').check(
+      request({ [HEADER]: 'not-the-secret' }),
+      '1.2.3.4'
+    );
+
+    expect(result.ok).toBe(false);
+  });
+
+  it('is inert when no recorder secret is configured at all', async () => {
+    vi.stubEnv('FLOWSTARTER_ENV', 'staging');
+    vi.stubEnv('ARCJET_KEY', 'test-key');
+    protectMock.mockResolvedValue(rateLimitDenyDecision(60_000));
+    const { routeLimiter } = await import('../route-limits');
+
+    const result = await routeLimiter('discovery-scope').check(
+      request({ [HEADER]: SECRET }),
+      '1.2.3.4'
+    );
+
+    expect(result.ok).toBe(false);
+  });
+
+  it('does not touch an ordinary visitor, who sends no header', async () => {
+    vi.stubEnv('FLOWSTARTER_ENV', 'staging');
+    vi.stubEnv('FLOWSTARTER_RECORDER_SECRET', SECRET);
+    vi.stubEnv('ARCJET_KEY', 'test-key');
+    protectMock.mockResolvedValue(allowDecision());
+    const { routeLimiter } = await import('../route-limits');
+
+    const result = await routeLimiter('discovery-scope').check(
+      request(),
+      '1.2.3.4'
+    );
+
+    expect(result).toEqual({ ok: true, retryAfter: 0 });
+    expect(protectMock).toHaveBeenCalled();
   });
 });
 

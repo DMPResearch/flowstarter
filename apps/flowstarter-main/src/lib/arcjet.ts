@@ -102,6 +102,37 @@ export const ajWithRateLimitBotDryRun = arcjet({
 });
 
 /**
+ * The base client `routeLimiter` layers its per-route sliding window onto.
+ *
+ * **No rules of its own, and that is the entire point.** This used to be
+ * `aj`, which carries shield and `detectBot` at `LIVE`, so every call to
+ * `routeLimiter(...).check()` ran bot detection and shield a SECOND time --
+ * after `src/middleware.ts` had already run both for the same request, and
+ * after the recorder allowance had already decided, for that request, that
+ * bot detection should be relaxed.
+ *
+ * That second evaluation is what stopped the 2026-09-15 showcase run.
+ * `decisionFromArcjet` turns any denial into `{ ok: false }`, and
+ * `POST /api/discovery/scope` turns `{ ok: false }` into
+ * `429 Retry-After: 60`. So an automated browser -- which passes the
+ * middleware under `ajWithRateLimitBotDryRun` and is then denied by `aj`'s
+ * `detectBot` at the route -- was told, over and over, that it had exhausted a
+ * ten-per-minute window it had never touched. Four single calls ninety seconds
+ * apart, all 429. The window was refilling exactly as configured; the refusal
+ * was never a rate limit at all.
+ *
+ * A route limiter limits rate. Shield and bot detection belong to the
+ * middleware, which runs them once, on every request, and reports them as the
+ * 403 they are. `arcjet-route-limit-policy.test.ts` pins this client's empty
+ * rule list the same way `arcjet-machine-policy.test.ts` pins `ajMachine`'s.
+ */
+export const ajRouteLimit = arcjet({
+  key: process.env.ARCJET_KEY!,
+  characteristics: ['ip.src'],
+  rules: [],
+});
+
+/**
  * Arcjet client for the middleware's `machine` policy: signature/shared-secret
  * callers (Cal.com's webhook delivery, the build worker's callbacks) rather
  * than a browser. See `arcjetPolicyFor` in `@/lib/route-manifest` for the
@@ -199,6 +230,7 @@ export const ajPublic = arcjet({
  */
 export type ArcjetClient =
   | typeof aj
+  | typeof ajRouteLimit
   | typeof ajWithRateLimit
   | typeof ajWithRateLimitBotDryRun
   | typeof ajMachine

@@ -32,16 +32,18 @@ function renderConversation(
 ) {
   const onState = vi.fn();
   const update = vi.fn();
+  const onPolicyStop = vi.fn();
   render(
     <IntakeGraphConversation
       data={overrides.data ?? EMPTY_DISCOVERY}
       update={update}
       answered={overrides.answered ?? []}
       onState={onState}
+      onPolicyStop={onPolicyStop}
       t={t}
     />
   );
-  return { onState, update };
+  return { onState, update, onPolicyStop };
 }
 
 afterEach(() => {
@@ -547,5 +549,146 @@ describe('a resume that fails', () => {
     expect(
       await screen.findByText(t('landing.discovery.chat.errors.required'))
     ).toBeInTheDocument();
+  });
+});
+
+/**
+ * Finding 1 of the 2026-09-15 showcase run, at the screen.
+ *
+ * The recorder filmed two takes of a prohibited brief typed into the browser.
+ * Both ended the same way: the route answered `status: 'complete'`,
+ * `ask: null`, the description blanked, and the visitor was left in front of a
+ * conversation that had simply stopped -- no refusal, no notice, nothing to
+ * film. The composer sat there accepting text that went nowhere.
+ */
+describe('when the acceptable-use gate stops the intake', () => {
+  function stoppedTurn(
+    stop: 'refused' | 'hold',
+    locale: 'en' | 'ro' = 'en'
+  ): IntakeGraphTurnResult {
+    return {
+      threadId: 't-stop',
+      status: 'complete',
+      ask: null,
+      data: {
+        ...EMPTY_DISCOVERY,
+        description: 'I sell recreational drugs by post',
+      },
+      answered: ['fullName', 'description'] as IntakeQuestionId[],
+      progress: { done: 2, total: 16 },
+      skipped: true,
+      reason: 'policy',
+      policyStop: stop,
+      policy: {
+        title:
+          locale === 'ro'
+            ? 'Nu putem construi acest site'
+            : 'We cannot build this one',
+        message: 'Our acceptable-use policy does not allow this.',
+        next: 'If we have read your business wrong, tell us.',
+        termsHref: '/terms#acceptable-use',
+        contactHref: '/contact',
+        termsLabel: 'Read the acceptable use section of our terms',
+        contactLabel: 'Talk to a person',
+        decision: stop === 'refused' ? 'refuse' : 'review',
+        categoryId: stop === 'refused' ? 'illegal_drugs' : 'none',
+        locale,
+      },
+    };
+  }
+
+  async function walkIntoAStop(stop: 'refused' | 'hold') {
+    const user = userEvent.setup();
+    let call = 0;
+    global.fetch = vi.fn(async () => {
+      call += 1;
+      if (call === 1) {
+        return {
+          ok: true,
+          json: async () =>
+            ({
+              threadId: 't-stop',
+              status: 'ask',
+              ask: {
+                type: 'ask',
+                questionId: 'description',
+                kind: 'longtext',
+                prompt: 'What does your business do?',
+                required: true,
+              },
+              data: EMPTY_DISCOVERY,
+              answered: [],
+              progress: { done: 0, total: 16 },
+            } satisfies IntakeGraphTurnResult),
+        } as Response;
+      }
+      return { ok: true, json: async () => stoppedTurn(stop) } as Response;
+    }) as unknown as typeof fetch;
+
+    const handles = renderConversation();
+    await screen.findByText('What does your business do?');
+    await user.type(
+      screen.getByLabelText(t('landing.discovery.chat.composerLabel')),
+      'I sell recreational drugs by post'
+    );
+    await user.click(
+      screen.getByRole('button', { name: t('landing.discovery.chat.send') })
+    );
+    return handles;
+  }
+
+  it("shows the refusal in the gate's own words instead of going quiet", async () => {
+    await walkIntoAStop('refused');
+
+    const notice = await screen.findByTestId('intake-policy-refused');
+    expect(
+      within(notice).getByText('We cannot build this one')
+    ).toBeInTheDocument();
+    expect(notice).toHaveAttribute('data-policy-decision', 'refuse');
+    // The two doors out of a refusal, in the same language as the rest of it.
+    expect(
+      within(notice).getByText('Talk to a person').getAttribute('href')
+    ).toBe('/contact');
+  });
+
+  it('takes the composer away, because the intake is over', async () => {
+    await walkIntoAStop('refused');
+    await screen.findByTestId('intake-policy-refused');
+
+    // An input box that still accepts text after the gate has said no is a
+    // promise the product cannot keep, and it is what the visitor was left
+    // staring at on 2026-09-15.
+    expect(
+      screen.queryByLabelText(t('landing.discovery.chat.composerLabel'))
+    ).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: t('landing.discovery.chat.send') })
+    ).toBeNull();
+  });
+
+  it('keeps the answer the visitor gave rather than discarding it', async () => {
+    const { onState } = await walkIntoAStop('refused');
+    await screen.findByTestId('intake-policy-refused');
+
+    // The exact regression: the old moderator answered with the state from
+    // before the turn, so the preview pane went on reading "You do: Not yet".
+    const last = onState.mock.calls.at(-1)?.[0] as { data: DiscoveryData };
+    expect(last.data.description).toBe('I sell recreational drugs by post');
+  });
+
+  it('tells the wizard, so nothing downstream mounts', async () => {
+    const { onPolicyStop } = await walkIntoAStop('refused');
+    await screen.findByTestId('intake-policy-refused');
+
+    expect(onPolicyStop).toHaveBeenCalledWith(
+      expect.objectContaining({ stop: 'refused' })
+    );
+  });
+
+  it('shows the hold with its own copy, which is not the refusal', async () => {
+    await walkIntoAStop('hold');
+
+    const notice = await screen.findByTestId('intake-policy-hold');
+    expect(notice).toHaveAttribute('data-policy-decision', 'review');
   });
 });

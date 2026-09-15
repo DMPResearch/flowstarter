@@ -4,6 +4,7 @@
  * Rules still live in `intake-script.ts`. The graph only phrases asks,
  * extracts multi-field answers, and pauses for the visitor via interrupt.
  */
+import type { PolicyNotice } from '@/lib/policy/copy';
 import type { DiscoveryData } from '@/app/(dynamic-pages)/(main-pages)/components/discovery/discovery.logic';
 import type {
   IntakeOption,
@@ -53,9 +54,29 @@ export interface IntakeGraphTurnResult {
   progress: IntakeGraphProgress;
   /** True when we bowed out of the model path but still have a scripted ask. */
   skipped?: boolean;
-  reason?: 'budget' | 'unconfigured' | 'error' | 'validation';
+  reason?: 'budget' | 'unconfigured' | 'error' | 'validation' | 'policy';
   /** Locale key when the primary answer failed validation. */
   errorKey?: string | null;
+  /**
+   * The acceptable-use gate stopped the intake, and which way.
+   *
+   * The scope gate's own two words (`@/lib/flowstarter/scope-route`'s
+   * `ScopeRoute`), so the browser renders one policy screen for both surfaces
+   * instead of learning a second vocabulary for the same two verdicts.
+   * Absent on every ordinary turn.
+   */
+  policyStop?: 'refused' | 'hold';
+  /**
+   * What to say, written by `@/lib/policy/copy` in the visitor's own
+   * language and carried here rather than re-derived in the browser.
+   *
+   * This field is the fix for the defect the showcase recorder filmed on
+   * 2026-09-15: the intake's old moderator ended a prohibited turn with
+   * `status: 'complete'`, `ask: null` and a blanked description, and said
+   * nothing at all. A visitor's answer is never discarded silently now --
+   * either the conversation continues, or this says why it did not.
+   */
+  policy?: PolicyNotice | null;
 }
 
 export interface IntakeGraphStartInput {
