@@ -23,7 +23,7 @@
  *
  * Copy is hardcoded English, which is the convention on the client dashboard.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
@@ -228,58 +228,74 @@ export function BriefForm({
   // photo, which is the photos uploader a few lines further down.
   const photosUploader = useRef<HTMLDivElement | null>(null);
 
-  // The uploader reports "a write happened", not which ids landed, so the
-  // newly arrived files are found by difference against what we already knew.
-  // Kept in a ref because the callback the uploader holds is created once.
-  const knownIds = useRef(new Set(initialAssets.map((asset) => asset.id)));
-  useEffect(() => {
-    knownIds.current = new Set(assets.map((asset) => asset.id));
-  }, [assets]);
-
   const endpoint = `/api/client/brief/${workspaceId}`;
 
-  const adopt = useCallback(
-    async (target: UploadTarget) => {
-      let payload: BriefResponse;
-      try {
-        const response = await fetch(endpoint);
-        if (!response.ok) return;
-        payload = (await response.json()) as BriefResponse;
-      } catch {
-        // The files are stored either way; the next save will pick them up.
-        return;
-      }
-      const fresh = payload.assets
-        .filter((asset) => !knownIds.current.has(asset.id))
-        .map((asset) => asset.id);
+  // Best-effort refresh of the full asset list -- captions, urls, rights
+  // state -- for the thumbnails and cards elsewhere on the page. Never the
+  // thing that decides which ids belong to which project: a slow or failed
+  // refresh here must not cost the client the attachment they just made.
+  const refreshAssets = useCallback(async () => {
+    try {
+      const response = await fetch(endpoint);
+      if (!response.ok) return;
+      const payload = (await response.json()) as BriefResponse;
       setAssets(payload.assets);
-      if (fresh.length === 0) return;
+    } catch {
+      // The files are stored either way; the next save or reload picks them up.
+    }
+  }, [endpoint]);
 
-      if (target === 'design') {
-        setReferenceIds((current) =>
-          [...current, ...fresh].slice(0, MAX_REFERENCES)
-        );
-        return;
+  /**
+   * Files an uploader's write onto its target.
+   *
+   * `assetIds` are the ids the uploader that called this just wrote --
+   * exactly the ones it uploaded, or exactly the ones it just confirmed the
+   * rights over -- never a guess reconstructed by diffing a shared asset list
+   * against what this form last saw. That diff used to be how this worked,
+   * keyed off a ref of "every id we have ever seen", and it raced: a brief
+   * has several uploaders open on one page (one per project, plus design
+   * references, plus photos), each refreshing the same workspace-wide list
+   * after its own write, and whichever refresh happened to land first claimed
+   * every id the list had not shown it yet -- including ids that belonged to
+   * a different, still-in-flight uploader. A screenshot could finish
+   * uploading, get captioned and have its rights confirmed, and still never
+   * reach its project's `screenshotAssetIds`, because some other row's
+   * refresh saw it first and marked it "already known" before its own row's
+   * refresh got a turn. Taking the ids directly from the write that produced
+   * them removes the race by construction: there is nothing left to diff.
+   */
+  const adopt = useCallback(
+    (target: UploadTarget, assetIds: string[]) => {
+      if (assetIds.length > 0) {
+        if (target === 'design') {
+          setReferenceIds((current) =>
+            Array.from(new Set([...current, ...assetIds])).slice(
+              0,
+              MAX_REFERENCES
+            )
+          );
+        } else if (target === 'photos') {
+          setPhotoIds((current) =>
+            Array.from(new Set([...current, ...assetIds])).slice(0, MAX_PHOTOS)
+          );
+        } else {
+          setProjects((current) =>
+            current.map((project, index) =>
+              index === target
+                ? {
+                    ...project,
+                    screenshotAssetIds: Array.from(
+                      new Set([...project.screenshotAssetIds, ...assetIds])
+                    ).slice(0, MAX_SCREENSHOTS),
+                  }
+                : project
+            )
+          );
+        }
       }
-      if (target === 'photos') {
-        setPhotoIds((current) => [...current, ...fresh].slice(0, MAX_PHOTOS));
-        return;
-      }
-      setProjects((current) =>
-        current.map((project, index) =>
-          index === target
-            ? {
-                ...project,
-                screenshotAssetIds: [
-                  ...project.screenshotAssetIds,
-                  ...fresh,
-                ].slice(0, MAX_SCREENSHOTS),
-              }
-            : project
-        )
-      );
+      void refreshAssets();
     },
-    [endpoint]
+    [refreshAssets]
   );
 
   const updateProject = useCallback(
@@ -736,7 +752,9 @@ export function BriefForm({
                     slot="section"
                     askKey="brief_project_screenshots"
                     label="Add a screenshot"
-                    onSufficiency={() => void adopt(index)}
+                    onSufficiency={(_sufficiency, assetIds) =>
+                      adopt(index, assetIds)
+                    }
                     // A screenshot is filed against a project by what it
                     // shows, and nothing else here says which project that
                     // is. Two of them went on the wrong case study once for
@@ -788,7 +806,9 @@ export function BriefForm({
             slot="section"
             askKey="brief_design_reference"
             label="Add a reference"
-            onSufficiency={() => void adopt('design')}
+            onSufficiency={(_sufficiency, assetIds) =>
+              adopt('design', assetIds)
+            }
           />
         </div>
       </GlassSurface>
@@ -862,7 +882,9 @@ export function BriefForm({
               slot="hero"
               askKey="brief_photos"
               label="Add photos"
-              onSufficiency={() => void adopt('photos')}
+              onSufficiency={(_sufficiency, assetIds) =>
+                adopt('photos', assetIds)
+              }
             />
           </div>
         </div>

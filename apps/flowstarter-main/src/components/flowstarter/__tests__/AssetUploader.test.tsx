@@ -224,10 +224,12 @@ describe('AssetUploader', () => {
         'true'
       )
     );
-    expect(onSufficiency).toHaveBeenLastCalledWith({
-      ready: true,
-      missing: [],
-    });
+    // The second argument is exactly the id rights were just confirmed over,
+    // not a diff against some list the caller has to keep in sync itself.
+    expect(onSufficiency).toHaveBeenLastCalledWith(
+      { ready: true, missing: [] },
+      [ASSET_ONE]
+    );
   });
 
   it('surfaces the server’s refusal rather than pretending it worked', async () => {
