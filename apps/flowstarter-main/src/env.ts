@@ -144,9 +144,6 @@ export const env = createEnv({
     // Stripe (publishable key is safe for client)
     NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: z.string().optional(),
 
-    // Analytics
-    NEXT_PUBLIC_GA_MEASUREMENT_ID: z.string().optional(),
-
     // Site Config
     NEXT_PUBLIC_SITE_URL: z.string().url().optional(),
     NEXT_PUBLIC_APP_URL: z.string().url().optional(),
@@ -226,7 +223,6 @@ export const env = createEnv({
       process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL,
     NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY:
       process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY,
-    NEXT_PUBLIC_GA_MEASUREMENT_ID: process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID,
     NEXT_PUBLIC_SITE_URL: process.env.NEXT_PUBLIC_SITE_URL,
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
     NEXT_PUBLIC_EXTRA_REDIRECT_ORIGINS:

@@ -18,6 +18,8 @@ import {
   orderingVerdict,
   paymentStatusAdvances,
   periodEndIsCurrent,
+  refundStatusFor,
+  refundedTotalAdvances,
 } from '../money-state';
 
 describe('paymentStatusAdvances — deposit and final paid are monotonic', () => {
@@ -223,5 +225,86 @@ describe('periodEndIsCurrent', () => {
         storedPeriodEnd: undefined,
       })
     ).toBe(true);
+  });
+});
+
+// ─── Refunds ────────────────────────────────────────────────────────────────
+
+describe('refundedTotalAdvances', () => {
+  // Stripe sends one charge.refunded per refund, each reporting the charge's
+  // RUNNING TOTAL. Two refunds on one charge therefore produce two events
+  // whose totals differ, and delivered out of order the older one would walk
+  // the stored total backwards.
+  it('accepts a larger total', () => {
+    expect(refundedTotalAdvances(0, 15_980)).toBe(true);
+    expect(refundedTotalAdvances(15_980, 39_950)).toBe(true);
+  });
+
+  it('refuses an equal total, which is a redelivery with nothing to write', () => {
+    expect(refundedTotalAdvances(39_950, 39_950)).toBe(false);
+  });
+
+  it('refuses a smaller total, which is an out-of-order delivery', () => {
+    expect(refundedTotalAdvances(39_950, 15_980)).toBe(false);
+  });
+
+  it('treats an absent stored total as zero', () => {
+    expect(refundedTotalAdvances(null, 1)).toBe(true);
+    expect(refundedTotalAdvances(undefined, 1)).toBe(true);
+  });
+
+  it('refuses a zero or nonsense incoming total', () => {
+    expect(refundedTotalAdvances(0, 0)).toBe(false);
+    expect(refundedTotalAdvances(0, -5)).toBe(false);
+    expect(refundedTotalAdvances(0, Number.NaN)).toBe(false);
+  });
+});
+
+describe('refundStatusFor', () => {
+  it('is none when nothing has gone back', () => {
+    expect(refundStatusFor({ refundedMinor: 0, quoteMinor: 79_900 })).toBe(
+      'none'
+    );
+  });
+
+  it('is partial for anything short of the whole quote', () => {
+    expect(refundStatusFor({ refundedMinor: 39_950, quoteMinor: 79_900 })).toBe(
+      'partial'
+    );
+  });
+
+  // A client who paid only the deposit and had all of it back has not had the
+  // project refunded in full; calling that `full` would read as "settled and
+  // closed" on a workspace that still owes 80%.
+  it('is partial when the whole deposit went back but the quote did not', () => {
+    expect(refundStatusFor({ refundedMinor: 15_980, quoteMinor: 79_900 })).toBe(
+      'partial'
+    );
+  });
+
+  it('is full once the refund reaches the quote', () => {
+    expect(refundStatusFor({ refundedMinor: 79_900, quoteMinor: 79_900 })).toBe(
+      'full'
+    );
+    expect(refundStatusFor({ refundedMinor: 80_000, quoteMinor: 79_900 })).toBe(
+      'full'
+    );
+  });
+
+  it('falls back to partial when the quote is unknown, so somebody looks', () => {
+    for (const quoteMinor of [null, undefined, 0, Number.NaN]) {
+      expect(refundStatusFor({ refundedMinor: 100, quoteMinor })).toBe(
+        'partial'
+      );
+    }
+  });
+
+  it('is none for an unknown quote and nothing refunded', () => {
+    expect(refundStatusFor({ refundedMinor: 0, quoteMinor: null })).toBe(
+      'none'
+    );
+    expect(refundStatusFor({ refundedMinor: Number.NaN, quoteMinor: 1 })).toBe(
+      'none'
+    );
   });
 });

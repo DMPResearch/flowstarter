@@ -461,6 +461,15 @@ export const SERVER_ONLY_TABLES = [
   // server-only instead and proved here. See
   // supabase/migrations/20260912163000_stripe_events.sql.
   'stripe_events',
+  // The refund ledger. Carries workspace_id, so the tenant-table guard sees
+  // it and demands a classification; server-only is the right one. A client
+  // sees their refund in the email we send and on a server-rendered
+  // dashboard, so nothing needs a browser session to read the row — and the
+  // row holds an operator's free-text reason for refunding, which is written
+  // for us, not for them. RLS on, zero policies, every grant to anon and
+  // authenticated revoked. See
+  // supabase/migrations/20260914140000_billing_refunds.sql.
+  'billing_refunds',
   'custom_inquiries',
   // Visitors the intake routed to a DMPResearch discovery call instead of to
   // the generator. Keyed on nothing but their own email: the row is created

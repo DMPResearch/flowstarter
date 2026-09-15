@@ -655,3 +655,60 @@ export function bookingPageReadyEmail(input: {
     ],
   });
 }
+
+/**
+ * Money went back.
+ *
+ * The one email in this file sent because something did not work out, and the
+ * register is set by that: no apology theatre, no attempt to keep the client,
+ * no button. A refund email has three jobs. Say the amount. Say roughly when
+ * it lands, which is a fact about the client's bank and not about us. Say
+ * that the work is still theirs, because the guarantee has always said so and
+ * this is the moment a client would doubt it.
+ *
+ * There is nothing to press: the money is already on its way, and a call to
+ * action here would read as selling to somebody who just asked for their
+ * money back.
+ */
+export function refundIssuedEmail(input: {
+  /** Already formatted, with its currency symbol. */
+  amount: string;
+  dashboardUrl: string;
+  clientName?: string | null;
+  businessName?: string | null;
+}): RenderedEmail {
+  return renderEmail({
+    subject: `We have refunded ${input.amount}`,
+    preheader: `${input.amount} is on its way back to the card you paid with.`,
+    blocks: [
+      { kind: 'heading', text: `We have refunded ${input.amount}` },
+      greeting(input.clientName),
+      {
+        kind: 'paragraph',
+        content: [
+          'We have sent ',
+          { strong: input.amount },
+          ` back to the card you paid for ${projectPhrase(
+            input.businessName
+          )} with. Most banks show it within five to ten working days, and some are faster.`,
+        ],
+      },
+      {
+        kind: 'paragraph',
+        content:
+          'The work stays yours. Nothing is taken down and nothing is ' +
+          'deleted because of this, and if you want a copy of the site to ' +
+          'host somewhere else, ask us and we will send you one.',
+      },
+      {
+        kind: 'note',
+        content: [
+          'The refund is on your dashboard at ',
+          { link: { href: input.dashboardUrl } },
+          ', with the amount and the date. If the figure is not what you ' +
+            'expected, reply to this email and a person will read it.',
+        ],
+      },
+    ],
+  });
+}

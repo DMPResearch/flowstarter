@@ -1,4 +1,16 @@
-/** Centralized landing page copy. Edit here instead of JSX. */
+/**
+ * Centralized landing page copy. Edit here instead of JSX.
+ *
+ * One exception, and it is deliberate: the hero's refund guarantee is not a
+ * string in this file. It is generated from
+ * `src/lib/billing/refund-policy.ts`, the same config the operator's refund
+ * action reads to decide what it is allowed to send. The window and the
+ * percentage were published here and in the terms page as prose for months
+ * while no refund code existed at all; now that it exists, the sentence a
+ * visitor reads before they buy and the amount the button pays out come from
+ * one place and cannot drift apart.
+ */
+import { guaranteeHeroSentence } from '@/lib/billing/refund-policy';
 
 export interface HeroCopy {
   headlinePrefix: string;
@@ -61,8 +73,7 @@ export const LANDING_COPY = {
     secondaryCta: 'See the process',
     trustLine:
       'For coaches, consultants, therapists, freelancers and founders, whether you are launching for the first time or finally fixing the site you have.',
-    guarantee:
-      'First month is free. If you are not happy within 30 days, we refund half your setup fee and you keep the work.',
+    guarantee: guaranteeHeroSentence(),
   },
   brandIntelligence: {
     headline: 'We start with what is already true',

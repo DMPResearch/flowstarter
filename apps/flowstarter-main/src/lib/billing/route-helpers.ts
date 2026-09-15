@@ -84,6 +84,13 @@ export function mapBillingError(e: unknown): NextResponse {
       invalid_amount: 400,
       invoice_create_failed: 502,
       invoice_finalize_failed: 502,
+      invoice_lookup_failed: 502,
+      payment_intent_lookup_failed: 502,
+      // Stripe refused the refund itself: a card that cannot take one, a
+      // charge already fully refunded, an amount above what settled. 502
+      // because the decision was Stripe's and the operator's next move is to
+      // read the message, not to fix a field.
+      refund_failed: 502,
       db_error: 500,
     };
     const status = statusByCode[e.code] ?? 500;

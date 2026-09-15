@@ -137,7 +137,35 @@ LINKEDIN_CLIENT_ID=                 # portrait from social, see the note below
 LINKEDIN_CLIENT_SECRET=
 INSTAGRAM_APP_ID=
 INSTAGRAM_APP_SECRET=
+
+# Who operates Flowstarter, printed on /terms and /privacy. Empty here on
+# purpose: there is no registered entity yet. See the note below.
+FLOWSTARTER_LEGAL_ENTITY_NAME=
+FLOWSTARTER_LEGAL_REGISTRATION_NUMBER=
+FLOWSTARTER_LEGAL_VAT_NUMBER=
+FLOWSTARTER_LEGAL_ADDRESS=
+FLOWSTARTER_LEGAL_JURISDICTION=
+FLOWSTARTER_LEGAL_COURT=
 ```
+
+The six `FLOWSTARTER_LEGAL_*` lines are the operator identity the terms and
+privacy pages print, and they are read at run time by
+`apps/flowstarter-main/src/lib/legal/company.ts`. They are empty above because
+they are empty on the box: Flowstarter is not incorporated yet.
+
+**All six or none.** With any one of them missing, both pages say "Operator
+identity pending registration" in place of a company name, the terms page
+declines to name a governing law or a court, and the draft notice stays up on
+terms, privacy and cookies. Filling five of six does not get you five sixths
+of a disclosure; it gets you a page that reads as complete and is not, which
+is the exact failure the module exists to prevent. Fill all six on the same
+edit, restart the slot, and the draft notice disappears from all three pages
+at once.
+
+There is nothing to put here until Darius decides the company structure. Do
+not write a placeholder: a plausible-looking registration number on a live
+terms page is worse than the honest blank, because a blank invites a question
+and a wrong number answers it.
 
 The three `AUTH_TRANSFER_*_ORIGIN` lines name the only origins a Clerk sign-in
 ticket may be sent to. They are optional here, because the policy already

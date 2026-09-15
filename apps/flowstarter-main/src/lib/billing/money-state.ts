@@ -167,6 +167,59 @@ export function carePlanTransitionAllowed(input: {
   return next.includes(to as CarePlanStatus);
 }
 
+// ─── Refunds ────────────────────────────────────────────────────────────────
+
+/** What `workspaces.refund_status` holds. Mirrors the CHECK constraint. */
+export const REFUND_STATUSES = ['none', 'partial', 'full'] as const;
+export type RefundStatus = (typeof REFUND_STATUSES)[number];
+
+/**
+ * May a `charge.refunded` event write this total?
+ *
+ * Same shape of rule, and the same reason, as `paymentStatusAdvances`. Stripe
+ * sends one `charge.refunded` per refund and each one reports the charge's
+ * running total, so two refunds on one charge produce two events whose totals
+ * differ — and delivered out of order, the older one would walk the stored
+ * total backwards. A total equal to what is stored is a redelivery with
+ * nothing to write.
+ */
+export function refundedTotalAdvances(
+  storedMinor: number | null | undefined,
+  incomingMinor: number
+): boolean {
+  if (!Number.isFinite(incomingMinor) || incomingMinor <= 0) return false;
+  const stored = typeof storedMinor === 'number' ? storedMinor : 0;
+  return incomingMinor > stored;
+}
+
+/**
+ * `refund_status` for a total refunded against an agreed price.
+ *
+ * `full` needs the refund to have reached the whole quote, not merely every
+ * payment collected so far: a client who paid only the 20% deposit and had it
+ * all back has not had the project refunded in full, they have had the
+ * deposit back, and calling that `full` would read as "this engagement is
+ * closed and settled" on a workspace that still owes 80%.
+ *
+ * An unknown or absent quote falls back to `partial` whenever anything was
+ * refunded: we know money went back and we cannot prove it was all of it, and
+ * of the two wrong answers that is the one that makes somebody look.
+ */
+export function refundStatusFor(input: {
+  refundedMinor: number;
+  quoteMinor: number | null | undefined;
+}): RefundStatus {
+  const refunded = Number.isFinite(input.refundedMinor)
+    ? input.refundedMinor
+    : 0;
+  if (refunded <= 0) return 'none';
+  const quote = input.quoteMinor;
+  if (typeof quote !== 'number' || !Number.isFinite(quote) || quote <= 0) {
+    return 'partial';
+  }
+  return refunded >= quote ? 'full' : 'partial';
+}
+
 // ─── Change requests ────────────────────────────────────────────────────────
 
 /**

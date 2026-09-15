@@ -5,6 +5,15 @@ import {
   ProseSection,
 } from '@/components/marketing';
 import { tServer } from '@/lib/i18n-server';
+import {
+  analyticsDisclosure,
+  CONSENT_STORAGE_NOTE,
+  COOKIE_INVENTORY,
+} from '@/lib/legal/cookies';
+import {
+  legalDraftNoticeVisible,
+  readOperatorIdentity,
+} from '@/lib/legal/company';
 
 export const metadata = {
   title: 'Cookie Policy',
@@ -12,50 +21,7 @@ export const metadata = {
     'What cookies Flowstarter uses, why we use them, and how to control them.',
 };
 
-const LAST_UPDATED = 'May 2026';
-
-type CookieRow = {
-  name: string;
-  purpose: string;
-  type: 'Strictly necessary' | 'Functional' | 'Analytics';
-  duration: string;
-};
-
-const COOKIE_TABLE: CookieRow[] = [
-  {
-    name: '__session',
-    purpose: 'Keeps you signed in. Set by Clerk after a successful sign-in.',
-    type: 'Strictly necessary',
-    duration: 'Session (up to 7 days)',
-  },
-  {
-    name: '__client_uat',
-    purpose:
-      'Used by Clerk to detect that a user has previously authenticated.',
-    type: 'Strictly necessary',
-    duration: '1 year',
-  },
-  {
-    name: 'flowstarter_theme',
-    purpose: 'Remembers your light / dark theme preference.',
-    type: 'Functional',
-    duration: '1 year',
-  },
-  {
-    name: 'flowstarter_cookie_consent',
-    purpose:
-      'Stores your cookie-banner choice so we do not ask again on every visit.',
-    type: 'Strictly necessary',
-    duration: '1 year',
-  },
-  {
-    name: 'NEXT_LOCALE',
-    purpose:
-      'Remembers your preferred language so the next visit loads in the same locale.',
-    type: 'Functional',
-    duration: '1 year',
-  },
-];
+const LAST_UPDATED = 'September 14, 2026';
 
 const cellStyle = {
   padding: '0.7rem 0.85rem',
@@ -82,6 +48,15 @@ const headerCellStyle = {
 
 export default function CookiesPage() {
   const t = tServer as (key: string) => string;
+  // The table is generated from src/lib/legal/cookies.ts, which is checked
+  // against what the source actually writes. The hand-written version listed
+  // NEXT_LOCALE, which nothing sets; listed flowstarter_cookie_consent as a
+  // cookie when it lives in localStorage, and told readers to clear it from
+  // their cookie settings, which would have done nothing; and omitted
+  // fs_country, the one cookie our own code sets.
+  const analytics = analyticsDisclosure();
+  const identity = readOperatorIdentity();
+
   return (
     <MarketingShell>
       <main id="main-content" className="flex-1">
@@ -100,7 +75,7 @@ export default function CookiesPage() {
         />
 
         <ProseSection>
-          <LegalDraftNotice />
+          {legalDraftNoticeVisible(identity) && <LegalDraftNotice />}
 
           <h2>1. What is a cookie?</h2>
           <p>
@@ -113,20 +88,17 @@ export default function CookiesPage() {
           <ul>
             <li>
               <strong>Strictly necessary</strong>: required for the site to
-              function. These keep you signed in, remember your consent choice,
-              and protect against cross-site request forgery. They are set
-              whether or not you accept the cookie banner.
+              function. These keep you signed in. They are set whether or not
+              you accept the cookie banner.
             </li>
             <li>
               <strong>Functional</strong>: small comforts such as your
-              light/dark theme preference and your chosen language. Optional; if
-              you decline, the site falls back to system defaults.
+              light/dark theme preference and the country we infer so prices
+              read correctly. Optional; if you decline, the site falls back to
+              system defaults.
             </li>
             <li>
-              <strong>Analytics</strong>: we currently use Plausible, a
-              privacy-friendly analytics tool that does <em>not</em> set
-              cookies. We do not run Google Analytics, Facebook Pixel, or any
-              cross-site advertising tracker.
+              <strong>Analytics</strong>: {analytics.statement}
             </li>
             <li>
               <strong>Advertising</strong>: we do not use advertising cookies of
@@ -136,8 +108,9 @@ export default function CookiesPage() {
 
           <h2>3. The full list</h2>
           <p>
-            The table below is the complete inventory of cookies served by
-            flowstarter.net and our authenticated app.
+            The table below is every cookie served by this site and our
+            authenticated app, including the ones our sign-in provider sets on
+            our behalf.
           </p>
 
           <div
@@ -166,61 +139,40 @@ export default function CookiesPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {COOKIE_TABLE.map((row, i) => (
-                    <tr key={row.name}>
-                      <td
-                        style={{
-                          ...cellStyle,
-                          fontFamily: 'var(--ls-mono)',
-                          fontSize: '0.82rem',
-                          color: 'var(--ls-ink)',
-                          borderBottom:
-                            i === COOKIE_TABLE.length - 1
-                              ? 'none'
-                              : cellStyle.borderBottom,
-                        }}
-                      >
-                        {row.name}
-                      </td>
-                      <td
-                        style={{
-                          ...cellStyle,
-                          borderBottom:
-                            i === COOKIE_TABLE.length - 1
-                              ? 'none'
-                              : cellStyle.borderBottom,
-                        }}
-                      >
-                        {row.purpose}
-                      </td>
-                      <td
-                        style={{
-                          ...cellStyle,
-                          color: 'var(--ls-ink)',
-                          borderBottom:
-                            i === COOKIE_TABLE.length - 1
-                              ? 'none'
-                              : cellStyle.borderBottom,
-                        }}
-                      >
-                        {row.type}
-                      </td>
-                      <td
-                        style={{
-                          ...cellStyle,
-                          fontFamily: 'var(--ls-mono)',
-                          fontSize: '0.82rem',
-                          color: 'var(--ls-ink-faint)',
-                          borderBottom:
-                            i === COOKIE_TABLE.length - 1
-                              ? 'none'
-                              : cellStyle.borderBottom,
-                        }}
-                      >
-                        {row.duration}
-                      </td>
-                    </tr>
-                  ))}
+                  {COOKIE_INVENTORY.map((row, i) => {
+                    const last = i === COOKIE_INVENTORY.length - 1;
+                    const cell = last
+                      ? { ...cellStyle, borderBottom: 'none' }
+                      : cellStyle;
+                    return (
+                      <tr key={row.name}>
+                        <td
+                          style={{
+                            ...cell,
+                            fontFamily: 'var(--ls-mono)',
+                            fontSize: '0.82rem',
+                            color: 'var(--ls-ink)',
+                          }}
+                        >
+                          {row.name}
+                        </td>
+                        <td style={cell}>{row.purpose}</td>
+                        <td style={{ ...cell, color: 'var(--ls-ink)' }}>
+                          {row.category}
+                        </td>
+                        <td
+                          style={{
+                            ...cell,
+                            fontFamily: 'var(--ls-mono)',
+                            fontSize: '0.82rem',
+                            color: 'var(--ls-ink-faint)',
+                          }}
+                        >
+                          {row.duration}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -228,28 +180,26 @@ export default function CookiesPage() {
 
           <h2>4. How to control your cookies</h2>
           <p>
-            The cookie banner at the bottom of the page lets you accept or
-            decline non-essential cookies on your first visit. You can change
-            your choice at any time by clearing the
-            <code> flowstarter_cookie_consent </code> cookie in your browser
-            settings. The banner will reappear on the next visit.
+            The banner at the bottom of the page lets you accept or decline
+            non-essential cookies on your first visit. {CONSENT_STORAGE_NOTE}
           </p>
           <p>You can also manage cookies directly in your browser:</p>
           <ul>
             <li>
-              <strong>Chrome</strong>: Settings → Privacy and security → Cookies
-              and other site data.
+              <strong>Chrome</strong>: Settings, then Privacy and security, then
+              Cookies and other site data.
             </li>
             <li>
-              <strong>Firefox</strong>: Settings → Privacy &amp; Security →
-              Cookies and Site Data.
+              <strong>Firefox</strong>: Settings, then Privacy &amp; Security,
+              then Cookies and Site Data.
             </li>
             <li>
-              <strong>Safari</strong>: Settings → Privacy → Manage Website Data.
+              <strong>Safari</strong>: Settings, then Privacy, then Manage
+              Website Data.
             </li>
             <li>
-              <strong>Edge</strong>: Settings → Cookies and site permissions →
-              Manage and delete cookies and site data.
+              <strong>Edge</strong>: Settings, then Cookies and site
+              permissions, then Manage and delete cookies and site data.
             </li>
           </ul>
           <p>
@@ -266,11 +216,9 @@ export default function CookiesPage() {
 
           <div className="ls-callout">
             <p>
-              Questions about cookies? Write to{' '}
-              <a href="mailto:privacy@flowstarter.net">
-                privacy@flowstarter.net
-              </a>{' '}
-              or read the full <a href="/privacy">privacy policy</a>.
+              Questions about cookies? Ask on the{' '}
+              <a href="/contact">contact page</a> or read the full{' '}
+              <a href="/privacy">privacy policy</a>.
             </p>
           </div>
         </ProseSection>

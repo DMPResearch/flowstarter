@@ -4,6 +4,25 @@ import {
   PageHero,
   ProseSection,
 } from '@/components/marketing';
+import {
+  controllerIdentityLines,
+  controllerSentence,
+  legalDraftNoticeVisible,
+  readOperatorIdentity,
+} from '@/lib/legal/company';
+import {
+  DPA_STATEMENT,
+  SUBPROCESSORS,
+  subprocessorsOutsideEu,
+  termsUrl,
+} from '@/lib/legal/subprocessors';
+import {
+  DATA_REQUEST_RESPONSE_DAYS,
+  ON_REQUEST_RETENTION,
+  dataRequestSentence,
+  enforcedRetention,
+} from '@/lib/legal/retention';
+import { analyticsDisclosure } from '@/lib/legal/cookies';
 
 export const metadata = {
   title: 'Privacy Policy',
@@ -11,9 +30,38 @@ export const metadata = {
     'How Flowstarter collects, uses, and protects your data. GDPR-aligned, plain-English, with a full list of subprocessors.',
 };
 
-const LAST_UPDATED = 'May 2026';
+const LAST_UPDATED = 'September 14, 2026';
+
+const cellStyle = {
+  padding: '0.7rem 0.85rem',
+  borderBottom: '1px solid var(--ls-rule)',
+  fontFamily: 'var(--ls-sans)',
+  fontSize: '0.9rem',
+  lineHeight: 1.5,
+  color: 'var(--ls-ink-dim)',
+  verticalAlign: 'top' as const,
+};
+
+const headerCellStyle = {
+  ...cellStyle,
+  fontFamily: 'var(--ls-mono)',
+  fontSize: '10.5px',
+  letterSpacing: '0.18em',
+  textTransform: 'uppercase' as const,
+  color: 'var(--ls-ink-faint)',
+  background: 'transparent',
+  borderBottom: '1px solid var(--ls-rule-strong)',
+  fontWeight: 500,
+  textAlign: 'left' as const,
+};
 
 export default function PrivacyPage() {
+  const identity = readOperatorIdentity();
+  const identityLines = controllerIdentityLines(identity);
+  const enforced = enforcedRetention();
+  const analytics = analyticsDisclosure();
+  const outsideEu = subprocessorsOutsideEu();
+
   return (
     <MarketingShell>
       <main id="main-content" className="flex-1">
@@ -32,18 +80,26 @@ export default function PrivacyPage() {
         />
 
         <ProseSection>
-          <LegalDraftNotice />
+          {legalDraftNoticeVisible(identity) && <LegalDraftNotice />}
 
           <h2>1. Who we are</h2>
+          {/* The old text said "a two-person studio registered in the European
+              Union", which named no entity and no address. Article 13 wants
+              the controller's identity; when there is not one to give, saying
+              so is the only honest answer. */}
+          <p>{controllerSentence(identity)}</p>
+          {identityLines.length > 0 && (
+            <ul>
+              {identityLines.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          )}
           <p>
-            Flowstarter is operated by Darius and Dorin, a two-person studio
-            registered in the European Union. We act as the{' '}
-            <strong>data controller</strong> for the marketing site
-            (flowstarter.net) and as the <strong>data processor</strong> for the
-            client sites and dashboards we build and host on your behalf. For
-            all data-protection questions, write to{' '}
-            <a href="mailto:privacy@flowstarter.net">privacy@flowstarter.net</a>
-            .
+            We act as the <strong>data controller</strong> for this marketing
+            site and as the <strong>data processor</strong> for the client sites
+            and dashboards we build and host on your behalf. Data-protection
+            questions go through the <a href="/contact">contact page</a>.
           </p>
 
           <h2>2. What data we collect</h2>
@@ -58,44 +114,42 @@ export default function PrivacyPage() {
               during invoicing.
             </li>
             <li>
-              <strong>Discovery-call submissions</strong>: the goals, business
-              details, and current-site URL you share when booking a free call.
-            </li>
-            <li>
-              <strong>Site usage</strong>: anonymised analytics events such as
-              page views, referrers, and aggregated device class. No cross-site
-              tracking.
+              <strong>Intake answers</strong>: what you tell us about your
+              business, and the public profiles you point us at, when you ask
+              for a preview. This is the text your site is written from, and it
+              is sent to the language-model gateway listed below.
             </li>
             <li>
               <strong>Uploaded content</strong>: copy, images, logos, and brand
-              assets you (or your team) upload to your project. Stored encrypted
-              at rest.
+              assets you (or your team) upload to your project.
             </li>
             <li>
-              <strong>Cookies</strong>: a small number of strictly necessary
-              cookies for auth and theme preference. Details on the{' '}
+              <strong>Cookies</strong>: a small number of cookies for sign-in,
+              your theme and the country we infer. The full list is on the{' '}
               <a href="/cookies">cookie page</a>.
             </li>
           </ul>
+          {/* "Site usage: anonymised analytics events" is gone. There is no
+              analytics tool installed and no events table, so it described
+              data this product does not hold. */}
 
           <h2>3. How we use your data</h2>
           <ul>
             <li>
-              <strong>Service delivery</strong>, scheduling calls, building your
-              site, hosting it, providing the smart editor, and responding to
-              support.
+              <strong>Service delivery</strong>: building your site, hosting it,
+              providing the smart editor, and answering support.
             </li>
             <li>
-              <strong>Billing</strong>: generating invoices, processing
-              payments, and meeting our tax obligations.
+              <strong>Billing</strong>: generating invoices, processing payments
+              and refunds, and meeting our tax obligations.
             </li>
             <li>
               <strong>Transactional email</strong>: confirmations, project
               updates, security alerts, and renewal notices.
             </li>
             <li>
-              <strong>Product improvement</strong>: aggregated, de-identified
-              analytics used to improve the editor and the marketing site.
+              <strong>Security</strong>: deciding whether a request to this site
+              is a person, a crawler or an attack.
             </li>
             <li>
               <strong>Marketing email</strong>: only with your explicit opt-in
@@ -110,98 +164,164 @@ export default function PrivacyPage() {
               deliver and support your project.
             </li>
             <li>
-              <strong>Legitimate interest</strong>: for aggregated analytics,
-              security monitoring, and fraud prevention.
+              <strong>Legitimate interest</strong>: for security monitoring and
+              fraud prevention.
             </li>
             <li>
               <strong>Legal obligation</strong>: for tax and accounting records.
             </li>
             <li>
               <strong>Consent</strong>: for marketing email and any optional
-              analytics or functional cookies.
+              cookie.
             </li>
           </ul>
 
-          <h2>5. Subprocessors we share data with</h2>
+          <h2>5. Analytics</h2>
+          <p>{analytics.statement}</p>
+
+          <h2>6. Subprocessors we share data with</h2>
+          {/* Generated from src/lib/legal/subprocessors.ts, which is the same
+              table the cookie page reads. The old hand-written list named
+              Plausible (never installed) and Calendly (replaced by a
+              self-hosted Cal.com) and omitted Arcjet, the language-model
+              gateway, Cal.com, GitHub and Depot. A list that is wrong in both
+              directions is not a disclosure. */}
           <p>
-            We use a small, vetted set of subprocessors. Each one has signed a
-            data-processing agreement with us covering Article 28 GDPR
-            requirements. The current list:
+            Every third party that processes data on our behalf is below. We
+            update this page before adding a new one.
+          </p>
+
+          <div
+            style={{
+              marginTop: '1.2rem',
+              border: '1px solid var(--ls-rule)',
+              borderRadius: '14px',
+              overflow: 'hidden',
+              background: 'var(--ls-glass-bg)',
+            }}
+          >
+            <div style={{ overflowX: 'auto' }}>
+              <table
+                style={{
+                  width: '100%',
+                  borderCollapse: 'collapse',
+                  fontFamily: 'var(--ls-sans)',
+                }}
+              >
+                <thead>
+                  <tr>
+                    <th style={headerCellStyle}>Who</th>
+                    <th style={headerCellStyle}>What for</th>
+                    <th style={headerCellStyle}>Where</th>
+                    <th style={headerCellStyle}>Legal basis</th>
+                    <th style={headerCellStyle}>Their terms</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {SUBPROCESSORS.map((entry, i) => {
+                    const last = i === SUBPROCESSORS.length - 1;
+                    const cell = last
+                      ? { ...cellStyle, borderBottom: 'none' }
+                      : cellStyle;
+                    return (
+                      <tr key={entry.name}>
+                        <td style={{ ...cell, color: 'var(--ls-ink)' }}>
+                          {entry.name}
+                        </td>
+                        <td style={cell}>{entry.purpose}</td>
+                        <td style={cell}>{entry.region}</td>
+                        <td style={cell}>{entry.legalBasis}</td>
+                        <td
+                          style={{
+                            ...cell,
+                            fontSize: '0.82rem',
+                            wordBreak: 'break-word',
+                          }}
+                        >
+                          {/* Parsed, not prefix-matched: see termsUrl(). A
+                              row whose terms are a sentence rather than a URL
+                              renders as words. */}
+                          {(() => {
+                            const url = termsUrl(entry.terms);
+                            if (!url) return entry.terms;
+                            return (
+                              <a
+                                href={url.href}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {`${url.hostname}${url.pathname}`.replace(
+                                  /\/$/,
+                                  ''
+                                )}
+                              </a>
+                            );
+                          })()}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <h2>7. Data-processing agreements</h2>
+          {/* The old sentence asserted eight signed DPAs. Nobody has checked
+              that eight executed documents exist, and most of these vendors
+              publish standing terms rather than counter-signing one. */}
+          <p>{DPA_STATEMENT}</p>
+
+          <h2>8. International transfers</h2>
+          <p>
+            Production hosting lives in the European Union: the servers in
+            Germany and Finland, the database in the EU, and the booking
+            software on our own machines.{' '}
+            {outsideEu.length > 0 && (
+              <>
+                {outsideEu.length} of the vendors above are headquartered in the
+                United States ({outsideEu.map((entry) => entry.name).join(', ')}
+                ). Each of those transfers is covered by the European
+                Commission&apos;s <strong>Standard Contractual Clauses</strong>,
+                and where applicable, by the EU&ndash;US Data Privacy Framework.
+              </>
+            )}
+          </p>
+
+          <h2>9. How long we keep things</h2>
+          {/* This section used to publish five retention periods as if a job
+              enforced them. None did: there is no deletion job for account
+              data, no analytics table, no billing pruning and no email log
+              table at all. Two of the five described data this product does
+              not hold. What follows is split into what a job does and what a
+              person does, and the windows below are read from the same
+              environment variables the jobs read. */}
+          <p>
+            Two things are deleted on a timer by a job that runs against our own
+            database.
           </p>
           <ul>
-            <li>
-              <strong>Clerk</strong> (US, EU SCCs): authentication and session
-              management.
-            </li>
-            <li>
-              <strong>Supabase</strong> (EU region): primary database and file
-              storage for client projects.
-            </li>
-            <li>
-              <strong>Hetzner</strong> (Germany / Finland): application hosting
-              and customer-site servers.
-            </li>
-            <li>
-              <strong>Cloudflare</strong> (US, EU SCCs): DNS, edge CDN, and DDoS
-              protection.
-            </li>
-            <li>
-              <strong>Stripe</strong> (Ireland): payments, invoicing, and tax
-              calculation.
-            </li>
-            <li>
-              <strong>Resend</strong> (US, EU SCCs): transactional email
-              delivery.
-            </li>
-            <li>
-              <strong>Calendly</strong> (US, EU SCCs): discovery-call
-              scheduling.
-            </li>
-            <li>
-              <strong>Plausible</strong> (EU): privacy-friendly, cookie-less
-              analytics for flowstarter.net.
-            </li>
+            {enforced.map((entry) => (
+              <li key={entry.subject}>
+                <strong>{entry.subject}</strong>: deleted {entry.window} after
+                it is made, by {entry.enforcedBy}.
+              </li>
+            ))}
           </ul>
           <p>
-            We update this list before adding any new subprocessor. If you need
-            an export for procurement, email{' '}
-            <a href="mailto:legal@flowstarter.net">legal@flowstarter.net</a>.
+            Everything else we hold for as long as it is useful to your project,
+            and delete when you ask. We would rather tell you that than print a
+            number nothing in the product counts.
           </p>
-
-          <h2>6. International transfers</h2>
-          <p>
-            All production hosting lives in the European Union (Hetzner DE/FI,
-            Supabase EU). A handful of subprocessors are headquartered in the
-            United States (Clerk, Cloudflare, Stripe, Resend, Calendly). Each of
-            those transfers is covered by the European Commission&apos;s{' '}
-            <strong>Standard Contractual Clauses</strong>, and where applicable,
-            by the EU&ndash;US Data Privacy Framework.
-          </p>
-
-          <h2>7. Retention</h2>
           <ul>
-            <li>
-              <strong>Account data</strong>: kept for the lifetime of the
-              account, then deleted 30 days after closure.
-            </li>
-            <li>
-              <strong>Uploaded site assets</strong>: kept until you delete them,
-              or 30 days after account closure.
-            </li>
-            <li>
-              <strong>Analytics events</strong>: retained for 12 months.
-            </li>
-            <li>
-              <strong>Billing and invoices</strong>: retained for 7 years to
-              meet EU tax-record obligations.
-            </li>
-            <li>
-              <strong>Email logs</strong>: retained for 30 days for
-              deliverability troubleshooting.
-            </li>
+            {ON_REQUEST_RETENTION.map((entry) => (
+              <li key={entry.subject}>
+                <strong>{entry.subject}</strong>: {entry.reason}
+              </li>
+            ))}
           </ul>
 
-          <h2>8. Your rights under GDPR</h2>
+          <h2>10. Your rights under GDPR</h2>
           <p>You have the right to:</p>
           <ul>
             <li>
@@ -214,7 +334,7 @@ export default function PrivacyPage() {
             </li>
             <li>
               <strong>Erasure</strong>: ask us to delete your data, subject to
-              legal-retention obligations.
+              the tax-record obligation above.
             </li>
             <li>
               <strong>Portability</strong>: receive your data in a
@@ -233,22 +353,17 @@ export default function PrivacyPage() {
               data-protection authority.
             </li>
           </ul>
-          <p>
-            To exercise any of these rights, email{' '}
-            <a href="mailto:privacy@flowstarter.net">privacy@flowstarter.net</a>
-            . We verify the request and respond within 30 days.
-          </p>
+          <p>{dataRequestSentence()}</p>
 
-          <h2>9. Children</h2>
+          <h2>11. Children</h2>
           <p>
             Flowstarter is not intended for anyone under the age of 16. We do
             not knowingly collect data from children. If you believe a child has
-            submitted data to us, contact{' '}
-            <a href="mailto:privacy@flowstarter.net">privacy@flowstarter.net</a>{' '}
-            and we will delete it.
+            submitted data to us, tell us on the{' '}
+            <a href="/contact">contact page</a> and we will delete it.
           </p>
 
-          <h2>10. Changes to this policy</h2>
+          <h2>12. Changes to this policy</h2>
           <p>
             We update this page whenever our practices change. Material changes
             are announced by email to active clients at least 14 days before
@@ -258,12 +373,11 @@ export default function PrivacyPage() {
 
           <div className="ls-callout">
             <p>
-              Questions about privacy? Write to{' '}
-              <a href="mailto:privacy@flowstarter.net">
-                privacy@flowstarter.net
-              </a>
-              . Need a signed data-processing agreement? Email us at the same
-              address and we&apos;ll send one over.
+              Questions about privacy, or a request about your own data? The{' '}
+              <a href="/contact">contact page</a> is the route, and we answer
+              within {DATA_REQUEST_RESPONSE_DAYS} days. Need a data-processing
+              agreement from us for your own records? Ask there and we will send
+              one.
             </p>
           </div>
         </ProseSection>

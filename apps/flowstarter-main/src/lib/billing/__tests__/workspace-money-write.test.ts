@@ -196,6 +196,9 @@ describe('casUpdateWorkspaceMoneyState', () => {
       subscription_status: null,
       stripe_subscription_id: null,
       subscription_next_billing: null,
+      refunded_amount_minor: 0,
+      final_value_minor: null,
+      setup_fee: null,
       billing_version: 0,
     };
 

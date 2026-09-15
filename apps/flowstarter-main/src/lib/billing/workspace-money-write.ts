@@ -40,6 +40,17 @@ export interface WorkspaceMoneyState {
   subscription_status: string | null;
   stripe_subscription_id: string | null;
   subscription_next_billing: string | null;
+  /**
+   * What has already gone back, so a `charge.refunded` delivered out of order
+   * can be refused rather than regressing the total. Read through the same
+   * compare-and-set as every other money column: a refund and a payment
+   * landing in the same instant are exactly the race `billing_version` exists
+   * for.
+   */
+  refunded_amount_minor: number | null;
+  /** The agreed price, so a refund total can be called partial or full. */
+  final_value_minor: number | null;
+  setup_fee: number | null;
   billing_version: number;
 }
 
@@ -58,7 +69,7 @@ export async function loadWorkspaceMoneyState(
   const { data, error } = await supabase
     .from('workspaces')
     .select(
-      'deposit_status, final_status, subscription_status, stripe_subscription_id, subscription_next_billing, billing_version'
+      'deposit_status, final_status, subscription_status, stripe_subscription_id, subscription_next_billing, refunded_amount_minor, final_value_minor, setup_fee, billing_version'
     )
     .eq('id', workspaceId)
     .maybeSingle();

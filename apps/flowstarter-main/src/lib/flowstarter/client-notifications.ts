@@ -78,6 +78,11 @@ export type ClientNotification =
   // visitor who submits the same form twice is two enquiries and two emails;
   // a retry of one submission that already stored a row is neither.
   | 'lead_captured'
+  // Keys on the payment intents the refund touched, so a client hears once
+  // per refund. A retried operator action that refunds the same charges is
+  // the same refund and says nothing; a later refund on a milestone the first
+  // one did not reach is a second thing that happened and is worth an email.
+  | 'refund_issued'
   // Keys on NOTHING: one per workspace, forever. The platform makes a client
   // exactly one booking page, on one account, and this email is the only
   // prompt they get to put a password on it. A retry that finds the page

@@ -316,10 +316,161 @@ export class StripeBilling {
   }
 
   /**
+   * The payment intent that settled an invoice, for the milestones billed
+   * through Stripe's hosted invoices rather than a Checkout Session.
+   *
+   * Two shapes, because Stripe changed one out from under us. Invoices used
+   * to carry `payment_intent` directly; since the 2025 API versions the
+   * settlement lives in `invoice.payments`, a list of attempts each pointing
+   * at its own intent. Both are read here, newest usable first, so a workspace
+   * billed before the change and one billed after it both resolve. Null when
+   * the invoice was never paid, which is not an error: the caller refuses the
+   * refund with a message about the milestone rather than about Stripe.
+   */
+  async paymentIntentForInvoice(
+    invoiceId: string | null | undefined
+  ): Promise<string | null> {
+    if (!invoiceId) return null;
+    let invoice: Stripe.Invoice;
+    try {
+      invoice = await this.stripe.invoices.retrieve(invoiceId, {
+        expand: ['payments'],
+      });
+    } catch (e) {
+      throw new StripeBillingError(
+        'invoice_lookup_failed',
+        `Invoice ${invoiceId} could not be read from Stripe: ` +
+          (e instanceof Error ? e.message : 'unknown error'),
+        e
+      );
+    }
+
+    const legacy = (invoice as unknown as { payment_intent?: unknown })
+      .payment_intent;
+    if (typeof legacy === 'string' && legacy) return legacy;
+    if (legacy && typeof legacy === 'object' && 'id' in legacy) {
+      const id = (legacy as { id?: unknown }).id;
+      if (typeof id === 'string' && id) return id;
+    }
+
+    for (const payment of invoice.payments?.data ?? []) {
+      const intent = payment.payment?.payment_intent;
+      if (typeof intent === 'string' && intent) return intent;
+      if (intent && typeof intent === 'object' && intent.id) return intent.id;
+    }
+    return null;
+  }
+
+  /**
+   * What is still refundable on one payment intent.
+   *
+   * `amount_received` is what actually settled, and the charge's
+   * `amount_refunded` is what has already gone back — including refunds
+   * issued from the Stripe dashboard by hand, which is how every refund
+   * before this code existed was made. Asking Stripe rather than only our own
+   * ledger is what stops the first automated refund on a workspace from
+   * doubling a manual one.
+   */
+  async refundableMinor(paymentIntentId: string): Promise<{
+    receivedMinor: number;
+    refundedMinor: number;
+    remainingMinor: number;
+    currency: string;
+  }> {
+    let intent: Stripe.PaymentIntent;
+    try {
+      intent = await this.stripe.paymentIntents.retrieve(paymentIntentId, {
+        expand: ['latest_charge'],
+      });
+    } catch (e) {
+      throw new StripeBillingError(
+        'payment_intent_lookup_failed',
+        `Payment intent ${paymentIntentId} could not be read from Stripe: ` +
+          (e instanceof Error ? e.message : 'unknown error'),
+        e
+      );
+    }
+    const charge =
+      intent.latest_charge && typeof intent.latest_charge === 'object'
+        ? intent.latest_charge
+        : null;
+    const receivedMinor = intent.amount_received ?? 0;
+    const refundedMinor = charge?.amount_refunded ?? 0;
+    return {
+      receivedMinor,
+      refundedMinor,
+      remainingMinor: Math.max(0, receivedMinor - refundedMinor),
+      currency: (intent.currency ?? this.currency).toLowerCase(),
+    };
+  }
+
+  /**
+   * Send money back.
+   *
+   * `idempotencyKey` is not optional in practice and is not defaulted here on
+   * purpose: the caller keys it on the payment intent, so a double-clicked
+   * button, a proxy retry or a second operator all produce the same Stripe
+   * request and Stripe returns the first refund rather than issuing a second.
+   * That is the only thing standing between a retried POST and paying a
+   * client twice, so it is a required argument a caller cannot forget.
+   *
+   * `reason` is Stripe's own enumeration, which has three values and none of
+   * them is "the guarantee". Our reason — the operator's sentence — goes into
+   * `metadata` and onto our own ledger row, where it is readable. Stripe's
+   * field is set to `requested_by_customer` because that is what a guarantee
+   * refund is, and because `fraudulent` would add the client's card to a
+   * block list.
+   */
+  async refundPaymentIntent(opts: {
+    paymentIntentId: string;
+    amountMinor: number;
+    idempotencyKey: string;
+    metadata?: Record<string, string>;
+  }): Promise<{
+    refundId: string;
+    status: string;
+    amountMinor: number;
+    currency: string;
+  }> {
+    if (!Number.isInteger(opts.amountMinor) || opts.amountMinor <= 0) {
+      throw new StripeBillingError(
+        'invalid_amount',
+        'amountMinor must be a positive integer'
+      );
+    }
+    let refund: Stripe.Refund;
+    try {
+      refund = await this.stripe.refunds.create(
+        {
+          payment_intent: opts.paymentIntentId,
+          amount: opts.amountMinor,
+          reason: 'requested_by_customer',
+          ...(opts.metadata ? { metadata: opts.metadata } : {}),
+        },
+        { idempotencyKey: opts.idempotencyKey }
+      );
+    } catch (e) {
+      throw new StripeBillingError(
+        'refund_failed',
+        `Stripe refused the refund on ${opts.paymentIntentId}: ` +
+          (e instanceof Error ? e.message : 'unknown error'),
+        e
+      );
+    }
+    return {
+      refundId: refund.id,
+      status: refund.status ?? 'unknown',
+      amountMinor: refund.amount ?? opts.amountMinor,
+      currency: (refund.currency ?? this.currency).toLowerCase(),
+    };
+  }
+
+  /**
    * Cancel an active subscription. Default behaviour: cancel at period end
    * (so the client keeps service through what they've already paid for).
-   * Pass `immediate: true` to cancel now (refunds handled separately by
-   * the team via Stripe dashboard).
+   * Pass `immediate: true` to cancel now. A refund for the unused part of a
+   * paid period is a separate decision and a separate action: see
+   * `refundPaymentIntent` above and `lib/billing/refund.ts`.
    */
   async cancelSubscription(opts: {
     project: WorkspaceBillingRow;
