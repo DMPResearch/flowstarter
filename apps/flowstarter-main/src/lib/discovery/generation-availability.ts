@@ -32,7 +32,7 @@ export interface GenerationPrerequisite {
 }
 
 /** Long enough for a same-host or same-network health check, short enough that a dead server fails fast. */
-const DEFAULT_MCP_HEALTH_TIMEOUT_MS = 2_000;
+export const DEFAULT_MCP_HEALTH_TIMEOUT_MS = 2_000;
 
 /**
  * A plain env-shaped record rather than `NodeJS.ProcessEnv`: Next.js
@@ -70,8 +70,15 @@ function healthCheckUrl(mcpUrl: string): string | null {
  * clean 2xx inside the timeout — refused connection, DNS failure, a hang, a
  * 5xx — counts as "not answering": the point is to catch exactly the
  * "server isn't running" case that a mere `Boolean(url)` check let through.
+ *
+ * Exported (originally #142's private helper) so `/api/health` can reuse the
+ * exact same probe for its `templateLibrary` field instead of growing a
+ * second, possibly-diverging implementation.
  */
-async function probeMcpHealth(mcpUrl: string, env: EnvLike): Promise<boolean> {
+export async function probeMcpHealth(
+  mcpUrl: string,
+  env: EnvLike = process.env
+): Promise<boolean> {
   const url = healthCheckUrl(mcpUrl);
   if (!url) return false;
   const configuredTimeout = Number(
