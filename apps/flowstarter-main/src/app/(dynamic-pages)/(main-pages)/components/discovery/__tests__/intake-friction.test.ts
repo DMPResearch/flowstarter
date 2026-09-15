@@ -48,13 +48,14 @@ describe('the friction budget', () => {
     expect(quickRequiredCount()).toBe(4);
   });
 
-  it('asks for who you are, where to send it, what you do, and one link, then offers the own-site check, the photo and the person block', () => {
+  it('asks for who you are, where to send it, what you do, and one link, then offers the own-site check, the name disambiguation, the photo and the person block', () => {
     expect(questionsInPhase('quick').map((question) => question.id)).toEqual([
       'fullName',
       'email',
       'description',
       'links',
       'websiteIsOwnSite',
+      'nameOnSite',
       'connectPortrait',
       ...PERSON_BLOCK_IDS,
     ]);
@@ -95,6 +96,7 @@ describe('the friction budget', () => {
     const quick = questionsInPhase('quick');
     const skippable = [
       'websiteIsOwnSite',
+      'nameOnSite',
       'connectPortrait',
       ...PERSON_BLOCK_IDS,
     ];
@@ -165,13 +167,24 @@ describe('the stages', () => {
     expect(LAST_STEP).toBe(6);
   });
 
-  it('has one quick question per quick stage, and the own-site check and the connect offer on the links stage', () => {
-    // Four stages, six questions, because the own-site check and the connect
-    // offer both belong to the links stage: they are both about the same
-    // link the visitor has just pasted. A stage of its own for either would
-    // read as one more thing standing between them and the preview, which is
-    // exactly what the stage list exists to prevent.
+  it('has one quick question per quick stage, and the own-site check, the name disambiguation and the connect offer on the links stage', () => {
+    // Four stages, seven questions, because the own-site check, the
+    // name-on-site disambiguation and the connect offer all belong to the
+    // links stage: every one of them is about the same link the visitor has
+    // just pasted. A stage of its own for any of them would read as one more
+    // thing standing between them and the preview, which is exactly what the
+    // stage list exists to prevent.
     const quick = questionsInPhase('quick');
+    expect(quick.map((question) => question.id)).toEqual([
+      'fullName',
+      'email',
+      'description',
+      'links',
+      'websiteIsOwnSite',
+      'nameOnSite',
+      'connectPortrait',
+      ...PERSON_BLOCK_IDS,
+    ]);
     expect(quick.map((question) => question.step)).toEqual([
       1,
       2,
@@ -179,9 +192,10 @@ describe('the stages', () => {
       4,
       4,
       4,
+      4,
       // The person block shares the links stage for the same reason the other
-      // two do: it follows from answers already given, and a stage of its own
-      // would draw a progress bar that grows while the visitor answers it.
+      // three do: it follows from answers already given, and a stage of its
+      // own would draw a progress bar that grows while the visitor answers it.
       ...PERSON_BLOCK_IDS.map(() => 4),
     ]);
   });

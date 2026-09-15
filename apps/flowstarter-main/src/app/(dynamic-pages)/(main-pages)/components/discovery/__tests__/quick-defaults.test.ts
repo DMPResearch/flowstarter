@@ -25,6 +25,7 @@ import {
   goalFromDescription,
   guessedFields,
   industryFromDescription,
+  ownedSiteNameIsAmbiguous,
   withQuickDefaults,
 } from '../quick-defaults';
 
@@ -507,5 +508,122 @@ describe('deriveBusinessName', () => {
 
   it('is empty for a draft nobody has started', () => {
     expect(deriveBusinessName(EMPTY_DISCOVERY)).toBe('');
+  });
+
+  describe('personAnswered', () => {
+    // The second incident: a visitor who owns the site he pasted, gave his
+    // own name, and then answered the whole person block, still got named
+    // after his hostname, because the naming rule checked ownership before it
+    // checked whether the person section had anything in it.
+    const ownedSiteAndName = {
+      ...EMPTY_DISCOVERY,
+      fullName: 'Darius Mihai Popescu',
+      websiteUrl: 'https://dmpresearch.flowstarter.dev',
+      websiteIsOwnSite: 'yes' as const,
+    };
+
+    it('outranks an owned hostname once the person block has answered anything', () => {
+      expect(
+        deriveBusinessName(ownedSiteAndName, { personAnswered: true })
+      ).toBe('Darius Mihai Popescu');
+    });
+
+    it("is what today's owned-hostname reading depends on: false keeps it", () => {
+      expect(
+        deriveBusinessName(ownedSiteAndName, { personAnswered: false })
+      ).toBe('Dmpresearch flowstarter');
+      // Absent entirely — every caller that has no person section to offer —
+      // defaults to the same, unchanged reading.
+      expect(deriveBusinessName(ownedSiteAndName)).toBe(
+        'Dmpresearch flowstarter'
+      );
+    });
+
+    it('never lets a completed person section put the hostname back once a business name is typed', () => {
+      // Step 1 (the Brief's own answer) still outranks everything, including
+      // a completed person section — an explicit answer beats a rule either
+      // way.
+      expect(
+        deriveBusinessName(
+          { ...ownedSiteAndName, businessName: 'Popescu Consulting' },
+          { personAnswered: true }
+        )
+      ).toBe('Popescu Consulting');
+    });
+
+    it('does not change a company brief that was never asked about a person', () => {
+      // The control: no person answers, an owned site, no name given at all
+      // -- the company reading a service business has always had.
+      expect(
+        deriveBusinessName(
+          {
+            ...EMPTY_DISCOVERY,
+            websiteUrl: 'https://hendrymotors.co.uk',
+            websiteIsOwnSite: 'yes',
+          },
+          { personAnswered: false }
+        )
+      ).toBe('Hendrymotors');
+    });
+  });
+});
+
+describe('ownedSiteNameIsAmbiguous', () => {
+  it('is true only when an owned site and a name leave nothing else to decide it', () => {
+    expect(
+      ownedSiteNameIsAmbiguous({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Darius Mihai Popescu',
+        websiteUrl: 'https://dmpresearch.flowstarter.dev',
+        websiteIsOwnSite: 'yes',
+      })
+    ).toBe(true);
+  });
+
+  it('is false once a business name has been given', () => {
+    expect(
+      ownedSiteNameIsAmbiguous({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Darius Mihai Popescu',
+        businessName: 'Popescu Consulting',
+        websiteUrl: 'https://dmpresearch.flowstarter.dev',
+        websiteIsOwnSite: 'yes',
+      })
+    ).toBe(false);
+  });
+
+  it('is false when the site was not confirmed as their own', () => {
+    expect(
+      ownedSiteNameIsAmbiguous({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Darius Mihai Popescu',
+        websiteUrl: 'https://dmpresearch.flowstarter.dev',
+        websiteIsOwnSite: 'no',
+      })
+    ).toBe(false);
+    expect(
+      ownedSiteNameIsAmbiguous({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Darius Mihai Popescu',
+        websiteUrl: 'https://dmpresearch.flowstarter.dev',
+      })
+    ).toBe(false);
+  });
+
+  it('is false with no name or no website at all', () => {
+    expect(
+      ownedSiteNameIsAmbiguous({
+        ...EMPTY_DISCOVERY,
+        websiteUrl: 'https://dmpresearch.flowstarter.dev',
+        websiteIsOwnSite: 'yes',
+      })
+    ).toBe(false);
+    expect(
+      ownedSiteNameIsAmbiguous({
+        ...EMPTY_DISCOVERY,
+        fullName: 'Darius Mihai Popescu',
+        websiteIsOwnSite: 'yes',
+      })
+    ).toBe(false);
   });
 });

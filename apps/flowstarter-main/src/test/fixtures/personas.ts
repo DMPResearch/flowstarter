@@ -1,5 +1,5 @@
 /**
- * Six people, as data.
+ * Nine people, as data.
  *
  * The product broke on one real brief: a two-sentence offer, three one-line
  * projects, no portrait, no story, and a business name that was the
@@ -8,9 +8,18 @@
  * a single happy-path fixture with the right answers in it would have taught
  * us the same nothing.
  *
+ * `darius-portfolio` and `hendry-motors` are the second incident, not the
+ * first: a visitor who owns his site, gave his own name, and then answered
+ * all eleven person and activity questions was still named after his
+ * hostname, because the naming rule checked the owned site before it checked
+ * whether the person section had anything in it. `hendry-motors` is the
+ * control for that fix the same way `orchard-plumbing` is the control for the
+ * first one -- a company that owns its site and was never asked about a
+ * person has to keep today's hostname-derived name exactly.
+ *
  * So the fixtures are people rather than payloads. Each one is a different
  * trade, a different language, a different amount of material and a different
- * expected verdict, and the suites walk all six through the same path:
+ * expected verdict, and the suites walk all nine through the same path:
  *
  *   which questions the intake asks them, and in what order
  *   the brief each one produces
@@ -479,6 +488,130 @@ const ELENA: Persona = {
 };
 
 /**
+ * An independent AI researcher in English, who owns the domain his preview
+ * sits on and answered the whole person block.
+ *
+ * The real incident: he typed his own name at step 1, confirmed the one
+ * link pasted was his own site, and then answered all eleven person and
+ * activity questions about himself. The naming rule read the owned hostname
+ * first and never looked at the section he had just filled in, so
+ * `deriveBusinessName` named him after a subdomain and `visitorIsTheBusiness`
+ * -- comparing that hostname to his own name -- came back false, which sent
+ * him through the whole funnel as a company with no name it could state. A
+ * completed person section now outranks an owned hostname, so this case
+ * resolves to his own name, a personal site kind, and a portfolio template.
+ */
+const DARIUS: Persona = {
+  id: 'darius-portfolio',
+  summary:
+    'Independent AI researcher, English, owns his domain, full person block',
+  locale: 'en',
+  discovery: discovery({
+    fullName: 'Darius Mihai Popescu',
+    email: 'darius@example.com',
+    description:
+      'I research AI agent workflows and build small products with them, mostly for other independent developers.',
+    websiteUrl: 'https://dmpresearch.flowstarter.dev',
+    websiteIsOwnSite: 'yes',
+    personStory:
+      'I started writing agents to get through my own backlog faster and kept going because the failures were more interesting than the successes.',
+    personHowIWork:
+      'I ship a small thing, watch where it breaks, and rebuild the part that broke rather than the whole system.',
+    personFeel:
+      'That this was actually built by the person whose name is on it.',
+    personProudest:
+      'A review agent that caught a production bug three reviewers had already approved past.',
+    personToneWords: 'direct, curious, precise',
+    activityWhat:
+      'Agent workflows and small research tools, mostly for other independent developers.',
+    activityWho: 'Other independent developers and small technical teams',
+    activityTypical:
+      'A short call to understand the failure mode, then a working prototype within a week.',
+    activityKnownFor: 'Turning a vague failure report into a reproducible test',
+    activityYears: 'five years',
+  }),
+  person: person({
+    name: 'Darius Mihai Popescu',
+    headline: 'Independent AI researcher',
+    story:
+      'I started writing agents to get through my own backlog faster and kept going because the failures were more interesting than the successes.',
+    howIWork:
+      'I ship a small thing, watch where it breaks, and rebuild the part that broke rather than the whole system.',
+    feel: 'That this was actually built by the person whose name is on it.',
+    toneWords: ['direct', 'curious', 'precise'],
+    proudestWork:
+      'A review agent that caught a production bug three reviewers had already approved past.',
+    links: [
+      {
+        kind: 'website',
+        url: 'https://dmpresearch.flowstarter.dev',
+        consented: true,
+      },
+    ],
+    activity: {
+      what: 'Agent workflows and small research tools, mostly for other independent developers.',
+      who: 'Other independent developers and small technical teams',
+      typical:
+        'A short call to understand the failure mode, then a working prototype within a week.',
+      knownFor: 'Turning a vague failure report into a reproducible test',
+      years: 'five years',
+    },
+  }),
+  offer:
+    'Agent workflows and small research tools built for other independent developers, from a short call to a working prototype in about a week.',
+  projects: [
+    { name: 'Sigma classifier', line: 'A taxonomy-agnostic guardrail core.' },
+  ],
+  noProjects: false,
+  portraitPath: '',
+  expect: {
+    siteKind: 'portfolio',
+    asksPersonQuestions: true,
+    businessName: 'Darius Mihai Popescu',
+    briefReady: true,
+    blockingCodes: [],
+  },
+};
+
+/**
+ * A family-run car garage in English, whose owner filled in the intake, owns
+ * the garage's own site, and was never asked about a person.
+ *
+ * The control for the fix above, the same way `orchard-plumbing` controls
+ * the first one: an owned site is still the right thing to name a company
+ * after when nobody has said anything about themselves. Read the fixture
+ * next to `darius-portfolio` and the only difference is the eleven person
+ * answers -- which is exactly the signal the precedence rule turns on.
+ */
+const HENDRY: Persona = {
+  id: 'hendry-motors',
+  summary:
+    'Car garage, English, owns its site, never asked about a person: stays a company',
+  locale: 'en',
+  discovery: discovery({
+    fullName: 'Paul Hendry',
+    email: 'paul@example.com',
+    description:
+      'A family run garage in Leeds doing servicing, MOTs and repairs for most makes.',
+    websiteUrl: 'https://hendrymotors.co.uk',
+    websiteIsOwnSite: 'yes',
+  }),
+  person: null,
+  offer:
+    'Servicing, MOTs and repairs for most makes, with a courtesy car for anything kept overnight.',
+  projects: [],
+  noProjects: true,
+  portraitPath: '',
+  expect: {
+    siteKind: 'services',
+    asksPersonQuestions: false,
+    businessName: 'Hendrymotors',
+    briefReady: true,
+    blockingCodes: [],
+  },
+};
+
+/**
  * The control, and the persona the person block must never reach.
  *
  * A plumbing company with a name, a van and two employees. Its site is about
@@ -530,6 +663,8 @@ export const PERSONAS: readonly Persona[] = [
   NADIA,
   ELENA,
   PLUMBER,
+  DARIUS,
+  HENDRY,
 ];
 
 /** One persona by id, for a suite that wants to name the case it is making. */

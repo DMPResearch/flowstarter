@@ -347,6 +347,35 @@ function personLinkKindFromUrl(url: URL): PersonLinkKind {
 }
 
 /**
+ * True when the person block sent with this spec has a real answer in it —
+ * not merely that the key is present, which per `PreviewStep.tsx` only means
+ * the visitor was classified as a person site, not that they wrote anything.
+ *
+ * Feeds `deriveBusinessName`'s `personAnswered` option for the one caller
+ * that can reach this route without going through `PreviewStep.tsx`'s own
+ * (already-correct) derivation: a stated business name is the client's, this
+ * is the server's defence for one that never got derived at all.
+ */
+function specPersonAnswered(
+  person: z.infer<typeof PersonSpecSchema> | undefined
+): boolean {
+  if (!person) return false;
+  return (
+    Boolean(person.personStory?.trim()) ||
+    Boolean(person.personHowIWork?.trim()) ||
+    Boolean(person.personFeel?.trim()) ||
+    Boolean(person.personProudest?.trim()) ||
+    Boolean(person.personLinks?.trim()) ||
+    Boolean(person.personToneWords?.trim()) ||
+    Boolean(person.activityWhat?.trim()) ||
+    Boolean(person.activityWho?.trim()) ||
+    Boolean(person.activityTypical?.trim()) ||
+    Boolean(person.activityKnownFor?.trim()) ||
+    Boolean(person.activityYears?.trim())
+  );
+}
+
+/**
  * The person section of the Pi evidence, or `undefined` when the funnel
  * never asked.
  *
@@ -722,7 +751,10 @@ export async function POST(req: NextRequest) {
   const spec = {
     ...parsed.data,
     businessName:
-      parsed.data.businessName.trim() || deriveBusinessName(parsed.data),
+      parsed.data.businessName.trim() ||
+      deriveBusinessName(parsed.data, {
+        personAnswered: specPersonAnswered(parsed.data.person),
+      }),
   };
 
   // Parked on the job, not passed down through the generator: the pipeline has

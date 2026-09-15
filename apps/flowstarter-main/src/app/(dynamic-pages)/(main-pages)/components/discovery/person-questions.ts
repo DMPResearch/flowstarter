@@ -16,7 +16,15 @@
  *   is a genre mistake, not a missing feature. `asksPersonQuestions` is that
  *   rule and `siteKindFor` in the codegen package is the classifier, the same
  *   one that decides the page order, so a site cannot be a portfolio for one
- *   purpose and not for the other.
+ *   purpose and not for the other. A completed person section
+ *   (`personBlockAnswered`) is the strongest evidence there is that the
+ *   visitor IS the business -- stronger than an owned site's hostname, which
+ *   only names the business when no person answers exist and no business
+ *   name was given. The one case that section cannot settle on its own is
+ *   the one before it has run at all: an owned site plus a name, with
+ *   nothing else said yet. `intake-script.ts`'s `nameOnSite` question asks
+ *   that explicitly, once, rather than let this rule guess and risk
+ *   flipping the answer the moment the block does run.
  * - **Which questions.** Not all of them, every time. A question whose answer
  *   the visitor has already given in another form is not asked again: that is
  *   what "keep the total intake short" means as code rather than as advice.
@@ -146,15 +154,39 @@ export function businessTypeText(data: DiscoveryData): string {
 }
 
 /**
+ * True when the visitor has completed at least one question in the person or
+ * activity block -- answered, not merely been offered it.
+ *
+ * This is the strongest evidence `deriveBusinessName` and
+ * `visitorIsTheBusiness` ever see that a site is about the person answering
+ * it: nobody writes six sentences about themselves for a company that is not
+ * them. It is what let a real visitor -- who owned the site he pasted, gave
+ * his own name, and then answered all eleven of these -- get named after a
+ * subdomain instead of himself: the naming rule read the owned hostname and
+ * never looked at the section he had just filled in. `PERSON_BLOCK_IDS` is
+ * read directly off `data` rather than through `alreadyAnswered`'s
+ * redundancy checks, because a skip is a real answer there and an unanswered
+ * field here -- the two questions ("should this be asked again" vs "has this
+ * visitor said anything about themselves at all") are not the same one.
+ */
+export function personBlockAnswered(data: DiscoveryData): boolean {
+  return PERSON_BLOCK_IDS.some((id) => collapsed(data[id]));
+}
+
+/**
  * True when the visitor IS the business.
  *
  * Asked of `deriveBusinessName` rather than reasoned about again here, and
  * that is the whole trick: the name rule already walks every signal a visitor
- * has given -- a name they typed, a name stated in their own sentence, the
- * hostname of a site they claimed -- and it falls through to their own name
- * only when none of those produced a business. So "the derivation landed on
- * the person" is precisely "there is no entity here but the person", and the
- * two rules cannot drift apart, because there is only one of them.
+ * has given -- a name they typed, a name stated in their own sentence, a
+ * completed person section, the hostname of a site they claimed -- and it
+ * falls through to their own name only when none of those produced a
+ * business. So "the derivation landed on the person" is precisely "there is
+ * no entity here but the person", and the two rules cannot drift apart,
+ * because there is only one of them. `personBlockAnswered` is passed down
+ * rather than re-derived inside `deriveBusinessName`, because that module
+ * cannot import this one (see `personalSiteAnswers`'s own note on the cycle)
+ * -- this is the one direction the dependency is allowed to run.
  *
  * It matters that this is not a second opinion. If the intake decided a
  * visitor was a person and the name rule decided they were a company, a
@@ -165,7 +197,11 @@ export function businessTypeText(data: DiscoveryData): string {
 export function visitorIsTheBusiness(data: DiscoveryData): boolean {
   const fullName = collapsed(data.fullName).toLowerCase();
   if (!fullName) return false;
-  return collapsed(deriveBusinessName(data)).toLowerCase() === fullName;
+  return (
+    collapsed(
+      deriveBusinessName(data, { personAnswered: personBlockAnswered(data) })
+    ).toLowerCase() === fullName
+  );
 }
 
 /**
