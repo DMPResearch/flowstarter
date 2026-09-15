@@ -1,0 +1,46 @@
+# Build context for apps/flowstarter-library/mcp-server/Dockerfile.
+#
+# BuildKit reads `<dockerfile>.dockerignore` in preference to the repository
+# root's, and this build needs the opposite of what the root file wants: the
+# root excludes `apps/flowstarter-library/**` entirely (the app's image wants
+# only that workspace's package.json), while this image IS that workspace's
+# MCP server. Rather than loosen the app's context for a directory it will
+# never use, this build carries its own ignore file.
+#
+# Deny everything, then name the two things this image is made of: the MCP
+# server's own sources, and the four catalog templates it serves. An allow-list
+# is the right shape here — the context is two directories out of a monorepo,
+# and anything that arrives by accident is either dead weight in a layer or a
+# secret in an image.
+*
+
+!apps/flowstarter-library/mcp-server/package.json
+!apps/flowstarter-library/mcp-server/package-lock.json
+!apps/flowstarter-library/mcp-server/tsconfig.json
+!apps/flowstarter-library/mcp-server/src/**
+
+# The catalog, matching TEMPLATE_CATALOG in
+# packages/agentic-codegen/src/workspace.ts and the `templates` stage of
+# deploy/hetzner-staging/Dockerfile. demo-coach (editor dev fixture) and
+# dorin-portfolio (legacy) are deliberately absent; the Dockerfile asserts
+# both halves of that.
+!apps/flowstarter-templates/creative-portfolio/**
+!apps/flowstarter-templates/local-trade/**
+!apps/flowstarter-templates/professional-services/**
+!apps/flowstarter-templates/wellness-therapy/**
+
+# ...but never a template's build output or installed dependencies. The image
+# ships SOURCES: node_modules for a preview build comes from the app image's
+# own baked template tree, and a stale dist/ would be shipped as if it were a
+# template file by `scaffold_template`.
+apps/flowstarter-templates/*/node_modules/**
+apps/flowstarter-templates/*/.astro/**
+apps/flowstarter-templates/*/dist/**
+
+# Belt and braces. `*` above already excludes these, but they are the files
+# whose accidental inclusion would matter most, and a future `!` line that
+# widened the allow-list should not be able to sweep them in.
+**/.env
+**/.env.*
+**/node_modules
+.git

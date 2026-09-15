@@ -83,6 +83,8 @@ REPO_DIR="$ROOT/opt/repo"
 export REPO_DIR
 SCRIPTS_DEST_DIR="$ROOT/opt/staging"
 export SCRIPTS_DEST_DIR
+MCP_DEST_DIR="$ROOT/opt/mcp"
+export MCP_DEST_DIR
 
 # Builds a tar stream of $ROOT/src/supabase and runs the script against it.
 run_sync() {
@@ -110,8 +112,20 @@ reset_scripts_src() {
 BUILD_WORKER_DEST_DIR="$ROOT/opt/build-worker"
 export BUILD_WORKER_DEST_DIR
 
-# All three top-level entries, same as staging-deploy.yml's
-# `tar -C . -cf - supabase -C deploy/hetzner-staging scripts build-worker`.
+# Builds a tar stream of all FOUR top-level entries -- supabase, scripts, mcp
+# and build-worker -- same as staging-deploy.yml's
+# `tar -C . -cf - supabase -C deploy/hetzner-staging scripts mcp build-worker`.
+run_sync_with_mcp() {
+  (cd "$ROOT/src" && tar -cf - supabase scripts mcp) \
+    | REPO_DIR="$REPO_DIR" SCRIPTS_DEST_DIR="$SCRIPTS_DEST_DIR" MCP_DEST_DIR="$MCP_DEST_DIR" bash "$SCRIPT" 2>&1
+}
+
+reset_mcp_src() {
+  rm -rf "$ROOT/src/mcp"
+  mkdir -p "$ROOT/src/mcp"
+}
+
+# Same idea, for the build worker's compose file.
 run_sync_with_build_worker() {
   (cd "$ROOT/src" && tar -cf - supabase scripts build-worker) \
     | REPO_DIR="$REPO_DIR" SCRIPTS_DEST_DIR="$SCRIPTS_DEST_DIR" \
@@ -335,6 +349,74 @@ if [ -f "$SCRIPTS_DEST_DIR/hello.sh" ]; then
   ok "a previously installed script is left alone when this sync omits scripts/"
 else
   no "a previously installed script is left alone when this sync omits scripts/"
+fi
+
+# ── The template library's compose file ─────────────────────────────────────
+# It travels in the same tar stream as the scripts, for the same reason: it is
+# a file the box runs and `main` owns. What must NOT travel with it is the env
+# file beside it in the repo -- that one is an example, and the real one holds
+# the shared secret the app slot authenticates with.
+echo "sync-supabase.sh: mcp install"
+reset_src
+reset_scripts_src
+reset_mcp_src
+printf 'services:\n  mcp:\n    image: ghcr.io/dmpresearch/flowstarter-mcp:main\n' >"$ROOT/src/mcp/docker-compose.yml"
+printf 'FLOWSTARTER_MCP_INTERNAL_TOKEN=replace-me\n' >"$ROOT/src/mcp/mcp.env.example"
+out="$(run_sync_with_mcp)"
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  ok "a sync carrying mcp/ succeeds"
+else
+  no "a sync carrying mcp/ succeeds" "$out"
+fi
+if [ -f "$MCP_DEST_DIR/docker-compose.yml" ]; then
+  ok "the compose file lands in MCP_DEST_DIR"
+else
+  no "the compose file lands in MCP_DEST_DIR"
+fi
+assert_contains "$out" "installed mcp/docker-compose.yml" "the install is logged with its hash"
+if [ ! -e "$MCP_DEST_DIR/mcp.env.example" ]; then
+  ok "the example env file is NOT installed alongside it"
+else
+  no "the example env file is NOT installed alongside it" "a lane that can write an env file can write a secret"
+fi
+mode="$(stat -c '%a' "$MCP_DEST_DIR/docker-compose.yml" 2>/dev/null || stat -f '%Lp' "$MCP_DEST_DIR/docker-compose.yml")"
+if [ "$mode" = "644" ]; then
+  ok "the compose file is installed 644"
+else
+  no "the compose file is installed 644" "found $mode"
+fi
+
+echo "sync-supabase.sh: mcp install — an unchanged compose file is not rewritten"
+out="$(run_sync_with_mcp)"
+assert_contains "$out" "already up to date" "an identical compose file is left alone"
+
+echo "sync-supabase.sh: mcp install — a changed compose file is replaced"
+printf 'services:\n  mcp:\n    mem_limit: 512m\n' >"$ROOT/src/mcp/docker-compose.yml"
+out="$(run_sync_with_mcp)"
+assert_contains "$out" "installed mcp/docker-compose.yml" "the changed compose file is reinstalled"
+assert_contains "$(cat "$MCP_DEST_DIR/docker-compose.yml")" "mem_limit: 512m" "the installed content actually changed"
+if [ -z "$(find "$MCP_DEST_DIR" -name '.docker-compose.yml.*.new' 2>/dev/null)" ]; then
+  ok "no leftover temp file after the atomic replace"
+else
+  no "no leftover temp file after the atomic replace"
+fi
+
+echo "sync-supabase.sh: a tar stream without a top-level mcp/ entry"
+reset_src
+reset_scripts_src
+out="$(run_sync_with_scripts)"
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  ok "a sync without mcp/ still succeeds"
+else
+  no "a sync without mcp/ still succeeds" "$out"
+fi
+assert_contains "$out" "no mcp/ in the tar stream" "sync-supabase.sh says it skipped the compose file"
+if [ -f "$MCP_DEST_DIR/docker-compose.yml" ]; then
+  ok "a previously installed compose file is left alone when this sync omits mcp/"
+else
+  no "a previously installed compose file is left alone when this sync omits mcp/"
 fi
 
 # ── The build worker's compose file ─────────────────────────────────────────

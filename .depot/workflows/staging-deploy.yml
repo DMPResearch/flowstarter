@@ -101,6 +101,7 @@ jobs:
         run: |
           owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
           echo "name=ghcr.io/${owner}/flowstarter-main" >> "$GITHUB_OUTPUT"
+          echo "mcp=ghcr.io/${owner}/flowstarter-mcp" >> "$GITHUB_OUTPUT"
           echo "worker=ghcr.io/${owner}/flowstarter-build-worker" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
@@ -137,6 +138,35 @@ jobs:
             FLOWSTARTER_BUILD_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # The template library (MCP server), as its own image. It takes no
+      # NEXT_PUBLIC_* build args and holds no environment-specific value, so
+      # the same image is correct for staging and for production and the two
+      # lanes cannot cross-contaminate through it.
+      #
+      # BUILT FROM THE SAME github.sha AS THE APP, and that is not incidental.
+      # The app image bakes the four templates' installed node_modules at
+      # /srv/preview-templates and symlinks them into every generated
+      # workspace; this image ships the same four templates' SOURCES, which is
+      # what `scaffold_template` returns. A scaffold whose package.json
+      # disagrees with the node_modules the app symlinks in is a preview that
+      # dies at `astro build` on an import the template plainly declares. One
+      # commit, both halves.
+      #
+      # Built unconditionally alongside the app, deployed below only when the
+      # SSH secrets are present, exactly like the app's.
+      - name: Build and push the template library image
+        if: steps.supabase.outputs.present == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/flowstarter-library/mcp-server/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.image.outputs.mcp }}:${{ github.sha }}
+            ${{ steps.image.outputs.mcp }}:main
+          cache-from: type=gha,scope=mcp
+          cache-to: type=gha,mode=max,scope=mcp
 
       # The build worker, as its own image. Separate from the app's on purpose:
       # it installs a different (much smaller) dependency graph, it carries a
@@ -205,13 +235,15 @@ jobs:
       # disk filled. See docs/operations/deploy-disk.md and
       # sync-supabase.sh's own header comment.
       #
-      # A third top-level entry, "build-worker", carries the build worker's
-      # compose file to /opt/flowstarter/build-worker/ for the same reason:
-      # it is a file the box runs and `main` owns. Its env file is NOT in that
-      # stream and never will be — the real one is
+      # Two more top-level entries, "mcp" and "build-worker", carry the
+      # template library's and the build worker's compose files to
+      # /opt/flowstarter/mcp/ and /opt/flowstarter/build-worker/ for the same
+      # reason: both are files the box runs and `main` owns. Neither env file
+      # is in this stream and never will be — the real ones are
+      # /etc/flowstarter/mcp-staging.env and
       # /etc/flowstarter/build-worker-staging.env, mode 600, and a lane that
-      # could write it could write a secret out of a git checkout.
-      - name: Sync supabase/, scripts/ and the build worker compose file to the host
+      # could write them could write a secret out of a git checkout.
+      - name: Sync supabase/, scripts/ and the mcp/build-worker compose files to the host
         if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
         env:
           HOST: ${{ secrets.STAGING_SSH_HOST }}
@@ -222,7 +254,7 @@ jobs:
           install -m 600 /dev/null "$RUNNER_TEMP/staging_key"
           printf '%s\n' "$KEY" > "$RUNNER_TEMP/staging_key"
           SSH=(ssh -i "$RUNNER_TEMP/staging_key" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
-          tar -C . -cf - supabase -C deploy/hetzner-staging scripts build-worker \
+          tar -C . -cf - supabase -C deploy/hetzner-staging scripts mcp build-worker \
             | "${SSH[@]}" "${USER}@${HOST}" "sudo /opt/flowstarter/staging/sync-supabase.sh"
 
       # Trust, then verify: sync-supabase.sh already logs each script it
@@ -264,6 +296,21 @@ jobs:
           fi
           echo "All scripts on the host match this repo checkout byte-for-byte."
 
+          # The template library's compose file, checked the same way and for
+          # the same reason. It is not under scripts/, so the glob above cannot
+          # cover it, and a compose file that silently stayed behind is exactly
+          # the drift this whole step exists to catch: it is what decides the
+          # loopback publish rule, the read-only root filesystem and the
+          # resource caps.
+          compose_expected="$(sha256sum deploy/hetzner-staging/mcp/docker-compose.yml | awk '{print $1}')"
+          compose_actual="$("${SSH[@]}" "${USER}@${HOST}" \
+            "sha256sum /opt/flowstarter/mcp/docker-compose.yml 2>/dev/null | awk '{print \$1}'" || true)"
+          if [ "$compose_expected" != "$compose_actual" ]; then
+            echo "::error::/opt/flowstarter/mcp/docker-compose.yml on the host does not match deploy/hetzner-staging/mcp/docker-compose.yml in this push (expected ${compose_expected}, host reported '${compose_actual}'). sync-supabase.sh should have installed it in the previous step; check its output there."
+            exit 1
+          fi
+          echo "The template library compose file on the host matches this repo checkout byte-for-byte."
+
           # The build worker's compose file, checked the same way and for the
           # same reason. It is not under scripts/, so the glob above cannot
           # cover it, and a compose file that silently stayed behind is
@@ -278,6 +325,75 @@ jobs:
             exit 1
           fi
           echo "The build worker compose file on the host matches this repo checkout byte-for-byte."
+
+      # The template library, BEFORE the app slot, and the order is the point.
+      #
+      # It is the opposite of the build worker's ordering next door, because
+      # the dependency runs the other way: nothing in the library calls back
+      # into flowstarter-main, while the app asks the library for a catalog
+      # and a template's sources on every live-preview request. Two things
+      # follow.
+      #
+      # First, a library deploy that fails must not leave a NEW app slot
+      # pointing at an OLD library: deployed first, a failure here stops the
+      # job with staging still running a matched pair (old app, old library)
+      # rather than a mismatched one. That pairing is real, not theoretical —
+      # the app image bakes the templates' node_modules and this image ships
+      # their sources.
+      #
+      # Second, the window this opens is harmless. The app probes the
+      # library's /health before it will start a generation run
+      # (generation-availability.ts), so while the library is being recreated
+      # a visitor is told the honest thing — "we will build it by hand and
+      # email it to you" — instead of watching a doomed build. The reverse
+      # order has no equivalent safety net.
+      #
+      # Same sudo grant as every other slot script: /opt/flowstarter/staging/*.sh
+      # (Cmnd_Alias FLOWSTARTER_SLOTS in /etc/sudoers.d/flowstarter-deploy), so
+      # this needs no sudoers change.
+      #
+      # This step does NOT write /etc/flowstarter/mcp-staging.env. Secrets on
+      # this box are placed by hand, once, mode 600; a lane that could rewrite
+      # them is a lane that can leak them.
+      - name: Deploy the template library over SSH
+        if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
+        env:
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          USER: ${{ secrets.STAGING_SSH_USER }}
+          KEY: ${{ secrets.STAGING_SSH_KEY }}
+          MCP_IMAGE: ${{ steps.image.outputs.mcp }}:${{ github.sha }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
+        run: |
+          set -euo pipefail
+          install -m 600 /dev/null "$RUNNER_TEMP/staging_key"
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/staging_key"
+          SSH=(ssh -i "$RUNNER_TEMP/staging_key" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
+          # GHCR packages are private; log the host in before docker pull. The
+          # app slot's step below does this too — both are needed, because
+          # either can be the first to run on a host whose login has expired.
+          "${SSH[@]}" "${USER}@${HOST}" \
+            "echo $(printf %q "$GHCR_TOKEN") | docker login ghcr.io -u $(printf %q "$GHCR_USERNAME") --password-stdin && sudo /opt/flowstarter/staging/mcp-stack.sh up $(printf %q "$MCP_IMAGE")"
+
+      # `up` already waited for the container to be healthy and ran `check`
+      # (loopback publish, authentication actually on, a shared secret that
+      # matches the app slot's, the app pointed at this library, the catalog).
+      # This is the other half: that /mcp itself refuses an untokened tool
+      # call. "The container is running" and "scaffold_template is not serving
+      # every template's sources to any caller on this box" are different
+      # facts.
+      - name: Smoke the template library
+        if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
+        env:
+          HOST: ${{ secrets.STAGING_SSH_HOST }}
+          USER: ${{ secrets.STAGING_SSH_USER }}
+          KEY: ${{ secrets.STAGING_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 600 /dev/null "$RUNNER_TEMP/staging_key"
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/staging_key"
+          SSH=(ssh -i "$RUNNER_TEMP/staging_key" -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
+          "${SSH[@]}" "${USER}@${HOST}" "sudo /opt/flowstarter/staging/mcp-stack.sh health"
 
       - name: Deploy slot main over SSH
         if: steps.supabase.outputs.present == 'true' && steps.ssh.outputs.present == 'true'
