@@ -526,6 +526,15 @@ export const SERVER_ONLY_TABLES = [
   // service role behind a route that already holds the connection id. See
   // supabase/migrations/20260913190000_portrait_from_social.sql.
   'portrait_connections',
+  // An operator's session in the editor: which operator, which workspace,
+  // where the worktree lives, and what they shipped. An operator never talks
+  // to this table directly -- they go through
+  // /api/admin/projects/[id]/editor, which runs requireTeamAuth first -- and a
+  // client must not be able to enumerate the times we opened a coding agent on
+  // their site. RLS on, zero policies, every grant to anon and authenticated
+  // revoked, same protection as every table above. See
+  // supabase/migrations/20260914180000_operator_editor_sessions.sql.
+  'operator_editor_sessions',
 ];
 
 // ─── Assertions ────────────────────────────────────────────────────────────

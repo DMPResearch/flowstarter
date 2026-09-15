@@ -37,6 +37,12 @@ export interface PolicyDecision {
 }
 
 export interface EditorState {
+  /**
+   * Whoever is looking, so the history can say "You" for their own change
+   * rather than naming them. Optional because the API route builds this shape
+   * too and a caller that does not know is better than one that guesses.
+   */
+  viewerId?: string | null;
   site: {
     name: string;
     version: number;

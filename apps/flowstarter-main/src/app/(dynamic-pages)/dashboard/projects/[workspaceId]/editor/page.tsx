@@ -81,6 +81,7 @@ export default async function ClientSiteEditorPage({
   ]);
 
   const initial: EditorState = {
+    viewerId: access.userId,
     site: {
       name: site.workspaceName,
       version: site.version,

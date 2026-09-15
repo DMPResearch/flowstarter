@@ -176,6 +176,13 @@ const ALLOW_LIST: AllowListEntry[] = [
   {
     file: 'job-store.ts',
     table: 'flowstarter_agent_jobs',
+    match: `.select('kind, payload')`,
+    reason:
+      "recordOperatorEditFailure(): reads the kind and payload of the job this attempt just failed, keyed by its own id, to learn which editor session to write the gate's words onto. The session update beside it IS tenant-scoped, through withTenant().",
+  },
+  {
+    file: 'job-store.ts',
+    table: 'flowstarter_agent_jobs',
     match: `.select('leased_by, lease_fence, status')`,
     reason:
       "assertHoldsLease(): reads this job's current holder and token to authorise a publish; keyed by the job id this worker claimed.",

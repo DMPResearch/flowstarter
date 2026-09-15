@@ -20,7 +20,11 @@ export interface GitWorktree {
  * and a kind that exists in one file and not the other is exactly the defect
  * below.
  */
-export type FlowstarterBuildKind = 'FULL_SITE_BUILD' | 'SITE_REBUILD' | 'CHANGE_REQUEST_BUILD';
+export type FlowstarterBuildKind =
+  | 'FULL_SITE_BUILD'
+  | 'SITE_REBUILD'
+  | 'CHANGE_REQUEST_BUILD'
+  | 'OPERATOR_EDIT_BUILD';
 
 /**
  * The one table of commit subjects, keyed by the build kind that writes it.
@@ -47,6 +51,17 @@ export const BUILD_COMMIT_SUBJECTS: Readonly<Record<FlowstarterBuildKind, string
   SITE_REBUILD: 'build: publish client edit to site',
   /** A paid change request, applied to the site the client already has. */
   CHANGE_REQUEST_BUILD: 'build: apply paid change request to site',
+  /**
+   * Work an operator did in the Flowstarter editor, shipped through the gates.
+   *
+   * The commit an operator's own session makes on the editor host uses this
+   * same subject, so the two commits that exist for one piece of work -- the
+   * one on the editor host's worktree and the one this repository writes when
+   * the build publishes -- read identically in both histories. Neither carries
+   * a word the operator typed: a subject that could hold arbitrary text is a
+   * subject that will one day hold a client's name, a ticket number or worse.
+   */
+  OPERATOR_EDIT_BUILD: 'build: ship operator editor session to site',
 };
 
 /**

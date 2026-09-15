@@ -38,6 +38,12 @@ import { GET as LIST_CHANGES } from '../changes/route';
 import { POST as QUOTE_CHANGE } from '../changes/[changeId]/quote/route';
 import { POST as SET_CHANGE_STATUS } from '../changes/[changeId]/status/route';
 import { POST as BUILD_CHANGE } from '../changes/[changeId]/build/route';
+import {
+  GET as EDITOR_STATE,
+  POST as OPEN_EDITOR,
+  DELETE as CLOSE_EDITOR,
+} from '../editor/route';
+import { POST as SHIP_EDITOR } from '../editor/ship/route';
 import { GET as PIPELINE_DETAIL } from '../pipeline/route';
 import { POST as CANCEL_JOB } from '../pipeline/cancel-job/route';
 import { GET as JOB_EVENTS } from '../pipeline/jobs/[jobId]/events/route';
@@ -245,6 +251,16 @@ function everyOperatorRoute(): RouteCase[] {
           change
         ),
     ],
+    // The operator editor. The hand-over mints a Clerk sign-in ticket, so a
+    // client who could reach it would be handed a credential for an
+    // operator surface on a workspace they merely belong to.
+    ['editor (read)', () => EDITOR_STATE(get(`${base}/editor`), project)],
+    ['editor (open)', () => OPEN_EDITOR(post(`${base}/editor`), project)],
+    ['editor (close)', () => CLOSE_EDITOR(del(`${base}/editor`), project)],
+    [
+      'editor/ship',
+      () => SHIP_EDITOR(post(`${base}/editor/ship`, {}), project),
+    ],
     ['pipeline', () => PIPELINE_DETAIL(get(`${base}/pipeline`), project)],
     [
       'pipeline/cancel-job',
@@ -387,6 +403,6 @@ describe('a workspace that is not yours to operate', () => {
     // A guard on the guard: the list above is what the two cases run, so a
     // route added without an entry has to change this number too, and the
     // walker test says which file is missing.
-    expect(everyOperatorRoute()).toHaveLength(32);
+    expect(everyOperatorRoute()).toHaveLength(36);
   });
 });

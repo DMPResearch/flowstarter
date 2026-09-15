@@ -8,6 +8,7 @@
  */
 
 import type { RouterConfig } from "./config.ts";
+import { handleControlRequest, SessionRegistry } from "./control.ts";
 import { parseWorkspaceSlugFromHost } from "./slug.ts";
 import { Supervisor } from "./supervisor.ts";
 
@@ -51,6 +52,7 @@ function forwardedHeaders(req: Request, host: string): Record<string, string> {
 export function createRouterServer(cfg: RouterConfig) {
   const supervisor = new Supervisor(cfg);
   supervisor.start();
+  const sessions = new SessionRegistry();
 
   const server = Bun.serve<SocketData>({
     port: cfg.listenPort,
@@ -62,13 +64,16 @@ export function createRouterServer(cfg: RouterConfig) {
     async fetch(req, srv) {
       const url = new URL(req.url);
 
-      // Container healthcheck — no slug required.
-      if (url.pathname === "/__router/health") {
-        return new Response(
-          JSON.stringify({ ok: true, children: supervisor.liveSlugs() }),
-          { headers: { "content-type": "application/json" } },
-        );
-      }
+      // Operator-session control plane (open/ship/close a worktree) —
+      // checked before slug routing since it lives under its own
+      // `/__router/` path, not a tenant subdomain. Returns null for any
+      // request that isn't a control-plane path.
+      const control = await handleControlRequest(req, cfg, {
+        sessions,
+        liveSlugs: () => supervisor.liveSlugs(),
+        supervisor,
+      });
+      if (control) return control;
 
       const host = req.headers.get("host");
       const slug = parseWorkspaceSlugFromHost(host, cfg.publicDomain);
@@ -200,6 +205,7 @@ export function createRouterServer(cfg: RouterConfig) {
   return {
     server,
     supervisor,
+    sessions,
     async stop() {
       await supervisor.shutdown();
       server.stop(true);

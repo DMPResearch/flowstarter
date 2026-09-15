@@ -12,6 +12,7 @@
  * never sent anywhere.
  */
 import { useState } from 'react';
+import { siteVersionAuthor } from '@/lib/flowstarter/site-version-author';
 import { PolicyNotice } from './PolicyNotice';
 import {
   EditorRequestError,
@@ -24,12 +25,15 @@ export function VersionHistoryPanel({
   base,
   versions,
   currentVersion,
+  viewerId = null,
   policy,
   onChanged,
 }: {
   base: string;
   versions: EditorVersion[];
   currentVersion: number;
+  /** Whoever is looking, so their own change reads "You" instead of an id. */
+  viewerId?: string | null;
   policy: PolicyDecision;
   onChanged: () => Promise<void> | void;
 }) {
@@ -124,6 +128,29 @@ export function VersionHistoryPanel({
                 {entry.summary ?? 'Change'} ·{' '}
                 {new Date(entry.createdAt).toLocaleDateString()}
               </p>
+              {/*
+                Who made this, in words. A client whose site changed overnight
+                because we built the page they asked for on a call should be
+                told that here, on the screen they already look at, rather than
+                having to ask whether something went wrong. The rule lives in
+                `site-version-author.ts`; this only prints its answer.
+              */}
+              {(() => {
+                const author = siteVersionAuthor(entry.createdBy, viewerId);
+                if (!author.label) return null;
+                return (
+                  <p
+                    data-testid="editor-version-author"
+                    data-author-kind={author.kind}
+                    className="truncate text-xs font-medium text-[var(--fs-ink-dim)]"
+                  >
+                    {author.label}
+                    {author.kind === 'flowstarter-team'
+                      ? ` · version ${entry.version}`
+                      : ''}
+                  </p>
+                );
+              })()}
             </div>
             {entry.version === currentVersion ? null : (
               <button

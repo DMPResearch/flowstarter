@@ -16,6 +16,8 @@ for production at `flowstarter.net`.
 | `/etc/flowstarter/backup.env`  | Backup config (retention, encryption, S3), mode 600 |
 | `/var/backups/flowstarter/`    | Nightly backups, see `docs/operations/backups.md`   |
 | `/opt/flowstarter/cal`         | Self-hosted Cal.com compose file + vhost snippet    |
+| `/opt/flowstarter/editor`      | Flowstarter editor compose file + stack script      |
+| `/etc/flowstarter/editor.env`  | Editor secrets, mode 600                            |
 | `/etc/flowstarter/cal.env`     | Cal secrets and admin credentials, mode 600         |
 
 The directory is still called `staging` so nothing that already references it
@@ -662,6 +664,111 @@ either the `sigma-runtime-deps` stage or the two `SIGMA_*_ROOT` env vars.
 one-off, documented in `apps/flowstarter-main/README.md` and `.env.example`.
 Not run automatically by `pnpm install` — it fetches a ~135 MB pinned model,
 not an npm package.
+
+## The Flowstarter editor
+
+The operator path from `docs/operations/operator-editor.md`: an operator opens
+a client's site in a real coding agent from the admin project page, builds
+whatever the client asked for, and ships it through the same build and the same
+gates as every other change.
+
+**One container**, `flowstarter-editor`, on this box. The editor server is
+single-project-per-process, so the image's entrypoint is the router/supervisor
+(`apps/flowstarter-editor/router`), which spawns one editor process per
+workspace slug pinned to `/workspaces/<slug>` and idle-stops it. The isolation
+boundary is that child process plus its own cwd and state dir; the auth
+boundary is the editor's own Clerk gate, which still runs per child because
+Caddy forwards the original `Host`.
+
+**No new vhost.** The deploy-agent already writes
+`<slug>.<domain>/editor/*  ->  reverse_proxy <upstream>` into every client
+site's Caddy snippet. Point it here:
+
+```
+DEPLOY_AGENT_EDITOR_UPSTREAM=http://127.0.0.1:3773
+```
+
+`code.flowstarter.net` stays on the auth-transfer allow-list for a
+root-mounted editor that does not exist yet; the operator hand-over goes to
+`https://<slug>.<domain>/editor/`, built server-side from `workspaces.slug`.
+
+**Two ways in, and only two.** A browser reaches `/editor/*` through Caddy on
+the tenant vhost. `flowstarter-main` reaches `/__router/*` on
+`127.0.0.1:3773` — the control plane that materialises a workspace's worktree
+from its published manifest, commits it, and reads it back. That control plane
+is protected twice: a constant-time bearer check against
+`EDITOR_CONTROL_SECRET` (503 with no secret set, never open by default), and a
+flat refusal of any request carrying `x-forwarded-host` or `x-forwarded-for`.
+The second one matters because Caddy's `handle_path /editor/*` strips the
+prefix, so a browser on a client site *can* reach `/__router/...` — but Caddy
+stamps those headers on everything it forwards and an attacker cannot remove
+them.
+
+### The env file
+
+`/etc/flowstarter/editor.env`, mode 600, owned by root. Template:
+`deploy/hetzner-staging/editor/editor.env.example`.
+
+```
+EDITOR_PUBLIC_DOMAIN=flowstarter.net   # must equal the app slot's PLATFORM_DOMAIN
+EDITOR_CONTROL_SECRET=                 # openssl rand -hex 32; shared with flowstarter-main
+CLERK_SECRET_KEY=
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=
+ANTHROPIC_API_KEY=
+IS_SANDBOX=1                           # REQUIRED; see below
+```
+
+`IS_SANDBOX=1` is not optional. The container runs as root, and "Full access"
+runtime mode makes the Claude Agent SDK pass
+`--dangerously-skip-permissions`, which Claude Code refuses under root — the
+turn dies with *"Claude Code process exited with code 1 / Runtime error"*.
+Each workspace is isolated in its own process with its own cwd and state dir,
+so it genuinely is a sandbox. Without the line, default-permission threads
+work and full-access ones fail, which is the confusing half-broken state.
+
+`flowstarter-main` needs the other half of the pair in its own env file:
+
+```
+EDITOR_HOST_URL=http://127.0.0.1:3773
+EDITOR_CONTROL_SECRET=<the same value>
+```
+
+### Installing and driving it
+
+`scripts/editor-stack.sh` is the only thing that should run `docker compose`
+against the editor compose file. Run as root:
+
+```bash
+sudo mkdir -p /opt/flowstarter/editor
+sudo cp deploy/hetzner-staging/editor/docker-compose.yml /opt/flowstarter/editor/
+sudo cp deploy/hetzner-staging/scripts/editor-stack.sh /opt/flowstarter/editor/
+sudo chmod +x /opt/flowstarter/editor/editor-stack.sh
+sudo install -m 600 /dev/null /etc/flowstarter/editor.env
+# Fill editor.env in from editor.env.example, then:
+sudo /opt/flowstarter/editor/editor-stack.sh up
+sudo /opt/flowstarter/editor/editor-stack.sh check     # must pass before going further
+sudo /opt/flowstarter/editor/editor-stack.sh health
+```
+
+| Subcommand | What it does |
+| ---------- | ------------ |
+| `up`       | `compose up -d`, then waits (bounded, `EDITOR_HEALTH_TIMEOUT`, default 120s) for the container to report healthy, then runs `check`. |
+| `recreate` | `docker rm -f` then `up`. This is what applies an env-file change: `docker restart` does **not** re-read `--env-file`. |
+| `down`     | `compose down`. Never `-v`: `/workspaces` can hold a session an operator has not shipped, and `/state` holds their conversation. |
+| `status`   | Container name, health, published ports, and the image tag actually running. |
+| `check`    | Fails unless 3773 is published loopback-only, `EDITOR_CONTROL_SECRET` is at least 32 characters, and `EDITOR_PUBLIC_DOMAIN` is set. Run it after every `up`. |
+| `health`   | The router answers on loopback, **and** the control plane 404s a request carrying `x-forwarded-host`. The second assertion is the one that proves a client site cannot reach it. |
+
+The image is built from the monorepo root:
+
+```bash
+docker build -f apps/flowstarter-editor/Dockerfile   --build-arg VITE_BASE_PATH=/editor/   --build-arg VITE_CLERK_PUBLISHABLE_KEY=<publishable>   -t ghcr.io/dmpresearch/flowstarter-editor:main .
+```
+
+`VITE_BASE_PATH=/editor/` is required for the sub-path mount: without it the
+SPA emits root-absolute asset URLs and the tenant vhost serves them the static
+site's `index.html` instead, which the SPA reports as *"Unexpected token '<'
+… is not valid JSON"*.
 
 ## Known gaps
 

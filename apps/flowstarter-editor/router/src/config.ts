@@ -32,6 +32,13 @@ export interface RouterConfig {
   readonly readinessTimeoutMs: number;
   /** Hard cap on concurrent children (LRU-evict idle when exceeded). */
   readonly maxChildren: number;
+  /**
+   * Bearer secret the operator-session control plane (`control.ts`)
+   * requires on every route except health. Undefined means the control
+   * plane is unconfigured — every authenticated route then refuses with
+   * 503 rather than defaulting open.
+   */
+  readonly controlSecret: string | undefined;
 }
 
 function num(name: string, fallback: number): number {
@@ -80,5 +87,6 @@ export function loadConfig(): RouterConfig {
     reapIntervalMs: num("EDITOR_REAP_INTERVAL_MS", 15 * 1000),
     readinessTimeoutMs: num("EDITOR_READINESS_TIMEOUT_MS", 45 * 1000),
     maxChildren: num("EDITOR_MAX_CHILDREN", 25),
+    controlSecret: process.env.EDITOR_CONTROL_SECRET,
   };
 }

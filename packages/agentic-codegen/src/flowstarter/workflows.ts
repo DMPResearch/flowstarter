@@ -146,6 +146,12 @@ import {
   describeUnavailableScan,
   type ContentPolicyScanner,
 } from './acceptable-use';
+import {
+  operatorEditSummary,
+  OPERATOR_EDIT_INVALID_STATE,
+  OPERATOR_EDIT_MANIFEST_MISSING,
+  type OperatorEditIntent,
+} from './operator-edit-build';
 import { BUILT_OUTPUT_DIR, resolveContainedOutputDir } from './site-export';
 import {
   missingRequiredLabelBlocksFromParsed,
@@ -1646,6 +1652,17 @@ export interface FullSiteBuildJob {
    */
   changeRequest?: ChangeRequestIntent | null;
   /**
+   * The operator editor session this job exists to publish, off the job
+   * payload. Present only on OPERATOR_EDIT_BUILD, and the job fails without it
+   * rather than publishing whatever manifest it happens to find.
+   *
+   * The bytes themselves arrive the same way every other kind's do, through
+   * `approvedPreviewFiles` — the job store reads them from the session row,
+   * not from the editor host's disk, so the worker needs no access to the
+   * editor container at all.
+   */
+  operatorEdit?: OperatorEditIntent | null;
+  /**
    * The in-depth brief the client filled in after paying, off the job payload,
    * with every asset the worker could not deliver already taken out.
    *
@@ -1756,6 +1773,50 @@ export interface FullSiteBuildJobStore {
       pullRequestUrl: string;
       stagingUrl: string;
       changeRequestId: string;
+      version: number;
+    },
+  ): Promise<void>;
+  /**
+   * An operator-edit build's worktree. Moves no project state, for the same
+   * reason a rebuild and a change build do not: a live client whose site one
+   * of us improved has not gone back into the build pipeline.
+   */
+  markOperatorEditStarted?(
+    jobId: string,
+    worktree: GitWorktree,
+  ): Promise<void>;
+  /**
+   * The operator's worktree, saved as the site's next version, before anything
+   * is published. Returns the number the client is later shown.
+   */
+  saveOperatorEditVersion?(
+    jobId: string,
+    input: { sessionId: string; files: TemplateScaffoldFile[] },
+  ): Promise<{ version: number }>;
+  /**
+   * Undoes {@link saveOperatorEditVersion} when the run that saved it failed
+   * before publishing. Same contract as the change-request one: false means
+   * the row was not this build's to remove, which is not an error.
+   */
+  discardOperatorEditVersion?(
+    jobId: string,
+    input: { sessionId: string; version: number },
+  ): Promise<boolean>;
+  /**
+   * The end of an operator-edit build: the version is published, the job
+   * succeeds, and the session moves shipping -> shipped with the version on
+   * it. Last thing the job does, so a crash anywhere earlier leaves the
+   * session unshipped and an operator with a failed job to read — which is
+   * the honest state, and the one they can act on from the editor they are
+   * already sitting in.
+   */
+  markOperatorEditBuilt?(
+    jobId: string,
+    result: {
+      commitSha: string;
+      pullRequestUrl: string;
+      stagingUrl: string;
+      sessionId: string;
       version: number;
     },
   ): Promise<void>;
@@ -2767,6 +2828,16 @@ export class FullSiteBuildWorker {
     // flag on one of theirs.
     if (job.kind === 'CHANGE_REQUEST_BUILD') {
       await this.changeRequestBuild(job, say, log, activity, signal);
+      return;
+    }
+    // The operator's own editor session, shipped. Agents did touch this site,
+    // so it cannot take the rebuild's thin path — but they touched it
+    // *interactively*, in an operator's hands, before this job existed, so
+    // there is no pass to run here either. It is its own leg because it is the
+    // only one that runs every output gate with no agent available to repair
+    // what one of them refuses.
+    if (job.kind === 'OPERATOR_EDIT_BUILD') {
+      await this.operatorEditBuild(job, say, log, activity, signal);
       return;
     }
     if (job.projectState !== ProjectState.DEPOSIT_PAID) {
@@ -4021,6 +4092,329 @@ export class FullSiteBuildWorker {
    * project_state a live site is in is a statement about the engagement, not
    * about this job, and a typo fix must not restate it.
    */
+  /**
+   * An operator's editor session, published.
+   *
+   * The shape is deliberately CHANGE_REQUEST_BUILD's gates on SITE_REBUILD's
+   * body: every output gate a paid build passes, and not one agent pass.
+   *
+   * Why no agent. On every other leg a gate that fails gets one repair pass,
+   * because the thing that wrote the site is a bounded agent session nobody
+   * watched and asking it to fix its own mess is cheaper than failing a build
+   * somebody paid for. Here the thing that wrote the site is an operator, at a
+   * keyboard, in a coding agent, who is still sitting in it. Running an
+   * unattended pass over a feature they deliberately built is how intent gets
+   * quietly undone — the repair prompt knows what the gate wants and knows
+   * nothing about what the operator was doing. So a gate that refuses stops
+   * the job, writes its own plain words onto the timeline, and the operator
+   * fixes it in the editor and ships again. Rules decide; the operator
+   * iterates.
+   *
+   * Why no page budget either. The page-set rule exists to stop an agent
+   * inventing routes nobody asked for out of a fixed brief. An operator
+   * session's whole purpose is that it may add a page, so holding it to the
+   * client's original page count would refuse exactly the work this path was
+   * built to do. Every other gate applies unchanged, because every other gate
+   * is a statement about what we will put in front of a client at all.
+   */
+  private async operatorEditBuild(
+    job: FullSiteBuildJob,
+    say: (
+      kind: FullSiteBuildEventKind,
+      body: string,
+      payload?: Record<string, unknown>,
+    ) => Promise<void>,
+    log: JobLogWriter | null,
+    activity: ActivityRecorder,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const jobId = job.id;
+    let builtOutput: string | null = null;
+    const phase = async (body: string) => {
+      this.assertStillHeld(jobId, signal);
+      await log?.flush();
+      activity.phase(body);
+      await say('phase', body);
+    };
+
+    // The same two states a rebuild and a change build are valid from: this
+    // publishes over a site the client already has, and before the deposit
+    // build has produced one there is nothing to publish over.
+    if (
+      job.projectState !== ProjectState.HUMAN_QA &&
+      job.projectState !== ProjectState.LIVE_SUBSCRIPTION
+    ) {
+      await this.store.markFailed(jobId, {
+        code: OPERATOR_EDIT_INVALID_STATE,
+        detail:
+          'Shipping an editor session requires HUMAN_QA or ' +
+          `LIVE_SUBSCRIPTION, received ${job.projectState}. The session is ` +
+          'left open; nothing was published.',
+      });
+      return;
+    }
+    const intent = job.operatorEdit;
+    if (!intent) {
+      await this.store.markFailed(jobId, {
+        code: OPERATOR_EDIT_MANIFEST_MISSING,
+        detail:
+          'This job names no readable editor session, so there is nothing to ' +
+          'publish. Ship again from the editor; nothing was changed.',
+      });
+      return;
+    }
+
+    /** Non-null only between saving a version and publishing it. See below. */
+    let unpublishedVersion: number | null = null;
+
+    try {
+      await phase('Preparing a clean worktree');
+      await this.worktrees.discard?.(job.projectId);
+      const worktree = await this.worktrees.create(job.projectId);
+      const siteRoot = join(worktree.path, 'generated-sites', job.projectId);
+      await mkdir(siteRoot, { recursive: true, mode: 0o700 });
+
+      await phase('Materializing the operator session');
+      // `approvedPreviewFiles` here is the session's own manifest, read off
+      // the session row by the job store — never the client's live files, and
+      // never the editor host's disk. The teaser strip and the seed-placeholder
+      // rule run anyway: an operator who copied a block out of a preview, or a
+      // session cut from a manifest published before #110, should not be the
+      // first person to discover that at the gate of record.
+      const seeded = await applySeedPlaceholderRule(
+        stripPreviewTeaserFromFiles(job.approvedPreviewFiles).files,
+        [],
+        say,
+      );
+      await materializeScaffold(siteRoot, seeded.files);
+      // Unconditional, exactly as on every other leg: a workspace with no
+      // booking link still needs the funnel's blurred demo taken back out, and
+      // a contact form left pointing at a preview token silently loses every
+      // enquiry. An operator working by hand is more likely to reintroduce
+      // either of those, not less.
+      await applyIntegrationsToWorkspace(siteRoot, {
+        booking: { provider: 'cal.com', url: job.calComUrl ?? null },
+        leadCapture: { endpoint: job.leadCaptureEndpoint ?? null },
+      });
+      await say('log', operatorEditSummary(intent), {
+        sessionId: intent.sessionId,
+        baseVersion: intent.baseVersion,
+        commitSha: intent.commitSha,
+        files: seeded.files.length,
+      });
+      if (intent.note) {
+        // Printed on its own line, never folded into a sentence the product
+        // speaks in its own voice.
+        await say('log', `The operator's note: ${intent.note}`);
+      }
+      await this.store.markOperatorEditStarted?.(jobId, worktree);
+
+      // The gate of record. No repair pass: a session that does not compile is
+      // something the operator can see in the editor in seconds, and guessing
+      // at a fix for a feature we do not understand is worse than saying so.
+      await phase('Checking the build');
+      builtOutput = await this.exportOf(
+        this.validator.validate(siteRoot, 'full'),
+        builtOutput,
+      );
+      const builtSiteText = () =>
+        collectBuiltSiteText(siteRoot, builtOutput ?? undefined);
+
+      await phase('Checking for placeholder copy');
+      const placeholderIssue = findPlaceholderCopyIssue(await builtSiteText(), {
+        hasBookingLink: Boolean(job.calComUrl),
+      });
+      if (placeholderIssue) {
+        throw new FullSiteBuildFailure(
+          PLACEHOLDER_COPY_SHIPPED,
+          placeholderIssue,
+        );
+      }
+
+      await phase('Checking for placeholder images');
+      const placeholderImages = findGatedPlaceholderImageFindings(
+        await builtSiteText(),
+      );
+      if (placeholderImages.length > 0) {
+        throw new FullSiteBuildFailure(
+          PLACEHOLDER_IMAGE_SHIPPED,
+          describePlaceholderImageIssue(placeholderImages),
+        );
+      }
+
+      // The one gate that is about the visitor rather than about the client:
+      // whatever an operator built, the site may not come back asking a
+      // browser to load a script, a frame or a form from somewhere we did not
+      // allow. An operator with a coding agent is precisely the actor most able
+      // to add a third-party embed in good faith, which is why this runs here
+      // rather than being trusted away.
+      await phase('Checking what the site asks the browser to do');
+      const markupIssue = findMarkupPolicyIssue(
+        await builtSiteText(),
+        this.markupPolicyFor(job),
+      );
+      if (markupIssue) {
+        throw new FullSiteBuildFailure(GENERATED_HTML_UNSAFE, markupIssue);
+      }
+
+      await phase('Checking for empty image elements');
+      assertNoEmptyImages(await builtSiteText());
+
+      // The acceptable-use gate covers this leg too, and the argument for it
+      // is the rebuild leg's, only stronger: an operator's session is the one
+      // path in the product that can add a whole new page to a live site, and
+      // the coding agent that wrote it took its instructions from a person
+      // rather than from our system prompt. The policy is a rule about the
+      // work we do, not about who typed it. Last, after every other check, so
+      // the text it reads is the text that would have shipped, and before the
+      // commit so a refused site never becomes a revision of anything.
+      await phase('Checking the site against the acceptable-use policy');
+      await this.assertAcceptableUse(
+        {
+          files: await builtSiteText(),
+          projectId: job.projectId,
+          workspaceId: job.projectId,
+        },
+        say,
+      );
+
+      // Commit first, then save — the order #146 paid for. The commit is the
+      // cheap, local, reversible half (a worktree nobody has seen); the version
+      // row is the half a client is told about. A failure between them would
+      // otherwise strand a finished build with `published_at` null that nothing
+      // will ever publish, so the version is taken last and rolled back below.
+      await phase('Committing the site');
+      const commitSha = await this.worktrees.commit(
+        worktree,
+        buildCommitMessage(job.kind, job.projectId),
+      );
+
+      await phase('Saving the new version of the site');
+      const files = await readSiteWorkspaceFiles(siteRoot);
+      const saved = await this.store.saveOperatorEditVersion?.(jobId, {
+        sessionId: intent.sessionId,
+        files,
+      });
+      if (!saved) {
+        throw new FullSiteBuildFailure(
+          OPERATOR_EDIT_MANIFEST_MISSING,
+          'This worker cannot save a site version, so the finished editor ' +
+            'session could not be recorded and was not published.',
+        );
+      }
+      unpublishedVersion = saved.version;
+      await say(
+        'log',
+        `Saved ${files.length} files as version ${saved.version} of the site.`,
+        { version: saved.version, files: files.length },
+      );
+
+      await phase('Publishing');
+      await this.authorizePublish(jobId, signal);
+      const published = await this.pullRequests.create({
+        projectId: job.projectId,
+        branch: worktree.branch,
+        worktreePath: worktree.path,
+        commitSha,
+        siteRoot,
+        outputRoot: builtOutput,
+        calComUrl: job.calComUrl ?? null,
+        leadCaptureEndpoint: job.leadCaptureEndpoint ?? null,
+        siteVersion: saved.version,
+      });
+      await this.store.markOperatorEditBuilt?.(jobId, {
+        commitSha,
+        ...published,
+        sessionId: intent.sessionId,
+        version: saved.version,
+      });
+      unpublishedVersion = null;
+      await phase(`Live, in version ${saved.version}`);
+    } catch (error) {
+      activity.fail(
+        subjectForFailureCode(
+          error instanceof FullSiteBuildFailure
+            ? error.code
+            : 'OPERATOR_EDIT_BUILD_FAILED',
+        ),
+        error instanceof Error ? error.message.slice(0, 300) : undefined,
+      );
+      const detail =
+        error instanceof Error
+          ? error.message
+          : 'Unknown operator edit build failure';
+      if (unpublishedVersion !== null) {
+        await this.rollBackUnpublishedOperatorVersion(
+          jobId,
+          intent.sessionId,
+          unpublishedVersion,
+          say,
+        );
+      }
+      await say('log', `Shipping the editor session failed: ${detail}`);
+      await this.recordFailure(jobId, {
+        code:
+          error instanceof LeaseLostError
+            ? BUILD_LEASE_LOST
+            : error instanceof FullSiteBuildFailure
+              ? error.code
+              : 'OPERATOR_EDIT_BUILD_FAILED',
+        detail: detail.slice(0, 2_000),
+      });
+      throw error;
+    } finally {
+      await log?.flush();
+      await this.releaseOutput(builtOutput);
+    }
+  }
+
+  /**
+   * Takes back the site version a failed operator-edit run saved. Same rule,
+   * same never-throws contract as {@link rollBackUnpublishedVersion}: the
+   * failure that brought us here is the one the operator needs to read, and a
+   * rollback that could not run must not replace it.
+   */
+  private async rollBackUnpublishedOperatorVersion(
+    jobId: string,
+    sessionId: string,
+    version: number,
+    say: (
+      kind: FullSiteBuildEventKind,
+      body: string,
+      payload?: Record<string, unknown>,
+    ) => Promise<void>,
+  ): Promise<void> {
+    try {
+      const discarded = await this.store.discardOperatorEditVersion?.(jobId, {
+        sessionId,
+        version,
+      });
+      if (discarded === true) {
+        await say(
+          'log',
+          `Rolled back version ${version}: this run did not publish it, so ` +
+            'the site is left exactly as the client last saw it.',
+          { version },
+        );
+        return;
+      }
+      await say(
+        'log',
+        `Version ${version} was left in place: it is no longer this build's ` +
+          'to remove. An operator should decide what happens to it.',
+        { version },
+      );
+    } catch (rollbackError) {
+      await say(
+        'log',
+        `Version ${version} could not be rolled back: ` +
+          `${rollbackError instanceof Error ? rollbackError.message : 'unknown'}. ` +
+          'It is unpublished, and an operator should decide what happens to it.',
+        { version },
+      );
+    }
+  }
+
   private async rebuild(
     job: FullSiteBuildJob,
     say: (

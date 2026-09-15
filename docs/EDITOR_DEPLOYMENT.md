@@ -12,6 +12,18 @@ already exists in this repo**.
 Canonical architecture: [`CONCIERGE_PIVOT_PLAN.md`](./CONCIERGE_PIVOT_PLAN.md)
 lines 16–30. This is the implementation runbook for it.
 
+> **The operator path is now built and wired.** Items 2 (the router), 3
+> (per-workspace code on the box) and 4 (admin → editor hand-over) below
+> describe what this file predicted; what actually shipped, including the
+> control plane, the session table, the `OPERATOR_EDIT_BUILD` job and the
+> gates it runs, is in
+> [`operations/operator-editor.md`](./operations/operator-editor.md). Two
+> things landed differently from the sketch below and that document says why:
+> the worktree is materialised from the workspace's published manifest rather
+> than cloned from `editor_repo_url` (no such repo was ever created), and the
+> hand-over goes to `<slug>.<domain>/editor/` rather than a root-mounted
+> `code.<domain>`.
+
 ## The load-bearing fact
 
 The editor server is **single-project-per-process**:

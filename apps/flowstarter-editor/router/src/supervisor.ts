@@ -65,6 +65,18 @@ export class Supervisor {
   }
 
   /**
+   * Kill this slug's child, if one is running, so the next `ensureChild`
+   * spawns fresh against whatever is now on disk. Used by the control
+   * plane's session DELETE: an operator session ending is exactly the
+   * moment the on-disk worktree changed out from under a live process,
+   * and that process must not keep serving the stale one.
+   */
+  stopSlug(slug: string): void {
+    const child = this.children.get(slug);
+    if (child) this.kill(child);
+  }
+
+  /**
    * Ensure a ready child for `slug`; returns its loopback port. Retries
    * a couple of times if a child dies before becoming ready (e.g. a
    * transient port clash).

@@ -1,0 +1,86 @@
+# Build context for the editor image, and the reason this file has to exist.
+#
+# BuildKit prefers `<dockerfile>.dockerignore` over the root `.dockerignore`
+# when one is present, and the two images need opposite things from the same
+# repository:
+#
+#   deploy/hetzner-staging/Dockerfile builds flowstarter-main, and the root
+#   `.dockerignore` rightly drops `apps/flowstarter-editor` from its context --
+#   the editor is a whole second application and none of it ships in the app
+#   image.
+#
+#   This Dockerfile builds the editor, and that same line made it unbuildable:
+#   `pnpm --filter @flowstarter/editor-web build` answered "No projects matched
+#   the filters in /app", then the `cp` of `web/dist` failed, because the only
+#   thing missing from the context was the application being built. The header
+#   of the Dockerfile says "the root .dockerignore already excludes
+#   node_modules/dist/.git, so the build is hermetic", which was true of those
+#   three and silently untrue of the app itself.
+#
+# So this list is the root one with that single line removed, plus the
+# workspaces the editor genuinely does not need. Keep it in step with
+# `.dockerignore` when that file changes; the parts that differ are marked.
+
+.git
+.github
+.depot
+.husky
+.nx
+.t3
+.next
+.turbo
+.DS_Store
+.env
+.env.*
+node_modules
+**/node_modules
+**/.next
+**/dist
+**/build
+**/.cache
+**/*.log
+.local
+coverage
+**/coverage
+.tmp
+tmp
+**/playwright-report
+**/test-results
+artifacts
+e2e
+docs
+flowstarter
+readiness
+supabase
+
+# DIFFERENT FROM THE ROOT LIST: `apps/flowstarter-editor` is deliberately NOT
+# excluded here. It is what this image builds.
+
+# The other applications. None of them is compiled into the editor image, and
+# pnpm is given explicit `--filter`s, so their absence costs nothing. Their
+# package.json files stay so the lockfile's importers still resolve.
+apps/flowstarter-main/**
+!apps/flowstarter-main/package.json
+apps/flowstarter-library/**
+!apps/flowstarter-library/package.json
+apps/flowstarter-templates/**
+!apps/flowstarter-templates/*/package.json
+apps/flowstarter-selfserve/**
+!apps/flowstarter-selfserve/package.json
+apps/shopify-landing/**
+!apps/shopify-landing/package.json
+apps/build-worker/**
+!apps/build-worker/package.json
+apps/deploy-agent/**
+!apps/deploy-agent/package.json
+
+# The shared packages are kept whole: `packages/platform-config` and its
+# siblings are real dependencies of nothing in the editor today, but the
+# lockfile names them and they are small. Dropping them would trade a few
+# hundred kilobytes for a class of "works locally, fails in CI" install
+# failure, which is not a trade worth making.
+deploy
+scripts
+mprocs.yaml
+ecosystem.config.cjs
+playwright.config.ts

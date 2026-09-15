@@ -18,8 +18,11 @@ import {
   mergeBriefIntoIntake,
   normalizeCalLink,
   parseBriefInput,
+  operatorEditCreatedBy,
   parseChangeRequestIntent,
+  parseOperatorEditIntent,
   withoutMissingAssets,
+  OPERATOR_EDIT_VERSION_SUMMARY,
   type BrandConfig,
   type BriefInput,
   type BusinessIntakePayload,
@@ -29,6 +32,7 @@ import {
   type FullSiteBuildJobStore,
   type GitWorktree,
   type ApprovedPreviewEdit,
+  type OperatorEditIntent,
   type OperatorNote,
   type PreviewIntent,
   type TemplateScaffoldFile,
@@ -450,10 +454,11 @@ function leadCaptureEndpointFor(raw: string | null | undefined): string | null {
   return `${publicAppOrigin()}/api/leads/capture/${token}`;
 }
 
-/** The three kinds this worker runs, off the ledger row's free-text column. */
+/** The four kinds this worker runs, off the ledger row's free-text column. */
 function jobKindFor(kind: string): FullSiteBuildJob['kind'] {
   if (kind === 'SITE_REBUILD') return 'SITE_REBUILD';
   if (kind === 'CHANGE_REQUEST_BUILD') return 'CHANGE_REQUEST_BUILD';
+  if (kind === 'OPERATOR_EDIT_BUILD') return 'OPERATOR_EDIT_BUILD';
   return 'FULL_SITE_BUILD';
 }
 
@@ -476,6 +481,17 @@ export function buildJobFromRows(input: {
    * removed, or null for a workspace that has none.
    */
   briefInput?: BriefInput | null;
+  /**
+   * The manifest an operator shipped out of the Flowstarter editor, read off
+   * `operator_editor_sessions.result_manifest`.
+   *
+   * When it is present it REPLACES the artifact manifest as the seed, because
+   * it already is the whole site: the operator's session was materialised from
+   * the client's published manifest, worked on, and handed back. Seeding from
+   * the artifact row instead would build the site as it was before they
+   * started and publish it as though it were their work.
+   */
+  operatorEditFiles?: readonly TemplateScaffoldFile[] | null;
 }): FullSiteBuildJob {
   const intake = asRecord(
     input.artifacts.intake_payload,
@@ -504,6 +520,10 @@ export function buildJobFromRows(input: {
     kind === 'CHANGE_REQUEST_BUILD'
       ? parseChangeRequestIntent(input.job.payload)
       : null;
+  const operatorEdit =
+    kind === 'OPERATOR_EDIT_BUILD'
+      ? parseOperatorEditIntent(input.job.payload)
+      : null;
   if (calComUrl && !requiredIntegrations.some((slug) => slug === CAL_COM)) {
     requiredIntegrations.push(CAL_COM);
   }
@@ -526,8 +546,13 @@ export function buildJobFromRows(input: {
       input.artifacts.brand_config,
       'brand_config',
     ) as unknown as BrandConfig,
+    // The operator's own worktree wins outright when there is one; see
+    // `operatorEditFiles` above. Everything else keeps reading the artifact
+    // manifest, which is still the seed for all three original kinds.
     approvedPreviewFiles: withChangeRequestAssets(
-      parseApprovedPreviewFiles(input.artifacts.preview_manifest),
+      input.operatorEditFiles && input.operatorEditFiles.length > 0
+        ? [...input.operatorEditFiles]
+        : parseApprovedPreviewFiles(input.artifacts.preview_manifest),
       input.changeRequestAssetFiles ?? [],
     ),
     requiredIntegrations,
@@ -535,6 +560,7 @@ export function buildJobFromRows(input: {
     ...(leadCaptureEndpoint ? { leadCaptureEndpoint } : {}),
     ...(previewIntent ? { previewIntent } : {}),
     ...(changeRequest ? { changeRequest } : {}),
+    ...(operatorEdit ? { operatorEdit } : {}),
     ...(briefInput ? { briefInput } : {}),
   };
 }
@@ -549,6 +575,20 @@ export function changeRequestFor(
 ): ChangeRequestIntent | null {
   if (row.kind !== 'CHANGE_REQUEST_BUILD') return null;
   return parseChangeRequestIntent(row.payload);
+}
+
+/**
+ * The editor session on a claimed job, or null for every other kind.
+ *
+ * Exported for the same reason `changeRequestFor` is: the claim path and its
+ * tests must read the payload through one rule, so a payload shape that the
+ * tests accept cannot be one the claim path quietly rejects.
+ */
+export function operatorEditFor(
+  row: JobLedgerRow,
+): OperatorEditIntent | null {
+  if (row.kind !== 'OPERATOR_EDIT_BUILD') return null;
+  return parseOperatorEditIntent(row.payload);
 }
 
 export interface SupabaseJobStoreOptions {
@@ -1280,6 +1320,16 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
       // every path before it starts.
       const brief = await this.loadBriefMaterial(row);
 
+      // And the operator's worktree, for a third time the same reason. The
+      // bytes come out of the session row rather than off the editor host's
+      // disk: this process has no access to that container, the worktree may
+      // already have been idle-reaped, and a build that can only be reproduced
+      // from a filesystem somebody has to go and look at is not reproducible.
+      const operatorEdit = operatorEditFor(row);
+      const operatorEditFiles = operatorEdit
+        ? await this.loadOperatorEditManifest(row.workspace_id, operatorEdit)
+        : null;
+
       return buildJobFromRows({
         job: row,
         projectState: workspace.project_state,
@@ -1288,6 +1338,7 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
         changeRequestAssetFiles: [...changeRequestAssetFiles, ...brief.files],
         briefInput: brief.briefInput,
         leadCaptureToken: workspace.lead_capture_token,
+        operatorEditFiles,
       });
     } catch (error) {
       await this.markFailed(jobId, {
@@ -1739,6 +1790,260 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
     }
   }
 
+  // ── Operator editor sessions ──────────────────────────────────────────
+
+  /**
+   * The worktree an operator shipped out of the Flowstarter editor.
+   *
+   * Read off the session row, guarded three ways: the session belongs to this
+   * workspace, it is the session the payload names, and it is `shipping` --
+   * the one status that means "an operator pressed Ship and nothing has
+   * published it yet". A session that is already `shipped`, or `closed`, or
+   * still `ready`, is not one this job may publish, and the honest failure is
+   * here at claim time rather than after a build has run.
+   */
+  private async loadOperatorEditManifest(
+    workspaceId: string,
+    intent: OperatorEditIntent,
+  ): Promise<TemplateScaffoldFile[]> {
+    const { data, error } = await withTenant(this.client, workspaceId)
+      .from('operator_editor_sessions')
+      .select('id, status, result_manifest')
+      .eq('id', intent.sessionId)
+      .maybeSingle<{
+        id: string;
+        status: string;
+        result_manifest: unknown;
+      }>();
+    if (error) throw error;
+    if (!data) {
+      throw new JobArtifactError(
+        `Editor session ${intent.sessionId} does not exist for this workspace.`,
+      );
+    }
+    if (data.status !== 'shipping') {
+      throw new JobArtifactError(
+        `Editor session ${intent.sessionId} is ${data.status}, not shipping, ` +
+          'so this build has nothing it is allowed to publish.',
+      );
+    }
+    // Same parser the artifact manifest goes through, so a session manifest
+    // cannot get in under looser rules than the client's own does.
+    return parseApprovedPreviewFiles(data.result_manifest);
+  }
+
+  /**
+   * An operator-edit build's worktree, recorded. Moves no project state, for
+   * the same reason a rebuild and a change build do not.
+   */
+  async markOperatorEditStarted(
+    jobId: string,
+    worktree: GitWorktree,
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    const { data, error } = await this.fencedJobUpdate(jobId, {
+      worktree_branch: worktree.branch,
+      worktree_path: worktree.path,
+      updated_at: now,
+    })
+      .select('id')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw this.lost(jobId, 'record a worktree for');
+  }
+
+  /**
+   * The operator's finished worktree, saved as the site's next version.
+   *
+   * Deliberately the same two writes, in the same order, under the same
+   * lease assertion and the same 23505 retry as `saveChangeRequestVersion`.
+   * The only things that differ are the two strings a client will read:
+   * `summary`, which says the team made this change, and `created_by`, which
+   * names this job so the rollback below can only ever reach its own row.
+   */
+  async saveOperatorEditVersion(
+    jobId: string,
+    input: { sessionId: string; files: TemplateScaffoldFile[] },
+  ): Promise<{ version: number }> {
+    await this.assertHoldsLease(jobId);
+    const workspaceId = await this.workspaceFor(jobId);
+    const manifest = { files: input.files };
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const { data: latest, error: readError } = await withTenant(
+        this.client,
+        workspaceId,
+      )
+        .from('site_versions')
+        .select('version')
+        .order('version', { ascending: false })
+        .limit(1)
+        .maybeSingle<{ version: number }>();
+      if (readError) throw readError;
+
+      const next = (latest?.version ?? 0) + 1;
+      const { error } = await withTenant(this.client, workspaceId)
+        .from('site_versions')
+        .insert({
+          version: next,
+          manifest,
+          // The one sentence the client reads. It names no operator: they
+          // bought a service, not a person, and whoever happened to be on
+          // shift is not theirs to have.
+          summary: OPERATOR_EDIT_VERSION_SUMMARY,
+          created_by: operatorEditCreatedBy(jobId),
+        });
+      if (error) {
+        if (error.code === '23505') continue;
+        throw error;
+      }
+
+      const { error: mirrorError } = await withTenant(this.client, workspaceId)
+        .from('flowstarter_project_artifacts')
+        .update({
+          preview_manifest: manifest,
+          updated_at: new Date().toISOString(),
+        });
+      if (mirrorError) throw mirrorError;
+
+      return { version: next };
+    }
+    throw new JobArtifactError(
+      'Could not take a site version number for the finished editor session',
+    );
+  }
+
+  /**
+   * Takes back a version this job saved and never published.
+   *
+   * The same four-part guard `discardChangeRequestVersion` uses, and
+   * deliberately not lease-fenced for the same reason: an attempt that lost
+   * its lease is exactly the attempt most likely to have left a version
+   * behind, and the `created_by` match means a rollback can only reach the row
+   * its own save wrote.
+   */
+  async discardOperatorEditVersion(
+    jobId: string,
+    input: { sessionId: string; version: number },
+  ): Promise<boolean> {
+    const workspaceId = await this.workspaceFor(jobId);
+    const { data, error } = await withTenant(this.client, workspaceId)
+      .from('site_versions')
+      .delete()
+      .eq('version', input.version)
+      .eq('created_by', operatorEditCreatedBy(jobId))
+      .is('published_at', null)
+      .select('version');
+    if (error) throw error;
+    if (!data || data.length === 0) return false;
+
+    // Put the artifact mirror back on the newest version that still exists.
+    // When none does, leave it: a workspace whose only version was this one
+    // has a manifest that predates versioning, and blanking it is worse.
+    const { data: latest, error: latestError } = await withTenant(
+      this.client,
+      workspaceId,
+    )
+      .from('site_versions')
+      .select('manifest')
+      .order('version', { ascending: false })
+      .limit(1)
+      .maybeSingle<{ manifest: unknown }>();
+    if (latestError) throw latestError;
+    if (!latest) return true;
+    const { error: mirrorError } = await withTenant(this.client, workspaceId)
+      .from('flowstarter_project_artifacts')
+      .update({
+        preview_manifest: latest.manifest,
+        updated_at: new Date(this.now()).toISOString(),
+      });
+    if (mirrorError) throw mirrorError;
+    return true;
+  }
+
+  /**
+   * The last thing an operator-edit build does.
+   *
+   * The session moves `shipping -> shipped` under a compare-and-set on
+   * `shipping`, so a redelivered job or a second attempt cannot produce a
+   * second completion, and a build that crashed before this line leaves the
+   * session exactly where it was -- which is the state the operator can act on
+   * from the editor they are still sitting in.
+   */
+  async markOperatorEditBuilt(
+    jobId: string,
+    result: {
+      commitSha: string;
+      pullRequestUrl: string;
+      stagingUrl: string;
+      sessionId: string;
+      version: number;
+    },
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    const workspaceId = await this.workspaceFor(jobId);
+    const existing = await this.currentPayload(jobId);
+
+    const { error: unpublishError } = await withTenant(this.client, workspaceId)
+      .from('site_versions')
+      .update({ published_at: null })
+      .not('published_at', 'is', null);
+    if (unpublishError) throw unpublishError;
+    const { error: publishError } = await withTenant(this.client, workspaceId)
+      .from('site_versions')
+      .update({ published_at: now })
+      .eq('version', result.version);
+    if (publishError) throw publishError;
+
+    const { data: finished, error } = await this.fencedJobUpdate(jobId, {
+      status: 'succeeded',
+      pull_request_url: result.pullRequestUrl,
+      payload: {
+        ...existing,
+        commitSha: result.commitSha,
+        stagingUrl: result.stagingUrl,
+        pullRequestUrl: result.pullRequestUrl,
+        builtVersion: result.version,
+      },
+      finished_at: now,
+      updated_at: now,
+      leased_by: null,
+      lease_expires_at: null,
+    })
+      .select('id')
+      .maybeSingle();
+    if (error) throw error;
+    if (!finished) throw this.lost(jobId, 'finish');
+    this.forget(jobId);
+
+    const { data: shipped, error: shippedError } = await withTenant(
+      this.client,
+      workspaceId,
+    )
+      .from('operator_editor_sessions')
+      .update({
+        status: 'shipped',
+        shipped_version: result.version,
+        shipped_at: now,
+        last_error: null,
+        closed_at: now,
+        updated_at: now,
+      })
+      .eq('id', result.sessionId)
+      .eq('status', 'shipping')
+      .select('id');
+    if (shippedError) throw shippedError;
+    if (!shipped || shipped.length === 0) {
+      // Loud rather than silent: the site is live and the session row
+      // disagrees, which is exactly the state an operator must be able to see.
+      throw new JobArtifactError(
+        `Editor session ${result.sessionId} was not at shipping when its ` +
+          'build finished, so it was not marked shipped. The site is live in ' +
+          `version ${result.version}.`,
+      );
+    }
+  }
+
   /**
    * A failed attempt, with its next one scheduled.
    *
@@ -1807,5 +2112,55 @@ export class SupabaseFullSiteBuildJobStore implements FullSiteBuildJobStore {
       .eq('id', data.workspace_id)
       .eq('project_state', ProjectState.AGENTS_WORKING);
     if (stateError) throw stateError;
+
+    // An operator whose ship failed is standing in the editor waiting to be
+    // told why. The job row carries the reason, but the project page reads the
+    // session, so the gate's own words are put where they are looking. The
+    // session goes back to `ready` rather than to `failed`: their worktree is
+    // untouched and still theirs to fix, and a status that said `failed` would
+    // read as "this session is over" when the whole point is that it is not.
+    await this.recordOperatorEditFailure(jobId, data.workspace_id, detail);
+  }
+
+  /**
+   * Best effort, and deliberately so: the failure this is annotating is the
+   * one the operator has to read, and a session row that could not be updated
+   * must never replace it with an error about bookkeeping. A job of any other
+   * kind carries no session and this is a single cheap read that finds none.
+   */
+  private async recordOperatorEditFailure(
+    jobId: string,
+    workspaceId: string,
+    detail: string,
+  ): Promise<void> {
+    try {
+      const { data: row, error } = await this.client
+        .from('flowstarter_agent_jobs')
+        .select('kind, payload')
+        .eq('id', jobId)
+        .maybeSingle<{ kind: string; payload: unknown }>();
+      // Thrown rather than ignored, so the catch below says it out loud. A
+      // read that quietly returns nothing leaves the operator's session
+      // reading `shipping` forever with no trace of why.
+      if (error) throw error;
+      if (!row || row.kind !== 'OPERATOR_EDIT_BUILD') return;
+      const intent = parseOperatorEditIntent(row.payload);
+      if (!intent) return;
+      await withTenant(this.client, workspaceId)
+        .from('operator_editor_sessions')
+        .update({
+          status: 'ready',
+          last_error: detail.slice(0, 2_000),
+          updated_at: new Date(this.now()).toISOString(),
+        })
+        .eq('id', intent.sessionId)
+        .eq('status', 'shipping');
+    } catch (error) {
+      console.warn(
+        `[job-store] could not record the ship failure on the editor ` +
+          `session for ${jobId}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
   }
 }
