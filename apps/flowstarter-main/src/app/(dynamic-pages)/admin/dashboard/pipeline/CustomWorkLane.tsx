@@ -46,6 +46,11 @@ export function CustomWorkLeadCard({
 }) {
   return (
     <article
+      // Matched by `leadBoardUrl` in `@/lib/flowstarter/scope-gate`, which is
+      // what the operator email's button and primary link point at. Without
+      // this id, "Open this lead" opens the board at the top of the lane
+      // instead of on the card it is actually about.
+      id={`custom-work-lead-${card.id}`}
       className={[
         CARD,
         // The same left rule the stalled project card wears, and the same red,

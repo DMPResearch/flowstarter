@@ -228,6 +228,27 @@ describe('runScopeGate on a custom brief', () => {
     expect(operator.text).toContain('customers log into');
   });
 
+  it('points the operator email at the lead on the admin board, not the visitor’s own site', async () => {
+    // Darius's own objection to PR #162's email: raw internals (a cosine
+    // margin printed as a confidence, "Scope: standard" beside "Route:
+    // discovery-call") and, once fixed, a request that the one clickable link
+    // open the lead on the board rather than the visitor's Instagram or site.
+    const result = await runScopeGate(BRIEF, noNetwork);
+    const operator = sendEmail.mock.calls.find(
+      (call) => call[0].to === 'ops@flowstarter.net'
+    )![0];
+    expect(operator.html).toContain(`#custom-work-lead-${result.leadId}"`);
+    expect(operator.text).toContain(`custom-work-lead-${result.leadId}`);
+    // The button is the primary link, and it is the board, never the site.
+    expect(operator.html).not.toContain(`href="${BRIEF.websiteUrl}"`);
+    // No raw internals: no reason code, no rule id, no confidence number.
+    expect(operator.text).not.toMatch(/\bConfidence\b|\bRoute\b/);
+    expect(operator.text).not.toContain('customAboveThreshold');
+    expect(operator.text).not.toMatch(/\d\.\d\d\b/);
+    // The visitor's own site is still there, as a labelled fact, not the link.
+    expect(operator.text).toContain(`Their site: ${BRIEF.websiteUrl}`);
+  });
+
   it('records that the confirmation actually reached them', async () => {
     await runScopeGate(BRIEF, noNetwork);
     expect(updatedRows).toHaveLength(1);
@@ -531,6 +552,38 @@ describe('the clarifying question', () => {
     // custom-work enquiry.
     expect(insertedRows).toHaveLength(0);
     expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('never sends the custom-work operator email for a review outcome', async () => {
+    // The requirement in full: a brief that opens an acceptable-use or scope
+    // review row is a different thing from a custom-work lead, and it must go
+    // to a person through the review queue, not through
+    // `customWorkOperatorEmail` -- an email that says "A custom work lead" and
+    // hands over a discovery-call link. `operatorReview: true` here is exactly
+    // that review, opened by `openScopeReview` against `policy_reviews`, and
+    // the route it produces is `self-serve`, never `discovery-call`. Structurally,
+    // `customWorkOperatorEmail` is only ever reached from `fileCustomWorkLead`,
+    // which only runs on a `discovery-call` route -- so this line is the proof
+    // that stays true even if that wiring changes.
+    setScopeClassifier(async () =>
+      classifierSaying({ scope: 'custom', confidence: 0.99 })
+    );
+    const result = await runScopeGate(
+      {
+        ...BRIEF,
+        clarification: 'A site that presents my business',
+        answerKey: 'site',
+      },
+      noNetwork
+    );
+    expect(result.operatorReview).toBe(true);
+    expect(result.route).not.toBe('discovery-call');
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(
+      sendEmail.mock.calls.some((call) =>
+        call[0]?.subject?.startsWith('Custom work lead:')
+      )
+    ).toBe(false);
   });
 
   it('lets a clarified standard answer through to the preview', async () => {

@@ -208,6 +208,22 @@ function boardUrl(): string {
 }
 
 /**
+ * The lead's own place on the pipeline board -- the operator email's primary
+ * link, and the only thing its button points to.
+ *
+ * `#custom-work-lead-<id>` matches the `id` `CustomWorkLeadCard` renders in
+ * `admin/dashboard/pipeline/CustomWorkLane.tsx`, so the link actually lands on
+ * the card rather than just the page. Falls back to the bare board when there
+ * is no id to anchor to -- `recordCustomWorkLead` failing is logged and does
+ * not stop the operator email from going, and a link to the board beats no
+ * link at all.
+ */
+function leadBoardUrl(leadId: string | null): string {
+  const base = boardUrl();
+  return leadId ? `${base}#custom-work-lead-${leadId}` : base;
+}
+
+/**
  * File the lead and tell both sides about it.
  *
  * The visitor's email and the operator's are sent independently: Darius must
@@ -233,6 +249,15 @@ async function fileCustomWorkLead(input: {
     gate.instagramUrl?.trim() ||
     gate.linkedinUrl?.trim() ||
     null;
+  // What the link above actually is, so the operator email's fact row reads
+  // right instead of a bare, unlabelled URL. A website is "their site"; a
+  // social profile is "their profile" -- neither is ever the email's primary
+  // link (see `leadBoardUrl`), just a fact next to their name and address.
+  const linkLabel = gate.websiteUrl?.trim()
+    ? 'Their site'
+    : gate.instagramUrl?.trim() || gate.linkedinUrl?.trim()
+    ? 'Their profile'
+    : undefined;
 
   const leadId = await recordCustomWorkLead({
     name: gate.fullName,
@@ -290,11 +315,12 @@ async function fileCustomWorkLead(input: {
       visitorEmail: visitorEmail || 'Not given',
       description: gate.description,
       linkUrl,
-      scope: classification.scope,
-      confidence: classification.confidence,
+      linkLabel,
+      routeRule: input.rule,
       evidence: classification.evidence,
-      route: input.route,
-      boardUrl: boardUrl(),
+      locale: gate.locale,
+      bookingUrl: input.bookingUrl,
+      leadUrl: leadBoardUrl(leadId),
     });
     const sent = await sendEmail({
       to: operator,
