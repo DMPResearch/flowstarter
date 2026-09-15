@@ -207,6 +207,54 @@ describe('decide', () => {
   });
 });
 
+describe('regression: 2026-09-15 staging false negative (flower shop)', () => {
+  // The exact composed text `apps/flowstarter-main/src/lib/policy/subject.ts`'s
+  // `intakeSubject` built on staging for scenario 1 of
+  // `e2e/support/scen-0915-lib.mjs` (Ana Dumitrescu, "Floraria Viorica" --
+  // a family flower shop in Timisoara), replayed via `docker exec` against
+  // the real deployed package on 2026-09-15 and reproduced verbatim here.
+  // `POST /api/discovery/scope` with this exact body returned
+  // `route: "discovery-call"` on staging -- a flower shop sent to a sales
+  // call instead of a preview -- with the `policy_reviews` row reading
+  // `abstained:acceptable_use:encoder_timeout`, confidence 0.000, sixteen
+  // minutes after boot. This is not a text problem: replayed cold (a fresh
+  // `LocalSentenceEncoder`, never warmed) it is slow enough to blow the
+  // 400ms embed budget every time; replayed against the shared, warmed
+  // `getEncoder()` singleton it classifies confidently in ~20ms. The
+  // `getEncoder()` globalThis fix (`packages/sigma-core/src/encoder.ts`) is
+  // what makes "warmed once at boot" and "the singleton real traffic reads"
+  // the same guarantee; this test is what makes sure the classification
+  // itself was always going to be right once that guarantee holds.
+  const FLOWER_SHOP_TEXT =
+    'What the business does: Floraria Viorica, a family flower shop in ' +
+    'Timisoara. We do wedding flowers, funeral wreaths and weekly ' +
+    'deliveries to offices, and we want people to order online.\n' +
+    'Link hostname: instagram.com\n' +
+    'Link page title: Instagram';
+
+  it('classifies the flower shop as a confident, allowed clean business', async () => {
+    const decision = await classifyAcceptableUse(FLOWER_SHOP_TEXT);
+    expect(decision.acceptableUse).toBe('allow');
+    expect(decision.category).toBe('clean');
+    const head = decision.trace.heads[ACCEPTABLE_USE_HEAD];
+    expect(head?.semanticAbstained).toBe(false);
+    expect(head?.semantic.reason).toBe('confident');
+  });
+
+  it('reaches the same verdict through the shared getEncoder() singleton, not just a fresh instance', async () => {
+    // The bug was never "the model gets it wrong" -- a brand new,
+    // never-warmed encoder classifies this text fine too, just slowly
+    // enough to blow the request budget. What must hold is that the
+    // SINGLETON everything else on the process shares is already warm by
+    // the time real traffic reaches it, which `classifyAcceptableUse`
+    // (through `getScorer()`/`getEncoder()`) exercises directly.
+    const first = await classifyAcceptableUse(FLOWER_SHOP_TEXT);
+    const second = await classifyAcceptableUse(FLOWER_SHOP_TEXT);
+    expect(first.acceptableUse).toBe('allow');
+    expect(second.acceptableUse).toBe('allow');
+  });
+});
+
 describe('the entry points', () => {
   it('return the whole decision, with the trace attached', async () => {
     const decision = await classifyAcceptableUse('a dental clinic taking new patients');
