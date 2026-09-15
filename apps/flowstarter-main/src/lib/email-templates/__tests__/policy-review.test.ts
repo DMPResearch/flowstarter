@@ -271,3 +271,45 @@ describe('policyReviewOperatorEmail, house style', () => {
     expect(mail.text).toMatchSnapshot();
   });
 });
+
+describe('policyReviewOperatorEmail, no classifier evidence field to leak', () => {
+  // The sibling of #191's bug on the scope head (`customWorkOperatorEmail`)
+  // would be this template quoting `PolicyClassification.evidence` -- a
+  // sentence that, on the sigma path, used to be a reason code like
+  // `confident:acceptable_use:prostitution_escort:semantic` before the fix in
+  // `@/lib/policy/classifier`. This template never took an `evidence`
+  // parameter at all: `categoryId`/`categoryLabel` pick a fixed, written
+  // sentence from `RULE_REASON`/`CATEGORY_MENTION`, and the only free text it
+  // ever prints is `briefText`, quoted as it is. This test pins that down so
+  // it stays true if the template is ever extended.
+  const REASON_CODE = 'confident:acceptable_use:prostitution_escort:semantic';
+
+  it('has no evidence parameter in its input type', () => {
+    const mail = policyReviewOperatorEmail({
+      ...BASE,
+      rule: 'sensitive_lawful',
+      categoryId: 'licensed_pharmacy',
+      categoryLabel: 'Licensed pharmacy or medicine retail',
+      // @ts-expect-error -- `evidence` is not part of this template's input;
+      // passing it must be a type error, not a silently ignored field.
+      evidence: [REASON_CODE],
+    });
+    expect(mail.text).not.toContain(REASON_CODE);
+    expect(mail.html).not.toContain(REASON_CODE);
+  });
+
+  it('never renders a reason code even when the category and brief are adversarial', () => {
+    const mail = policyReviewOperatorEmail({
+      ...BASE,
+      rule: 'unknown_category',
+      categoryId: REASON_CODE,
+      categoryLabel: REASON_CODE,
+      briefText: 'An ordinary brief about a bakery website.',
+    });
+    // `unknown_category`'s sentence never reads `mention` at all -- see
+    // `RULE_REASON` -- so even a category id shaped like a reason code cannot
+    // reach the rendered text through it.
+    expect(mail.text).not.toContain(REASON_CODE);
+    expect(mail.html).not.toContain(REASON_CODE);
+  });
+});

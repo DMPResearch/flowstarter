@@ -187,16 +187,30 @@ describe('translating a sigma decision into a classification', () => {
     ).toBe('llm');
   });
 
-  it('falls back to the machine-readable reason when a head has no evidence', () => {
+  it('never puts the machine-readable reason in evidence, even when a head has none of its own', () => {
+    // The sibling of the #191 bug on the scope head: `evidence` is documented
+    // as "one sentence... shown to the operator", and a reason code
+    // (`confident:acceptable_use:prostitution_escort:semantic`) is neither a
+    // sentence nor safe to show as one -- `PolicyReviewPanel` prints it in
+    // quotes, where it would read as the classifier's own words about a
+    // submission it never wrote a word about.
     const classification = classificationFromSigmaDecision(
       sigmaDecision({
         trace: { heads: {} },
       })
     );
-    expect(classification.evidence).toBe(
+    expect(classification.evidence).not.toContain(
       'confident:acceptable_use:prostitution_escort:semantic'
     );
+    expect(classification.evidence).toBe(
+      'The embedding classifier matched this category on centroid similarity, without writing a sentence about the submission.'
+    );
     expect(classification.confidence).toBe(0);
+    // The reason code is not lost, only moved: still readable for
+    // diagnostics, on `trace`, never on the field a person reads.
+    expect(classification.trace).toBe(
+      'confident:acceptable_use:prostitution_escort:semantic'
+    );
   });
 
   it('does not call the package fallback a decision', () => {

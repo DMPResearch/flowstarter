@@ -27,7 +27,10 @@ import 'server-only';
  * should not be asked a clarifying question because of our deployment.
  */
 import { SCOPE_PROMPT_VERSION, llmClassifyScope } from './classify-scope';
-import type { ScopeClassification } from '@/lib/flowstarter/scope-classifier';
+import {
+  verbatimEvidence,
+  type ScopeClassification,
+} from '@/lib/flowstarter/scope-classifier';
 import type { Scope } from '@/lib/flowstarter/scope-route';
 
 /**
@@ -57,10 +60,38 @@ function scopeFrom(action: string): Scope {
   return 'unclear';
 }
 
-/** Evidence an operator reads. sigma reports one machine-readable reason. */
-function evidenceFrom(reason: string): string[] {
-  const trimmed = reason.trim();
-  return trimmed ? [trimmed] : [];
+/**
+ * Evidence an operator can check against the brief.
+ *
+ * sigma's cascade reports one machine-readable reason per head -- calibration
+ * state, head, verdict, tier, e.g. `confident:scope:custom-work:semantic` --
+ * safe to log and built never to contain the visitor's text (see `reasons` on
+ * `Decision` in `@flowstarter/sigma-flowstarter`'s `gate.ts`). This function
+ * used to read that string in here, and #191 shipped an operator email that
+ * quoted it as though it were a clause from the brief. That string now goes
+ * into `ScopeClassification.trace` and a log line instead (see
+ * `sigmaScopeClassifier` below); this function only ever sees `head.evidence`,
+ * which is `null` whenever the embedding tier decided on its own -- centroid
+ * geometry has no sentence to report -- and is the injected LLM tier's own
+ * text (see `llmTier` below) whenever THAT tier is the one that decided.
+ *
+ * Even the LLM tier's own text is re-checked against `text` here rather than
+ * trusted: a model can paraphrase instead of quoting, and a paraphrase in
+ * quotation marks reads exactly like the bug above to an operator with no way
+ * to tell the two apart short of opening the brief. `text` is what was
+ * actually classified, the same string `scopeClassifierText` assembled, so a
+ * fragment that survives this really is checkable against it.
+ */
+function evidenceFrom(
+  headEvidence: string | null | undefined,
+  text: string
+): string[] {
+  if (!headEvidence) return [];
+  const fragments = headEvidence
+    .split('|')
+    .map((fragment) => fragment.trim())
+    .filter(Boolean);
+  return verbatimEvidence(fragments, text);
 }
 
 /**
@@ -100,7 +131,9 @@ type SigmaGate = {
   ) => Promise<{
     scope: string;
     reasons: { scope: string };
-    trace: { heads: Record<string, { confidence?: number }> };
+    trace: {
+      heads: Record<string, { confidence?: number; evidence?: string | null }>;
+    };
   }>;
 };
 
@@ -140,11 +173,19 @@ export async function sigmaScopeClassifier(
     });
     const head = decision.trace?.heads?.scope;
     const scope = scopeFrom(decision.scope);
+    // The reason code, kept for a log line only -- see `trace` on
+    // `ScopeClassification` and the doc on `evidenceFrom` above for why it
+    // must never reach `evidence`.
+    const trace = decision.reasons?.scope || undefined;
+    if (trace) {
+      console.debug(`[scope] sigma decided ${scope}: ${trace}`);
+    }
     return {
       scope,
       confidence: Math.min(1, Math.max(0, Number(head?.confidence) || 0)),
-      evidence: evidenceFrom(decision.reasons?.scope ?? ''),
+      evidence: evidenceFrom(head?.evidence, text),
       classifier: 'sigma',
+      trace,
       // `@flowstarter/sigma-core`'s `decide()` maps every head to its
       // platform action through a guard on that head's OWN calibration
       // (cosine similarity/margin for the embedding tier, its own confidence

@@ -341,11 +341,23 @@ export function classificationFromSigmaDecision(
   return {
     categoryId,
     confidence: head?.confidence ?? 0,
-    // The package's reason string is machine-readable and carries no user text
-    // by construction, which is what an operator card needs.
-    evidence: head?.evidence ?? decision.reasons.acceptableUse,
+    // `head.evidence` is the injected LLM tier's own sentence, present only
+    // when that tier is the one that decided -- the embedding tier settles on
+    // centroid geometry and never writes one. It used to fall back to
+    // `decision.reasons.acceptableUse` here: a machine-readable reason code
+    // (documented on the package's own `Decision.reasons` as "safe to log",
+    // which is another way of saying "not a sentence"), read straight onto a
+    // field whose contract above is "one sentence... shown to the operator".
+    // `PolicyReviewPanel` prints this in quotes, so a reason code in that
+    // slot read as a quote from something it was not, the sibling of the bug
+    // #191 shipped on the scope head. The reason code still goes somewhere:
+    // `trace` below, and the log line in `classifyAcceptableUse`.
+    evidence:
+      head?.evidence ??
+      'The embedding classifier matched this category on centroid similarity, without writing a sentence about the submission.',
     needsHuman: decision.acceptableUse !== 'allow',
     tier: head?.tier === 'injected' ? 'llm' : 'embedding',
+    trace: decision.reasons.acceptableUse || undefined,
     // Authoritative ONLY when a tier actually decided: see `decidedAction` in
     // acceptable-use.ts. The package's bands are calibrated against cosine
     // margins, ours against a model's self-reported probability, and

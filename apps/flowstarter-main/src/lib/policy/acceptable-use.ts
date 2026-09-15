@@ -515,6 +515,19 @@ export interface PolicyClassification {
    * must not be recorded as one (see `decided` on its `Decision`).
    */
   decidedAction?: PolicyDecision;
+  /**
+   * Machine-readable why, for a log line or a developer, never for a person.
+   *
+   * Set only by the sigma adapter, from the package's own `reasons.acceptableUse`
+   * (calibration state, head, verdict, tier -- e.g.
+   * `confident:acceptable_use:prostitution_escort:semantic`). It used to be
+   * read into `evidence` above whenever the deciding tier had no sentence of
+   * its own to report, which is the sibling of the bug #191 shipped on the
+   * scope head: an operator card printing a reason code as though it were
+   * "one sentence in the classifier's words". Mirrors `trace` on
+   * `ScopeClassification` in `@/lib/flowstarter/scope-classifier`.
+   */
+  trace?: string;
 }
 
 export type PolicyRule =

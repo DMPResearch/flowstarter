@@ -15,6 +15,7 @@
  * a URL.
  */
 import { renderEmail, type RenderedEmail } from './base';
+import { verbatimEvidence } from '@/lib/flowstarter/scope-classifier';
 
 /** The studio that contracts the custom work. Named, not implied. */
 const STUDIO = 'DMPResearch';
@@ -158,8 +159,12 @@ export function customWorkEnquiryEmail(input: {
 interface OperatorReason {
   /** A few words for the subject line. Never a full sentence. */
   subjectSummary: string;
-  /** The one sentence the email's body opens with. */
-  sentence: (evidence: readonly string[]) => string;
+  /**
+   * The one sentence the email's body opens with. `brief` is the visitor's
+   * own description, passed through so `quotedEvidence` can check a fragment
+   * against it before this sentence quotes it -- see that function.
+   */
+  sentence: (evidence: readonly string[], brief: string) => string;
 }
 
 /**
@@ -194,12 +199,25 @@ function wholeWordFragment(raw: string): string | null {
 
 /**
  * Up to two of the visitor's own fragments, quoted and joined for a sentence.
- * Null when the classifier gave none, or none of them survived
- * `wholeWordFragment`, so the caller falls back to a sentence that asserts
- * nothing it cannot show.
+ * Null when the classifier gave none, none of them are actually in `brief`,
+ * or none of them survived `wholeWordFragment`, so the caller falls back to a
+ * sentence that asserts nothing it cannot show.
+ *
+ * The verbatim check against `brief` is the defensive half of the fix for
+ * #191: `fix at the source` (see `classify-scope-sigma.ts`) means a correctly
+ * behaving classifier never hands this function anything but the visitor's
+ * own words, but this function does not trust that. A fragment is quoted only
+ * if it occurs, case-insensitively and after whitespace is folded, as a
+ * substring of the brief actually sent -- `occursVerbatim` in
+ * `@/lib/flowstarter/scope-classifier`. Anything else, a reason code, a prompt
+ * version, a paraphrase, is dropped rather than printed as though the visitor
+ * wrote it.
  */
-function quotedEvidence(evidence: readonly string[]): string | null {
-  const fragments = evidence
+function quotedEvidence(
+  evidence: readonly string[],
+  brief: string
+): string | null {
+  const fragments = verbatimEvidence(evidence, brief)
     .map((fragment) => wholeWordFragment(fragment))
     .filter((fragment): fragment is string => fragment !== null)
     .slice(0, 2);
@@ -215,8 +233,8 @@ const REASON_COPY: Record<string, OperatorReason> = {
   },
   customAboveThreshold: {
     subjectSummary: 'reads like software to build, not a site',
-    sentence: (evidence) => {
-      const quoted = quotedEvidence(evidence);
+    sentence: (evidence, brief) => {
+      const quoted = quotedEvidence(evidence, brief);
       return quoted
         ? `The brief mentions ${quoted}, which points to software we do not build self-serve.`
         : 'The brief reads like software to build rather than a site that presents the business, which is not something we build self-serve.';
@@ -224,8 +242,8 @@ const REASON_COPY: Record<string, OperatorReason> = {
   },
   clarifiedCustom: {
     subjectSummary: 'still reads as software after the question',
-    sentence: (evidence) => {
-      const quoted = quotedEvidence(evidence);
+    sentence: (evidence, brief) => {
+      const quoted = quotedEvidence(evidence, brief);
       return quoted
         ? `We asked what they needed, and the brief still mentions ${quoted}, which points to software we do not build self-serve.`
         : 'We asked what they needed, and the brief still reads as software to build rather than a site that presents the business.';
@@ -268,7 +286,7 @@ export function customWorkOperatorEmail(input: {
   leadUrl: string;
 }): RenderedEmail {
   const reason = operatorReasonFor(input.routeRule);
-  const sentence = reason.sentence(input.evidence);
+  const sentence = reason.sentence(input.evidence, input.description);
   const briefNote =
     input.locale === 'ro'
       ? ' The brief is written in Romanian, quoted below exactly as they sent it.'

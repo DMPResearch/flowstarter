@@ -55,9 +55,11 @@ describe('customWorkOperatorEmail, one sentence per route_rule', () => {
     },
     {
       routeRule: 'clarifiedCustom',
-      evidence: ['staff logins'],
+      // Must actually occur in `BASE.description` -- see the verbatim check
+      // in `quotedEvidence`.
+      evidence: ['track their orders'],
       sentence:
-        'We asked what they needed, and the brief still mentions "staff logins", which points to software we do not build self-serve.',
+        'We asked what they needed, and the brief still mentions "track their orders", which points to software we do not build self-serve.',
     },
     {
       routeRule: 'contactForm',
@@ -99,19 +101,30 @@ describe('customWorkOperatorEmail, one sentence per route_rule', () => {
 
   it('quotes an evidence fragment whole, up to the length bound, never cut mid-word', () => {
     // 60 chars is the bound (`MAX_QUOTED_EVIDENCE_CHARS`). This fragment is
-    // longer, so only whole words that fit are kept.
+    // longer, so only whole words that fit are kept. The description carries
+    // the fragment verbatim, or the verbatim check below would drop it before
+    // the truncation logic ever ran.
     const mail = customWorkOperatorEmail({
       ...BASE,
+      description:
+        'A portal where customers log into their account to track orders and reschedule delivery, all self-service.',
       routeRule: 'customAboveThreshold',
       evidence: [
         'customers log into their account to track orders and reschedule delivery',
       ],
     });
+    // The exact string below is the whole proof: the quoted sentence stops
+    // at "and", not partway through "reschedule" -- no fragment word was cut
+    // in half. (The full brief is quoted separately, verbatim, further down
+    // the same email, so "reschedule" legitimately appears there; asserting
+    // its absence from `mail.text` as a whole would not be testing this
+    // function any more.)
     expect(mail.text).toContain(
       'The brief mentions "customers log into their account to track orders and", which points to software we do not build self-serve.'
     );
-    // No fragment word was cut in half.
-    expect(mail.text).not.toContain('resched');
+    expect(mail.text).not.toContain(
+      'and reschedule", which points to software'
+    );
   });
 
   it('falls back to the generic sentence when the fragment is empty', () => {
@@ -128,15 +141,43 @@ describe('customWorkOperatorEmail, one sentence per route_rule', () => {
 
   it('falls back to the generic sentence when even one whole word is too long to quote', () => {
     // A single "word" (no spaces) longer than the bound cannot be shortened
-    // to anything honest, so it is dropped rather than half-quoted.
+    // to anything honest, so it is dropped rather than half-quoted. The
+    // description is that same word, so the verbatim check is not what drops
+    // it here -- the length bound is.
     const mail = customWorkOperatorEmail({
       ...BASE,
+      description: 'a'.repeat(61),
       routeRule: 'clarifiedCustom',
       evidence: ['a'.repeat(61)],
     });
     expect(mail.text).toContain(
       'We asked what they needed, and the brief still reads as software to build rather than a site that presents the business.'
     );
+  });
+
+  it('never quotes a fragment absent from the brief, even if the classifier handed it one', () => {
+    // The defensive half of the fix for #191: the source (`classify-scope-sigma.ts`)
+    // no longer produces this, but this template does not trust that either.
+    // A fragment that is not actually in the brief is dropped, not quoted.
+    const mail = customWorkOperatorEmail({
+      ...BASE,
+      routeRule: 'customAboveThreshold',
+      evidence: ['confident:scope:custom-work:semantic'],
+    });
+    expect(mail.text).not.toContain('confident:scope:custom-work:semantic');
+    expect(mail.text).toContain(
+      'The brief reads like software to build rather than a site that presents the business, which is not something we build self-serve.'
+    );
+  });
+
+  it('exactly the reason-code string reported in #191 never reaches the rendered email', () => {
+    const mail = customWorkOperatorEmail({
+      ...BASE,
+      routeRule: 'customAboveThreshold',
+      evidence: ['confident:scope:custom-work:semantic'],
+    });
+    expect(mail.text).not.toContain('confident:scope:custom-work:semantic');
+    expect(mail.html).not.toContain('confident:scope:custom-work:semantic');
   });
 });
 
@@ -240,7 +281,10 @@ describe('customWorkOperatorEmail, locale', () => {
     const mail = customWorkOperatorEmail({
       ...BASE,
       routeRule: 'customAboveThreshold',
-      evidence: ['customers log into'],
+      // A Romanian fragment, not the English one BASE's description would
+      // match: an evidence quote must be verbatim in the brief actually sent,
+      // and an English fragment is never in a Romanian one.
+      evidence: ['clientii mei se autentifica'],
       locale: 'ro',
       description: 'Un portal in care clientii mei se autentifica',
     });
