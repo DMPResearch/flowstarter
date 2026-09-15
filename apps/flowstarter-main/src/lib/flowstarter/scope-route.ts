@@ -17,9 +17,39 @@
  * A model (or, later, the local sigma classifier -- see `./scope-classifier`)
  * supplies one verdict and a confidence. It does not decide anything. This
  * module is the decision: a pure function over that verdict, the confidence,
- * the acceptable-use gate's answer, and whether the visitor has already been
- * asked the one clarifying question. Same inputs, same route, every time, with
- * no IO and no import of the classifier.
+ * the acceptable-use gate's answer, and the visitor's own answer to the one
+ * clarifying question. Same inputs, same route, every time, with no IO and no
+ * import of the classifier.
+ *
+ * ── The visitor's answer is a rule input, not a hint ───────────────────────
+ * This used to be the bug. The clarifying question's answer was appended to
+ * the classifier's text and nothing else: it changed what the model was shown
+ * and never what the rule decided. So when the classifier went down -- and on
+ * 2026-09-15 it went down on 100% of calls, every one of them returning
+ * `unclear` -- a visitor who tapped "A site that presents my business" was
+ * still carrying `scope: "unclear"`, and `unclear` plus any answer routed to
+ * a sales call. Nobody could reach a preview, and the screen they got asserted
+ * they had described software, which is the opposite of what they had just
+ * said.
+ *
+ * A person answering a direct question about their own business is the best
+ * evidence in this system, better than a model reading a paragraph about it.
+ * So `visitorAnswer` is a first-class input below, it settles `scope`, and the
+ * only thing that can override it is the classifier being confidently certain
+ * of the opposite -- which is not a refusal either, it is a disagreement, and
+ * a disagreement is a thing for an operator to read while the visitor carries
+ * on to their preview.
+ *
+ * ── Who may be offered a call ──────────────────────────────────────────────
+ * Only a scope decision, and only when acceptable use allows. The
+ * acceptable-use gate's verdicts route nobody to a calendar: a brief it
+ * refused is a business we will not build for, and a brief it held is one
+ * nobody has read yet. Sending either to `discovery-call` files a lead row,
+ * emails Darius and hands the visitor a prefilled booking link, which on
+ * staging is exactly what happened -- a request to sell drugs and unregistered
+ * firearms was offered thirty minutes with Darius, name and email already in
+ * the URL. Both of those verdicts now step aside to `self-serve`, where the
+ * preview route screens again and answers with the copy `@/lib/policy` owns.
  *
  * ── The thresholds ────────────────────────────────────────────────────────
  * Two numbers, both overridable by ops without a deploy, and neither of them
@@ -56,6 +86,20 @@ export type ScopeRoute =
   | 'discovery-call'
   | 'ask-one-more-question';
 
+/**
+ * The visitor's answer to "is this a site, or software?", as a decided value
+ * rather than as the sentence they tapped.
+ *
+ * The browser sends the key of the chip, not its English label, so the rule
+ * reads an enum instead of matching prose -- a rule that compared the answer
+ * to a translated string would decide differently in the second locale the
+ * product ships, and would be a string matcher deciding policy, which this
+ * codebase does not do. `undefined` means the question has not been answered,
+ * and `other` means they chose to type instead, which is evidence for the
+ * classifier rather than an answer to this rule.
+ */
+export type ScopeAnswer = 'site' | 'software' | 'other';
+
 export interface ScopeRouteInput {
   scope: Scope;
   /** 0..1, as the classifier reported it. Values outside are clamped. */
@@ -63,28 +107,51 @@ export interface ScopeRouteInput {
   /**
    * The acceptable-use gate's verdict, when there is one.
    *
-   * Absent means "no gate ran", which is the state of `main` until the
-   * acceptable-use branch lands, and it must behave exactly as today rather
-   * than routing every visitor to a call. Present and not `allowed` means a
-   * human looks at it: whatever the gate decides to refuse, it refuses at its
-   * own enforcement points, and nothing this module returns can spend a
-   * generation on content the gate was unhappy with.
+   * Absent means "no gate ran", which must behave exactly as `allowed` rather
+   * than routing every visitor somewhere else. Present and not `allowed`
+   * means this module steps aside: see the module doc on why neither a
+   * refusal nor a hold is ever offered a calendar.
    */
   acceptableUse?: AcceptableUse;
   /**
-   * True once the visitor has answered the clarifying question. The funnel
-   * asks it at most once -- a second "sorry, which is it?" is an interrogation,
-   * not a conversation.
+   * What the visitor answered, when they have. The rule acts on it.
+   */
+  visitorAnswer?: ScopeAnswer;
+  /**
+   * True once the visitor has answered the clarifying question in any form,
+   * including by typing something that is neither option. The funnel asks it
+   * at most once -- a second "sorry, which is it?" is an interrogation, not a
+   * conversation.
    */
   alreadyClarified?: boolean;
 }
 
 export interface ScopeRouteDecision {
   route: ScopeRoute;
+  /**
+   * The scope as the rule settled it, which is not always the scope the
+   * classifier reported: the visitor's own answer settles it, and a
+   * disagreement between the two settles nothing.
+   *
+   * This is the value the API returns and the value the copy is chosen from.
+   * Returning the classifier's raw verdict here is what let a screen assert
+   * "you described software" over a recorded scope of `unclear`.
+   */
+  scope: Scope;
   /** The rule that produced it, for the lead row and for the tests. */
   rule: ScopeRouteRuleId;
   /** One sentence an operator reads on the pipeline card. */
   reason: string;
+  /**
+   * True when a person should look at this brief even though the visitor is
+   * carrying on. The gate files an acceptable-use review row for it.
+   *
+   * Distinct from the route on purpose: "somebody should read this" and
+   * "where does the visitor go next" are two questions, and the version of
+   * this module that answered them with one value is the version that sent a
+   * flower shop to a sales call.
+   */
+  operatorReview: boolean;
 }
 
 export type ScopeRouteRuleId =
@@ -95,6 +162,9 @@ export type ScopeRouteRuleId =
   | 'standardAboveThreshold'
   | 'standardBelowThreshold'
   | 'unclear'
+  | 'visitorSaysSite'
+  | 'visitorSaysSoftware'
+  | 'visitorSaysSiteClassifierSaysCustom'
   | 'clarifiedCustom'
   | 'clarifiedStandard'
   | 'clarifiedStillUnclear';
@@ -130,7 +200,7 @@ export function scopeRouteThresholds(): {
 
 const REASONS: Record<ScopeRouteRuleId, string> = {
   acceptableUseNeedsAHuman:
-    'The acceptable use check did not clear this brief, so it goes to a person rather than to the generator.',
+    'The acceptable use check did not clear this brief, so a person reads it before anything is built. It is not custom work and it is not offered a call.',
   acceptableUseRefused:
     'The acceptable use gate refused this brief. It is not custom work and it is not offered a call; the preview route refuses it in its own words.',
   customAboveThreshold:
@@ -143,27 +213,43 @@ const REASONS: Record<ScopeRouteRuleId, string> = {
     'The brief leans standard but not confidently enough to start a build without asking.',
   unclear:
     'The brief could be either a site or a piece of software, so the visitor is asked which.',
+  visitorSaysSite:
+    'The visitor was asked and said this is a site that presents their business, so the preview continues.',
+  visitorSaysSoftware:
+    'The visitor was asked and said this is software their customers log into, which is custom work for DMPResearch.',
+  visitorSaysSiteClassifierSaysCustom:
+    'The visitor says this is a site and the classifier is confident it is software. The visitor continues to their preview and an operator reads the disagreement.',
   clarifiedCustom:
     'After the clarifying question the brief is custom work for DMPResearch.',
   clarifiedStandard:
     'After the clarifying question the brief is a standard site, so the preview continues.',
   clarifiedStillUnclear:
-    'The brief is still ambiguous after the clarifying question, so a person picks it up rather than the generator.',
+    'The brief is still ambiguous after the clarifying question. The visitor continues to their preview and an operator reads the brief.',
 };
 
 function decision(
   rule: ScopeRouteRuleId,
-  route: ScopeRoute
+  route: ScopeRoute,
+  scope: Scope,
+  operatorReview = false
 ): ScopeRouteDecision {
-  return { route, rule, reason: REASONS[rule] };
+  return { route, rule, scope, reason: REASONS[rule], operatorReview };
 }
 
 /**
  * The routing rule, whole.
  *
- * Pure, synchronous, no IO. Read top to bottom: the acceptable-use gate wins
- * over everything, then the clarified pass acts on whatever verdict it has,
- * then the first pass acts only on a confident verdict and otherwise asks.
+ * Pure, synchronous, no IO. Read top to bottom:
+ *
+ *   acceptable use    a refusal or a hold ends the decision here, at
+ *                     `self-serve`, which means "this module has no opinion
+ *                     left" and hands the visitor to the preview route that
+ *                     owns the policy copy. Neither is ever offered a call.
+ *   visitor answer    an explicit answer settles the scope, unless the
+ *                     classifier confidently says the opposite, which is a
+ *                     disagreement rather than a verdict.
+ *   clarified, typed  the second classification acts on whatever it reached.
+ *   first pass        a confident verdict acts, anything else asks once.
  */
 export function decideRoute(input: ScopeRouteInput): ScopeRouteDecision {
   const acceptableUse = input.acceptableUse ?? 'allowed';
@@ -179,42 +265,77 @@ export function decideRoute(input: ScopeRouteInput): ScopeRouteDecision {
     // cached, so the second screen costs nothing) and answers with the refusal
     // notice and the copy that `@/lib/policy` owns. Refusal is written in one
     // place, and it is not this one.
-    return decision('acceptableUseRefused', 'self-serve');
+    return decision('acceptableUseRefused', 'self-serve', input.scope);
   }
   if (acceptableUse !== 'allowed') {
-    // `review`: lawful but sensitive, or the classifier could not settle it.
-    // A person should read it, and the discovery call is how a person reads it.
-    return decision('acceptableUseNeedsAHuman', 'discovery-call');
+    // `review`: lawful but sensitive, or the classifier abstained. Same
+    // stepping-aside as a refusal, and for a sharper reason than symmetry.
+    // This branch used to route to the discovery call, and on staging the
+    // embedding tier abstained on nearly every brief, so nearly every brief
+    // became a sales call: a flower shop, and also an escort service and a
+    // firearms seller, each handed a prefilled calendar link. The hold is
+    // real and it is already recorded -- `screenAcceptableUse` wrote the
+    // `policy_reviews` row before this ran -- and the preview route holds the
+    // build on the same verdict. What must not happen is a calendar.
+    return decision('acceptableUseNeedsAHuman', 'self-serve', input.scope);
   }
 
   const confidence = Math.min(1, Math.max(0, Number(input.confidence) || 0));
   const thresholds = scopeRouteThresholds();
+  const classifierIsSureItIsCustom =
+    input.scope === 'custom' && confidence >= thresholds.customAtOrAbove;
+
+  if (input.visitorAnswer === 'software') {
+    // Nothing outranks this. Somebody who has just said their customers log
+    // in has told us more than a paragraph about their business ever will.
+    return decision('visitorSaysSoftware', 'discovery-call', 'custom');
+  }
+
+  if (input.visitorAnswer === 'site') {
+    if (classifierIsSureItIsCustom) {
+      // The one case an answer does not settle. Two sources disagree and both
+      // are credible, so the rule refuses to invent a verdict: `unclear` is
+      // recorded, an operator is given the brief to read, and the visitor --
+      // who has told us plainly what they want -- carries on to their
+      // preview rather than being told they said something else.
+      return decision(
+        'visitorSaysSiteClassifierSaysCustom',
+        'self-serve',
+        'unclear',
+        true
+      );
+    }
+    return decision('visitorSaysSite', 'self-serve', 'standard');
+  }
 
   if (input.alreadyClarified) {
-    // The question has been asked and answered. Act on the verdict as it
-    // stands, at whatever confidence: asking again is not an option, and a
-    // brief that survives the question still ambiguous is exactly the brief a
-    // person should be reading, not the generator.
+    // The question was asked and answered with neither option, so the answer
+    // went to the classifier as evidence and this acts on what came back, at
+    // whatever confidence. Asking again is not an option.
     if (input.scope === 'custom')
-      return decision('clarifiedCustom', 'discovery-call');
+      return decision('clarifiedCustom', 'discovery-call', 'custom');
     if (input.scope === 'standard')
-      return decision('clarifiedStandard', 'self-serve');
-    return decision('clarifiedStillUnclear', 'discovery-call');
+      return decision('clarifiedStandard', 'self-serve', 'standard');
+    // Still nothing. The visitor answered in good faith and we cannot tell,
+    // which is our problem and not theirs: they continue, and an operator
+    // reads the brief. Routing this to a sales call, as it used to, sold to
+    // somebody who had asked for a website.
+    return decision('clarifiedStillUnclear', 'self-serve', 'unclear', true);
   }
 
   if (input.scope === 'custom') {
-    return confidence >= thresholds.customAtOrAbove
-      ? decision('customAboveThreshold', 'discovery-call')
-      : decision('customBelowThreshold', 'ask-one-more-question');
+    return classifierIsSureItIsCustom
+      ? decision('customAboveThreshold', 'discovery-call', 'custom')
+      : decision('customBelowThreshold', 'ask-one-more-question', 'unclear');
   }
 
   if (input.scope === 'standard') {
     return confidence >= thresholds.standardAtOrAbove
-      ? decision('standardAboveThreshold', 'self-serve')
-      : decision('standardBelowThreshold', 'ask-one-more-question');
+      ? decision('standardAboveThreshold', 'self-serve', 'standard')
+      : decision('standardBelowThreshold', 'ask-one-more-question', 'unclear');
   }
 
-  return decision('unclear', 'ask-one-more-question');
+  return decision('unclear', 'ask-one-more-question', 'unclear');
 }
 
 /**
@@ -226,4 +347,50 @@ export function decideRoute(input: ScopeRouteInput): ScopeRouteDecision {
  */
 export function spendsGenerationBudget(route: ScopeRoute): boolean {
   return route === 'self-serve';
+}
+
+// ---------------------------------------------------------------------------
+// The copy the decision is allowed to show
+// ---------------------------------------------------------------------------
+
+/**
+ * Which locale keys the discovery-call screen may use for this scope.
+ *
+ * The rule picks the copy, the client renders it. That is the same division as
+ * everywhere else here, and it exists because the alternative shipped: the
+ * screen had one hard-coded sentence -- "what you have described is not a site
+ * that presents your business, it is software built for it" -- and rendered it
+ * for every visitor that reached the offer, including the ones the gate had
+ * recorded as `unclear` and the ones who had just tapped the opposite. A
+ * screen asserting a verdict nothing reached is worse than no screen.
+ *
+ * `custom` is the only scope allowed the assertion, and `custom` is only ever
+ * reached from a verdict: a confident classification, or the visitor's own
+ * answer that their customers log in.
+ */
+export interface ScopeOfferCopy {
+  titleKey: string;
+  bodyKey: string;
+}
+
+const OFFER_COPY: Record<Scope, ScopeOfferCopy> = {
+  custom: {
+    titleKey: 'landing.discovery.scope.offer.title',
+    bodyKey: 'landing.discovery.scope.offer.body',
+  },
+  // Neither of these asserts anything about what the visitor described. They
+  // say what we know, which is that we could not settle it, and what happens
+  // next.
+  unclear: {
+    titleKey: 'landing.discovery.scope.review.title',
+    bodyKey: 'landing.discovery.scope.review.body',
+  },
+  standard: {
+    titleKey: 'landing.discovery.scope.review.title',
+    bodyKey: 'landing.discovery.scope.review.body',
+  },
+};
+
+export function scopeOfferCopy(scope: Scope): ScopeOfferCopy {
+  return OFFER_COPY[scope] ?? OFFER_COPY.unclear;
 }

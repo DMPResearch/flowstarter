@@ -99,6 +99,70 @@ describe('security-headers', () => {
       expect(frameSrc).not.toContain('http://localhost');
     });
 
+    describe('the booking calendar the funnel actually frames', () => {
+      /**
+       * Run 8, 2026-09-15: the custom-work refusal screen offered a discovery
+       * call and then rendered "This content is blocked" where the calendar
+       * should be. `frame-src` allowed `https://cal.com` and
+       * `https://*.cal.com` and nothing else, while `CAL_BASE_URL` -- and so
+       * the gate's own `bookingUrl` -- pointed at `https://cal.flowstarter.dev`.
+       * The one path the refusal offered was blocked by the app that offered
+       * it.
+       */
+      function directive(name: string): string {
+        return (
+          buildCSPHeader()
+            .split(';')
+            .map((d) => d.trim())
+            .find((d) => d.startsWith(`${name} `)) ?? ''
+        );
+      }
+
+      it('frames the self-hosted instance CAL_BASE_URL names', () => {
+        vi.stubEnv('CAL_BASE_URL', 'https://cal.flowstarter.dev');
+        expect(directive('frame-src')).toContain('https://cal.flowstarter.dev');
+      });
+
+      it('lets that instance answer its own availability request', () => {
+        vi.stubEnv('CAL_BASE_URL', 'https://cal.flowstarter.dev');
+        expect(directive('connect-src')).toContain(
+          'https://cal.flowstarter.dev'
+        );
+      });
+
+      it('frames an explicitly configured discovery-call page too', () => {
+        vi.stubEnv(
+          'DMPRESEARCH_DISCOVERY_CAL_URL',
+          'https://book.dmpresearch.com/darius/discovery-call'
+        );
+        expect(directive('frame-src')).toContain(
+          'https://book.dmpresearch.com'
+        );
+      });
+
+      it('keeps the hosted cal.com entries the templates embed', () => {
+        vi.stubEnv('CAL_BASE_URL', 'https://cal.flowstarter.dev');
+        const frameSrc = directive('frame-src');
+        expect(frameSrc).toContain('https://cal.com');
+        expect(frameSrc).toContain('https://*.cal.com');
+      });
+
+      it('refuses a plain-http calendar rather than allow-listing it', () => {
+        // A standing permission to frame somebody, over a protocol anybody on
+        // the path can rewrite, on the one screen that asks a visitor to book.
+        vi.stubEnv('CAL_BASE_URL', 'http://cal.internal');
+        expect(directive('frame-src')).not.toContain('cal.internal');
+      });
+
+      it('adds nothing at all when neither variable is set', () => {
+        vi.stubEnv('CAL_BASE_URL', '');
+        vi.stubEnv('DMPRESEARCH_DISCOVERY_CAL_URL', '');
+        const frameSrc = directive('frame-src');
+        expect(frameSrc).toContain('https://cal.com');
+        expect(frameSrc).not.toContain('undefined');
+      });
+    });
+
     it('includes object-src none', () => {
       expect(buildCSPHeader()).toContain("object-src 'none'");
     });

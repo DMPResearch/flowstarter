@@ -51,14 +51,33 @@ vi.mock('@/lib/policy/gate', () => ({
 
 const insertedRows: Array<Record<string, unknown>> = [];
 const updatedRows: Array<Record<string, unknown>> = [];
+/**
+ * Every insert, with the table it went to.
+ *
+ * `insertedRows` is the custom-work lane and stays that way so the assertions
+ * about leads keep reading one list. The acceptable-use review rows the scope
+ * gate now opens go to a different table, and a test that could not tell them
+ * apart would let "filed a lead" and "asked an operator to read it" pass for
+ * each other.
+ */
+const insertedByTable: Array<{
+  table: string;
+  values: Record<string, unknown>;
+}> = [];
+const policyRows = () =>
+  insertedByTable
+    .filter((row) => row.table === 'policy_reviews')
+    .map((row) => row.values);
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const supabase = {
-  from: vi.fn(() => ({
+  from: vi.fn((table: string) => ({
     insert: (values: Record<string, unknown>) => {
-      insertedRows.push(values);
+      insertedByTable.push({ table, values });
+      if (table === 'custom_work_leads') insertedRows.push(values);
       return {
         select: () => ({
           single: async () => ({ data: { id: 'lead-1' }, error: null }),
+          maybeSingle: async () => ({ data: { id: 'review-1' }, error: null }),
         }),
       };
     },
@@ -120,6 +139,7 @@ const seen: string[] = [];
 
 beforeEach(() => {
   insertedRows.length = 0;
+  insertedByTable.length = 0;
   updatedRows.length = 0;
   seen.length = 0;
   sendEmail.mockReset();
@@ -258,15 +278,52 @@ describe('the acceptable-use gate, ahead of the scope classification', () => {
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
-  it('sends a sensitive-but-lawful brief to a person', async () => {
+  it('offers a sensitive-but-lawful brief no calendar at all', async () => {
+    // It used to be offered one. On staging the embedding tier abstained on
+    // nearly every brief, every abstention is a `review`, and this branch
+    // handed each of them a prefilled link to Darius's calendar -- including
+    // an escort service and a firearms seller. The hold is already recorded by
+    // `screenAcceptableUse`, and the preview route holds the build on the same
+    // verdict; what must not happen here is a booking link.
     policyDecision.value = 'review';
     const result = await runScopeGate(
       { ...BRIEF, description: 'A clinic offering medical cannabis' },
       noNetwork
     );
-    expect(result.route).toBe('discovery-call');
+    expect(result.route).toBe('self-serve');
     expect(result.rule).toBe('acceptableUseNeedsAHuman');
-    expect(insertedRows[0]).toMatchObject({ acceptable_use: 'review' });
+    expect(result.bookingUrl).toBeUndefined();
+    expect(insertedRows).toHaveLength(0);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('never hands a prohibited brief a booking URL, whatever it says next', async () => {
+    // The property as a loop, because the staging report found it on two
+    // separate briefs and on both passes of the question.
+    for (const decision of ['refuse', 'review'] as const) {
+      for (const answerKey of [
+        undefined,
+        'site',
+        'software',
+        'other',
+      ] as const) {
+        policyDecision.value = decision;
+        insertedRows.length = 0;
+        sendEmail.mockClear();
+        const result = await runScopeGate(
+          {
+            ...BRIEF,
+            description:
+              'Selling controlled substances and unregistered firearms',
+            ...(answerKey ? { answerKey } : {}),
+          },
+          noNetwork
+        );
+        expect(result.bookingUrl).toBeUndefined();
+        expect(result.route).not.toBe('discovery-call');
+        expect(insertedRows).toHaveLength(0);
+      }
+    }
   });
 
   it('records the verdict it actually screened on the lead', async () => {
@@ -303,7 +360,7 @@ describe('the clarifying question', () => {
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
-  it('is never asked twice: a still-unclear second pass goes to a person', async () => {
+  it('is never asked twice: a still-unclear second pass continues and is filed for a person', async () => {
     setScopeClassifier(async (text) => {
       seen.push(text);
       return classifierSaying({
@@ -316,10 +373,118 @@ describe('the clarifying question', () => {
       { ...BRIEF, clarification: 'Honestly I am not sure' },
       noNetwork
     );
-    expect(result.route).toBe('discovery-call');
+    expect(result.route).toBe('self-serve');
     expect(result.rule).toBe('clarifiedStillUnclear');
+    expect(result.operatorReview).toBe(true);
     // The answer is part of the text the second classification sees.
     expect(seen[0]).toContain('Honestly I am not sure');
+    // And an operator has the brief, which is the whole point of not sending
+    // somebody who asked for a website to a sales call.
+    expect(policyRows()).toHaveLength(1);
+    expect(policyRows()[0]).toMatchObject({
+      decision: 'review',
+      surface: 'preview',
+      rule: 'scope_unresolved_after_question',
+    });
+  });
+
+  it('lets the visitor answer settle the scope when the classifier is down', async () => {
+    // Run 8, 2026-09-15: the classifier failed on 100% of calls, so every
+    // brief carried `unclear` at confidence 0. A visitor who tapped "A site
+    // that presents my business" got `{"route":"discovery-call","scope":
+    // "unclear"}` -- the answer moved the route and not the verdict, and no
+    // visitor could reach a preview for as long as the classifier was down.
+    setScopeClassifier(async () =>
+      classifierSaying({ scope: 'unclear', confidence: 0, evidence: [] })
+    );
+    const result = await runScopeGate(
+      {
+        ...BRIEF,
+        description: 'A portfolio showing the three projects I have shipped',
+        clarification: 'A site that presents my business',
+        answerKey: 'site',
+      },
+      noNetwork
+    );
+    expect(result.route).toBe('self-serve');
+    expect(result.scope).toBe('standard');
+    expect(result.rule).toBe('visitorSaysSite');
+    expect(result.bookingUrl).toBeUndefined();
+    expect(result.offerCopy).toBeUndefined();
+    expect(insertedRows).toHaveLength(0);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('never asserts custom work over a scope it did not settle', async () => {
+    setScopeClassifier(async () =>
+      classifierSaying({ scope: 'unclear', confidence: 0, evidence: [] })
+    );
+    const result = await runScopeGate(
+      {
+        ...BRIEF,
+        clarification: 'A site that presents my business',
+        answerKey: 'site',
+      },
+      noNetwork
+    );
+    // The serialised body, exactly as the browser receives it. The copy key
+    // that asserts "it is software built for it" must not be in it.
+    expect(JSON.stringify(result)).not.toContain(
+      'landing.discovery.scope.offer.body'
+    );
+  });
+
+  it('takes the visitor at their word when they say it is software', async () => {
+    setScopeClassifier(async () =>
+      classifierSaying({ scope: 'unclear', confidence: 0, evidence: [] })
+    );
+    const result = await runScopeGate(
+      {
+        ...BRIEF,
+        clarification: 'Software my customers log into',
+        answerKey: 'software',
+      },
+      noNetwork
+    );
+    expect(result.route).toBe('discovery-call');
+    expect(result.scope).toBe('custom');
+    expect(result.rule).toBe('visitorSaysSoftware');
+    // A custom scope is the only one allowed the assertion, and this one was
+    // reached from the visitor's own answer.
+    expect(result.offerCopy?.bodyKey).toBe(
+      'landing.discovery.scope.offer.body'
+    );
+    expect(result.bookingUrl).toContain('cal.flowstarter.dev');
+  });
+
+  it('files the disagreement for an operator and still shows the preview', async () => {
+    setScopeClassifier(async () =>
+      classifierSaying({ scope: 'custom', confidence: 0.99 })
+    );
+    const result = await runScopeGate(
+      {
+        ...BRIEF,
+        clarification: 'A site that presents my business',
+        answerKey: 'site',
+      },
+      noNetwork
+    );
+    expect(result.route).toBe('self-serve');
+    expect(result.scope).toBe('unclear');
+    expect(result.classifiedScope).toBe('custom');
+    expect(result.operatorReview).toBe(true);
+    expect(policyRows()).toHaveLength(1);
+    expect(policyRows()[0]).toMatchObject({
+      decision: 'review',
+      surface: 'preview',
+      rule: 'scope_visitor_disagrees_with_classifier',
+      category_id: 'none',
+      status: 'open',
+    });
+    // No lead, no email: this is a visitor continuing to their preview, not a
+    // custom-work enquiry.
+    expect(insertedRows).toHaveLength(0);
+    expect(sendEmail).not.toHaveBeenCalled();
   });
 
   it('lets a clarified standard answer through to the preview', async () => {

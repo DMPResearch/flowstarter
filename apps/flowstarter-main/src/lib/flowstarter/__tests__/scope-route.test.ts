@@ -2,18 +2,28 @@
  * The routing table, whole.
  *
  * `decideRoute` is the one place that decides whether a visitor's brief costs a
- * generation run, so the test is a table rather than a handful of examples:
- * every scope, on both sides of its threshold, on both passes, and with every
- * acceptable-use verdict. A rule that is not in the table below is a rule that
- * does not exist.
+ * generation run, and the one place that decides whether a stranger is handed a
+ * prefilled link to Darius's calendar. So the test is a table rather than a
+ * handful of examples: every scope, on both sides of its threshold, on both
+ * passes, with every acceptable-use verdict, and with every answer the visitor
+ * can give. A rule that is not in the table below is a rule that does not
+ * exist.
+ *
+ * Every row asserts four things and not one: where the visitor goes, which rule
+ * sent them, what scope the rule settled on, and whether an operator is asked
+ * to read it. The version of this file that only checked the route is the
+ * version that let `scope: "unclear"` reach a screen asserting the visitor had
+ * described software.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   decideRoute,
+  scopeOfferCopy,
   scopeRouteThresholds,
   spendsGenerationBudget,
   type AcceptableUse,
   type Scope,
+  type ScopeAnswer,
   type ScopeRoute,
 } from '../scope-route';
 
@@ -27,9 +37,14 @@ interface Row {
   scope: Scope;
   confidence: number;
   alreadyClarified: boolean;
+  visitorAnswer?: ScopeAnswer;
   acceptableUse?: AcceptableUse;
   route: ScopeRoute;
   rule: string;
+  /** What the rule settled on, which is not always what the classifier said. */
+  settled: Scope;
+  /** True when a person is asked to read the brief anyway. */
+  review?: boolean;
 }
 
 const { customAtOrAbove, standardAtOrAbove } = scopeRouteThresholds();
@@ -45,6 +60,7 @@ const TABLE: Row[] = [
     alreadyClarified: false,
     route: 'discovery-call',
     rule: 'customAboveThreshold',
+    settled: 'custom',
   },
   {
     scope: 'custom',
@@ -52,6 +68,7 @@ const TABLE: Row[] = [
     alreadyClarified: false,
     route: 'discovery-call',
     rule: 'customAboveThreshold',
+    settled: 'custom',
   },
   {
     scope: 'custom',
@@ -59,6 +76,7 @@ const TABLE: Row[] = [
     alreadyClarified: false,
     route: 'ask-one-more-question',
     rule: 'customBelowThreshold',
+    settled: 'unclear',
   },
   {
     scope: 'custom',
@@ -66,6 +84,7 @@ const TABLE: Row[] = [
     alreadyClarified: false,
     route: 'ask-one-more-question',
     rule: 'customBelowThreshold',
+    settled: 'unclear',
   },
 
   // ── First pass, standard ────────────────────────────────────────────────
@@ -75,6 +94,7 @@ const TABLE: Row[] = [
     alreadyClarified: false,
     route: 'self-serve',
     rule: 'standardAboveThreshold',
+    settled: 'standard',
   },
   {
     scope: 'standard',
@@ -82,6 +102,7 @@ const TABLE: Row[] = [
     alreadyClarified: false,
     route: 'self-serve',
     rule: 'standardAboveThreshold',
+    settled: 'standard',
   },
   {
     scope: 'standard',
@@ -89,6 +110,7 @@ const TABLE: Row[] = [
     alreadyClarified: false,
     route: 'ask-one-more-question',
     rule: 'standardBelowThreshold',
+    settled: 'unclear',
   },
   {
     scope: 'standard',
@@ -96,6 +118,7 @@ const TABLE: Row[] = [
     alreadyClarified: false,
     route: 'ask-one-more-question',
     rule: 'standardBelowThreshold',
+    settled: 'unclear',
   },
 
   // ── First pass, unclear: always the question, at any confidence ─────────
@@ -105,6 +128,7 @@ const TABLE: Row[] = [
     alreadyClarified: false,
     route: 'ask-one-more-question',
     rule: 'unclear',
+    settled: 'unclear',
   },
   {
     scope: 'unclear',
@@ -112,15 +136,83 @@ const TABLE: Row[] = [
     alreadyClarified: false,
     route: 'ask-one-more-question',
     rule: 'unclear',
+    settled: 'unclear',
   },
 
-  // ── Second pass: act on the verdict you have, at any confidence ─────────
+  // ── The visitor's answer, which is the strongest evidence here ──────────
+  // A classifier that could not answer at all is the state this whole feature
+  // was found in: 100% of calls returning `unclear`. The answer has to settle
+  // it, or nobody reaches a preview.
+  {
+    scope: 'unclear',
+    confidence: 0,
+    alreadyClarified: true,
+    visitorAnswer: 'site',
+    route: 'self-serve',
+    rule: 'visitorSaysSite',
+    settled: 'standard',
+  },
+  {
+    scope: 'unclear',
+    confidence: 0,
+    alreadyClarified: true,
+    visitorAnswer: 'software',
+    route: 'discovery-call',
+    rule: 'visitorSaysSoftware',
+    settled: 'custom',
+  },
+  // The answer beats a classifier that leans the other way without being sure.
+  {
+    scope: 'custom',
+    confidence: JUST_UNDER(customAtOrAbove),
+    alreadyClarified: true,
+    visitorAnswer: 'site',
+    route: 'self-serve',
+    rule: 'visitorSaysSite',
+    settled: 'standard',
+  },
+  // ...and a confident classifier saying the opposite does not beat the
+  // answer either. Neither wins: the visitor carries on and a person reads it.
+  {
+    scope: 'custom',
+    confidence: customAtOrAbove,
+    alreadyClarified: true,
+    visitorAnswer: 'site',
+    route: 'self-serve',
+    rule: 'visitorSaysSiteClassifierSaysCustom',
+    settled: 'unclear',
+    review: true,
+  },
+  {
+    scope: 'custom',
+    confidence: 1,
+    alreadyClarified: true,
+    visitorAnswer: 'site',
+    route: 'self-serve',
+    rule: 'visitorSaysSiteClassifierSaysCustom',
+    settled: 'unclear',
+    review: true,
+  },
+  // "It is software" is never second-guessed, whatever the classifier thinks.
+  {
+    scope: 'standard',
+    confidence: 1,
+    alreadyClarified: true,
+    visitorAnswer: 'software',
+    route: 'discovery-call',
+    rule: 'visitorSaysSoftware',
+    settled: 'custom',
+  },
+
+  // ── Second pass with a typed answer: act on the verdict you have ────────
   {
     scope: 'custom',
     confidence: 0,
     alreadyClarified: true,
+    visitorAnswer: 'other',
     route: 'discovery-call',
     rule: 'clarifiedCustom',
+    settled: 'custom',
   },
   {
     scope: 'custom',
@@ -128,6 +220,7 @@ const TABLE: Row[] = [
     alreadyClarified: true,
     route: 'discovery-call',
     rule: 'clarifiedCustom',
+    settled: 'custom',
   },
   {
     scope: 'standard',
@@ -135,54 +228,73 @@ const TABLE: Row[] = [
     alreadyClarified: true,
     route: 'self-serve',
     rule: 'clarifiedStandard',
+    settled: 'standard',
   },
   {
     scope: 'standard',
     confidence: 1,
     alreadyClarified: true,
+    visitorAnswer: 'other',
     route: 'self-serve',
     rule: 'clarifiedStandard',
+    settled: 'standard',
   },
+  // Still nothing after the question. The visitor continues and an operator
+  // reads it; this used to route to a sales call, which sold to somebody who
+  // had asked for a website.
   {
     scope: 'unclear',
     confidence: 0,
     alreadyClarified: true,
-    route: 'discovery-call',
+    route: 'self-serve',
     rule: 'clarifiedStillUnclear',
+    settled: 'unclear',
+    review: true,
   },
   {
     scope: 'unclear',
     confidence: 1,
     alreadyClarified: true,
-    route: 'discovery-call',
+    visitorAnswer: 'other',
+    route: 'self-serve',
     rule: 'clarifiedStillUnclear',
+    settled: 'unclear',
+    review: true,
   },
 
   // ── The acceptable-use gate wins over every one of the above ────────────
-  // `review` goes to a person, which is what the discovery call is.
+  // `review` steps aside to the preview route, which screens again and holds.
+  // It does NOT go to the discovery call: on staging the embedding tier
+  // abstained on nearly every brief, and that branch handed a prefilled
+  // calendar link to an escort service and to a firearms seller.
   {
     scope: 'standard',
     confidence: 1,
     alreadyClarified: false,
     acceptableUse: 'review',
-    route: 'discovery-call',
+    route: 'self-serve',
     rule: 'acceptableUseNeedsAHuman',
+    settled: 'standard',
   },
   {
     scope: 'standard',
     confidence: 1,
     alreadyClarified: true,
+    visitorAnswer: 'site',
     acceptableUse: 'review',
-    route: 'discovery-call',
+    route: 'self-serve',
     rule: 'acceptableUseNeedsAHuman',
+    settled: 'standard',
   },
   {
     scope: 'custom',
     confidence: 1,
     alreadyClarified: true,
+    visitorAnswer: 'software',
     acceptableUse: 'review',
-    route: 'discovery-call',
+    route: 'self-serve',
     rule: 'acceptableUseNeedsAHuman',
+    settled: 'custom',
   },
   // `refuse` goes nowhere near it. See the rule's own comment: this module
   // steps aside and the preview route writes the refusal.
@@ -193,6 +305,7 @@ const TABLE: Row[] = [
     acceptableUse: 'blocked',
     route: 'self-serve',
     rule: 'acceptableUseRefused',
+    settled: 'standard',
   },
   {
     scope: 'custom',
@@ -201,14 +314,17 @@ const TABLE: Row[] = [
     acceptableUse: 'blocked',
     route: 'self-serve',
     rule: 'acceptableUseRefused',
+    settled: 'custom',
   },
   {
     scope: 'unclear',
     confidence: 0,
     alreadyClarified: true,
+    visitorAnswer: 'software',
     acceptableUse: 'blocked',
     route: 'self-serve',
     rule: 'acceptableUseRefused',
+    settled: 'unclear',
   },
   {
     scope: 'standard',
@@ -217,6 +333,7 @@ const TABLE: Row[] = [
     acceptableUse: 'allowed',
     route: 'self-serve',
     rule: 'standardAboveThreshold',
+    settled: 'standard',
   },
 ];
 
@@ -225,17 +342,21 @@ describe('decideRoute', () => {
     const name =
       `${row.scope} @ ${row.confidence}` +
       `${row.alreadyClarified ? ' (clarified)' : ''}` +
+      `${row.visitorAnswer ? ` <${row.visitorAnswer}>` : ''}` +
       `${row.acceptableUse ? ` [${row.acceptableUse}]` : ''}` +
-      ` -> ${row.route}`;
+      ` -> ${row.route} as ${row.settled}`;
     it(name, () => {
       const decision = decideRoute({
         scope: row.scope,
         confidence: row.confidence,
         alreadyClarified: row.alreadyClarified,
+        ...(row.visitorAnswer ? { visitorAnswer: row.visitorAnswer } : {}),
         ...(row.acceptableUse ? { acceptableUse: row.acceptableUse } : {}),
       });
       expect(decision.route).toBe(row.route);
       expect(decision.rule).toBe(row.rule);
+      expect(decision.scope).toBe(row.settled);
+      expect(decision.operatorReview).toBe(row.review === true);
       expect(decision.reason.length).toBeGreaterThan(0);
     });
   }
@@ -247,23 +368,65 @@ describe('decideRoute', () => {
     // is what any route but `self-serve` would do here.
     for (const scope of ['standard', 'custom', 'unclear'] as const) {
       for (const clarified of [false, true]) {
-        for (const confidence of [0, 0.5, 1]) {
-          expect(
-            decideRoute({
-              scope,
-              confidence,
-              alreadyClarified: clarified,
-              acceptableUse: 'blocked',
-            }).route
-          ).toBe('self-serve');
+        for (const answer of [
+          undefined,
+          'site',
+          'software',
+          'other',
+        ] as const) {
+          for (const confidence of [0, 0.5, 1]) {
+            expect(
+              decideRoute({
+                scope,
+                confidence,
+                alreadyClarified: clarified,
+                visitorAnswer: answer,
+                acceptableUse: 'blocked',
+              }).route
+            ).toBe('self-serve');
+          }
         }
       }
     }
   });
 
+  it('never offers a held brief a discovery call either', () => {
+    // The staging defect, as a property. A `review` verdict means nobody has
+    // read this yet, and "nobody has read it" is not a reason to put it in
+    // front of Darius's calendar with the visitor's name already filled in.
+    for (const scope of ['standard', 'custom', 'unclear'] as const) {
+      for (const answer of [undefined, 'site', 'software', 'other'] as const) {
+        for (const confidence of [0, 0.5, 1]) {
+          const decision = decideRoute({
+            scope,
+            confidence,
+            alreadyClarified: true,
+            visitorAnswer: answer,
+            acceptableUse: 'review',
+          });
+          expect(decision.route).toBe('self-serve');
+          expect(decision.rule).toBe('acceptableUseNeedsAHuman');
+        }
+      }
+    }
+  });
+
+  it('lets an explicit answer settle the scope when the classifier is down', () => {
+    // The run-8 blocker, as one assertion. Every call was returning `unclear`
+    // at confidence 0, and the answer changed only the route: `scope` stayed
+    // `unclear` and no visitor could reach a preview.
+    const decision = decideRoute({
+      scope: 'unclear',
+      confidence: 0,
+      alreadyClarified: true,
+      visitorAnswer: 'site',
+    });
+    expect(decision.scope).toBe('standard');
+    expect(decision.route).toBe('self-serve');
+    expect(spendsGenerationBudget(decision.route)).toBe(true);
+  });
+
   it('treats an absent acceptable-use verdict as the gate not having run', () => {
-    // `main` has no acceptable-use gate yet. Until it lands, the funnel must
-    // behave exactly as it does today rather than sending everybody to a call.
     expect(decideRoute({ scope: 'standard', confidence: 1 }).route).toBe(
       'self-serve'
     );
@@ -305,6 +468,45 @@ describe('scopeRouteThresholds', () => {
     for (const bad of ['0', '-1', '1.5', 'soon', '']) {
       process.env.SCOPE_CUSTOM_CONFIDENCE = bad;
       expect(scopeRouteThresholds().customAtOrAbove).toBe(customAtOrAbove);
+    }
+  });
+
+  it('decides the disagreement at the same bar it routes custom work at', () => {
+    // One threshold, not two: the confidence that would have sent this brief
+    // to a call on its own is the confidence that makes the visitor's answer
+    // a disagreement rather than the last word.
+    process.env.SCOPE_CUSTOM_CONFIDENCE = '0.9';
+    expect(
+      decideRoute({
+        scope: 'custom',
+        confidence: 0.89,
+        visitorAnswer: 'site',
+        alreadyClarified: true,
+      }).rule
+    ).toBe('visitorSaysSite');
+    expect(
+      decideRoute({
+        scope: 'custom',
+        confidence: 0.9,
+        visitorAnswer: 'site',
+        alreadyClarified: true,
+      }).rule
+    ).toBe('visitorSaysSiteClassifierSaysCustom');
+  });
+});
+
+describe('scopeOfferCopy', () => {
+  it('only lets the custom scope assert that this is software', () => {
+    expect(scopeOfferCopy('custom').bodyKey).toBe(
+      'landing.discovery.scope.offer.body'
+    );
+    for (const scope of ['unclear', 'standard'] as const) {
+      expect(scopeOfferCopy(scope).bodyKey).toBe(
+        'landing.discovery.scope.review.body'
+      );
+      expect(scopeOfferCopy(scope).titleKey).toBe(
+        'landing.discovery.scope.review.title'
+      );
     }
   });
 });

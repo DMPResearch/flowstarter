@@ -21,7 +21,8 @@
 export type AlertEvent =
   | 'build_job_failed'
   | 'client_email_failed'
-  | 'health_check_failed';
+  | 'health_check_failed'
+  | 'scope_classifier_failed';
 
 export type AlertSeverity = 'critical' | 'warning';
 
@@ -62,6 +63,18 @@ const RULES: Record<AlertEvent, AlertRule> = {
     severity: 'critical',
     dedupeWindowEnvVar: 'OPS_ALERT_HEALTH_CHECK_FAILED_DEDUPE_MINUTES',
     defaultDedupeWindowMinutes: 30,
+  },
+  // The scope classifier failing is silent by design: the gate fails closed to
+  // `unclear`, every visitor gets one extra question, and the funnel keeps
+  // answering 200. It ran that way for a whole evening on 100% of calls and
+  // the only trace was a console line nobody was reading. Critical, because
+  // while it is down the routing rule is running on no verdict at all; a
+  // narrow window, because the thing an operator needs to know is that it is
+  // still down, not that it failed once.
+  scope_classifier_failed: {
+    severity: 'critical',
+    dedupeWindowEnvVar: 'OPS_ALERT_SCOPE_CLASSIFIER_FAILED_DEDUPE_MINUTES',
+    defaultDedupeWindowMinutes: 60,
   },
 };
 

@@ -41,6 +41,23 @@ export const discoveryCallKeys = {
     'What you have described is not a site that presents your business, it is software built for it. We do not start work like that from a form, and we are not going to build you a preview that pretends otherwise.',
   'landing.discovery.scope.offer.studio':
     'Work like this is handled by DMPResearch, Darius’s studio, and it is contracted after a call rather than bought off a page. Thirty minutes, nothing to prepare. You leave knowing what the work involves and what it costs, whether or not you go ahead with us.',
+  /**
+   * The same screen when the gate did not reach a custom verdict.
+   *
+   * It exists because the copy above was shown unconditionally, including to
+   * visitors whose recorded scope was `unclear` and who had just tapped "a
+   * site that presents my business". Being told, as a statement of fact, that
+   * you said the opposite of what you said is not a tone problem, it is the
+   * product lying about its own data.
+   *
+   * So this says only what is true at that point: we could not settle it, we
+   * are not going to guess, and the call is how it gets settled. No verdict is
+   * asserted and nothing is implied about what they described.
+   */
+  'landing.discovery.scope.review.title': 'Let us get this right first',
+  'landing.discovery.scope.review.body':
+    'We could not tell from your answers whether this is a site that presents your business or software built for it, and the two are different pieces of work with different prices. Rather than guess and build you the wrong one, we would rather ask.',
+
   'landing.discovery.scope.offer.cta': 'Pick a time',
   'landing.discovery.scope.offer.prefilled':
     'Your name and email are already filled in.',

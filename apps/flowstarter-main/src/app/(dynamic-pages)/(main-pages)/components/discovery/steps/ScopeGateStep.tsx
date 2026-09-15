@@ -16,7 +16,7 @@
  */
 import { useState } from 'react';
 import { Button } from '@flowstarter/flow-design-system';
-import type { ScopeRouteState } from '../useScopeRoute';
+import type { ScopeAnswerKey, ScopeRouteState } from '../useScopeRoute';
 
 const CARD =
   'rounded-2xl border border-[var(--fs-rule)] bg-[var(--fs-surface)] p-6 sm:p-7';
@@ -29,10 +29,23 @@ const CARD =
  * and a one-tap answer is more likely to be given than a typed one. The third
  * option opens the composer for the person whose project is neither.
  */
-const ANSWER_KEYS = [
-  'landing.discovery.scope.answer.site',
-  'landing.discovery.scope.answer.software',
-] as const;
+const ANSWERS: readonly { key: ScopeAnswerKey; localeKey: string }[] = [
+  { key: 'site', localeKey: 'landing.discovery.scope.answer.site' },
+  { key: 'software', localeKey: 'landing.discovery.scope.answer.software' },
+];
+
+/**
+ * The copy shown when the server did not name any.
+ *
+ * Deliberately the non-asserting pair. An offer screen that cannot tell which
+ * verdict it is rendering must not guess the one that tells a visitor they
+ * described something they did not: that guess is exactly the defect this
+ * screen shipped with.
+ */
+const FALLBACK_COPY = {
+  titleKey: 'landing.discovery.scope.review.title',
+  bodyKey: 'landing.discovery.scope.review.body',
+} as const;
 
 function Checking({ t }: { t: (key: string) => string }) {
   return (
@@ -56,7 +69,7 @@ function Question({
   t: (key: string) => string;
   questionKey: string;
   pending: boolean;
-  onAnswer: (answer: string) => void;
+  onAnswer: (answer: string, answerKey?: ScopeAnswerKey) => void;
 }) {
   const [typing, setTyping] = useState(false);
   const [draft, setDraft] = useState('');
@@ -72,7 +85,9 @@ function Question({
           className="mt-4 flex flex-col gap-3"
           onSubmit={(event) => {
             event.preventDefault();
-            onAnswer(draft);
+            // A typed answer names neither option, so it goes to the
+            // classifier as evidence rather than to the rule as an answer.
+            onAnswer(draft, 'other');
           }}
         >
           <label className="sr-only" htmlFor="scope-clarification">
@@ -95,15 +110,17 @@ function Question({
         </form>
       ) : (
         <div className="mt-4 flex flex-wrap gap-2">
-          {ANSWER_KEYS.map((key) => (
+          {ANSWERS.map((answer) => (
             <Button
-              key={key}
+              key={answer.key}
               type="button"
               variant="outline"
               disabled={pending}
-              onClick={() => onAnswer(t(key))}
+              // The key travels with the sentence. The sentence is what the
+              // classifier reads; the key is what the routing rule decides on.
+              onClick={() => onAnswer(t(answer.localeKey), answer.key)}
             >
-              {t(key)}
+              {t(answer.localeKey)}
             </Button>
           ))}
           <Button
@@ -123,18 +140,21 @@ function Question({
 function Offer({
   t,
   bookingUrl,
+  copy,
 }: {
   t: (key: string) => string;
   bookingUrl: string | null;
+  copy?: { titleKey: string; bodyKey: string };
 }) {
+  // The server's rule chose these from the scope it actually settled. This
+  // component never picks between them, which is the point: it used to hold
+  // one sentence asserting the visitor had described software, and it showed
+  // that sentence to people the gate had recorded as `unclear`.
+  const { titleKey, bodyKey } = copy ?? FALLBACK_COPY;
   return (
     <div className={CARD}>
-      <h3 className="text-lg font-bold text-[var(--fs-ink)]">
-        {t('landing.discovery.scope.offer.title')}
-      </h3>
-      <p className="mt-2 text-sm text-[var(--fs-ink)]">
-        {t('landing.discovery.scope.offer.body')}
-      </p>
+      <h3 className="text-lg font-bold text-[var(--fs-ink)]">{t(titleKey)}</h3>
+      <p className="mt-2 text-sm text-[var(--fs-ink)]">{t(bodyKey)}</p>
       <p className="mt-3 text-sm text-[var(--fs-ink-faint)]">
         {t('landing.discovery.scope.offer.studio')}
       </p>
@@ -192,7 +212,7 @@ export function ScopeGateStep({
 }: {
   state: ScopeRouteState;
   pending: boolean;
-  onClarify: (answer: string) => void;
+  onClarify: (answer: string, answerKey?: ScopeAnswerKey) => void;
   t: (key: string) => string;
 }) {
   if (state.status === 'question') {
@@ -206,7 +226,7 @@ export function ScopeGateStep({
     );
   }
   if (state.status === 'offer') {
-    return <Offer t={t} bookingUrl={state.bookingUrl} />;
+    return <Offer t={t} bookingUrl={state.bookingUrl} copy={state.copy} />;
   }
   return <Checking t={t} />;
 }

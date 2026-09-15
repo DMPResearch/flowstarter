@@ -1,4 +1,4 @@
-import { publicAppOrigin } from '@flowstarter/platform-config';
+import { calEmbedOrigins, publicAppOrigin } from '@flowstarter/platform-config';
 import { previewZone } from '@/lib/hosting/site-hostnames';
 import { createSecureHeaders } from 'next-secure-headers';
 import { NextResponse } from 'next/server';
@@ -23,6 +23,23 @@ const ALLOWED_SCRIPT_DOMAINS = [
   'https://cal.com',
   publicAppOrigin(),
 ];
+
+/**
+ * Every origin a booking calendar may be served from in this deployment.
+ *
+ * Read per call, not frozen at import: `CAL_BASE_URL` is a deployment's own
+ * setting, and a module-level constant would bake whatever it was at the
+ * moment Next.js first loaded this file into every response for the life of
+ * the process. `calEmbedOrigins` keeps the hosted cal.com entries and adds the
+ * self-hosted instance, so the funnel's discovery-call embed renders wherever
+ * the funnel's own `bookingUrl` points.
+ */
+function calOrigins(): string[] {
+  return calEmbedOrigins({
+    CAL_BASE_URL: process.env.CAL_BASE_URL,
+    DMPRESEARCH_DISCOVERY_CAL_URL: process.env.DMPRESEARCH_DISCOVERY_CAL_URL,
+  });
+}
 
 const ALLOWED_CONNECT_DOMAINS = [
   "'self'",
@@ -85,43 +102,56 @@ function devHttpWsConnectSrcExtras(): string {
   return parts.length ? ` ${parts.join(' ')}` : '';
 }
 
-const ALLOWED_FRAME_DOMAINS = [
-  // Same-origin so the library detail page can embed the static template
-  // previews at /preview/<slug>/ (DeferredPreviewFrame). Without 'self' the
-  // parent page's frame-src blocks the iframe even though the preview itself
-  // allows being framed (frame-ancestors 'self').
-  "'self'",
-  'https://accounts.google.com', // Google OAuth
-  'https://*.clerk.accounts.dev', // Clerk OAuth
-  'https://challenges.cloudflare.com', // Turnstile if used
-  'https://calendly.com', // Calendly inline embed
-  // Cal.com booking widget embedded inside Astro template previews
-  'https://cal.com',
-  'https://*.cal.com',
-  // Library "Live template" iframes for shipped client work. The detail
-  // page at /library/templates/<slug> renders the client's live site
-  // when the entry sets `externalPreviewUrl`. Each origin must be
-  // allowlisted explicitly here or the browser will block the frame
-  // under our own CSP (the client site can ALSO block framing via its
-  // own X-Frame-Options / frame-ancestors — that we can't override).
-  'https://ux-journey.com',
-  'https://lebadusularticoledepescuit.ro',
-  // OpenStreetMap embed used by the Dorin portfolio template contact map
-  'https://www.openstreetmap.org',
-  // Concierge discovery funnel (step 7): the live preview embeds the
-  // generated site. Since previews moved onto Flowstarter's own platform
-  // that is `https://<slug>.preview.<platform domain>`, derived from the
-  // same `previewZone()` rule the publisher mints the hostname with rather
-  // than written out twice — a literal here would be wrong in exactly one
-  // environment and blank the wizard's iframe there.
-  `https://*.${previewZone()}`,
-  // The Daytona publisher is still selectable by name
-  // (FLOWSTARTER_PREVIEW_PUBLISHER=daytona), and it frames
-  // https://<port>-<sandboxId>.daytonaproxy01.net — without this the browser
-  // blocks the frame under our own CSP and the preview stays permanently
-  // blank.
-  'https://*.daytonaproxy01.net',
-];
+/**
+ * `frame-src`, as a function rather than a constant.
+ *
+ * Two of its entries are derived from environment (`previewZone()` and
+ * `calOrigins()`), and a constant evaluated at import time would freeze both
+ * at whatever the first module load saw.
+ */
+function allowedFrameDomains(): string[] {
+  return [
+    // Same-origin so the library detail page can embed the static template
+    // previews at /preview/<slug>/ (DeferredPreviewFrame). Without 'self' the
+    // parent page's frame-src blocks the iframe even though the preview itself
+    // allows being framed (frame-ancestors 'self').
+    "'self'",
+    'https://accounts.google.com', // Google OAuth
+    'https://*.clerk.accounts.dev', // Clerk OAuth
+    'https://challenges.cloudflare.com', // Turnstile if used
+    'https://calendly.com', // Calendly inline embed
+    // Every Cal.com this deployment can frame: the hosted cal.com the Astro
+    // templates embed a client's own booking link from, plus whatever
+    // CAL_BASE_URL / DMPRESEARCH_DISCOVERY_CAL_URL resolve to. Derived, so the
+    // discovery-call embed on the funnel's custom work branch renders at the
+    // same origin the gate's own `bookingUrl` points at instead of showing
+    // "This content is blocked".
+    ...calOrigins(),
+    // Library "Live template" iframes for shipped client work. The detail
+    // page at /library/templates/<slug> renders the client's live site
+    // when the entry sets `externalPreviewUrl`. Each origin must be
+    // allowlisted explicitly here or the browser will block the frame
+    // under our own CSP (the client site can ALSO block framing via its
+    // own X-Frame-Options / frame-ancestors — that we can't override).
+    'https://ux-journey.com',
+    'https://lebadusularticoledepescuit.ro',
+    // OpenStreetMap embed used by the Dorin portfolio template contact map
+    'https://www.openstreetmap.org',
+    // Concierge discovery funnel (step 7): the live preview embeds the
+    // generated site. Since previews moved onto Flowstarter's own platform
+    // that is `https://<slug>.preview.<platform domain>`, derived from the
+    // same `previewZone()` rule the publisher mints the hostname with rather
+    // than written out twice — a literal here would be wrong in exactly one
+    // environment and blank the wizard's iframe there.
+    `https://*.${previewZone()}`,
+    // The Daytona publisher is still selectable by name
+    // (FLOWSTARTER_PREVIEW_PUBLISHER=daytona), and it frames
+    // https://<port>-<sandboxId>.daytonaproxy01.net — without this the browser
+    // blocks the frame under our own CSP and the preview stays permanently
+    // blank.
+    'https://*.daytonaproxy01.net',
+  ];
+}
 
 // Create headers without CSP (we'll add it dynamically with nonce).
 //
@@ -172,7 +202,11 @@ export function buildCSPHeader(nonce?: string, frameable = false): string {
     `worker-src 'self' blob:`,
     `style-src 'self' 'unsafe-inline' https://fonts.googleapis.com`, // CSS-in-JS requires unsafe-inline
     `img-src ${ALLOWED_IMG_DOMAINS.join(' ')}`,
-    `connect-src ${ALLOWED_CONNECT_DOMAINS.join(' ')}${
+    // The Cal.com embed script fetches its own availability from the instance
+    // it is framed from, so an origin allowed in `frame-src` and refused here
+    // renders an empty calendar rather than a blocked one, which is the
+    // harder failure to recognise.
+    `connect-src ${[...ALLOWED_CONNECT_DOMAINS, ...calOrigins()].join(' ')}${
       isDev
         ? `${devHttpWsConnectSrcExtras()} ws://localhost:* http://localhost:*`
         : ''
@@ -184,7 +218,7 @@ export function buildCSPHeader(nonce?: string, frameable = false): string {
     // like the un-allowlisted Daytona case: an empty white frame whose
     // `load` event still fires (which is why the skeleton got out of its
     // way). Dev-only by construction; the env flag is never set in prod.
-    `frame-src ${ALLOWED_FRAME_DOMAINS.join(' ')}${
+    `frame-src ${allowedFrameDomains().join(' ')}${
       isDev && process.env.FLOWSTARTER_LOCAL_PREVIEW === 'true'
         ? ' http://127.0.0.1:* http://localhost:*'
         : ''

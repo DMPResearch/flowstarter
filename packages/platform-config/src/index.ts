@@ -498,3 +498,11 @@ export {
   readRecorderAllowanceEnvFromProcess,
 } from './recorder-allowance';
 export type { RecorderAllowanceEnvInput } from './recorder-allowance';
+
+// ---------------------------------------------------------------------------
+// Embeddable origins (what the app's own CSP may frame, derived from the same
+// variables that produce the URLs it frames).
+// ---------------------------------------------------------------------------
+
+export { HOSTED_CAL_FRAME_ORIGINS, calEmbedOrigins } from './embed-origins';
+export type { CalEmbedEnvInput } from './embed-origins';
