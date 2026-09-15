@@ -21,7 +21,11 @@
 #      scripts/check-no-nul-bytes.mjs), plus a check that every en.ts key in
 #      a visitor-facing block (the discovery funnel, the scope gate, policy
 #      notices, the preview step, the brief, the client dashboard) has a
-#      ro.ts translation — see scripts/check-i18n-ro-coverage.mjs
+#      ro.ts translation — see scripts/check-i18n-ro-coverage.mjs, plus a
+#      check that an undocumented Prettier major difference never sneaks
+#      back in between the repo root and apps/flowstarter-main — see
+#      scripts/check-prettier-pin.mjs and docs/dev-machine.md, "Prettier
+#      version pins"
 #   2. Typecheck — flow-design-system + flowstarter-main
 #   3. Unit tests with coverage for flowstarter-main, agentic-codegen and
 #      build-worker (vitest), then the coverage ratchet. Each package's vitest
@@ -90,6 +94,13 @@ jobs:
       # the exact blocks checked and the defect that made this a gate.
       - name: Romanian catalogue — no missing key in a visitor-facing block
         run: node scripts/check-i18n-ro-coverage.mjs
+      # The root pins a newer Prettier than apps/flowstarter-main on
+      # purpose (see docs/dev-machine.md, "Prettier version pins") — but an
+      # undocumented difference is exactly what let a hoisted/mis-resolved
+      # Prettier reformat files a commit never touched. This fails if either
+      # version moves without the doc moving with it.
+      - name: Prettier version pins — any drift is documented
+        run: node scripts/check-prettier-pin.mjs
   # ── 2. Typecheck ──────────────────────────────────────────────────────────
   typecheck:
     name: Typecheck
