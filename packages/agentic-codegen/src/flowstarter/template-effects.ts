@@ -169,6 +169,70 @@ function resolveRelative(fromFile: string, specifier: string): string {
   return base.join('/');
 }
 
+function isWordCharacter(char: string | undefined): boolean {
+  return char !== undefined && WORD_CHARACTER.test(char);
+}
+
+/** One character, so this can never backtrack over attacker-supplied text. */
+const WORD_CHARACTER = /[A-Za-z0-9_-]/;
+
+/** Where one `<tag …>…</tag>` sits in a source file, and what is inside it. */
+interface TagBlock {
+  inner: string;
+  /** The `<` of the opening tag. */
+  start: number;
+  /** One past the `>` of the closing tag, or the end of the file. */
+  end: number;
+}
+
+/**
+ * Every `<style>` or `<script>` block in a file, found by scanning rather
+ * than by matching.
+ *
+ * A regular expression is the obvious way to write this and the wrong one
+ * twice over. `<style[\s\S]*?</style>` reads a template an agent wrote, so a
+ * file full of `<style` openings makes it quadratic; and it does not
+ * recognise `</script >`, which a browser closes and the pattern does not —
+ * the difference between a selector being read as script (ignored) and as
+ * markup (required). Indexed scanning is linear and closes the tag the way
+ * the HTML spec does: the name, then anything up to the next `>`.
+ */
+function tagBlocks(source: string, tag: 'style' | 'script'): TagBlock[] {
+  const blocks: TagBlock[] = [];
+  const lower = source.toLowerCase();
+  const open = `<${tag}`;
+  const close = `</${tag}`;
+  let from = 0;
+  for (;;) {
+    const start = lower.indexOf(open, from);
+    if (start < 0) return blocks;
+    const afterName = start + open.length;
+    // `<style>` and `<style lang="scss">`, but not `<styles>`.
+    if (isWordCharacter(source[afterName])) {
+      from = afterName;
+      continue;
+    }
+    const openEnd = source.indexOf('>', afterName);
+    if (openEnd < 0) return blocks;
+    const closeStart = lower.indexOf(close, openEnd + 1);
+    if (closeStart < 0) {
+      // An unclosed block runs to the end of the file, which is what a
+      // browser would do with it too.
+      blocks.push({
+        inner: source.slice(openEnd + 1),
+        start,
+        end: source.length,
+      });
+      return blocks;
+    }
+    // `</script>` and `</script >` alike: the tag ends at its own `>`.
+    const closeEnd = source.indexOf('>', closeStart + close.length);
+    const end = closeEnd < 0 ? source.length : closeEnd + 1;
+    blocks.push({ inner: source.slice(openEnd + 1, closeStart), start, end });
+    from = end;
+  }
+}
+
 /**
  * An `.astro` file's template body: frontmatter, `<style>` and `<script>`
  * removed, so a selector quoted inside a script block is never mistaken for
@@ -180,9 +244,17 @@ function astroBody(source: string): string {
     const end = body.indexOf('\n---', 3);
     if (end >= 0) body = body.slice(end + 4);
   }
-  return body
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ');
+  const ranges = tagBlocks(body, 'style')
+    .concat(tagBlocks(body, 'script'))
+    .sort((a, b) => a.start - b.start);
+  let out = '';
+  let cursor = 0;
+  for (const range of ranges) {
+    if (range.start < cursor) continue;
+    out += `${body.slice(cursor, range.start)} `;
+    cursor = range.end;
+  }
+  return out + body.slice(cursor);
 }
 
 /** An `.astro` file's frontmatter, where its imports live. */
@@ -193,14 +265,53 @@ function astroFrontmatter(source: string): string {
 }
 
 function blocksOf(source: string, tag: 'style' | 'script'): string[] {
-  const pattern = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, 'gi');
-  return Array.from(source.matchAll(pattern), (match) => match[1] ?? '');
+  return tagBlocks(source, tag).map((block) => block.inner);
 }
 
-const IMPORT_SPECIFIER = /import\s+(?:[\s\S]*?\sfrom\s*)?['"]([^'"]+)['"]/g;
+/** How far past an `import` keyword its specifier is still looked for. */
+const IMPORT_STATEMENT_MAX = 2_000;
 
+/**
+ * The module specifiers a source file imports, scanned rather than matched.
+ *
+ * `import\s+(?:[\s\S]*?\sfrom\s*)?['"]…['"]` is the readable version and it
+ * backtracks: two variable-length runs either side of a keyword, over a file
+ * an agent wrote. This walks instead — find the `import` keyword on token
+ * boundaries, then take the first quoted string in the statement, stopping at
+ * the terminator or a bounded window so a file with one stray `import` and no
+ * quote cannot make the scan quadratic either.
+ */
 function importSpecifiers(source: string): string[] {
-  return Array.from(source.matchAll(IMPORT_SPECIFIER), (match) => match[1]!);
+  const found: string[] = [];
+  let from = 0;
+  for (;;) {
+    const at = source.indexOf('import', from);
+    if (at < 0) return found;
+    from = at + 'import'.length;
+    if (isWordCharacter(source[at - 1]) || isWordCharacter(source[from])) {
+      continue;
+    }
+    const limit = Math.min(source.length, from + IMPORT_STATEMENT_MAX);
+    let index = from;
+    let quote = '';
+    while (index < limit) {
+      const char = source[index]!;
+      if (char === "'" || char === '"') {
+        quote = char;
+        break;
+      }
+      // The statement ended without a specifier (`import.meta.url`, or a
+      // word that only looked like one).
+      if (char === ';') break;
+      index += 1;
+    }
+    if (!quote) continue;
+    const close = source.indexOf(quote, index + 1);
+    if (close < 0) return found;
+    const specifier = source.slice(index + 1, close);
+    if (specifier.length > 0) found.push(specifier);
+    from = close + 1;
+  }
 }
 
 /* -------------------------------------------------------------------------
@@ -279,6 +390,27 @@ interface CssRule {
 }
 
 /**
+ * Comments out, by scanning.
+ *
+ * `\/\*[\s\S]*?\*\/` over a stylesheet an agent wrote is quadratic on input
+ * that opens comments it never closes, and this reads compiled CSS as readily
+ * as authored CSS. `indexOf` cannot backtrack.
+ */
+function stripCssComments(css: string): string {
+  let out = '';
+  let from = 0;
+  for (;;) {
+    const start = css.indexOf('/*', from);
+    if (start < 0) return out + css.slice(from);
+    out += `${css.slice(from, start)} `;
+    const end = css.indexOf('*/', start + 2);
+    // An unterminated comment runs to the end, as it does in a browser.
+    if (end < 0) return out;
+    from = end + 2;
+  }
+}
+
+/**
  * Style text as a flat list of rules.
  *
  * Deliberately small: at-rules are descended into rather than understood, so
@@ -291,7 +423,7 @@ interface CssRule {
  */
 export function cssRules(style: string): CssRule[] {
   const rules: CssRule[] = [];
-  const withoutComments = style.replace(/\/\*[\s\S]*?\*\//g, ' ');
+  const withoutComments = stripCssComments(style);
   let index = 0;
 
   const parseBlock = (prefixEnd: number): void => {
@@ -433,7 +565,7 @@ export function deriveTemplateEffectsManifest(
   const byPath = new Map<string, string>();
   for (const file of files) byPath.set(posixPath(file.path), file.content);
 
-  const astroFiles = [...byPath.keys()]
+  const astroFiles = Array.from(byPath.keys())
     .filter((path) => path.endsWith('.astro'))
     .sort();
   const { sources, reachable } = loadedScripts(byPath, astroFiles);
@@ -441,7 +573,7 @@ export function deriveTemplateEffectsManifest(
 
   const boundAttributes = new Set<string>();
   const boundSelectors = new Set<string>();
-  for (const match of scriptText.matchAll(BOUND_SELECTOR)) {
+  for (const match of Array.from(scriptText.matchAll(BOUND_SELECTOR))) {
     boundAttributes.add(match[1]!);
     const value = match[2] ?? match[3];
     boundSelectors.add(
@@ -449,7 +581,7 @@ export function deriveTemplateEffectsManifest(
     );
   }
   const stateClasses = new Set<string>();
-  for (const match of scriptText.matchAll(STATE_CLASS_LITERAL)) {
+  for (const match of Array.from(scriptText.matchAll(STATE_CLASS_LITERAL))) {
     stateClasses.add(match[1]!);
   }
 
@@ -470,14 +602,14 @@ export function deriveTemplateEffectsManifest(
         queue.push(resolved);
       }
     }
-    return [...seen].sort();
+    return Array.from(seen).sort();
   };
 
   /** Attributes the markup renders whatever the data says. */
   const unconditionalHooks = (body: string): Set<string> => {
     const found = new Set<string>();
     const pattern = /\bdata-[a-z0-9-]+/g;
-    for (const match of body.matchAll(pattern)) {
+    for (const match of Array.from(body.matchAll(pattern))) {
       const attribute = match[0];
       if (!boundAttributes.has(attribute)) continue;
       const after = body.slice(match.index + attribute.length);
@@ -494,7 +626,7 @@ export function deriveTemplateEffectsManifest(
   /** The literal classes a component's own markup writes out. */
   const markerClasses = (body: string): Set<string> => {
     const found = new Set<string>();
-    for (const match of body.matchAll(/\bclass\s*=\s*"([^"]*)"/g)) {
+    for (const match of Array.from(body.matchAll(/\bclass\s*=\s*"([^"]*)"/g))) {
       for (const token of match[1]!.split(/\s+/)) {
         // A class built from an expression (`${className}`) is not a name a
         // page can be asked about.
@@ -517,7 +649,9 @@ export function deriveTemplateEffectsManifest(
    */
   const componentsPerClass = new Map<string, number>();
   for (const component of astroFiles) {
-    for (const name of markerClasses(astroBody(byPath.get(component) ?? ''))) {
+    for (const name of Array.from(
+      markerClasses(astroBody(byPath.get(component) ?? '')),
+    )) {
       componentsPerClass.set(name, (componentsPerClass.get(name) ?? 0) + 1);
     }
   }
@@ -529,7 +663,7 @@ export function deriveTemplateEffectsManifest(
    * nothing.
    */
   const globalClasses = new Set<string>();
-  for (const [path, content] of byPath) {
+  for (const [path, content] of Array.from(byPath.entries())) {
     if (!path.startsWith('src/styles/') || !path.endsWith('.css')) continue;
     for (const rule of cssRules(content)) {
       for (const name of selectorClasses(rule.selector))
@@ -563,7 +697,7 @@ export function deriveTemplateEffectsManifest(
       return undefined;
     }
     const markers = new Set(
-      [...markerClasses(astroBody(source))].filter(
+      Array.from(markerClasses(astroBody(source))).filter(
         (name) =>
           componentsPerClass.get(name) === 1 &&
           !globalClasses.has(name) &&
@@ -576,18 +710,18 @@ export function deriveTemplateEffectsManifest(
     if (markers.size === 0) return undefined;
     return {
       component,
-      markers: [...markers].sort(),
-      hooks: [...hooks].sort(),
-      reveals: [...reveals].sort(),
-      sticky: [...sticky].sort(),
+      markers: Array.from(markers).sort(),
+      hooks: Array.from(hooks).sort(),
+      reveals: Array.from(reveals).sort(),
+      sticky: Array.from(sticky).sort(),
     };
   };
 
   const sections = new Map<string, TemplateEffectsSection>();
   const renderedHooks = new Set<string>();
   for (const component of astroFiles) {
-    for (const hook of unconditionalHooks(
-      astroBody(byPath.get(component) ?? ''),
+    for (const hook of Array.from(
+      unconditionalHooks(astroBody(byPath.get(component) ?? '')),
     )) {
       renderedHooks.add(hook);
     }
@@ -606,7 +740,7 @@ export function deriveTemplateEffectsManifest(
     });
   }
 
-  const orphanModules = [...byPath.keys()]
+  const orphanModules = Array.from(byPath.keys())
     .filter(
       (path) =>
         path.startsWith('src/scripts/') &&
@@ -614,7 +748,7 @@ export function deriveTemplateEffectsManifest(
         !reachable.has(path),
     )
     .sort();
-  const orphanBindings = [...boundSelectors]
+  const orphanBindings = Array.from(boundSelectors)
     .filter((selector) => {
       const attribute = selector.split('=')[0]!;
       return !renderedHooks.has(attribute);
@@ -623,9 +757,9 @@ export function deriveTemplateEffectsManifest(
 
   return {
     schemaVersion: 1,
-    stateClasses: [...stateClasses].sort(),
-    boundAttributes: [...boundAttributes].sort(),
-    sections: [...sections.values()],
+    stateClasses: Array.from(stateClasses).sort(),
+    boundAttributes: Array.from(boundAttributes).sort(),
+    sections: Array.from(sections.values()),
     pages,
     orphans: { modules: orphanModules, bindings: orphanBindings },
   };

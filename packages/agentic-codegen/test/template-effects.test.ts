@@ -231,6 +231,64 @@ describe('cssRules — enough CSS to ask two questions', () => {
     );
     expect(rules.map((rule) => rule.selector)).toEqual(['.a', '.b']);
   });
+
+  test('a comment that never closes takes the rest of the file with it', () => {
+    // Scanned rather than matched: `\\/\\*[\\s\\S]*?\\*\\/` over a stylesheet
+    // an agent wrote is quadratic on exactly this input.
+    expect(
+      cssRules('.a{color:red}/* .b{color:blue}').map((r) => r.selector),
+    ).toEqual(['.a']);
+  });
+});
+
+describe('the source scanners — what a regular expression got wrong', () => {
+  test('a script block closed with a space is still a script block', () => {
+    // `</script >` is a close tag to a browser and was not one to the pattern
+    // this replaced, so the selector inside it read as markup the page
+    // renders. It is script, and script is not the contract.
+    const manifest = deriveTemplateEffectsManifest(
+      template({
+        'src/components/Story.astro':
+          '<section class="story" data-story-reveal>' +
+          '<p class="story__line">hi</p></section>\n' +
+          '<script >document.querySelector("[data-menu]");</script >\n' +
+          '<style>.story.is-visible .story__line { opacity: 1; }</style>',
+      }),
+    );
+    expect(manifest.sections[0]?.hooks).toEqual(['data-story-reveal']);
+    expect(manifest.sections[0]?.markers).toEqual(['story', 'story__line']);
+  });
+
+  test('a block that never closes ends the file, as it would in a browser', () => {
+    const manifest = deriveTemplateEffectsManifest(
+      template({
+        'src/components/Story.astro':
+          '<section class="story" data-story-reveal></section>\n' +
+          '<script>document.querySelector("[data-menu]");',
+      }),
+    );
+    // No style block survives, so the section carries its hook and nothing
+    // from inside the unterminated script.
+    expect(manifest.sections[0]?.hooks).toEqual(['data-story-reveal']);
+    expect(manifest.sections[0]?.reveals).toEqual([]);
+  });
+
+  test('reads every import shape, and the word alone is not one', () => {
+    const manifest = deriveTemplateEffectsManifest(
+      template({
+        'src/pages/index.astro': `---
+import Layout from '../layouts/Layout.astro';
+import {
+  Story,
+} from '../components/Story.astro';
+const note = 'important: not an import';
+const here = import.meta.url;
+---
+<Layout><Story /></Layout>`,
+      }),
+    );
+    expect(manifest.pages[0]?.sections).toEqual(['src/components/Story.astro']);
+  });
 });
 
 describe('findTemplateEffectsFindings — what a build dropped', () => {
