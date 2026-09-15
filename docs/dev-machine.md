@@ -93,6 +93,13 @@ throwaway branch you set up by hand) rather than the main checkout:
   fetch hangs on this network. Screenshots and Playwright runs on this
   machine use `channel: 'chrome'` to drive the already-installed system
   Chrome instead of downloading Playwright's own browser build.
+- **Never reset the shared local dev Supabase stack.** `pnpm db:reset` (and
+  a bare `supabase db reset`) rewrites the database on `54321` for every
+  worktree and every other agent session pointed at it — there is one
+  dev-machine stack, not one per worktree. An agent that needs a disposable
+  database (RLS verification, a migration dry run, a scratch fixture) uses
+  the separate verify stack on port `55322` instead, and tears it down when
+  done. The shared `54321` stack is never reset by an agent.
 
 ## Staging and production on Hetzner
 
@@ -114,6 +121,10 @@ release.
   verifies staging, builds the image for that tag, and deploys it to the
   `prod` slot. Production's database is the hosted Supabase project, the
   only place that project is used. See `docs/release-process.md`.
+- **`fs-sites-01`'s own disk is not unbounded.** Every deploy pulls a new
+  tagged image and nothing removed an old one until PR #175, which filled
+  the disk and failed every staging lane on 2026-09-15. See
+  `docs/operations/deploy-disk.md`.
 
 Nothing on the dev machine reaches either slot's database directly; the
 local Supabase stack on `127.0.0.1:54321` is the only database a developer
