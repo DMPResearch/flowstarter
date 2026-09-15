@@ -376,6 +376,367 @@ describe('Flowstarter preview-to-build orchestration', () => {
     expect(mediaFeedbacks[1]).toContain('/flowstarter-assets/profile.jpg');
   });
 
+  // ── The starting design ─────────────────────────────────────────────────
+  //
+  // The delivered portfolio that prompted the person work was built from
+  // `professional-services`. Nothing malfunctioned: the brief read as a
+  // studio, and a studio is a professional-services site. These two tests are
+  // the correction and its control.
+
+  /** A brief the funnel asked the person questions of. */
+  function personalIntake(): BusinessIntakePayload {
+    return {
+      ...validIntake(),
+      business: {
+        ...validIntake().business,
+        // Deliberately not a portfolio word anywhere: the person section is
+        // what makes this personal, which is the case that shipped wrong.
+        name: 'Flowstarter',
+        niche: 'Professional services',
+        description: 'Founder of Flowstarter, building websites with agents.',
+      },
+      person: {
+        name: 'Darius Mihai',
+        headline: 'I build websites, on my own',
+        story:
+          'I have built software on my own for nine years, and I would rather ship one screen that works than five that demo well.',
+        howIWork: 'One project at a time, with something working in two weeks.',
+        values: '',
+        feel: '',
+        toneWords: [],
+        links: [],
+        proudestWork: '',
+        activity: { what: '', who: '', typical: '', knownFor: '', years: '' },
+        sourcedBio: null,
+      },
+    };
+  }
+
+  /** A company, with nothing in its trade that reads as a portfolio. */
+  function companyIntake(): BusinessIntakePayload {
+    return {
+      ...validIntake(),
+      business: {
+        ...validIntake().business,
+        name: 'Orchard Plumbing',
+        niche: 'Plumbing and heating',
+        description: 'A two van plumbing company covering south Leeds.',
+        targetAudience: 'Homeowners',
+      },
+    };
+  }
+
+  it('overrules a services template chosen for a site that is about a person', async () => {
+    let asked = 0;
+    const agents = {
+      analyzeBrand: async () => validBrandConfig(),
+      selectTemplate: async () => {
+        asked += 1;
+        // The answer that shipped. It is a defensible answer to the question
+        // the model was asked, which is why the rule overrules it rather than
+        // the prompt being reworded.
+        return {
+          slug: 'professional-services',
+          reason: 'Founder of a company.',
+          matchedSignals: ['consulting'],
+          confidence: 0.91,
+        };
+      },
+      buildPreview: async (input: { workspaceRoot: string }) => {
+        // The personalization check wants the business name on the page, and
+        // on this brief the business name is still the platform's: that is
+        // the defect `deriveBusinessName` fixes upstream, and this test is
+        // about the template rather than the name.
+        await writeFile(
+          join(input.workspaceRoot, 'src/content/site.md'),
+          'Flowstarter, by Darius Mihai',
+          'utf8',
+        );
+        return { summary: 'done', changedPaths: ['src/content/site.md'] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    const pipeline = new PreviewGenerationPipeline(
+      agents,
+      twoKindLibrary(),
+      { validate: async () => undefined },
+      staticPublisher(),
+    );
+    const result = await pipeline.run({
+      intake: personalIntake(),
+      corpus: validCorpus(validIntake().projectId),
+      cachedAssets: [],
+    });
+
+    expect(asked).toBe(1);
+    expect(result.template.slug).toBe('creative-portfolio');
+    // The override is recorded rather than hidden: an operator reading the
+    // job needs to know the model was overruled and why.
+    expect(result.template.reason).toContain('professional-services');
+    expect(result.template.matchedSignals).toContain('personal-portfolio');
+  });
+
+  it('leaves a company brief with the template the model chose', async () => {
+    const agents = {
+      analyzeBrand: async () => validBrandConfig(),
+      selectTemplate: async () => ({
+        slug: 'professional-services',
+        reason: 'A practice with a name.',
+        matchedSignals: ['consulting'],
+        confidence: 0.91,
+      }),
+      buildPreview: async (input: { workspaceRoot: string }) => {
+        await writeFile(
+          join(input.workspaceRoot, 'src/content/site.md'),
+          'Orchard Plumbing preview',
+          'utf8',
+        );
+        return { summary: 'done', changedPaths: ['src/content/site.md'] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    const pipeline = new PreviewGenerationPipeline(
+      agents,
+      twoKindLibrary(),
+      { validate: async () => undefined },
+      staticPublisher(),
+    );
+    const result = await pipeline.run({
+      // A company, with no person section and nothing in its trade that
+      // `siteKindFor` reads as a portfolio. `validIntake` is deliberately not
+      // reused here: its description says "founders and creatives", and
+      // "creatives" is a portfolio signal, so it is a personal site by the
+      // same rule and would make this control prove nothing.
+      intake: companyIntake(),
+      corpus: validCorpus(validIntake().projectId),
+      cachedAssets: [],
+    });
+
+    // THE CONTROL. Nothing about a company brief changed, and if this ever
+    // starts failing the fix is a different wrong answer rather than a fix.
+    expect(result.template.slug).toBe('professional-services');
+    expect(result.template.matchedSignals).not.toContain('personal-portfolio');
+  });
+
+  /**
+   * A classifier that ranks by a fixed table rather than by an embedding, so
+   * the confidence gate can be steered exactly and the rule underneath it can
+   * be observed on its own.
+   */
+  function stubClassifier(
+    ranked: Array<{ slug: string; score: number }>,
+    auto = false,
+  ) {
+    return {
+      classify: async () => ({
+        ranked,
+        ...(auto && ranked[0]
+          ? {
+              autoSelect: {
+                slug: ranked[0].slug,
+                score: ranked[0].score,
+                margin: 0.2,
+              },
+            }
+          : {}),
+      }),
+    } as unknown as ConstructorParameters<typeof PreviewGenerationPipeline>[4];
+  }
+
+  function previewAgents(content: string) {
+    return {
+      analyzeBrand: async () => validBrandConfig(),
+      selectTemplate: async () => {
+        throw new Error('the model selector should not have been reached');
+      },
+      buildPreview: async (input: { workspaceRoot: string }) => {
+        await writeFile(
+          join(input.workspaceRoot, 'src/content/site.md'),
+          content,
+          'utf8',
+        );
+        return { summary: 'done', changedPaths: ['src/content/site.md'] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+  }
+
+  it('settles a personal site by rule when the classifier is not confident', async () => {
+    // Two portfolio templates scoring within the margin is a murky choice
+    // between two right answers, not a reason to hand the whole library back
+    // to a model. `selectTemplate` throws here, so reaching it fails the test.
+    const pipeline = new PreviewGenerationPipeline(
+      previewAgents('Flowstarter, by Darius Mihai'),
+      twoKindLibrary(),
+      { validate: async () => undefined },
+      staticPublisher(),
+      stubClassifier([
+        { slug: 'creative-portfolio', score: 0.41 },
+        { slug: 'professional-services', score: 0.4 },
+      ]),
+    );
+
+    const result = await pipeline.run({
+      intake: personalIntake(),
+      corpus: validCorpus(validIntake().projectId),
+      cachedAssets: [],
+    });
+
+    expect(result.template.slug).toBe('creative-portfolio');
+    expect(result.template.matchedSignals).toContain('personal-portfolio');
+    expect(result.template.reason).toContain('chosen by rule');
+  });
+
+  it('keeps the confidence gate for a company brief', async () => {
+    // No autoSelect and not a personal site: the rule has no opinion and the
+    // model selector runs, exactly as it did before any of this.
+    let asked = 0;
+    const agents = {
+      analyzeBrand: async () => validBrandConfig(),
+      selectTemplate: async () => {
+        asked += 1;
+        return {
+          slug: 'professional-services',
+          reason: 'A practice with a name.',
+          matchedSignals: ['consulting'],
+          confidence: 0.6,
+        };
+      },
+      buildPreview: async (input: { workspaceRoot: string }) => {
+        await writeFile(
+          join(input.workspaceRoot, 'src/content/site.md'),
+          'Orchard Plumbing preview',
+          'utf8',
+        );
+        return { summary: 'done', changedPaths: ['src/content/site.md'] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    const pipeline = new PreviewGenerationPipeline(
+      agents,
+      twoKindLibrary(),
+      { validate: async () => undefined },
+      staticPublisher(),
+      stubClassifier([{ slug: 'professional-services', score: 0.2 }]),
+    );
+
+    const result = await pipeline.run({
+      intake: companyIntake(),
+      corpus: validCorpus(validIntake().projectId),
+      cachedAssets: [],
+    });
+
+    expect(asked).toBe(1);
+    expect(result.template.slug).toBe('professional-services');
+  });
+
+  it('takes a confident classification without consulting the model', async () => {
+    const pipeline = new PreviewGenerationPipeline(
+      previewAgents('Flowstarter, by Darius Mihai'),
+      twoKindLibrary(),
+      { validate: async () => undefined },
+      staticPublisher(),
+      stubClassifier([{ slug: 'creative-portfolio', score: 0.8 }], true),
+    );
+
+    const result = await pipeline.run({
+      intake: personalIntake(),
+      corpus: validCorpus(validIntake().projectId),
+      cachedAssets: [],
+    });
+
+    expect(result.template.slug).toBe('creative-portfolio');
+    expect(result.template.matchedSignals).toContain('sigma-embedding');
+  });
+
+  it('leaves a correct choice alone rather than swapping it for another portfolio', async () => {
+    // The model already picked a portfolio template. There is nothing to
+    // correct, and a rule that reshuffled a right answer would be noise in
+    // every job log for no gain.
+    const agents = {
+      analyzeBrand: async () => validBrandConfig(),
+      selectTemplate: async () => ({
+        slug: 'creative-portfolio',
+        reason: 'A body of work.',
+        matchedSignals: ['portfolio'],
+        confidence: 0.88,
+      }),
+      buildPreview: async (input: { workspaceRoot: string }) => {
+        await writeFile(
+          join(input.workspaceRoot, 'src/content/site.md'),
+          'Flowstarter, by Darius Mihai',
+          'utf8',
+        );
+        return { summary: 'done', changedPaths: ['src/content/site.md'] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    const pipeline = new PreviewGenerationPipeline(
+      agents,
+      twoKindLibrary(),
+      { validate: async () => undefined },
+      staticPublisher(),
+    );
+    const result = await pipeline.run({
+      intake: personalIntake(),
+      corpus: validCorpus(validIntake().projectId),
+      cachedAssets: [],
+    });
+
+    expect(result.template.slug).toBe('creative-portfolio');
+    expect(result.template.reason).toBe('A body of work.');
+    expect(result.template.matchedSignals).not.toContain('personal-portfolio');
+  });
+
+  it('keeps the model choice when the library has no portfolio template at all', async () => {
+    // A deployment problem, not a reason to fail a preview. The content gates
+    // still hold the built site to the person.
+    const servicesOnlyLibrary: TemplateLibrary = {
+      ...staticLibrary(),
+      search: async () => [
+        {
+          slug: 'professional-services',
+          displayName: 'Professional Services',
+          description: 'A services site for a consultancy or practice.',
+          category: 'Services',
+          useCase: ['consulting'],
+          fileCount: 1,
+          totalLOC: 1,
+        },
+      ],
+    };
+    const agents = {
+      analyzeBrand: async () => validBrandConfig(),
+      selectTemplate: async () => ({
+        slug: 'professional-services',
+        reason: 'The only thing on the shelf.',
+        matchedSignals: ['consulting'],
+        confidence: 0.5,
+      }),
+      buildPreview: async (input: { workspaceRoot: string }) => {
+        await writeFile(
+          join(input.workspaceRoot, 'src/content/site.md'),
+          'Flowstarter, by Darius Mihai',
+          'utf8',
+        );
+        return { summary: 'done', changedPaths: ['src/content/site.md'] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    const pipeline = new PreviewGenerationPipeline(
+      agents,
+      servicesOnlyLibrary,
+      { validate: async () => undefined },
+      staticPublisher(),
+    );
+    const result = await pipeline.run({
+      intake: personalIntake(),
+      corpus: validCorpus(validIntake().projectId),
+      cachedAssets: [],
+    });
+
+    expect(result.template.slug).toBe('professional-services');
+  });
+
   it('accepts a repair pass that correctly changes nothing', async () => {
     const intake = validIntake();
     let passes = 0;
@@ -1290,6 +1651,42 @@ function staticLibrary(): TemplateLibrary {
       ],
     }),
     close: async () => undefined,
+  };
+}
+
+/**
+ * A library that answers a search with both kinds of template, so the rule
+ * that narrows a personal site to the portfolio ones has something to narrow.
+ *
+ * `staticLibrary` answers `[]`, which is why every other test in this file is
+ * untouched by the narrowing: with nothing to choose from, the rule returns
+ * the model's answer unchanged, which is exactly what it should do for a
+ * deployment whose library is not reachable.
+ */
+function twoKindLibrary(): TemplateLibrary {
+  const base = staticLibrary();
+  return {
+    ...base,
+    search: async () => [
+      {
+        slug: 'professional-services',
+        displayName: 'Professional Services',
+        description: 'A services site for a consultancy or practice.',
+        category: 'Services',
+        useCase: ['consulting'],
+        fileCount: 1,
+        totalLOC: 1,
+      },
+      {
+        slug: 'creative-portfolio',
+        displayName: 'Creative Portfolio',
+        description: 'An editorial portfolio built around selected work.',
+        category: 'Creative',
+        useCase: ['portfolio'],
+        fileCount: 1,
+        totalLOC: 1,
+      },
+    ],
   };
 }
 

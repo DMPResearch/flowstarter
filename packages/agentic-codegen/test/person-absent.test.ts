@@ -120,8 +120,8 @@ describe('pageCarriesStory', () => {
     expect(
       pageCarriesStory(
         '<p>Un studio creativ care ofera solutii vizuale complete.</p>',
-        IOANA_STORY
-      )
+        IOANA_STORY,
+      ),
     ).toBe(false);
   });
 
@@ -134,7 +134,7 @@ describe('pageCarriesStory', () => {
 
   test('measures runs of words rather than a bag of them', () => {
     expect(shingles('one two three four five six seven')).toContain(
-      'one two three four five six'
+      'one two three four five six',
     );
     // The regression this shape exists for: a page that shares a genre's
     // vocabulary with the story, and not one phrase of it. The first version
@@ -143,9 +143,9 @@ describe('pageCarriesStory', () => {
     const sameVocabulary =
       '<p>Eleven years of product work with support teams, before and ' +
       'after going out on my own, in a workshop rather than a queue.</p>';
-    expect(
-      storyPhraseMatches(sameVocabulary, SAM_STORY, 1)
-    ).toBeGreaterThan(MIN_STORY_PHRASES);
+    expect(storyPhraseMatches(sameVocabulary, SAM_STORY, 1)).toBeGreaterThan(
+      MIN_STORY_PHRASES,
+    );
     expect(pageCarriesStory(sameVocabulary, SAM_STORY)).toBe(false);
   });
 });
@@ -157,7 +157,7 @@ describe('judgePersonAbsent', () => {
       {
         businessType: 'Plumbing and heating, boilers and bathrooms',
         person: person({ story: SAM_STORY }),
-      }
+      },
     );
     expect(verdict.verdict).toBe('not-applicable');
   });
@@ -167,7 +167,7 @@ describe('judgePersonAbsent', () => {
     // guessed here would fail the whole backlog.
     const verdict = judgePersonAbsent(
       [aboutPage('<p>A studio for ambitious brands.</p>')],
-      { ...PORTFOLIO, person: null }
+      { ...PORTFOLIO, person: null },
     );
     expect(verdict.verdict).toBe('not-applicable');
   });
@@ -177,14 +177,14 @@ describe('judgePersonAbsent', () => {
       [
         aboutPage(
           `<h1>Sam Okafor</h1><p>${SAM_STORY}</p>` +
-            `<img src="/flowstarter-media/sam-portrait.jpg" alt="Sam Okafor">`
+            `<img src="/flowstarter-media/sam-portrait.jpg" alt="Sam Okafor">`,
         ),
       ],
       {
         ...PORTFOLIO,
         person: person({ name: 'Sam Okafor', story: SAM_STORY }),
         portraitPath: '/flowstarter-media/sam-portrait.jpg',
-      }
+      },
     );
     expect(verdict.verdict).toBe('pass');
   });
@@ -195,19 +195,19 @@ describe('judgePersonAbsent', () => {
         aboutPage(
           '<h1>About the studio</h1><p>We are a multidisciplinary studio ' +
             'delivering bespoke digital experiences for ambitious brands.</p>' +
-            '<img src="/flowstarter-media/sam-portrait.jpg" alt="Sam">'
+            '<img src="/flowstarter-media/sam-portrait.jpg" alt="Sam">',
         ),
       ],
       {
         ...PORTFOLIO,
         person: person({ name: 'Sam Okafor', story: SAM_STORY }),
         portraitPath: '/flowstarter-media/sam-portrait.jpg',
-      }
+      },
     );
     expect(verdict.verdict).toBe('fail');
     if (verdict.verdict !== 'fail') return;
     expect(verdict.findings.map((f) => f.code)).toContain(
-      'story_not_on_about_page'
+      'story_not_on_about_page',
     );
     // The feedback carries the sentences the agent is to use, not a code.
     expect(verdict.issue).toContain(PERSON_ABSENT);
@@ -221,20 +221,25 @@ describe('judgePersonAbsent', () => {
         ...PORTFOLIO,
         person: person({ name: 'Sam Okafor', story: SAM_STORY }),
         portraitPath: '/flowstarter-media/sam-portrait.jpg',
-      }
+      },
     );
     expect(verdict.verdict).toBe('fail');
     if (verdict.verdict !== 'fail') return;
     expect(verdict.findings.map((f) => f.code)).toContain(
-      'portrait_not_placed'
+      'portrait_not_placed',
     );
     expect(verdict.issue).toContain('/flowstarter-media/sam-portrait.jpg');
   });
 
   test('fails a portfolio with no about page at all', () => {
     const verdict = judgePersonAbsent(
-      [{ path: 'index.html', content: '<html><body><h1>Hi</h1></body></html>' }],
-      { ...PORTFOLIO, person: person({ story: SAM_STORY }) }
+      [
+        {
+          path: 'index.html',
+          content: '<html><body><h1>Hi</h1></body></html>',
+        },
+      ],
+      { ...PORTFOLIO, person: person({ story: SAM_STORY }) },
     );
     expect(verdict.verdict).toBe('fail');
   });
@@ -244,7 +249,7 @@ describe('judgePersonAbsent', () => {
     // writing can fix this, so it never gets a repair pass.
     const verdict = judgePersonAbsent(
       [aboutPage('<p>Bookkeeping and VAT for small limited companies.</p>')],
-      { ...PORTFOLIO, person: person({}) }
+      { ...PORTFOLIO, person: person({}) },
     );
     expect(verdict.verdict).toBe('hold');
     if (verdict.verdict !== 'hold') return;
@@ -260,11 +265,10 @@ describe('judgePersonAbsent', () => {
       [
         {
           path: 'index.html',
-          content:
-            `<html><body><section id="about"><p>${SAM_STORY}</p></section></body></html>`,
+          content: `<html><body><section id="about"><p>${SAM_STORY}</p></section></body></html>`,
         },
       ],
-      { ...PORTFOLIO, person: person({ story: SAM_STORY }) }
+      { ...PORTFOLIO, person: person({ story: SAM_STORY }) },
     );
     expect(verdict.verdict).toBe('pass');
   });
@@ -312,7 +316,7 @@ describe('describePerson', () => {
           knownFor: 'Untangling onboarding',
           years: 'eleven years',
         },
-      })
+      }),
     );
     expect(paragraph).toContain("client's phrasing wins");
     expect(paragraph).toContain(SAM_STORY);
@@ -342,7 +346,7 @@ describe('describePerson', () => {
           fetchedAt: '2026-09-15T09:00:00.000Z',
           adoptedAt: null,
         },
-      })
+      }),
     );
     expect(paragraph).toContain('has NOT');
     expect(paragraph).toContain('Do not use it');
@@ -350,7 +354,7 @@ describe('describePerson', () => {
 
   test('keeps Romanian prose intact on the way to the prompt', () => {
     const paragraph = describePerson(
-      person({ name: 'Ioana Petrescu', story: IOANA_STORY })
+      person({ name: 'Ioana Petrescu', story: IOANA_STORY }),
     );
     expect(paragraph).toContain(IOANA_STORY);
   });
@@ -386,13 +390,14 @@ describe('parsePerson', () => {
           source: 'github-bio',
           sourceUrl: '',
         },
-      })?.sourcedBio
+      })?.sourcedBio,
     ).toBeNull();
   });
 
   test('keeps at most three tone words and lowercases them', () => {
     expect(
-      parsePerson({ toneWords: ['Plain', 'Direct', 'Warm', 'Loud'] })?.toneWords
+      parsePerson({ toneWords: ['Plain', 'Direct', 'Warm', 'Loud'] })
+        ?.toneWords,
     ).toEqual(['plain', 'direct', 'warm']);
   });
 });
@@ -420,7 +425,7 @@ async function buildWithStory(input: {
 }): Promise<Array<{ path: string; content: string }>> {
   const template = join(templatesRoot, 'creative-portfolio');
   const workspace = await mkdtemp(
-    join(tmpdir(), `person-absent-${input.label}-`)
+    join(tmpdir(), `person-absent-${input.label}-`),
   );
   try {
     await cp(template, workspace, {
@@ -433,7 +438,7 @@ async function buildWithStory(input: {
     await symlink(
       join(template, 'node_modules'),
       join(workspace, 'node_modules'),
-      'dir'
+      'dir',
     );
 
     const labelsPath = join(workspace, 'src/content/site-labels.md');
@@ -450,16 +455,16 @@ async function buildWithStory(input: {
           `    buttonLabel: "CONTACT"\n` +
           `    buttonHref: "/contact"\n` +
           `    imageSrc: ${JSON.stringify(input.portraitPath ?? '')}\n` +
-          `    imageAlt: ${JSON.stringify(input.siteTitle)}${tail}`
+          `    imageAlt: ${JSON.stringify(input.siteTitle)}${tail}`,
       )
       .replace(
         /^(\s+)title: ".*"$/m,
         (_whole, indent: string) =>
-          `${indent}title: ${JSON.stringify(input.siteTitle)}`
+          `${indent}title: ${JSON.stringify(input.siteTitle)}`,
       );
     expect(
       withStory,
-      `${input.label}: the about intro block was not rewritten`
+      `${input.label}: the about intro block was not rewritten`,
     ).toContain(input.story);
     await writeFile(labelsPath, withStory);
 
@@ -473,15 +478,15 @@ async function buildWithStory(input: {
       "import { mergeConfig } from 'astro/config';\n" +
         "import base from './astro.config.mjs';\n" +
         `export default mergeConfig(base, { vite: { cacheDir: ${JSON.stringify(
-          join(workspace, '.vite-cache')
+          join(workspace, '.vite-cache'),
         )} } });\n`,
-      'utf8'
+      'utf8',
     );
 
     await run(
       join(template, 'node_modules/.bin/astro'),
       ['build', '--config', configOverrideName],
-      { cwd: workspace }
+      { cwd: workspace },
     );
 
     const distDir = join(workspace, 'dist');
@@ -503,7 +508,7 @@ async function buildWithStory(input: {
     await walk(distDir);
     expect(
       files.length,
-      `${input.label}: astro build produced no HTML under dist/`
+      `${input.label}: astro build produced no HTML under dist/`,
     ).toBeGreaterThan(0);
     return files;
   } finally {
@@ -515,84 +520,73 @@ describe('the gate on a real build of creative-portfolio', () => {
   const template = join(templatesRoot, 'creative-portfolio');
   const buildable = existsSync(join(template, 'node_modules/.bin/astro'));
 
-  test(
-    'passes an English build whose about page carries the client story',
-    async () => {
-      if (!buildable) {
-        console.warn(
-          'creative-portfolio has no installed astro binary; skipping the ' +
-            'real-build PERSON_ABSENT check (run `pnpm install` first)'
-        );
-        return;
-      }
-      const files = await buildWithStory({
-        label: 'en',
-        story: SAM_STORY,
-        eyebrow: 'Sam Okafor, freelance product designer',
-        siteTitle: 'Sam Okafor',
-        portraitPath: null,
-      });
-      const verdict = judgePersonAbsent(files, {
-        ...PORTFOLIO,
-        person: person({ name: 'Sam Okafor', story: SAM_STORY }),
-      });
-      expect(
-        verdict.verdict,
-        verdict.verdict === 'fail' ? verdict.issue : ''
-      ).toBe('pass');
-    },
-    300_000
-  );
+  test('passes an English build whose about page carries the client story', async () => {
+    if (!buildable) {
+      console.warn(
+        'creative-portfolio has no installed astro binary; skipping the ' +
+          'real-build PERSON_ABSENT check (run `pnpm install` first)',
+      );
+      return;
+    }
+    const files = await buildWithStory({
+      label: 'en',
+      story: SAM_STORY,
+      eyebrow: 'Sam Okafor, freelance product designer',
+      siteTitle: 'Sam Okafor',
+      portraitPath: null,
+    });
+    const verdict = judgePersonAbsent(files, {
+      ...PORTFOLIO,
+      person: person({ name: 'Sam Okafor', story: SAM_STORY }),
+    });
+    expect(
+      verdict.verdict,
+      verdict.verdict === 'fail' ? verdict.issue : '',
+    ).toBe('pass');
+  }, 300_000);
 
-  test(
-    'passes a Romanian build, and fails the same build with generic copy',
-    async () => {
-      if (!buildable) return;
-      const files = await buildWithStory({
-        label: 'ro',
-        story: IOANA_STORY,
-        eyebrow: 'Ioana Petrescu, fotograf de nunta',
-        siteTitle: 'Ioana Petrescu',
-        portraitPath: null,
-      });
-      const ioana = person({ name: 'Ioana Petrescu', story: IOANA_STORY });
-      expect(judgePersonAbsent(files, { ...PORTFOLIO, person: ioana }).verdict)
-        .toBe('pass');
+  test('passes a Romanian build, and fails the same build with generic copy', async () => {
+    if (!buildable) return;
+    const files = await buildWithStory({
+      label: 'ro',
+      story: IOANA_STORY,
+      eyebrow: 'Ioana Petrescu, fotograf de nunta',
+      siteTitle: 'Ioana Petrescu',
+      portraitPath: null,
+    });
+    const ioana = person({ name: 'Ioana Petrescu', story: IOANA_STORY });
+    expect(
+      judgePersonAbsent(files, { ...PORTFOLIO, person: ioana }).verdict,
+    ).toBe('pass');
 
-      // The negative, over the same real pages: a different person's brief
-      // against this site is the shape of the defect the gate exists for.
-      const stranger = person({
-        name: 'Sam Okafor',
-        story: SAM_STORY,
-      });
-      const failed = judgePersonAbsent(files, {
-        ...PORTFOLIO,
-        person: stranger,
-      });
-      expect(failed.verdict).toBe('fail');
-    },
-    300_000
-  );
+    // The negative, over the same real pages: a different person's brief
+    // against this site is the shape of the defect the gate exists for.
+    const stranger = person({
+      name: 'Sam Okafor',
+      story: SAM_STORY,
+    });
+    const failed = judgePersonAbsent(files, {
+      ...PORTFOLIO,
+      person: stranger,
+    });
+    expect(failed.verdict).toBe('fail');
+  }, 300_000);
 
-  test(
-    'draws a designed panel rather than an empty box when there is no portrait',
-    async () => {
-      if (!buildable) return;
-      const files = await buildWithStory({
-        label: 'noportrait',
-        story: SAM_STORY,
-        eyebrow: 'Sam Okafor, freelance product designer',
-        siteTitle: 'Sam Okafor',
-        portraitPath: null,
-      });
-      const about = files.find((file) => file.path.startsWith('about/'));
-      expect(about, 'the build emitted no about page').toBeDefined();
-      // The monogram, not an <img src="">, and not a sentence apologising for
-      // a photograph that does not exist.
-      expect(about!.content).toContain('about-intro-section__monogram');
-      expect(about!.content).not.toContain('src=""');
-      expect(about!.content).not.toContain('will follow here');
-    },
-    300_000
-  );
+  test('draws a designed panel rather than an empty box when there is no portrait', async () => {
+    if (!buildable) return;
+    const files = await buildWithStory({
+      label: 'noportrait',
+      story: SAM_STORY,
+      eyebrow: 'Sam Okafor, freelance product designer',
+      siteTitle: 'Sam Okafor',
+      portraitPath: null,
+    });
+    const about = files.find((file) => file.path.startsWith('about/'));
+    expect(about, 'the build emitted no about page').toBeDefined();
+    // The monogram, not an <img src="">, and not a sentence apologising for
+    // a photograph that does not exist.
+    expect(about!.content).toContain('about-intro-section__monogram');
+    expect(about!.content).not.toContain('src=""');
+    expect(about!.content).not.toContain('will follow here');
+  }, 300_000);
 });

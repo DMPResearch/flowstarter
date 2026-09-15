@@ -52,6 +52,13 @@ import type {
   PersonSourcedBio,
 } from '@flowstarter/agentic-codegen/src/flowstarter/person';
 import { MIN_STORY_CHARS } from '@flowstarter/agentic-codegen/src/flowstarter/person';
+import {
+  decodeHtmlEntities,
+  readableText,
+  stripTagBlocks,
+  stripTags,
+  tagBlocks,
+} from '@flowstarter/agentic-codegen/src/flowstarter/html-scan';
 import { fetchPublicResource, type FetchLike } from '@/lib/net/safe-fetch';
 import { githubHandleFrom, websiteUrlFrom } from './portrait-auto';
 
@@ -286,24 +293,24 @@ export function personParagraphs(html: string, fullName: string): string {
   const name = collapse(fullName).toLowerCase();
   if (!name) return '';
 
-  const body = html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ');
+  // Scanned, not matched. This reads a page at a URL a visitor typed, so a
+  // lazy `<script[\s\S]*?</script>` would be quadratic in the number of
+  // `<script` openings the page happens to contain, and would miss
+  // `</script >` entirely -- letting a script body be quoted back to a client
+  // as their own bio. `tagBlocks` closes a tag the way the spec does.
+  const body = stripTagBlocks(html, ['script', 'style']);
 
   // The page has to name them somewhere, in full or by first name, before any
   // of its prose is treated as being about them.
-  const flat = collapse(stripTags(body)).toLowerCase();
+  const flat = collapse(readableText(body)).toLowerCase();
   const firstName = name.split(' ')[0] ?? '';
   const named =
     flat.includes(name) || (firstName.length > 2 && flat.includes(firstName));
   if (!named) return '';
 
   const paragraphs: string[] = [];
-  const matcher = /<p\b[^>]*>([\s\S]*?)<\/p>/gi;
-  for (;;) {
-    const match = matcher.exec(body);
-    if (!match) break;
-    const text = collapse(stripTags(match[1] ?? ''));
+  for (const block of tagBlocks(body, 'p')) {
+    const text = collapse(decodeHtmlEntities(stripTags(block.inner)));
     if (text.length < MIN_ABOUT_PARAGRAPH_CHARS) continue;
     paragraphs.push(text);
     if (paragraphs.length >= MAX_ABOUT_PARAGRAPHS) break;
@@ -318,17 +325,6 @@ export function personParagraphs(html: string, fullName: string): string {
 // ---------------------------------------------------------------------------
 // Small pure helpers
 // ---------------------------------------------------------------------------
-
-function stripTags(html: string): string {
-  return html
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&quot;/gi, '"')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>');
-}
 
 function collapse(value: string): string {
   return value.replace(/\s+/g, ' ').trim();

@@ -47,6 +47,7 @@
  * somebody's actual sentences.
  */
 
+import { readableText } from './html-scan';
 import { hasPersonStory, personStoryText, type BriefPerson } from './person';
 import { siteKindFor } from './page-set';
 
@@ -167,13 +168,24 @@ function aboutRegion(path: string, content: string): string | null {
 const NOT_A_WORD_CHARACTER =
   /[^0-9a-zA-Z\u00C0-\u024F\u0370-\u03FF\u0400-\u04FF]+/g;
 
-/** Visible words, with markup, entities and punctuation taken out. */
+/**
+ * Visible words, with markup, entities and punctuation taken out.
+ *
+ * The markup half is `readableText` in `html-scan.ts` and not four
+ * `.replace()` calls here, for reasons that are about this gate specifically
+ * rather than about tidiness. It reads pages an agent wrote from a brief a
+ * stranger typed, so `<script[\s\S]*?</script>` was two defects at once: it
+ * does not close `</script >`, which means a page could be written that this
+ * gate and a browser read differently, and its lazy quantifier is quadratic
+ * in the number of `<script` openings on the page. The shared scanner is
+ * linear and closes a tag the way the spec does.
+ *
+ * Entities are decoded rather than deleted, which is a behaviour change and
+ * the right one: the old line replaced `&amp;` with a space, so a page saying
+ * "Sam &amp; Co" and a brief saying "Sam & Co" did not match each other.
+ */
 export function visibleText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&[a-z]+;|&#\d+;/gi, ' ')
+  return readableText(html)
     .toLowerCase()
     .replace(NOT_A_WORD_CHARACTER, ' ')
     .replace(/\s+/g, ' ')
@@ -234,8 +246,7 @@ export function storyPhraseMatches(
 export function pageCarriesStory(pageHtml: string, story: string): boolean {
   if (storyPhraseMatches(pageHtml, story, STORY_SHINGLE_WORDS) > 0) return true;
   return (
-    storyPhraseMatches(pageHtml, story, STORY_PHRASE_WORDS) >=
-    MIN_STORY_PHRASES
+    storyPhraseMatches(pageHtml, story, STORY_PHRASE_WORDS) >= MIN_STORY_PHRASES
   );
 }
 
@@ -300,7 +311,11 @@ export function judgePersonAbsent(
   // different hat: the material exists and the site does not carry it.
   if (aboutPages.length === 0) {
     const findings: PersonAbsentFinding[] = [];
-    if (story) findings.push({ code: 'story_not_on_about_page', path: '(no about page)' });
+    if (story)
+      findings.push({
+        code: 'story_not_on_about_page',
+        path: '(no about page)',
+      });
     if (portraitPath) {
       findings.push({ code: 'portrait_not_placed', path: '(no about page)' });
     }
@@ -313,7 +328,10 @@ export function judgePersonAbsent(
 
   const findings: PersonAbsentFinding[] = [];
 
-  if (story && !aboutPages.some((file) => pageCarriesStory(file.content, story))) {
+  if (
+    story &&
+    !aboutPages.some((file) => pageCarriesStory(file.content, story))
+  ) {
     for (const file of aboutPages) {
       findings.push({ code: 'story_not_on_about_page', path: file.path });
     }
@@ -373,7 +391,7 @@ export function describePersonAbsentFindings(
         `references it. Place it in the about section of ${portraitPages.join(
           ', ',
         )}. It is a photograph of the client: never caption it as anything ` +
-        'else, and never use the template\'s demo-persona art in its place.',
+        "else, and never use the template's demo-persona art in its place.",
     );
   }
 
