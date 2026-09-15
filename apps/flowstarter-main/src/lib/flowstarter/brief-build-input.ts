@@ -349,5 +349,8 @@ function usableAsClientAssets(assets: readonly UsableAsset[]) {
     createdAt: null,
     usable: true,
     url: null,
+    caption: asset.caption,
+    captionSource: asset.captionSource,
+    autoCaptionKind: asset.autoCaptionKind,
   }));
 }

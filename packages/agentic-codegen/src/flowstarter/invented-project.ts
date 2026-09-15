@@ -166,8 +166,13 @@ export function headingText(markup: string): string {
 /**
  * A heading or a project name reduced to the words in it. Punctuation and
  * case are how the same name is written twice, not how two names differ.
+ *
+ * Exported because the change-request placement rule reads project names out
+ * of a caption and out of built markup, and two modules that disagree about
+ * whether "Ivy Dental." and "ivy dental" are the same name would put a
+ * picture under one project and then fail the build for it being there.
  */
-function canonical(text: string): string {
+export function canonicalProjectName(text: string): string {
   return text
     .toLowerCase()
     .replace(/[‐-―−]/g, '-')
@@ -211,10 +216,10 @@ export function matchesBriefProject(
   heading: string,
   briefProjectNames: readonly string[],
 ): boolean {
-  const candidate = canonical(heading);
+  const candidate = canonicalProjectName(heading);
   if (!candidate) return true;
   return briefProjectNames.some((name) => {
-    const project = canonical(name);
+    const project = canonicalProjectName(name);
     if (!project) return false;
     return candidate.includes(project) || project.includes(candidate);
   });
@@ -246,7 +251,9 @@ export function findInventedProjects(
   briefProjectNames: readonly string[],
   options: InventedProjectOptions = {},
 ): InventedProjectFinding[] {
-  const names = briefProjectNames.filter((name) => canonical(name).length > 0);
+  const names = briefProjectNames.filter(
+    (name) => canonicalProjectName(name).length > 0,
+  );
   if (names.length === 0 && options.projectsKnown !== true) return [];
 
   const findings: InventedProjectFinding[] = [];
@@ -259,7 +266,7 @@ export function findInventedProjects(
     for (const markup of headingMarkups(region)) {
       const heading = headingText(markup);
       if (!heading) continue;
-      if (GENERIC_HEADINGS.has(canonical(heading))) continue;
+      if (GENERIC_HEADINGS.has(canonicalProjectName(heading))) continue;
       if (matchesBriefProject(heading, names)) continue;
       findings.push({ path: file.path, heading });
     }

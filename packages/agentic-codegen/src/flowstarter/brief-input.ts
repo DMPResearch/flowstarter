@@ -476,9 +476,19 @@ export function describeBriefInput(brief: BriefInput | null): string {
       if (project.line) parts.push(`: ${project.line}`);
       if (project.link) parts.push(` (link: ${project.link})`);
       if (project.screenshots.length > 0) {
+        // Each screenshot with what it shows, the same way the photographs
+        // below are written. The path alone shipped once, and it meant a
+        // caption the client typed -- or the one the vision pass produced
+        // from the file itself -- never reached the agent placing the
+        // picture, which is exactly the knowledge an agent needs to put a
+        // screenshot on the right case study rather than a plausible one.
         parts.push(
           ` [screenshots: ${project.screenshots
-            .map((shot) => shot.publicPath)
+            .map((shot) =>
+              shot.caption
+                ? `${shot.publicPath} (${shot.caption})`
+                : shot.publicPath,
+            )
             .join(', ')}]`,
         );
       }

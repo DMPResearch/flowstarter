@@ -83,7 +83,13 @@ export function RequestCard({
   request: ChangeRequestView;
   projectId: string;
   projectState: string;
-  /** The client's rights-confirmed pictures, for the picker on a paid card. */
+  /**
+   * The client's rights-confirmed pictures, for the picker on a paid card.
+   * `ChangeRequestAssetOption` is the response's own type and stays the one
+   * source of truth, including for what this screen may print: a label, a
+   * caption's source and its kind, and never anything path-shaped, which is
+   * the regression #119 was about.
+   */
   assets?: ChangeRequestAssetOption[];
 }) {
   const quote = useQuoteChangeRequest(projectId);
@@ -316,7 +322,32 @@ export function RequestCard({
                           className="h-10 w-10 shrink-0 rounded object-cover"
                         />
                       )}
-                      <span>{asset.label}</span>
+                      <span className="min-w-0">
+                        <span>{asset.label}</span>
+                        {/* Whose sentence the label is, and what the picture
+                            was taken to be: the two things that tell six
+                            files of the same size apart. */}
+                        {asset.captionSource || asset.kind ? (
+                          <span className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-[var(--fs-ink-faint)]">
+                            {asset.captionSource ? (
+                              <span
+                                data-testid={`change-request-asset-source-${asset.id}`}
+                              >
+                                {asset.captionSource === 'auto'
+                                  ? 'AI suggested'
+                                  : "Client's own words"}
+                              </span>
+                            ) : null}
+                            {asset.kind ? (
+                              <span
+                                data-testid={`change-request-asset-kind-${asset.id}`}
+                              >
+                                {asset.kind}
+                              </span>
+                            ) : null}
+                          </span>
+                        ) : null}
+                      </span>
                     </label>
                   ))}
                 </fieldset>

@@ -19,6 +19,7 @@ import { requireWorkspaceAccess } from '@/lib/api-auth';
 import { readFormDataCapped } from '@/lib/net/ingress';
 import {
   AssetUploadError,
+  MAX_CLIENT_CAPTION_CHARS,
   MAX_FILES_PER_REQUEST,
   MAX_REQUEST_BYTES,
   MAX_UPLOAD_BYTES,
@@ -141,10 +142,12 @@ export async function POST(
   const slot = stringField(form, 'slot');
   const kind = stringField(form, 'kind');
   const askKey = stringField(form, 'askKey');
+  const captions = captionsField(form, files.length);
 
   try {
     const stored: UploadedAsset[] = [];
-    for (const file of files) {
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index] as File;
       const bytes = Buffer.from(await file.arrayBuffer());
       // Second size check, on the bytes we actually received: `File.size` is
       // whatever the sender claimed, and this is what we are about to store.
@@ -156,6 +159,7 @@ export async function POST(
           slot,
           kind,
           originalName: sanitizedOriginalName(file),
+          caption: captions?.[index] ?? null,
         })
       );
     }
@@ -226,6 +230,46 @@ function stringField(form: FormData, key: string): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed && trimmed.length <= 64 ? trimmed : null;
+}
+
+/**
+ * Comfortably more than `MAX_FILES_PER_REQUEST` captions at
+ * `MAX_CLIENT_CAPTION_CHARS` each plus JSON's own punctuation could ever
+ * need, so a well-formed field is never rejected on size alone.
+ */
+const MAX_CAPTIONS_FIELD_CHARS =
+  MAX_FILES_PER_REQUEST * (MAX_CLIENT_CAPTION_CHARS + 8);
+
+/**
+ * The optional `captions` field: a JSON array of strings, one per file, in
+ * the same order as `files` was appended client-side. An entry of `''` means
+ * "the client did not type one for this file" — `storeUpload` reads that the
+ * same way it reads the field being absent altogether, and answers it with an
+ * auto-caption rather than leaving the picture blank.
+ *
+ * Malformed input (not JSON, not an array, wrong length, a non-string entry)
+ * degrades to `null` rather than a 400: a caption is something this upload
+ * gains, never something its absence should fail the upload over — the same
+ * fail-open-to-"nothing typed" posture `stringField` already takes with
+ * `slot`/`kind`/`askKey`.
+ */
+function captionsField(
+  form: FormData,
+  fileCount: number
+): (string | null)[] | null {
+  const raw = form.get('captions');
+  if (typeof raw !== 'string' || raw.length > MAX_CAPTIONS_FIELD_CHARS) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed) || parsed.length !== fileCount) return null;
+  if (!parsed.every((entry) => typeof entry === 'string')) return null;
+  return parsed as string[];
 }
 
 /**

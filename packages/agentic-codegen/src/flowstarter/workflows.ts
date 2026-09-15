@@ -120,16 +120,20 @@ import {
 import { readSiteWorkspaceFiles } from './site-manifest';
 import {
   builtPageNames,
+  changeRequestAssetPlacement,
   changeRequestFeedback,
   changeRequestSeedPages,
   changeRequestSummary,
+  describeChangeRequestPlacementIssues,
   describeUnappliedChangeRequest,
   describeUncheckableChangeRequest,
   findChangeRequestPageIssue,
+  findChangeRequestPlacementIssues,
   findChangeRequestRepairDamage,
   findUnappliedChangeRequest,
   planChangeRequestPageRepair,
   unappliedChangeRequestFeedback,
+  CHANGE_REQUEST_ASSET_MISPLACED,
   CHANGE_REQUEST_NOT_APPLIED,
   CHANGE_REQUEST_REPAIR_DAMAGED_SITE,
   type ChangeRequestIntent,
@@ -3549,7 +3553,37 @@ export class FullSiteBuildWorker {
       });
       await this.store.markChangeRequestBuildStarted?.(jobId, worktree);
 
-      const brief = changeRequestFeedback(intent);
+      // The client's real work, which is the whole list of project-specific
+      // slots a picture could go in. A workspace whose brief an operator
+      // waived has none, and then no picture is tied to a project -- the
+      // honest reading, and the one that sends every picture to a general
+      // gallery rather than to a guess.
+      const projects = job.briefInput?.projects ?? [];
+      const untied = intent.assets.filter(
+        (asset) =>
+          changeRequestAssetPlacement(asset, projects).project === null,
+      );
+      if (projects.length > 0 && untied.length > 0) {
+        // On the board, before the agent starts: an operator who later asks
+        // why a picture is in the gallery instead of on a case study can read
+        // the answer in the timeline rather than in a prompt nobody kept.
+        await say(
+          'log',
+          `Pictures with no project of their own, ${untied.length} of ` +
+            `${intent.assets.length}: ` +
+            `${untied.map((asset) => asset.publicPath).join(', ')}. ` +
+            'No caption names one and nobody attached them to one, so none ' +
+            'of them may go in a project’s section: each goes where the ' +
+            'request asks, in a general gallery, or nowhere, and the agents ' +
+            'are asked to say which they chose.',
+          {
+            untiedAssets: untied.map((asset) => asset.publicPath),
+            projects: projects.map((project) => project.name),
+          },
+        );
+      }
+
+      const brief = changeRequestFeedback(intent, projects);
       const withRequest = (feedback?: string): string =>
         feedback ? `${brief}\n\n${feedback}` : brief;
       const onTrace = log
@@ -3741,6 +3775,39 @@ export class FullSiteBuildWorker {
         throw new FullSiteBuildFailure(
           CHANGE_REQUEST_NOT_APPLIED,
           describeUnappliedChangeRequest(intent, missing),
+        );
+      }
+
+      // The other half of the same question. "Is the paid change on the site"
+      // and "is it on the right part of the site" are one gate to the client,
+      // so they share a phase; they are two repair cycles inside it because a
+      // picture that is not on the site yet cannot be under the wrong project
+      // yet either, and a brief that asked for both at once would be telling
+      // an agent to fix a fault it has not made.
+      let misplaced = findChangeRequestPlacementIssues(
+        await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
+        intent,
+        projects,
+      );
+      if (misplaced.length > 0) {
+        await say('log', describeChangeRequestPlacementIssues(misplaced), {
+          misplacedAssets: misplaced.map((issue) => issue.assetPath),
+        });
+        await pass(
+          'Moving a picture to the work it belongs with',
+          describeChangeRequestPlacementIssues(misplaced),
+        );
+        await check();
+        misplaced = findChangeRequestPlacementIssues(
+          await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
+          intent,
+          projects,
+        );
+      }
+      if (misplaced.length > 0) {
+        throw new FullSiteBuildFailure(
+          CHANGE_REQUEST_ASSET_MISPLACED,
+          describeChangeRequestPlacementIssues(misplaced),
         );
       }
 

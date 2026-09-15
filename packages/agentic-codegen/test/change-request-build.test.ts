@@ -1,24 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import {
   builtPageNames,
+  changeRequestAssetPlacement,
   changeRequestFeedback,
   changeRequestSeedPages,
   changeRequestSummary,
   describeChangeRequestPageChange,
+  describeChangeRequestPlacementIssues,
   describeUnappliedChangeRequest,
   describeUncheckableChangeRequest,
   diffChangeRequestPages,
   findChangeRequestPageIssue,
+  findChangeRequestPlacementIssues,
   findChangeRequestRepairDamage,
   findUnappliedChangeRequest,
   parseChangeRequestIntent,
   planChangeRequestPageRepair,
+  projectAttachedTo,
+  projectNamedInCaption,
   quotedRequestPhrases,
   seedPageNames,
   unappliedChangeRequestFeedback,
   CHANGE_REQUEST_PAGE_BUDGET,
+  PLACEMENT_PROXIMITY_WINDOW_CHARS,
   type ChangeRequestAsset,
   type ChangeRequestIntent,
+  type PlacementProject,
 } from '../src/flowstarter/change-request-build';
 
 const CHANGE_ID = '72fe7f79-0e83-4cf6-9b4a-2502842b9a54';
@@ -196,6 +203,149 @@ describe('quotedRequestPhrases', () => {
   });
 });
 
+const SHOT_ID = 'c2f0f3a1-9b2e-4a7c-8d1f-6b5a4c3d2e10';
+
+/** The client's two pieces of past work, as their brief listed them. */
+function projects(
+  overrides: readonly PlacementProject[] = [],
+): PlacementProject[] {
+  return overrides.length > 0
+    ? [...overrides]
+    : [
+        { name: 'Ivy Dental', screenshotAssetIds: [] },
+        { name: 'Barton Roofing', screenshotAssetIds: [] },
+      ];
+}
+
+describe('projectNamedInCaption', () => {
+  it('reads the project a caption names', () => {
+    expect(
+      projectNamedInCaption('The reception desk at Ivy Dental', [
+        'Ivy Dental',
+        'Barton Roofing',
+      ]),
+    ).toBe('Ivy Dental');
+  });
+
+  it('does not care how either side is capitalised or punctuated', () => {
+    expect(
+      projectNamedInCaption('the new van for BARTON ROOFING.', [
+        'Ivy Dental',
+        'barton roofing',
+      ]),
+    ).toBe('barton roofing');
+  });
+
+  it('refuses a name that is only letters inside another word', () => {
+    // A project called Ivy matched every caption mentioning a delivery once,
+    // and matching on characters rather than words is how a client's van ends
+    // up on a dental case study.
+    expect(projectNamedInCaption('a delivery van in the yard', ['Ivy'])).toBe(
+      null,
+    );
+    expect(projectNamedInCaption('ivory tiles in the bathroom', ['Ivy'])).toBe(
+      null,
+    );
+    expect(projectNamedInCaption('the Ivy waiting room', ['Ivy'])).toBe('Ivy');
+  });
+
+  it('names no project when the caption could mean two of them', () => {
+    // The #98 lesson as a placement rule: a slot chosen on a guess is worse
+    // than no slot, and this picture goes to a general gallery instead.
+    expect(
+      projectNamedInCaption(
+        'the booking flow we built for Ivy Dental and later reused on ' +
+          'Barton Roofing',
+        ['Ivy Dental', 'Barton Roofing'],
+      ),
+    ).toBe(null);
+  });
+
+  it('reads the longer of two names that are the same words', () => {
+    // "Ivy" and "Ivy Dental" both appear, because one is inside the other.
+    // That is one reading of the caption written short and written long, not
+    // two candidate projects, and the caption says the long one.
+    expect(
+      projectNamedInCaption('the Ivy Dental waiting room', [
+        'Ivy',
+        'Ivy Dental',
+      ]),
+    ).toBe('Ivy Dental');
+  });
+
+  it('names nothing for an empty caption or an empty project list', () => {
+    expect(projectNamedInCaption('', ['Ivy Dental'])).toBe(null);
+    expect(projectNamedInCaption('The reception desk', [])).toBe(null);
+    expect(projectNamedInCaption('   ', ['Ivy Dental'])).toBe(null);
+  });
+});
+
+describe('projectAttachedTo', () => {
+  it('finds the project the client hung this file on', () => {
+    expect(
+      projectAttachedTo(SHOT_ID, [
+        { name: 'Ivy Dental', screenshotAssetIds: [] },
+        { name: 'Barton Roofing', screenshotAssetIds: [SHOT_ID] },
+      ]),
+    ).toBe('Barton Roofing');
+  });
+
+  it('finds nothing when no project carries the id', () => {
+    expect(projectAttachedTo(SHOT_ID, projects())).toBe(null);
+    expect(projectAttachedTo('', projects())).toBe(null);
+    expect(projectAttachedTo(SHOT_ID, [])).toBe(null);
+  });
+});
+
+describe('changeRequestAssetPlacement', () => {
+  it('lets an attachment by the client beat what the caption says', () => {
+    // A caption may mention another project in passing; ticking this file
+    // onto that project is the client saying where it belongs.
+    expect(
+      changeRequestAssetPlacement(
+        asset({
+          assetId: SHOT_ID,
+          caption: 'the booking flow, the one we first built for Ivy Dental',
+        }),
+        [
+          { name: 'Ivy Dental', screenshotAssetIds: [] },
+          { name: 'Barton Roofing', screenshotAssetIds: [SHOT_ID] },
+        ],
+      ),
+    ).toEqual({ project: 'Barton Roofing' });
+  });
+
+  it('falls back to the caption when nobody attached the file', () => {
+    expect(
+      changeRequestAssetPlacement(
+        asset({ caption: 'The reception desk at Ivy Dental' }),
+        projects(),
+      ),
+    ).toEqual({ project: 'Ivy Dental' });
+  });
+
+  it('gives a picture no project when there is nothing to go on', () => {
+    // Workspace c009105e: six uploads, no captions, nothing attached. The
+    // honest answer is "no project-specific slot", and it is the answer that
+    // keeps a dental page from carrying somebody else's screenshot.
+    expect(
+      changeRequestAssetPlacement(asset({ caption: '' }), projects()),
+    ).toEqual({ project: null });
+    expect(
+      changeRequestAssetPlacement(
+        asset({ caption: 'Untitled picture' }),
+        projects(),
+      ),
+    ).toEqual({ project: null });
+    expect(
+      changeRequestAssetPlacement(
+        asset({ caption: 'The reception desk at Ivy Dental' }),
+        [],
+      ),
+    ).toEqual({ project: null });
+  });
+});
+
 describe('changeRequestFeedback', () => {
   it('states the request verbatim and names every asset path', () => {
     const prompt = changeRequestFeedback(
@@ -261,6 +411,40 @@ describe('changeRequestFeedback', () => {
     expect(prompt).toContain('leave the rest out');
     // The sentence that put unrelated photographs on a paid page.
     expect(prompt).not.toContain('Use every one of these pictures');
+  });
+
+  it('gives a picture with a project the one slot it may sit in', () => {
+    const prompt = changeRequestFeedback(
+      intent({ assets: [asset({ caption: 'The Ivy Dental reception desk' })] }),
+      projects(),
+    );
+    expect(prompt).toContain(
+      'belongs under the "Ivy Dental" case study only, nowhere else',
+    );
+  });
+
+  it('sends a picture with no project to a gallery and says so out loud', () => {
+    const prompt = changeRequestFeedback(
+      intent({ assets: [asset({ caption: '' })] }),
+      projects(),
+    );
+    expect(prompt).toContain(
+      'not tied to any project, so it may not go in one',
+    );
+    expect(prompt).toContain('or in a general gallery, or leave it out');
+    expect(prompt).toContain('say so in your summary of the work');
+  });
+
+  it('states the placement rule as a rule rather than a preference', () => {
+    const prompt = changeRequestFeedback(intent(), projects());
+    expect(prompt).toContain(
+      '6. Put a picture in a project’s own section only where its line ' +
+        'above says it belongs there',
+    );
+    expect(prompt).toContain(
+      'Never reword a caption, a heading or alt text to fit where you put a ' +
+        'picture',
+    );
   });
 });
 
@@ -409,6 +593,180 @@ describe('the repair brief and the failure detail', () => {
     expect(detail).toContain('pictures not on the site');
     expect(detail).toContain('wording not on the site');
     expect(detail).toContain('left at paid');
+  });
+});
+
+describe('findChangeRequestPlacementIssues', () => {
+  const shot = '/flowstarter-media/cr-b104b1e0.jpg';
+
+  /** One case-study card as the templates render one: picture, then name. */
+  const card = (project: string, image: string) =>
+    `<article class="ds-case-card"><div class="ds-case-card__image">` +
+    `<img src="${image}" alt="a screenshot"></div>` +
+    `<div class="ds-case-card__info"><h3 class="ds-case-card__title">` +
+    `${project}</h3></div></article>`;
+
+  const placed = intent({
+    assets: [asset({ caption: 'The Ivy Dental booking screen' })],
+  });
+
+  it("reports a picture sitting under somebody else's work", () => {
+    // Workspace c009105e, exactly: a screenshot of one client's work on
+    // another client's case study, under a sentence nobody could know was
+    // true.
+    const issues = findChangeRequestPlacementIssues(
+      [
+        {
+          path: 'dist/case-studies/barton-roofing/index.html',
+          content: card('Barton Roofing', shot),
+        },
+      ],
+      placed,
+      projects(),
+    );
+    expect(issues).toEqual([
+      {
+        assetPath: shot,
+        namedProject: 'Ivy Dental',
+        foundUnderProject: 'Barton Roofing',
+      },
+    ]);
+  });
+
+  it('passes a picture on the case study it belongs to', () => {
+    expect(
+      findChangeRequestPlacementIssues(
+        [
+          {
+            path: 'dist/case-studies/ivy-dental/index.html',
+            content: card('Ivy Dental', shot),
+          },
+        ],
+        placed,
+        projects(),
+      ),
+    ).toEqual([]);
+  });
+
+  it('never checks a picture that belongs to no project', () => {
+    // Nothing was claimed about this file, so there is no wrong place for it
+    // to be and no reading of the page that could make one.
+    expect(
+      findChangeRequestPlacementIssues(
+        [
+          {
+            path: 'dist/case-studies/barton-roofing/index.html',
+            content: card('Barton Roofing', shot),
+          },
+        ],
+        intent({ assets: [asset({ caption: '' })] }),
+        projects(),
+      ),
+    ).toEqual([]);
+  });
+
+  it('says nothing about a page the picture is not on', () => {
+    expect(
+      findChangeRequestPlacementIssues(
+        [
+          {
+            path: 'dist/case-studies/barton-roofing/index.html',
+            content: card('Barton Roofing', '/flowstarter-media/other.jpg'),
+          },
+        ],
+        placed,
+        projects(),
+      ),
+    ).toEqual([]);
+  });
+
+  it('passes a picture in a gallery that names no project at all', () => {
+    // A general gallery, a card whose name is only in an image, a layout this
+    // check does not understand: identical from here, and failing a paid
+    // build on absent evidence is the #98 mistake.
+    expect(
+      findChangeRequestPlacementIssues(
+        [
+          {
+            path: 'dist/gallery/index.html',
+            content: `<figure><img src="${shot}" alt="a screenshot"></figure>`,
+          },
+        ],
+        placed,
+        projects(),
+      ),
+    ).toEqual([]);
+  });
+
+  it('does not read a project name from the far side of the page', () => {
+    const far = 'x'.repeat(PLACEMENT_PROXIMITY_WINDOW_CHARS + 200);
+    expect(
+      findChangeRequestPlacementIssues(
+        [
+          {
+            path: 'dist/index.html',
+            content:
+              `<figure><img src="${shot}" alt="a screenshot"></figure>` +
+              `<div>${far}</div>` +
+              card('Barton Roofing', '/flowstarter-media/other.jpg'),
+          },
+        ],
+        placed,
+        projects(),
+      ),
+    ).toEqual([]);
+  });
+
+  it('has no opinion when the client has no projects', () => {
+    expect(
+      findChangeRequestPlacementIssues(
+        [{ path: 'dist/index.html', content: card('Barton Roofing', shot) }],
+        placed,
+        [],
+      ),
+    ).toEqual([]);
+  });
+
+  it('reports the same wrong placement once, on however many pages', () => {
+    // A card repeated on the work index and on its own page is one fault to
+    // fix, and a repair brief that listed it twice would read as two.
+    const issues = findChangeRequestPlacementIssues(
+      [
+        {
+          path: 'dist/work/index.html',
+          content: card('Barton Roofing', shot),
+        },
+        {
+          path: 'dist/case-studies/barton-roofing/index.html',
+          content: card('Barton Roofing', shot),
+        },
+      ],
+      placed,
+      projects(),
+    );
+    expect(issues).toHaveLength(1);
+  });
+});
+
+describe('describeChangeRequestPlacementIssues', () => {
+  it('names the file, the work it belongs with and the work it is on', () => {
+    const message = describeChangeRequestPlacementIssues([
+      {
+        assetPath: '/flowstarter-media/cr-b104b1e0.jpg',
+        namedProject: 'Ivy Dental',
+        foundUnderProject: 'Barton Roofing',
+      },
+    ]);
+    expect(message).toContain('/flowstarter-media/cr-b104b1e0.jpg');
+    expect(message).toContain('belongs with "Ivy Dental"');
+    expect(message).toContain('under "Barton Roofing"');
+    expect(message).toContain("1 of the client's picture");
+    // The repair an agent would otherwise reach for first, ruled out: moving
+    // the words is how the site came to say something untrue in the first
+    // place.
+    expect(message).toContain(
+      'Do not rewrite the heading, the caption or the alt text',
+    );
   });
 });
 

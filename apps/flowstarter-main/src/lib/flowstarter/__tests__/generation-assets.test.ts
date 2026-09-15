@@ -90,6 +90,8 @@ describe('loadUsableAssets', () => {
         height: null,
         usableFor: [],
         caption: null,
+        captionSource: null,
+        autoCaptionKind: null,
         // The one optional column that does not default to null. A row with no
         // `source` is a file the client uploaded, because that is the only way
         // an asset could arrive before there was anything else to record.

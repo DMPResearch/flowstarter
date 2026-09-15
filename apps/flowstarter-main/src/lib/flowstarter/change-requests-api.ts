@@ -108,6 +108,10 @@ export interface ChangeRequestAssetOption {
   id: string;
   label: string;
   caption: string | null;
+  /** Who is answerable for `caption`: the client, or (until confirmed) a guess. */
+  captionSource: 'client' | 'auto' | null;
+  /** The auto-caption's structured kind, e.g. `screenshot` — never a path or a hash. */
+  kind: 'screenshot' | 'photo' | 'logo' | 'document' | null;
   thumbnailUrl: string | null;
 }
 
@@ -133,6 +137,8 @@ export async function listChangeRequestsHandler(
           createdAt: asset.createdAt,
         }),
         caption: asset.caption?.trim() || null,
+        captionSource: asset.captionSource,
+        kind: asset.autoCaptionKind,
         thumbnailUrl: await signedAssetUrl(op.workspaceId, asset.storagePath),
       }))
     );

@@ -26,6 +26,7 @@
  * line on the board saying so, exactly as an unresolvable approved edit does.
  */
 import { normalizePhrase, isUsablePhrase } from './preview-manifest';
+import { canonicalProjectName } from './invented-project';
 
 /** Longest request text carried out of an untrusted jsonb payload. */
 export const CHANGE_REQUEST_TEXT_MAX = 2_000;
@@ -232,6 +233,127 @@ export function quotedRequestPhrases(request: string): string[] {
 }
 
 /**
+ * A project as the placement rule needs to know it: the name a case study
+ * goes by, and the pictures the client hung on it in their brief.
+ *
+ * Structural rather than `BriefInputProject`, so this module never has to
+ * import the brief carrier to answer a question about one project's name, and
+ * so a test can state a project in two fields.
+ */
+export interface PlacementProject {
+  name: string;
+  screenshotAssetIds: readonly string[];
+}
+
+/** True when `text`, already canonical, carries `name` as words of its own. */
+function namesProject(text: string, name: string): boolean {
+  const needle = canonicalProjectName(name);
+  if (needle.length === 0) return false;
+  return ` ${text} `.includes(` ${needle} `);
+}
+
+/**
+ * The project a caption names, or null when it names none of them.
+ *
+ * Words, not characters. A project called "Ivy" is named by "the Ivy waiting
+ * room" and is not named by "delivery van" or "ivory tiles", and a rule that
+ * could not tell those apart would put a client's van on a dental case study
+ * with a straight face.
+ *
+ * Two or more names in one caption returns null, because a caption that could
+ * mean either project is not evidence for either one: the picture goes to a
+ * general gallery and an agent is told so, which is the PR #98 lesson written
+ * as a placement rule -- a decision made on a guess is worse than no decision.
+ * The one exception is a name that is wholly inside another matched name
+ * ("Ivy" and "Ivy Dental", where the caption reads "Ivy Dental"): those are
+ * not two readings of the caption, they are the same words read short and
+ * read long, and the long one is what the caption actually says.
+ */
+export function projectNamedInCaption(
+  caption: string,
+  projectNames: readonly string[],
+): string | null {
+  const words = canonicalProjectName(caption);
+  if (words.length === 0) return null;
+
+  const named: string[] = [];
+  for (const name of projectNames) {
+    if (!namesProject(words, name)) continue;
+    const canonical = canonicalProjectName(name);
+    if (named.some((kept) => canonicalProjectName(kept) === canonical)) {
+      continue;
+    }
+    named.push(name);
+  }
+
+  const mostSpecific = named.filter(
+    (name) =>
+      !named.some(
+        (other) =>
+          other !== name && namesProject(canonicalProjectName(other), name),
+      ),
+  );
+  return mostSpecific.length === 1 ? (mostSpecific[0] as string) : null;
+}
+
+/**
+ * The project the client themselves hung this file on, or null.
+ *
+ * The brief page asks for a project's screenshots project by project, so an
+ * id in `screenshotAssetIds` is the client saying "this picture is that piece
+ * of work" in the only way a form can. It is the strongest thing anybody
+ * knows about a file, stronger than any sentence about it.
+ */
+export function projectAttachedTo(
+  assetId: string,
+  projects: readonly PlacementProject[],
+): string | null {
+  if (assetId.length === 0) return null;
+  const owner = projects.find((project) =>
+    project.screenshotAssetIds.includes(assetId),
+  );
+  return owner ? owner.name : null;
+}
+
+/** Where one of the client's pictures is allowed to go. */
+export interface ChangeRequestAssetPlacement {
+  /**
+   * The one project whose section may carry this picture, or null for "no
+   * project-specific slot": a general gallery, or left out entirely.
+   */
+  project: string | null;
+}
+
+/**
+ * The placement decision for one picture, made here rather than by an agent.
+ *
+ * The attachment wins over the caption when the two disagree. A client who
+ * ticked this file onto that project has told us where it belongs; a caption
+ * may mention another project in passing ("the booking flow we later reused
+ * on Ivy Dental") and reading that as a slot would move a picture off the
+ * work it was attached to.
+ *
+ * Workspace c009105e is what this exists to make impossible: six uncaptioned
+ * uploads, an agent with nothing to place them by, and two screenshots that
+ * landed on a dental case study under a sentence nobody could have known was
+ * true. With no caption and no attachment there is no project, and a picture
+ * with no project goes in a general gallery or does not go on the site.
+ */
+export function changeRequestAssetPlacement(
+  asset: ChangeRequestAsset,
+  projects: readonly PlacementProject[],
+): ChangeRequestAssetPlacement {
+  const attached = projectAttachedTo(asset.assetId, projects);
+  if (attached) return { project: attached };
+  return {
+    project: projectNamedInCaption(
+      asset.caption,
+      projects.map((project) => project.name),
+    ),
+  };
+}
+
+/**
  * The prompt paragraph the agent is given.
  *
  * The request is quoted verbatim and labelled as the client's own words: it is
@@ -241,8 +363,19 @@ export function quotedRequestPhrases(request: string): string[] {
  * really there rather than inventing one. The prohibitions are stated as
  * rules, not preferences, because the failure this replaces was a delivered
  * site carrying invented projects and template art.
+ *
+ * `projects` is the client's real work, from their brief. Each picture's line
+ * carries the one project it may sit under, or says plainly that it has no
+ * project at all, because the agent is the wrong thing to be deciding that:
+ * it decided it once, from six identical uncaptioned thumbnails, and put two
+ * screenshots on a dental case study. A workspace with no brief has no
+ * projects, and then every picture reads as untied, which is the honest
+ * answer rather than an invitation to guess.
  */
-export function changeRequestFeedback(intent: ChangeRequestIntent): string {
+export function changeRequestFeedback(
+  intent: ChangeRequestIntent,
+  projects: readonly PlacementProject[] = [],
+): string {
   const lines: string[] = [
     'PAID CHANGE REQUEST, trusted. The client asked for this after their ' +
       'site was delivered, and they have paid for it. These are their own ' +
@@ -281,7 +414,13 @@ export function changeRequestFeedback(intent: ChangeRequestIntent): string {
         ? ` shows: ${asset.caption}`
         : ' has no caption, so describe it only in general terms and never ' +
           'claim what it depicts';
-      lines.push(`  - ${asset.publicPath}${size} --${caption}`);
+      const placement = changeRequestAssetPlacement(asset, projects).project;
+      const belongs = placement
+        ? ` — belongs under the "${placement}" case study only, nowhere else`
+        : ' — not tied to any project, so it may not go in one: put it where ' +
+          'the request asks, or in a general gallery, or leave it out, and ' +
+          'say so in your summary of the work';
+      lines.push(`  - ${asset.publicPath}${size} --${caption}${belongs}`);
     }
     lines.push(
       offered
@@ -327,6 +466,14 @@ export function changeRequestFeedback(intent: ChangeRequestIntent): string {
       'for one in so many words.',
     '5. Keep the template component system, the routes and the styling ' +
       'tokens; this is an edit to a live site, not a rebuild of it.',
+    '6. Put a picture in a project’s own section only where its line ' +
+      'above says it belongs there. A picture whose line names no project ' +
+      'goes where the request asks, or in a general gallery, or nowhere at ' +
+      'all, and your summary says which you chose. Never reword a caption, ' +
+      'a heading or alt text to fit where you put a picture: the caption is ' +
+      'the client telling us what the file shows, and a picture filed under ' +
+      'work it has nothing to do with is their site telling a visitor ' +
+      'something untrue.',
   );
   return lines.join('\n');
 }
@@ -481,6 +628,129 @@ export function describeUnappliedChangeRequest(
     `The built site does not carry the paid change ${intent.changeRequestId} ` +
     `(${parts.join('; ')}). The request has been left at paid, so nobody is ` +
     'told work shipped that did not.'
+  );
+}
+
+/** The error a build fails with when a picture landed on the wrong project. */
+export const CHANGE_REQUEST_ASSET_MISPLACED = 'CHANGE_REQUEST_ASSET_MISPLACED';
+
+/**
+ * How far either side of a picture the built markup is read for a project
+ * name.
+ *
+ * A rendered case-study card is roughly 900 characters of markup, and its own
+ * heading sits within about 500 of its image, so a thousand characters either
+ * side reaches the name of the card a picture is in from anywhere inside it.
+ * The next card's heading is a further card-width away and falls outside,
+ * which is the half that matters: this window decides whether a build fails,
+ * and a window wide enough to see the neighbours would fail a picture in a
+ * gallery beside a work section for sitting near a name it never claimed.
+ */
+export const PLACEMENT_PROXIMITY_WINDOW_CHARS = 1_000;
+
+/** One of the client's pictures, on the site, under somebody else's work. */
+export interface ChangeRequestPlacementIssue {
+  /** The picture, by the path the markup references it with. */
+  assetPath: string;
+  /** The project its caption names, or the client attached it to. */
+  namedProject: string;
+  /** The other project whose name the built page carries beside it. */
+  foundUnderProject: string;
+}
+
+/**
+ * Pictures the build filed under a project they do not belong to.
+ *
+ * This is the c009105e failure written as a check: two of the client's
+ * screenshots referenced inside a case study for work they are nothing to do
+ * with. The evidence is positive and local -- the project this picture does
+ * belong to is not named anywhere near it, and another of the client's
+ * projects is -- and nothing else is treated as evidence at all:
+ *
+ *   - a picture with no project of its own is never looked at, because there
+ *     is no wrong place for it to be;
+ *   - a picture whose path appears in no built file is not this gate's
+ *     business; `findUnappliedChangeRequest` already speaks for that;
+ *   - a window naming no project at all passes. A general gallery, a page
+ *     whose cards carry their names only in an image the markup cannot read,
+ *     a layout this check does not understand: all three look identical from
+ *     here, and failing a paid build on the absence of evidence rather than
+ *     on evidence to the contrary is the mistake PR #98 paid for.
+ */
+export function findChangeRequestPlacementIssues(
+  files: ReadonlyArray<{ path: string; content: string }>,
+  intent: ChangeRequestIntent,
+  projects: readonly PlacementProject[],
+): ChangeRequestPlacementIssue[] {
+  const issues: ChangeRequestPlacementIssue[] = [];
+  if (projects.length === 0) return issues;
+  const seen = new Set<string>();
+
+  for (const asset of intent.assets) {
+    const belongsTo = changeRequestAssetPlacement(asset, projects).project;
+    if (!belongsTo) continue;
+    for (const file of files) {
+      let at = file.content.indexOf(asset.publicPath);
+      while (at >= 0) {
+        const window = canonicalProjectName(
+          file.content.slice(
+            Math.max(0, at - PLACEMENT_PROXIMITY_WINDOW_CHARS),
+            at + asset.publicPath.length + PLACEMENT_PROXIMITY_WINDOW_CHARS,
+          ),
+        );
+        if (!namesProject(window, belongsTo)) {
+          const other = projects.find(
+            (project) =>
+              canonicalProjectName(project.name) !==
+                canonicalProjectName(belongsTo) &&
+              namesProject(window, project.name),
+          );
+          const key = `${asset.publicPath}|${other?.name ?? ''}`;
+          if (other && !seen.has(key)) {
+            seen.add(key);
+            issues.push({
+              assetPath: asset.publicPath,
+              namedProject: belongsTo,
+              foundUnderProject: other.name,
+            });
+          }
+        }
+        at = file.content.indexOf(asset.publicPath, at + 1);
+      }
+    }
+  }
+  return issues;
+}
+
+/**
+ * The misplaced pictures in plain words, for the board and for the pass that
+ * has to move them.
+ *
+ * One sentence for both readers, the way the invented-project gate says its
+ * finding once: what an operator reads on the build-status board and what the
+ * agent is told to fix can never drift apart if they are the same string. It
+ * names the file and both projects, because "a picture is in the wrong place"
+ * is not something either of them can act on.
+ */
+export function describeChangeRequestPlacementIssues(
+  issues: readonly ChangeRequestPlacementIssue[],
+): string {
+  const detail = issues
+    .map(
+      (issue) =>
+        `${issue.assetPath} belongs with "${issue.namedProject}" and is on ` +
+        `the page under "${issue.foundUnderProject}"`,
+    )
+    .join('; ');
+  return (
+    `The built site puts ${issues.length} of the client's ` +
+    `${plural(issues.length, 'picture')} under the wrong work: ${detail}. ` +
+    'Move each one to the project it belongs with, or take it out of that ' +
+    'section and put it in a general gallery. Do not rewrite the heading, ' +
+    'the caption or the alt text to fit where the picture landed: the ' +
+    'caption is the client telling us what the file shows, and a picture ' +
+    'filed under work it has nothing to do with is their site telling a ' +
+    'visitor something untrue.'
   );
 }
 

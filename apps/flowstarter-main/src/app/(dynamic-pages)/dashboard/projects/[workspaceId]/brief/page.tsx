@@ -158,6 +158,13 @@ export default async function ClientBriefPage({
           source: asset.source,
           sourceUrl: asset.sourceUrl,
           rightsConfirmedAt: asset.rightsConfirmedAt,
+          // What the picture shows, and whose sentence that is. Dropping these
+          // here would leave the form showing four identical thumbnails with
+          // nothing to tell them apart, which is the failure this exists to
+          // end.
+          caption: asset.caption,
+          captionSource: asset.captionSource,
+          autoCaptionKind: asset.autoCaptionKind,
         }))}
         // Read here, on the server, because `portraitSizeFloors` reads
         // `process.env` and a client component would only ever see the

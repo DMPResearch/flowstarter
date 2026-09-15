@@ -67,6 +67,8 @@ const DEFAULT_USABLE_ASSETS: UsableAsset[] = [
     height: 750,
     usableFor: ['section'],
     caption: 'The workshops room',
+    captionSource: 'client',
+    autoCaptionKind: null,
     originalName: 'workshops-room.jpg',
     createdAt: '2026-09-01T00:00:00.000Z',
     kind: null,
@@ -219,6 +221,8 @@ describe('listing what the client asked for', () => {
         id: 'b104b1e0-6d4c-4a3e-9230-13cc17b426a0',
         label: 'The workshops room',
         caption: 'The workshops room',
+        captionSource: 'client',
+        kind: null,
         // The fake Supabase client this suite runs against has no `.storage`
         // surface at all, so `signedAssetUrl` degrades to null here exactly
         // as it must on a real signing failure -- that degrade path is what
@@ -239,6 +243,8 @@ describe('listing what the client asked for', () => {
         height: 750,
         usableFor: ['section'],
         caption: null,
+        captionSource: null,
+        autoCaptionKind: null,
         originalName: 'front-of-shop.jpg',
         createdAt: '2026-09-12T08:00:00.000Z',
         kind: null,
@@ -256,6 +262,8 @@ describe('listing what the client asked for', () => {
         id: 'b104b1e0-6d4c-4a3e-9230-13cc17b426a0',
         label: 'front-of-shop.jpg — 1200x750 — 12 Sep 2026',
         caption: null,
+        captionSource: null,
+        kind: null,
         thumbnailUrl: null,
       },
     ]);

@@ -8,12 +8,18 @@
  * only those, and nothing at all when nobody ticked anything, because an
  * empty `assetIds` would read on the server as "the operator chose none"
  * rather than "the operator did not choose".
+ *
+ * The third is what each line is allowed to say. Six uncaptioned pictures once
+ * arrived as six identical lines an operator could not tell apart, so a line
+ * now carries whose words the caption is and what the picture was taken to be
+ * -- and, as it has since #119, never a storage path and never a hash.
  */
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ChangeRequestView } from '@/lib/flowstarter/change-requests';
+import type { ChangeRequestAssetOption } from '@/lib/flowstarter/change-requests-api';
 import { RequestCard } from '../ChangesTab';
 
 vi.mock('sonner', () => ({
@@ -57,17 +63,21 @@ function paidRequest(): ChangeRequestView {
 }
 
 function renderCard(
-  assets = [
+  assets: ChangeRequestAssetOption[] = [
     {
       id: ASSET_A,
       label: 'The Flowstarter client dashboard',
       caption: null,
+      captionSource: null,
+      kind: null,
       thumbnailUrl: 'https://storage.example/signed/a.jpg',
     },
     {
       id: ASSET_B,
       label: 'operator-pipeline.png',
       caption: null,
+      captionSource: null,
+      kind: null,
       thumbnailUrl: null,
     },
   ]
@@ -186,5 +196,76 @@ describe('the change request card', () => {
     expect(
       screen.getByTestId('change-request-build-start')
     ).toBeInTheDocument();
+  });
+});
+
+describe('the picker on a paid card', () => {
+  it('says whose words the caption is, and what the picture was taken to be', () => {
+    renderCard([
+      {
+        id: ASSET_A,
+        label: 'The booking page on a phone',
+        caption: 'The booking page on a phone',
+        captionSource: 'auto',
+        kind: 'screenshot',
+        thumbnailUrl: null,
+      },
+      {
+        id: ASSET_B,
+        label: 'The bench at the back of the workshop',
+        caption: 'The bench at the back of the workshop',
+        captionSource: 'client',
+        kind: 'photo',
+        thumbnailUrl: null,
+      },
+    ]);
+
+    expect(
+      screen.getByTestId(`change-request-asset-source-${ASSET_A}`)
+    ).toHaveTextContent('AI suggested');
+    expect(
+      screen.getByTestId(`change-request-asset-kind-${ASSET_A}`)
+    ).toHaveTextContent('screenshot');
+    expect(
+      screen.getByTestId(`change-request-asset-source-${ASSET_B}`)
+    ).toHaveTextContent("Client's own words");
+    expect(
+      screen.getByTestId(`change-request-asset-kind-${ASSET_B}`)
+    ).toHaveTextContent('photo');
+  });
+
+  it('says nothing where there is nothing to say', () => {
+    // The fixture's captions are null, which is a picture nobody has
+    // described. Inventing "unknown" or "photo" for it would be the same
+    // guess the build agent is forbidden from making.
+    renderCard();
+    expect(
+      screen.queryByTestId(`change-request-asset-source-${ASSET_A}`)
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId(`change-request-asset-kind-${ASSET_A}`)
+    ).not.toBeInTheDocument();
+  });
+
+  // #119: an operator was once shown storage paths in place of labels. Nothing
+  // this picker renders may be a path or a digest, whatever else is added to
+  // the response.
+  it('never prints a storage path or a hash', () => {
+    renderCard([
+      {
+        id: ASSET_A,
+        label: 'The booking page on a phone',
+        caption: 'The booking page on a phone',
+        captionSource: 'auto',
+        kind: 'screenshot',
+        thumbnailUrl: 'https://storage.example/signed/a.jpg',
+      },
+    ]);
+
+    const text =
+      screen.getByTestId('change-request-asset-picker').textContent ?? '';
+    expect(text).not.toMatch(/[0-9a-f]{32,}/i);
+    expect(text).not.toMatch(/workspaces\/|assets\/|storage/i);
+    expect(text).toContain('The booking page on a phone');
   });
 });

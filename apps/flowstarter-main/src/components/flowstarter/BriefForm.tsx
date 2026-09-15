@@ -107,6 +107,12 @@ export interface BriefAssetView {
   sourceUrl: string | null;
   /** Null when we hold the file but may not publish it. */
   rightsConfirmedAt: string | null;
+  /** What the picture shows, in the client's words or ours. */
+  caption: string | null;
+  /** Whose words those are. Null when nothing has been written yet. */
+  captionSource: 'client' | 'auto' | null;
+  /** What the automatic pass took the picture to be, when it ran. */
+  autoCaptionKind: 'screenshot' | 'photo' | 'logo' | 'document' | null;
 }
 
 export interface BriefFormProps {
@@ -731,6 +737,17 @@ export function BriefForm({
                     askKey="brief_project_screenshots"
                     label="Add a screenshot"
                     onSufficiency={() => void adopt(index)}
+                    // A screenshot is filed against a project by what it
+                    // shows, and nothing else here says which project that
+                    // is. Two of them went on the wrong case study once for
+                    // exactly this reason, so the caption is part of sending
+                    // them rather than a nicety afterwards.
+                    requireCaption
+                    captionPrompt={
+                      project.name.trim().length > 0
+                        ? `Say what each screenshot shows, and name ${project.name.trim()} in it if it belongs to that project.`
+                        : 'Say what each screenshot shows, and name the project it belongs to.'
+                    }
                   />
                 )}
               </div>
@@ -804,6 +821,7 @@ export function BriefForm({
                   className="flex w-28 flex-col gap-2"
                 >
                   <Thumbnail asset={asset} />
+                  <AssetCaption asset={asset} />
                   {isUndersizedPhoto(asset) ? (
                     <span
                       data-testid="brief-undersized-warning"
@@ -966,11 +984,46 @@ function Thumbnails({
   return (
     <ul className="flex flex-wrap gap-2" aria-label={label}>
       {assets.map((asset) => (
-        <li key={asset.id}>
+        <li key={asset.id} className="flex w-28 flex-col gap-1">
           <Thumbnail asset={asset} />
+          <AssetCaption asset={asset} />
         </li>
       ))}
     </ul>
+  );
+}
+
+/**
+ * What a picture is said to show, under the picture.
+ *
+ * Read-only on purpose: the caption is written where the file is sent, in the
+ * uploader, and a second editable copy of the same sentence on the same page
+ * is a second chance for the two to disagree. What this is for is recognition
+ * -- telling four screenshots apart at thumbnail size -- and being honest
+ * about whose sentence it is, because a caption we guessed and a caption the
+ * client wrote are not the same evidence.
+ */
+function AssetCaption({ asset }: { asset: BriefAssetView }) {
+  if (!asset.caption) return null;
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span
+        data-testid="brief-asset-caption"
+        className="text-[11px] leading-snug text-[var(--fs-ink-dim)]"
+      >
+        {asset.caption}
+      </span>
+      {asset.captionSource ? (
+        <span
+          data-testid="brief-asset-caption-source"
+          className="text-[11px] text-[var(--fs-ink-faint)]"
+        >
+          {asset.captionSource === 'auto'
+            ? 'We suggested this'
+            : 'You wrote this'}
+        </span>
+      ) : null}
+    </div>
   );
 }
 

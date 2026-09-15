@@ -2770,6 +2770,298 @@ describe('CHANGE_REQUEST_BUILD: the paid change that used to ship nothing', () =
     expect(phases).toContain('Live, in version 5');
   });
 
+  /** A minimal, valid `BriefInput` carrying only the projects a test needs. */
+  function briefWithProjects(
+    projects: Array<{ name: string; caption?: string }>,
+  ): BriefInput {
+    return {
+      version: BRIEF_INPUT_VERSION,
+      composedAt: '2026-09-12T09:00:00.000Z',
+      reason: 'brief_ready',
+      offer: 'Calm, practical work for small businesses.',
+      projects: projects.map((project) => ({
+        name: project.name,
+        line: `Work for ${project.name}.`,
+        link: `https://${project.name.toLowerCase().replace(/\s+/g, '-')}.example`,
+        screenshotAssetIds: [],
+        screenshots: [],
+      })),
+      noProjects: false,
+      designReferences: [],
+      photos: [],
+      portrait: null,
+    };
+  }
+
+  it('logs the pictures with no project of their own, when the brief names some', async () => {
+    // Workspace c009105e's job c8f48c1e is exactly what this proves cannot
+    // happen silently: a picture with no caption naming a project, and no
+    // attachment to one, must never be filed under a case study on a guess.
+    // The build says so on the board before the agent even starts.
+    const calls: string[] = [];
+    const events: Array<{ kind: string; body: string }> = [];
+    const projectId = validIntake().projectId;
+    const worktreeRoot = await deepTempDir('flowstarter-change-untied');
+    temporaryDirectories.push(worktreeRoot);
+
+    const store: FullSiteBuildJobStore = {
+      claim: async (jobId) => ({
+        id: jobId,
+        projectId,
+        kind: 'CHANGE_REQUEST_BUILD',
+        projectState: ProjectState.LIVE_SUBSCRIPTION,
+        intake: validIntake(),
+        brandConfig: validBrandConfig(),
+        approvedPreviewFiles: [
+          {
+            path: 'src/content/site.md',
+            content: 'The site the client already has',
+            type: 'file',
+          },
+          {
+            path: 'public/flowstarter-media/cr-b104b1e0.jpg',
+            content: Buffer.from('not-really-a-jpeg').toString('base64'),
+            encoding: 'base64',
+            type: 'file',
+          },
+        ],
+        requiredIntegrations: [],
+        changeRequest: changeIntent(),
+        // A real brief, with a real project -- but the change-request
+        // picture's caption names neither it nor anything else, and the
+        // client never attached it to that project's screenshots either.
+        briefInput: briefWithProjects([{ name: 'Ereno' }]),
+      }),
+      markAgentWorking: async () => undefined,
+      markRebuildStarted: async () => undefined,
+      markRebuilt: async () => undefined,
+      markHumanQa: async () => undefined,
+      markChangeRequestBuildStarted: async () => {
+        calls.push('store:change-started');
+      },
+      saveChangeRequestVersion: async () => {
+        calls.push('store:version-saved');
+        return { version: 6 };
+      },
+      markChangeRequestBuilt: async () => {
+        calls.push('store:change-done');
+      },
+      markFailed: async (_jobId, error) => {
+        calls.push(`store:failed:${error.code}`);
+      },
+      appendEvent: async (_jobId, event) => {
+        events.push({ kind: event.kind, body: event.body });
+      },
+    };
+
+    const worktrees = {
+      discard: async () => {
+        calls.push('git:discard');
+      },
+      create: async () => {
+        calls.push('git:create-worktree');
+        return { branch: `change/${projectId}`, path: worktreeRoot };
+      },
+      commit: async () => {
+        calls.push('git:commit');
+        return 'cha0untd';
+      },
+    } as unknown as SafeGitWorktreeManager;
+
+    const agents = {
+      buildFullSite: async (input: { workspaceRoot: string }) => {
+        calls.push('agent:change-pass');
+        const source = join(input.workspaceRoot, 'src/content/site.md');
+        await writeFile(
+          source,
+          'The site the client already has, now with ' +
+            '<img src="/flowstarter-media/cr-b104b1e0.jpg">',
+          'utf8',
+        );
+        return { summary: 'Added the gallery', changedPaths: [source] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    const validator: SiteValidator = { validate: async () => undefined };
+    const pullRequests: PullRequestPublisher = {
+      create: async () => {
+        calls.push('publisher:deploy');
+        return { pullRequestUrl: 'x', stagingUrl: 'y' };
+      },
+    };
+
+    await new FullSiteBuildWorker(
+      store,
+      worktrees,
+      agents,
+      validator,
+      pullRequests,
+    ).run('job-cr-untied');
+
+    // The picture with no project shipped fine -- being untied is not an
+    // error, only an absence of evidence -- but the board carries the reason.
+    expect(calls).toContain('store:change-done');
+    const logs = events
+      .filter((event) => event.kind === 'log')
+      .map((event) => event.body);
+    expect(
+      logs.some((body) =>
+        body.includes('Pictures with no project of their own'),
+      ),
+    ).toBe(true);
+    expect(
+      logs.some((body) => body.includes('/flowstarter-media/cr-b104b1e0.jpg')),
+    ).toBe(true);
+  });
+
+  it('fails a build that files a picture under the wrong project, even after a repair attempt', async () => {
+    // The bug itself, reproduced as a gate: a picture whose caption names one
+    // project ends up, in the built markup, next to a different project's
+    // name and nowhere near its own. Same repair-then-recheck shape as every
+    // other gate in this pass -- the agent gets one chance to move it before
+    // the job fails and the paid change stays unshipped rather than wrong.
+    const calls: string[] = [];
+    const events: Array<{ kind: string; body: string }> = [];
+    const projectId = validIntake().projectId;
+    const worktreeRoot = await deepTempDir('flowstarter-change-misplaced');
+    temporaryDirectories.push(worktreeRoot);
+
+    const misplacedIntent = changeIntent({
+      assets: [
+        {
+          ...changeIntent().assets[0],
+          caption: 'The Ereno inbox, freshly redesigned',
+        },
+      ],
+    });
+
+    const store: FullSiteBuildJobStore = {
+      claim: async (jobId) => ({
+        id: jobId,
+        projectId,
+        kind: 'CHANGE_REQUEST_BUILD',
+        projectState: ProjectState.LIVE_SUBSCRIPTION,
+        intake: validIntake(),
+        brandConfig: validBrandConfig(),
+        approvedPreviewFiles: [
+          {
+            path: 'src/content/site.md',
+            content: 'The site the client already has',
+            type: 'file',
+          },
+          {
+            path: 'public/flowstarter-media/cr-b104b1e0.jpg',
+            content: Buffer.from('not-really-a-jpeg').toString('base64'),
+            encoding: 'base64',
+            type: 'file',
+          },
+        ],
+        requiredIntegrations: [],
+        changeRequest: misplacedIntent,
+        // Two real projects. The picture's caption names Ereno; the built
+        // markup below files it under Bright Grove instead.
+        briefInput: briefWithProjects([
+          { name: 'Ereno' },
+          { name: 'Bright Grove' },
+        ]),
+      }),
+      markAgentWorking: async () => undefined,
+      markRebuildStarted: async () => undefined,
+      markRebuilt: async () => undefined,
+      markHumanQa: async () => undefined,
+      markChangeRequestBuildStarted: async () => {
+        calls.push('store:change-started');
+      },
+      saveChangeRequestVersion: async () => {
+        calls.push('store:version-saved');
+        return { version: 6 };
+      },
+      markChangeRequestBuilt: async () => {
+        calls.push('store:change-done');
+      },
+      markFailed: async (_jobId, error) => {
+        calls.push(`store:failed:${error.code}`);
+      },
+      appendEvent: async (_jobId, event) => {
+        events.push({ kind: event.kind, body: event.body });
+      },
+    };
+
+    const worktrees = {
+      discard: async () => {
+        calls.push('git:discard');
+      },
+      create: async () => {
+        calls.push('git:create-worktree');
+        return { branch: `change/${projectId}`, path: worktreeRoot };
+      },
+      commit: async () => {
+        calls.push('git:commit');
+        return 'cha0wrng';
+      },
+    } as unknown as SafeGitWorktreeManager;
+
+    // Every pass -- the first and the repair alike -- files the picture
+    // under Bright Grove. A repair pass that "fixed" it on the first try
+    // would never exercise the recheck-still-fails branch this test is for.
+    const agents = {
+      buildFullSite: async (input: { workspaceRoot: string }) => {
+        calls.push('agent:change-pass');
+        const source = join(input.workspaceRoot, 'src/content/site.md');
+        await writeFile(
+          source,
+          'The site the client already has, now with a new Bright Grove ' +
+            'case study section: <img src="/flowstarter-media/cr-b104b1e0.jpg"> ' +
+            'showing recent work for Bright Grove.',
+          'utf8',
+        );
+        return { summary: 'Added the gallery', changedPaths: [source] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    const validator: SiteValidator = { validate: async () => undefined };
+    const pullRequests: PullRequestPublisher = {
+      create: async () => {
+        calls.push('publisher:deploy');
+        return { pullRequestUrl: 'x', stagingUrl: 'y' };
+      },
+    };
+
+    await expect(
+      new FullSiteBuildWorker(
+        store,
+        worktrees,
+        agents,
+        validator,
+        pullRequests,
+      ).run('job-cr-misplaced'),
+    ).rejects.toThrow(/wrong work/);
+
+    expect(calls).toEqual([
+      'git:discard',
+      'git:create-worktree',
+      'store:change-started',
+      'agent:change-pass', // the first pass
+      'agent:change-pass', // the repair pass, same wrong placement
+      'store:failed:CHANGE_REQUEST_ASSET_MISPLACED',
+    ]);
+    expect(calls).not.toContain('store:version-saved');
+    expect(calls).not.toContain('publisher:deploy');
+    expect(calls).not.toContain('store:change-done');
+
+    const logs = events
+      .filter((event) => event.kind === 'log')
+      .map((event) => event.body);
+    expect(
+      logs.some(
+        (body) =>
+          body.includes('Ereno') &&
+          body.includes('Bright Grove') &&
+          body.includes('wrong work'),
+      ),
+    ).toBe(true);
+  });
+
   it('leaves the request at paid when the change was dropped', async () => {
     const calls: string[] = [];
     const projectId = validIntake().projectId;

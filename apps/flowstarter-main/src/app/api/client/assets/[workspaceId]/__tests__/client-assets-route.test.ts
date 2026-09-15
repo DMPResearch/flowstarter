@@ -86,6 +86,39 @@ vi.mock('@/supabase-clients/server', () => ({
 }));
 
 /**
+ * The bounded vision call, faked out entirely. Every test in this file but
+ * the "captioning an upload" suite below uploads without ever caring what
+ * `assets.caption` ends up holding, and without this mock those uploads
+ * would fall through `storeUpload` into a REAL network call on every single
+ * one of them — slow at best, and a real external request from a test suite
+ * at worst. Defaults to "no guess", the same honest answer a real timeout or
+ * a real budget breach would produce, so a test that does not opt in still
+ * exercises the fail-closed path rather than skipping it by accident.
+ */
+const autoCaption = vi.hoisted(() => ({
+  result: null as null | {
+    subject: string;
+    kind: 'screenshot' | 'photo' | 'logo' | 'document';
+    showsPerson: boolean;
+    visibleName: string | null;
+    dominantColors: string[];
+  },
+  calls: [] as Array<{ mime: string; workspaceId: string | null | undefined }>,
+}));
+vi.mock('@/lib/ai/asset-caption', () => ({
+  autoCaptionAsset: async (input: {
+    mime: string;
+    workspaceId?: string | null;
+  }) => {
+    autoCaption.calls.push({
+      mime: input.mime,
+      workspaceId: input.workspaceId,
+    });
+    return autoCaption.result;
+  },
+}));
+
+/**
  * Only the non-asset half of the sufficiency input is faked. The images are
  * read back out of the fake database so the gate sees exactly what the route
  * decided to hand it — which is the whole point of the "unconfirmed rights do
@@ -219,6 +252,8 @@ beforeEach(() => {
   gate.logo = null;
   authState.userId = 'user_client_a';
   authState.role = undefined;
+  autoCaption.result = null;
+  autoCaption.calls.length = 0;
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   db.seed('workspace_memberships', [
@@ -460,6 +495,190 @@ describe('storing an upload', () => {
       params(WORKSPACE_A)
     );
     expect(assetsIn(WORKSPACE_A)).toHaveLength(2);
+  });
+});
+
+describe('captioning an upload', () => {
+  const AUTO_GUESS = {
+    subject: 'A dentist smiling at the reception desk',
+    kind: 'photo' as const,
+    showsPerson: true,
+    visibleName: null,
+    dominantColors: ['white', 'teal'],
+  };
+
+  it("stores a client's own typed caption, and never calls the vision model", async () => {
+    const response = await POST(
+      upload(
+        WORKSPACE_A,
+        [{ name: 'front.png', type: 'image/png', bytes: pngBytes() }],
+        { captions: JSON.stringify(['The reception desk, freshly painted']) }
+      ),
+      params(WORKSPACE_A)
+    );
+    const body = await response.json();
+
+    expect(body.uploaded[0]).toMatchObject({
+      caption: 'The reception desk, freshly painted',
+      captionSource: 'client',
+      autoCaptionKind: null,
+    });
+    expect(assetsIn(WORKSPACE_A)[0]).toMatchObject({
+      caption: 'The reception desk, freshly painted',
+      caption_source: 'client',
+      auto_caption: null,
+    });
+    expect(autoCaption.calls).toHaveLength(0);
+  });
+
+  it('asks the vision model when the client typed nothing, and stores its guess', async () => {
+    autoCaption.result = AUTO_GUESS;
+
+    const response = await POST(
+      upload(WORKSPACE_A, [
+        { name: 'front.png', type: 'image/png', bytes: pngBytes() },
+      ]),
+      params(WORKSPACE_A)
+    );
+    const body = await response.json();
+
+    expect(body.uploaded[0]).toMatchObject({
+      caption: AUTO_GUESS.subject,
+      captionSource: 'auto',
+      autoCaptionKind: 'photo',
+    });
+    expect(assetsIn(WORKSPACE_A)[0]).toMatchObject({
+      caption: AUTO_GUESS.subject,
+      caption_source: 'auto',
+      auto_caption: AUTO_GUESS,
+    });
+    expect(autoCaption.calls).toEqual([
+      { mime: 'image/png', workspaceId: WORKSPACE_A },
+    ]);
+  });
+
+  it('a blank captions entry is treated the same as no caption at all', async () => {
+    autoCaption.result = AUTO_GUESS;
+
+    await POST(
+      upload(
+        WORKSPACE_A,
+        [{ name: 'front.png', type: 'image/png', bytes: pngBytes() }],
+        { captions: JSON.stringify(['   ']) }
+      ),
+      params(WORKSPACE_A)
+    );
+
+    expect(autoCaption.calls).toHaveLength(1);
+    expect(assetsIn(WORKSPACE_A)[0]).toMatchObject({ caption_source: 'auto' });
+  });
+
+  it('fails closed to no caption at all when the vision call cannot answer', async () => {
+    autoCaption.result = null; // the default, spelled out for this test's own sake
+
+    const response = await POST(
+      upload(WORKSPACE_A, [
+        { name: 'front.png', type: 'image/png', bytes: pngBytes() },
+      ]),
+      params(WORKSPACE_A)
+    );
+
+    expect(response.status).toBe(201);
+    expect(assetsIn(WORKSPACE_A)[0]).toMatchObject({
+      caption: null,
+      caption_source: null,
+      auto_caption: null,
+    });
+  });
+
+  it('reuses another workspace’s auto-caption for identical bytes instead of asking again', async () => {
+    const bytes = pngBytes(1600, 900, 7);
+    db.seed('assets', [
+      {
+        id: 'cached-asset-1',
+        workspace_id: WORKSPACE_B,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        auto_caption: AUTO_GUESS,
+        caption: AUTO_GUESS.subject,
+        caption_source: 'auto',
+      },
+    ]);
+
+    const response = await POST(
+      upload(WORKSPACE_A, [
+        { name: 'shared-stock-photo.png', type: 'image/png', bytes },
+      ]),
+      params(WORKSPACE_A)
+    );
+    const body = await response.json();
+
+    expect(body.uploaded[0]).toMatchObject({
+      caption: AUTO_GUESS.subject,
+      captionSource: 'auto',
+      autoCaptionKind: 'photo',
+    });
+    // The cache hit answered it; the vision model was never asked.
+    expect(autoCaption.calls).toHaveLength(0);
+  });
+
+  it('ignores a malformed captions field rather than failing the upload', async () => {
+    autoCaption.result = AUTO_GUESS;
+
+    const response = await POST(
+      upload(
+        WORKSPACE_A,
+        [{ name: 'front.png', type: 'image/png', bytes: pngBytes() }],
+        { captions: 'not json at all' }
+      ),
+      params(WORKSPACE_A)
+    );
+
+    expect(response.status).toBe(201);
+    expect(assetsIn(WORKSPACE_A)[0]).toMatchObject({ caption_source: 'auto' });
+  });
+
+  it('ignores a captions array of the wrong length rather than misattributing one', async () => {
+    autoCaption.result = AUTO_GUESS;
+
+    await POST(
+      upload(
+        WORKSPACE_A,
+        [
+          { name: 'a.png', type: 'image/png', bytes: pngBytes(1600, 900, 11) },
+          { name: 'b.png', type: 'image/png', bytes: pngBytes(1600, 900, 12) },
+        ],
+        { captions: JSON.stringify(['Only one caption for two files']) }
+      ),
+      params(WORKSPACE_A)
+    );
+
+    // Neither file got the lone caption misapplied to it; both fell through
+    // to the (mocked) auto-caption instead.
+    for (const row of assetsIn(WORKSPACE_A)) {
+      expect(row.caption_source).toBe('auto');
+    }
+  });
+
+  it("reading the workspace's assets back reports the caption and its source", async () => {
+    autoCaption.result = AUTO_GUESS;
+    await POST(
+      upload(WORKSPACE_A, [
+        { name: 'front.png', type: 'image/png', bytes: pngBytes() },
+      ]),
+      params(WORKSPACE_A)
+    );
+
+    const response = await GET(
+      new NextRequest(`http://localhost/api/client/assets/${WORKSPACE_A}`),
+      params(WORKSPACE_A)
+    );
+    const body = await response.json();
+
+    expect(body.assets[0]).toMatchObject({
+      caption: AUTO_GUESS.subject,
+      captionSource: 'auto',
+      autoCaptionKind: 'photo',
+    });
   });
 });
 
