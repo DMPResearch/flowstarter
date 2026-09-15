@@ -33,6 +33,7 @@ import {
   humanList,
   interpolate,
   nextQuestion,
+  optionLabel,
   promptText,
   questionById,
   reflectionText,
@@ -349,6 +350,101 @@ describe('answers landing in DiscoveryData', () => {
   // The catalog-size question and its `when` condition moved to the Brief with
   // the rest of the commerce vocabulary; `intake-brief-questions.test.ts`
   // exercises them where they now live.
+});
+
+describe('nameOnSite: the one-tap disambiguation', () => {
+  const AMBIGUOUS: DiscoveryData = {
+    ...EMPTY_DISCOVERY,
+    fullName: 'Darius Mihai Popescu',
+    websiteUrl: 'https://dmpresearch.flowstarter.dev',
+    websiteIsOwnSite: 'yes',
+  };
+
+  it('only applies when an owned site and a name leave nothing else to decide it', () => {
+    const nameOnSite = questionById('nameOnSite')!;
+    expect(nameOnSite.when?.(AMBIGUOUS, [])).toBe(true);
+    // Not reachable at all until the one link is confirmed as theirs.
+    expect(
+      nameOnSite.when?.({ ...AMBIGUOUS, websiteIsOwnSite: 'no' }, [])
+    ).toBe(false);
+    expect(nameOnSite.when?.({ ...AMBIGUOUS, websiteIsOwnSite: '' }, [])).toBe(
+      false
+    );
+    // A business name already given settles it on its own.
+    expect(
+      nameOnSite.when?.(
+        { ...AMBIGUOUS, businessName: 'Popescu Consulting' },
+        []
+      )
+    ).toBe(false);
+  });
+
+  it('appears in the real walk exactly when the ambiguity is real, right after websiteIsOwnSite', () => {
+    const { asked } = walk({
+      fullName: 'Darius Mihai Popescu',
+      email: 'darius@example.com',
+      description: 'I build small tools for other independent developers.',
+      links: 'dmpresearch.flowstarter.dev',
+      websiteIsOwnSite: 'yes',
+      nameOnSite: 'person',
+    });
+    expect(asked).toContain('nameOnSite');
+    expect(asked.indexOf('nameOnSite')).toBeGreaterThan(
+      asked.indexOf('websiteIsOwnSite')
+    );
+
+    // The control: declining the site question removes the ambiguity, and
+    // the question never appears at all.
+    const { asked: declined } = walk({
+      fullName: 'Darius Mihai Popescu',
+      email: 'darius@example.com',
+      description: 'I build small tools for other independent developers.',
+      links: 'dmpresearch.flowstarter.dev',
+      websiteIsOwnSite: 'no',
+    });
+    expect(declined).not.toContain('nameOnSite');
+  });
+
+  it('writes the visitor’s own name into businessName when they pick it', () => {
+    const nameOnSite = questionById('nameOnSite')!;
+    const answered = nameOnSite.apply(AMBIGUOUS, 'person');
+    expect(answered.businessName).toBe('Darius Mihai Popescu');
+  });
+
+  it('writes the hostname-derived name when they pick the site instead', () => {
+    const nameOnSite = questionById('nameOnSite')!;
+    const answered = nameOnSite.apply(AMBIGUOUS, 'site');
+    expect(answered.businessName).toBe('Dmpresearch flowstarter');
+  });
+
+  it('leaves businessName untouched on a skip, same as every other choice question', () => {
+    const nameOnSite = questionById('nameOnSite')!;
+    const answered = nameOnSite.apply(AMBIGUOUS, '');
+    expect(answered.businessName).toBe('');
+    expect(answered).toEqual(AMBIGUOUS);
+  });
+
+  it('names both real candidates in the prompt, not a placeholder', () => {
+    const nameOnSite = questionById('nameOnSite')!;
+    const prompt = promptText(nameOnSite, AMBIGUOUS, t);
+    expect(prompt).toContain('Darius');
+    expect(prompt).toContain('Dmpresearch');
+    expect(prompt).not.toContain('{');
+  });
+
+  it('has no em dash or en dash, house style for every line of copy', () => {
+    const nameOnSite = questionById('nameOnSite')!;
+    for (const key of [
+      'landing.discovery.chat.q.nameOnSite.prompt',
+      'landing.discovery.chat.q.nameOnSite.reflect',
+      'landing.discovery.chat.q.nameOnSite.reflect.skipped',
+    ]) {
+      expect(t(key), key).not.toMatch(/[—–]/);
+    }
+    for (const option of nameOnSite.options ?? []) {
+      expect(optionLabel(option, t), option.value).not.toMatch(/[—–]/);
+    }
+  });
 });
 
 describe('what the visitor sees', () => {

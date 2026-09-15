@@ -30,7 +30,11 @@ import {
 // growing its own, slightly different, version of the refusal.
 import type { PolicyNotice } from '@/lib/policy/copy';
 import { deriveBusinessName, withQuickDefaults } from '../quick-defaults';
-import { asksPersonQuestions, intakeSiteKind } from '../person-questions';
+import {
+  asksPersonQuestions,
+  intakeSiteKind,
+  personBlockAnswered,
+} from '../person-questions';
 import { usePreviewProgress } from '../usePreviewProgress';
 import { AgentActivityPanel } from '@/components/flowstarter/AgentActivityPanel';
 import { formatPreviewExpiry } from '@/components/flowstarter/site-link';
@@ -170,7 +174,9 @@ export function previewPayload(raw: DiscoveryData) {
   // defensible guess beats a blank that the page-set rule reads as zero.
   const data = withQuickDefaults(raw);
   return {
-    businessName: deriveBusinessName(data),
+    businessName: deriveBusinessName(data, {
+      personAnswered: personBlockAnswered(data),
+    }),
     fullName: data.fullName,
     // The intake asks "Where should I send your preview once it's ready?" and
     // this is the request that knows when it is ready. Dropping it here is
@@ -593,7 +599,9 @@ export function PreviewStep({
           // than leaving `quoteMinor` null and the Pay button unable to
           // render.
           tier: withQuickDefaults(data).selectedTier,
-          businessName: deriveBusinessName(data),
+          businessName: deriveBusinessName(data, {
+            personAnswered: personBlockAnswered(data),
+          }),
           fullName: data.fullName,
           email: data.email,
           description: data.description,
@@ -687,7 +695,9 @@ export function PreviewStep({
             // email and, after payment, their sign-in identifier.
             email: data.email,
             fullName: data.fullName,
-            businessName: deriveBusinessName(data),
+            businessName: deriveBusinessName(data, {
+              personAnswered: personBlockAnswered(data),
+            }),
             // Read for the same reason submitClaim sends it: the business
             // name rule can name the workspace after its own website rather
             // than the person paying for it.

@@ -2484,6 +2484,17 @@ const en = {
   'landing.discovery.chat.q.websiteIsOwnSite.prompt':
     'Quick check: is that site yours? If it is, I will use its name for the business; if it is a reference, I will leave it out of the name.',
 
+  // Only asked when it is genuinely unclear which name to use: an owned site
+  // and a name, with nothing else said yet. `{name}` and `{siteName}` are the
+  // two actual candidates, not placeholders — see `promptText` in
+  // `intake-script.ts`.
+  'landing.discovery.chat.q.nameOnSite.prompt':
+    'Whose name goes on the site: yours, {name}, or {siteName}?',
+  'landing.discovery.chat.q.nameOnSite.reflect':
+    "Got it, I'll introduce the site as {business}.",
+  'landing.discovery.chat.q.nameOnSite.reflect.skipped':
+    "No problem, I'll work that out from what you tell me next.",
+
   // ─── The person block: asked only when the site is about one person ──────
   //
   // `person-questions.ts` decides when these run; this file only supplies
@@ -2798,6 +2809,8 @@ const en = {
   // social profile.
   'landing.discovery.options.ownSite.yes': 'Yes',
   'landing.discovery.options.ownSite.no': 'No',
+  'landing.discovery.options.nameOnSite.person': 'My own name',
+  'landing.discovery.options.nameOnSite.site': "The site's name",
 
   // Timeline options
   'landing.discovery.options.timeline.asap': 'ASAP',

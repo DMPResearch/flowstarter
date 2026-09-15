@@ -36,6 +36,10 @@ import {
   type PersonQuestionId,
 } from './person-questions';
 import {
+  businessNameFromHostname,
+  ownedSiteNameIsAmbiguous,
+} from './quick-defaults';
+import {
   type DiscoveryData,
   type PageCount,
   type Step,
@@ -60,6 +64,7 @@ export type IntakeQuestionId =
   | 'targetAudience'
   | 'links'
   | 'websiteIsOwnSite'
+  | 'nameOnSite'
   | 'connectPortrait'
   | PersonQuestionId
   | 'goal'
@@ -344,6 +349,24 @@ const OWN_SITE_OPTIONS: ReadonlyArray<IntakeOption> = [
   },
 ];
 
+/**
+ * The two candidates `nameOnSite` chooses between. The prompt itself names
+ * them (`{name}` and `{siteName}`, see `promptText`), so the chips only need
+ * to say which one was meant rather than repeat it.
+ */
+const NAME_ON_SITE_OPTIONS: ReadonlyArray<IntakeOption> = [
+  {
+    value: 'person',
+    label: 'My own name',
+    labelKey: 'landing.discovery.options.nameOnSite.person',
+  },
+  {
+    value: 'site',
+    label: "The site's name",
+    labelKey: 'landing.discovery.options.nameOnSite.site',
+  },
+];
+
 const TIMELINE_OPTIONS: ReadonlyArray<IntakeOption & { value: TimelineId }> = [
   {
     value: 'asap',
@@ -604,6 +627,44 @@ export const INTAKE_SCRIPT: readonly IntakeQuestion[] = [
     // `websiteIsOwnSite` already fails the `=== 'yes'` check the rule makes.
     apply: choiceApplier('websiteIsOwnSite', OWN_SITE_OPTIONS),
     value: (data) => data.websiteIsOwnSite ?? '',
+  },
+  {
+    id: 'nameOnSite',
+    phase: 'quick',
+    // Same stage as the question it disambiguates. It has to be answered (or
+    // skipped) before the person block starts, or `asksPersonQuestions` would
+    // have to guess from the same two readings this question exists to ask
+    // about instead.
+    step: 4,
+    kind: 'choice',
+    promptKey: `${Q}nameOnSite.prompt`,
+    required: false,
+    options: NAME_ON_SITE_OPTIONS,
+    // Only when `deriveBusinessName` genuinely cannot tell yet: an owned
+    // site, a name, and nothing that already settles it (no business name,
+    // no name stated in the description that step 2 of `deriveBusinessName`
+    // would have caught). `ownedSiteNameIsAmbiguous` is the single reading
+    // this question and the naming rule both use, so they cannot disagree
+    // about when the question was needed.
+    when: (data) => ownedSiteNameIsAmbiguous(data),
+    validate: choiceValidator(NAME_ON_SITE_OPTIONS),
+    // Writes straight into `businessName` -- the one field `deriveBusinessName`
+    // always checks first -- so the visitor's own choice is never second-
+    // guessed by the hostname/person-block precedence below it, and the
+    // Brief's own `businessName` question later prefills with exactly this,
+    // still free to correct it. A skip leaves `businessName` untouched:
+    // `matchOption` returns null for an empty answer, same as every other
+    // choice question here, so declining the question changes nothing and
+    // `deriveBusinessName` falls back to reading the person block for itself.
+    apply: (data, raw) => {
+      const picked = matchOption(NAME_ON_SITE_OPTIONS, raw);
+      if (picked === null) return data;
+      const siteName = businessNameFromHostname(data.websiteUrl ?? '');
+      const businessName =
+        picked === 'site' && siteName ? siteName : trimmed(data.fullName);
+      return { ...data, businessName };
+    },
+    value: (data) => data.businessName,
   },
   {
     id: 'connectPortrait',
@@ -1087,6 +1148,12 @@ export function promptText(
     name: firstName || t('landing.discovery.chat.tokens.you'),
     business:
       data.businessName.trim() || t('landing.discovery.chat.tokens.business'),
+    // Only `nameOnSite`'s prompt uses this token; computing it unconditionally
+    // is cheap and keeps every other prompt's copy free to add it later
+    // without a second change here.
+    siteName:
+      businessNameFromHostname(data.websiteUrl ?? '') ||
+      t('landing.discovery.chat.tokens.business'),
   });
 }
 

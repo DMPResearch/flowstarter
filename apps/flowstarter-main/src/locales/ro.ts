@@ -40,6 +40,19 @@ const ro: Record<string, string> = {
   'admin.hosting.connectExisting.error.dbError':
     'Înregistrarea serverului nu a putut fi salvată',
 
+  // Asked only when an owned site and a name leave it genuinely unclear whose
+  // name the site should carry. Matches `landing.discovery.chat.q.nameOnSite`
+  // in en.ts; `{name}` and `{siteName}` are the visitor's own two candidates,
+  // not placeholders.
+  'landing.discovery.chat.q.nameOnSite.prompt':
+    'Al cui nume merge pe site: al tău, {name}, sau {siteName}?',
+  'landing.discovery.chat.q.nameOnSite.reflect':
+    'Am notat, prezint site-ul ca {business}.',
+  'landing.discovery.chat.q.nameOnSite.reflect.skipped':
+    'Nicio problemă, îmi dau seama din ce îmi spui în continuare.',
+  'landing.discovery.options.nameOnSite.person': 'Numele meu',
+  'landing.discovery.options.nameOnSite.site': 'Numele site-ului',
+
   // ─── The person block: asked only when the site is about one person ──────
   //
   // Matches the English block of the same keys in en.ts (search

@@ -243,6 +243,26 @@ export type QuickBusinessNameAnswers = Pick<
   | 'websiteIsOwnSite'
 >;
 
+/** Extra evidence `deriveBusinessName` cannot read off `QuickBusinessNameAnswers` alone. */
+export interface DeriveBusinessNameOptions {
+  /**
+   * True when the visitor has completed at least one question in the person
+   * or activity block — answered, not merely offered it; see
+   * `personBlockAnswered` in `person-questions.ts`, the one place that reads
+   * `DiscoveryData`'s person fields to produce this.
+   *
+   * This is the strongest evidence `deriveBusinessName` ever sees that the
+   * visitor IS the business: nobody writes six sentences about themselves
+   * for a company that is not them. It outranks even a hostname the visitor
+   * has confirmed is their own — see the precedence note below.
+   *
+   * Optional, and false by default, so every caller that has no person
+   * section to offer (the claim route's own re-derivation, in particular)
+   * keeps deriving exactly as it always has.
+   */
+  personAnswered?: boolean;
+}
+
 /**
  * Names this rule will never derive, however plausibly a string suggests one.
  *
@@ -279,7 +299,8 @@ export function isUnderivableBusinessName(candidate: string): boolean {
  *   2. A name stated in the "what you do" answer (`businessNameFromDescription`
  *      below) — the visitor's own words, read rather than guessed.
  *   3. The one link, but ONLY when it is confirmed to be the visitor's OWN
- *      website (`websiteIsOwnSite === 'yes'`) and no name was stated above:
+ *      website (`websiteIsOwnSite === 'yes'`) and no name was stated above,
+ *      AND no person section has been answered (`options.personAnswered`):
  *      the hostname, with `www.` and the TLD stripped and the rest
  *      title-cased — `flowstarter.net` reads as `Flowstarter`.
  *
@@ -295,6 +316,22 @@ export function isUnderivableBusinessName(candidate: string): boolean {
  *      way `industryFromDescription` reads words rather than fetching
  *      anything: a domain that does not resolve derives exactly as well as
  *      one that does, because nothing here ever asks the network.
+ *
+ *      A second visitor claimed a site this way and was still named after its
+ *      hostname: he owned the domain, gave his own name at step 1, and then
+ *      answered all eleven person and activity questions about himself. The
+ *      hostname check ran first and never looked at the person section, so it
+ *      named him after a subdomain his preview happened to sit on. A
+ *      completed person section is stronger evidence than an owned hostname —
+ *      nobody writes six sentences about themselves for a company that is not
+ *      them — so it is checked first now (`options.personAnswered`, step 3a
+ *      below), and a hostname only names the business when that section was
+ *      never answered at all. The remaining chicken-and-egg case — the person
+ *      block has not run yet, so there is no `personAnswered` evidence either
+ *      way, and the visitor has both an owned site and a name — is not
+ *      guessed at all: `ownedSiteNameIsAmbiguous` below is what the intake's
+ *      `nameOnSite` question uses to ask, once, before the person block would
+ *      otherwise start on a guess.
  *   4. Otherwise the visitor's own name. An Instagram or LinkedIn profile
  *      names a person, not a business — pointing this rule at a handle
  *      instead of a real domain would produce "Sablefig.Official" out of
@@ -307,7 +344,10 @@ export function isUnderivableBusinessName(candidate: string): boolean {
  * name at least two characters long, so in practice this only returns ''
  * for a draft nobody has started.
  */
-export function deriveBusinessName(answers: QuickBusinessNameAnswers): string {
+export function deriveBusinessName(
+  answers: QuickBusinessNameAnswers,
+  options: DeriveBusinessNameOptions = {}
+): string {
   const briefName = answers.businessName?.trim();
   if (briefName) return briefName;
 
@@ -331,8 +371,14 @@ export function deriveBusinessName(answers: QuickBusinessNameAnswers): string {
   // trade under. `visitorIsTheBusiness` in `person-questions.ts` is defined
   // as "this rule landed on their own name", so the intake's question set and
   // the site's name are decided by one reading rather than two that can
-  // disagree.
-  const personal = personalSiteAnswers(answers);
+  // disagree. `personalSiteAnswers` itself checks `options.personAnswered`
+  // first (step 3a of the module doc above): a completed person section wins
+  // even over an owned hostname, which is what makes this branch unreachable
+  // for a visitor who has actually answered the block.
+  const personal = personalSiteAnswers(
+    answers,
+    options.personAnswered ?? false
+  );
 
   if (!personal && answers.websiteIsOwnSite === 'yes') {
     const fromWebsite = businessNameFromHostname(answers.websiteUrl ?? '');
@@ -359,17 +405,57 @@ export function deriveBusinessName(answers: QuickBusinessNameAnswers): string {
  * A local reading rather than a call into `person-questions.ts`, and
  * deliberately so: that module imports the codegen package's site-kind
  * classifier, this one is imported by the wizard's own client components, and
- * a cycle between the two would be paid for on every page load. The rule is
- * the narrow half of `visitorIsTheBusiness` -- no business name given, and no
- * website they have claimed as their own -- which is exactly the condition
- * under which a hostname is the wrong thing to name somebody after.
+ * a cycle between the two would be paid for on every page load. `personAnswered`
+ * crosses that boundary in the other direction instead -- `person-questions.ts`
+ * already imports `deriveBusinessName` from here, so it is the one place that
+ * can compute "has the person block said anything" and hand the answer down,
+ * rather than this module reaching up for it.
+ *
+ * The rule, in order:
+ *
+ *   1. a business name given outright is never a person's site (unchanged);
+ *   2. a completed person section is -- regardless of an owned hostname,
+ *      because nobody answers six questions about themselves for a company
+ *      that is not them;
+ *   3. otherwise the narrow reading `visitorIsTheBusiness` has always used:
+ *      no website they have claimed as their own, and a name given -- which
+ *      is exactly the condition under which a hostname is the wrong thing to
+ *      name somebody after.
  */
-function personalSiteAnswers(answers: QuickBusinessNameAnswers): boolean {
+function personalSiteAnswers(
+  answers: QuickBusinessNameAnswers,
+  personAnswered: boolean
+): boolean {
   if ((answers.businessName ?? '').trim()) return false;
+  if (personAnswered) return true;
   const ownSite =
     (answers.websiteUrl ?? '').trim() && answers.websiteIsOwnSite === 'yes';
   if (ownSite) return false;
   return Boolean((answers.fullName ?? '').trim());
+}
+
+/**
+ * True when `deriveBusinessName` cannot yet tell a company's owned site from
+ * a person's, because the person block that would settle it has not run.
+ *
+ * Both readings are plausible here: the visitor claimed the one link as
+ * their own, gave a name at step 1 (always required), and has not typed a
+ * business name anywhere in the quick phase. Left alone, the naming rule
+ * would fall back to the hostname -- today's behaviour for a company, and
+ * exactly the wrong guess for somebody like a solo consultant whose "owned
+ * site" is a personal domain. The intake's `nameOnSite` question in
+ * `intake-script.ts` uses this to ask once, explicitly, rather than let the
+ * person block's own gate guess and risk flipping the answer once it runs.
+ */
+export function ownedSiteNameIsAmbiguous(
+  answers: QuickBusinessNameAnswers
+): boolean {
+  return (
+    !(answers.businessName ?? '').trim() &&
+    Boolean((answers.websiteUrl ?? '').trim()) &&
+    answers.websiteIsOwnSite === 'yes' &&
+    Boolean((answers.fullName ?? '').trim())
+  );
 }
 
 /**
@@ -472,8 +558,12 @@ const GENERIC_SECOND_LEVEL_LABELS = new Set([
  *
  * `new URL` only parses — it never opens a connection — so this derives the
  * same name whether or not the domain resolves to anything.
+ *
+ * Exported for `intake-script.ts`'s `nameOnSite` question, which needs the
+ * same candidate name to put in front of the visitor rather than a second,
+ * possibly-drifting copy of this parsing.
  */
-function businessNameFromHostname(rawUrl: string): string {
+export function businessNameFromHostname(rawUrl: string): string {
   const trimmed = rawUrl.trim();
   if (!trimmed) return '';
   let hostname: string;

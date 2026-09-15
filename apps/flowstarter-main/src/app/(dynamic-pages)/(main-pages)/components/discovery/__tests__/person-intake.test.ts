@@ -17,6 +17,7 @@ import {
   asksPersonQuestions,
   consentedPersonLinkCount,
   intakeSiteKind,
+  personBlockAnswered,
   visitorIsTheBusiness,
 } from '../person-questions';
 import {
@@ -216,11 +217,39 @@ describe('what the site is called', () => {
   it.each(PERSONAS.map((entry) => [entry.id, entry] as const))(
     '%s is introduced by the right name',
     (_id, entry) => {
-      expect(deriveBusinessName(entry.discovery)).toBe(
-        entry.expect.businessName
-      );
+      // `personAnswered` computed the same way every real caller computes
+      // it -- off the same `data` the naming rule reads -- rather than
+      // reasoned about a second time per persona in this test.
+      expect(
+        deriveBusinessName(entry.discovery, {
+          personAnswered: personBlockAnswered(entry.discovery),
+        })
+      ).toBe(entry.expect.businessName);
     }
   );
+
+  it('outranks an owned hostname with a completed person section', () => {
+    // The regression itself, isolated from the rest of the persona's
+    // material: an owned site, a name, and a person section that has
+    // answered even one question is enough to flip the naming rule.
+    const owned: DiscoveryData = {
+      ...EMPTY_DISCOVERY,
+      fullName: 'Darius Mihai Popescu',
+      websiteUrl: 'https://dmpresearch.flowstarter.dev',
+      websiteIsOwnSite: 'yes',
+      personStory: 'I write about the tools I build.',
+    };
+    expect(personBlockAnswered(owned)).toBe(true);
+    expect(deriveBusinessName(owned, { personAnswered: true })).toBe(
+      'Darius Mihai Popescu'
+    );
+    // And without that evidence, today's company reading is unchanged --
+    // including `businessNameFromHostname`'s own quirk of capitalising only
+    // the first label of a multi-part hostname.
+    expect(deriveBusinessName(owned, { personAnswered: false })).toBe(
+      'Dmpresearch flowstarter'
+    );
+  });
 
   it('never names a personal site after this platform', () => {
     // The incident. A visitor who mentions the tool they build with must not
