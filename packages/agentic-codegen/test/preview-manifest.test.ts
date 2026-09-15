@@ -169,6 +169,34 @@ describe('isUsablePhrase', () => {
   it('rejects anything too short to be evidence', () => {
     expect(isUsablePhrase('Contact us')).toBe(false);
   });
+
+  /**
+   * Job `7508bf52`'s own stored row: this exact string was recorded as an
+   * "approved phrase" before `visibleTextLines` existed, and it is still
+   * sitting in that job's `addedPhrases` today. `resolveApprovedEdit`
+   * (`workflows.ts`) hands every phrase `usablePhrases` lets through to the
+   * build agent as text that "must survive... exactly as it is" — which is
+   * how the platform's own lead-capture slot markup, not anything the client
+   * wrote, ended up copied verbatim into the rebuilt contact page as
+   * `class="contact-pagelead-capture"`. This is the retroactive filter: no
+   * row has to be hand-edited for the next attempt to stop reproducing it.
+   */
+  it('rejects markup stored before visibleTextLines existed, on job 7508bf52 workspace', () => {
+    const storedMarkupPhrase =
+      '<div class="contact-pagelead-capture" data-flowstarter-lead-capture-slot></div>';
+    expect(isUsablePhrase(storedMarkupPhrase)).toBe(false);
+    expect(usablePhrases([storedMarkupPhrase, HEADLINE])).toEqual([HEADLINE]);
+    // The correctly-formed class, still markup, is rejected the same way —
+    // this is not about the corruption, it is about the shape.
+    expect(
+      isUsablePhrase(
+        '<div class="contact-page__lead-capture" data-flowstarter-lead-capture-slot></div>',
+      ),
+    ).toBe(false);
+    expect(
+      isUsablePhrase('<script>fetch("/api/leads/capture/token")</script>'),
+    ).toBe(false);
+  });
 });
 
 describe('phraseFromLine', () => {

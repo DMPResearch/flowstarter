@@ -27,6 +27,26 @@
  * - **Matching is loose and the generic labels are listed.** "Ereno, a calm
  *   inbox" is the project "Ereno" written for a page, not a new client, and
  *   "Selected work" is a section label rather than a claim about anybody.
+ *
+ * Found on job `7508bf52` (attempt 2, 2026-09-15): a correct, shippable site
+ * — the client's own headline, the three real projects, no invented work —
+ * was failed by this gate anyway, over "Selected projects" (a section label
+ * one word away from three entries already on `GENERIC_HEADINGS`, and the
+ * generator's own name for the section) and over "A site that earns trust,
+ * built fast and supervised by me." (the closing CTA line: a sentence, not a
+ * name). `GENERIC_HEADINGS` was an exact-string allow-list, so a label had to
+ * be *seen and typed in* before it stopped failing builds, and nothing at all
+ * asked whether a candidate heading was shaped like a name before treating it
+ * as one — any `<h2>`/`<h3>` outside the list was a candidate, sentences
+ * included. A heading is now judged a project-name *candidate* only when
+ * `isNameShapedHeading` says it looks like one (see below); a section label
+ * is now also recognised by `isGenericSectionLabel`'s small canonicalised
+ * grammar — `(selected|featured|recent|our|my)? (work|projects|case
+ * studies|portfolio|clients)`, in English and Romanian — so the next label
+ * built from the same handful of words never needs a code change to be
+ * believed. `GENERIC_HEADINGS` stays, for labels the grammar does not shape
+ * (`"the result"`, `"frequently asked questions"`) and as a fast, exact path
+ * for everything the grammar also covers.
  */
 
 /** The job fails with this when the built site names a project nobody hired. */
@@ -70,12 +90,16 @@ const CASE_STUDY_MARKERS: readonly string[] = [
 ];
 
 /**
- * Headings that label a section rather than name a client.
+ * Headings that label a section rather than name a client, and are not
+ * already shaped by `GENERIC_SECTION_GRAMMAR` below.
  *
  * Closed and hand-written, like the placeholder sentinels next door: no model
  * decides what counts, and an operator can answer "what may a work page say
  * that is not a project" by reading this list. Everything in it is either a
- * section title the templates ship or a case-study sub-heading they use.
+ * section title the templates ship or a case-study sub-heading they use. A
+ * label built from `(modifier)? (work|projects|case studies|portfolio|
+ * clients)` — "Selected projects", "Recent work", "Proiecte selectate" —
+ * does not need an entry here at all; see `isGenericSectionLabel`.
  */
 export const GENERIC_HEADINGS: ReadonlySet<string> = new Set([
   'selected work',
@@ -102,6 +126,86 @@ export const GENERIC_HEADINGS: ReadonlySet<string> = new Set([
   'testimonials',
   'frequently asked questions',
 ]);
+
+/**
+ * A section label built from a modifier and a work/portfolio noun, in
+ * English and Romanian, matched against `canonicalProjectName()` text (lower-cased,
+ * diacritics folded, punctuation collapsed to single spaces).
+ *
+ * `GENERIC_HEADINGS` needed "Selected projects" typed in by hand before it
+ * would stop failing a build; this is the rule that string was an instance
+ * of, so the next label made of the same words — "Recent projects", "Proiecte
+ * recente" — never needs a code change. Deliberately narrow: a modifier
+ * before or after a small closed noun list, nothing else. A real project
+ * called "My Work" or "Our Clients" is exactly the false negative
+ * `GENERIC_HEADINGS` already accepted this risk for — `matchesBriefProject`
+ * runs after this and still catches it because a name on the brief is
+ * checked either way.
+ */
+const GENERIC_SECTION_GRAMMAR =
+  /^(?:(?:selected|featured|recent|our|my)\s+)?(?:work|works|project|projects|case studies|portfolio|client|clients)$|^(?:proiect|proiecte|lucrare|lucrari|portofoliu|client|clienti|studiu de caz|studii de caz)(?:\s+(?:selectat|selectate|recent|recente|ales|alese|nostru|noastre|meu|mele))?$|^(?:selectat|selectate|recent|recente|ales|alese|nostru|noastre|meu|mele)\s+(?:proiect|proiecte|lucrare|lucrari|portofoliu|client|clienti)$/;
+
+/** True for a heading that is section furniture rather than a claim about a client. */
+function isGenericSectionLabel(heading: string): boolean {
+  const text = canonicalProjectName(heading);
+  if (!text) return true;
+  return GENERIC_HEADINGS.has(text) || GENERIC_SECTION_GRAMMAR.test(text);
+}
+
+/**
+ * A project name is a short noun phrase, not a sentence.
+ *
+ * Nothing checked this before job `7508bf52`: any `<h2>`/`<h3>` outside
+ * `GENERIC_HEADINGS` was a candidate, which is how a closing CTA line — nine
+ * words, a comma, a full stop — was read as a client nobody had heard of.
+ * Three cheap, deliberately simple tests, each sufficient on its own for the
+ * heading that motivated it:
+ *
+ *   - terminal punctuation (`.`, `!`, `?`, `…`) — a name is not punctuated
+ *     like a sentence's end, even a short one;
+ *   - word count outside a project name's plausible range — long enough to
+ *     be a sentence rather than a name;
+ *   - a comma, or one of a short list of finite-verb words a real project
+ *     name essentially never contains — "the site earns trust" has a verb, a
+ *     project called "Trust Capital" does not.
+ *
+ * None of this is a grammar parser. It does not need to be: the bar is
+ * "clearly not a name", not "definitely a name", because a heading that
+ * passes still has to match the brief or it is a finding regardless.
+ */
+export const MIN_PROJECT_NAME_WORDS = 1;
+export const MAX_PROJECT_NAME_WORDS = 6;
+
+const TERMINAL_PUNCTUATION = /[.!?…]$/;
+
+/**
+ * A short, closed list of finite-verb and auxiliary words. Bounded on
+ * purpose: this is a signal a heading reads as a clause, not a parser, and a
+ * project name that happens to contain one of these as part of a proper noun
+ * still has to fail `matchesBriefProject` before it becomes a finding.
+ */
+const SENTENCE_VERB_HINT =
+  /\b(?:is|are|was|were|am|be|been|being|has|have|had|does|did|will|would|can|could|should|shall|may|might|must|earns?|builds?|built|supervises|supervised|makes?|made|helps?|helped|lets?|gives?|gave|shows?|showed|means?|meant)\b/i;
+
+/** True when a heading reads as a clause rather than a name. */
+function looksLikeSentence(text: string): boolean {
+  return text.includes(',') || SENTENCE_VERB_HINT.test(text);
+}
+
+/** True when a heading is shaped like a project name at all — see above. */
+export function isNameShapedHeading(heading: string): boolean {
+  const text = heading.trim();
+  if (!text) return false;
+  if (TERMINAL_PUNCTUATION.test(text)) return false;
+  const words = text.split(/\s+/).filter(Boolean);
+  if (
+    words.length < MIN_PROJECT_NAME_WORDS ||
+    words.length > MAX_PROJECT_NAME_WORDS
+  ) {
+    return false;
+  }
+  return !looksLikeSentence(text);
+}
 
 /**
  * `<h2>`/`<h3>` inner markup, in document order, found with a forward scan.
@@ -173,14 +277,22 @@ export function headingText(markup: string): string {
  * picture under one project and then fail the build for it being there.
  */
 export function canonicalProjectName(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[‐-―−]/g, '-')
-    .replace(/[‘’]/g, "'")
-    .replace(/[“”]/g, '"')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return (
+    text
+      .toLowerCase()
+      .replace(/[‐-―−]/g, '-')
+      .replace(/[‘’]/g, "'")
+      .replace(/[“”]/g, '"')
+      // Folds "proiecte selectate" and "proiecte selectate" written with
+      // Romanian diacritics (ă, â, î, ș, ț) onto the same ASCII text the
+      // grammar below matches, the way `template-classifier.ts` already folds
+      // accents before tokenising.
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
 }
 
 /**
@@ -266,7 +378,8 @@ export function findInventedProjects(
     for (const markup of headingMarkups(region)) {
       const heading = headingText(markup);
       if (!heading) continue;
-      if (GENERIC_HEADINGS.has(canonicalProjectName(heading))) continue;
+      if (isGenericSectionLabel(heading)) continue;
+      if (!isNameShapedHeading(heading)) continue;
       if (matchesBriefProject(heading, names)) continue;
       findings.push({ path: file.path, heading });
     }
