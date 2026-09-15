@@ -15,6 +15,8 @@
     "docker:dev:main:restart": "docker compose -f docker-compose.flowstarter-main-dev.yml restart flowstarter-main-dev",
     "build:all": "pnpm nx run-many -t build --output-style=stream",
     "lint:all": "pnpm nx run-many -t lint --output-style=stream --fix",
+    "effects:manifest": "tsx scripts/generate-template-effects.ts",
+    "effects:manifest:check": "tsx scripts/generate-template-effects.ts --check",
     "stripe:setup": "tsx scripts/stripe-setup.ts",
     "stripe:setup:dry": "tsx scripts/stripe-setup.ts --dry-run",
     "anthropic:invite-users": "tsx scripts/anthropic-invite-users.ts",

@@ -103,6 +103,7 @@ export * from './flowstarter/operator-edit-build';
 export * from './flowstarter/teaser-rule';
 export * from './flowstarter/cal-preview-rule';
 export * from './flowstarter/markup-policy';
+export * from './flowstarter/template-effects';
 export * from './flowstarter/empty-image';
 export * from './flowstarter/acceptable-use';
 export * from './flowstarter/site-html-sanitizer';

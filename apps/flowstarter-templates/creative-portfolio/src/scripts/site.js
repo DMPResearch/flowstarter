@@ -7,6 +7,7 @@
 // page is the same behaviour as before, not a broader one.
 
 import { useVisibilityClass } from './hooks/useVisibilityClass.js';
+import { useJourneyTimeline } from './hooks/useJourneyTimeline.js';
 import { useCountryPicker } from './hooks/useCountryPicker.js';
 import { useFormSuccess } from './hooks/useFormSuccess.js';
 
@@ -206,13 +207,13 @@ import { useFormSuccess } from './hooks/useFormSuccess.js';
   });
 }
 
+// src/components/about/AboutJourneySection.astro
+{
+  useJourneyTimeline();
+}
+
 // src/pages/about.astro
 {
-  useVisibilityClass({
-    selector: '[data-reveal="about-background-title"]',
-    threshold: 0.12,
-    rootMargin: '0px 0px -8% 0px',
-  });
   useVisibilityClass({
     selector: '[data-zigzag-section]',
     threshold: 0.45,

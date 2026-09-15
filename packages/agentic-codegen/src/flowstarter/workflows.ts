@@ -113,6 +113,15 @@ import {
   type MarkupPolicy,
 } from './markup-policy';
 import {
+  deriveTemplateEffectsManifest,
+  describeTemplateEffectsIssue,
+  describeTemplateEffectsRegressions,
+  describeTemplateEffectsRepair,
+  findTemplateEffectsFindings,
+  findTemplateEffectsRegressions,
+  TEMPLATE_EFFECTS_DROPPED,
+} from './template-effects';
+import {
   describeEmptyImageIssue,
   findEmptyImageFindings,
   EMPTY_IMAGE_SHIPPED,
@@ -638,6 +647,44 @@ export class PreviewGenerationPipeline {
           );
           console.warn(
             `[integrity] restored ${integrity.paths.join(', ')} from the template. ${integrity.feedback.slice(-700)}`,
+          );
+        }
+      }
+
+      // The same shape again, over the template's effect layer.
+      //
+      // The compiled `TEMPLATE_EFFECTS_DROPPED` gate runs on the paid build,
+      // where there is a `dist/` to read; this leg has no compiled output and
+      // is also where the damage starts, because the paid build is seeded
+      // from whatever this agent leaves behind. So the question is asked of
+      // the source: does each section component still declare the hooks, the
+      // reveal classes and the sticky rules the template shipped it with?
+      //
+      // The remedy is the style check's, for the same reason: a personalized
+      // component that lost its markup is worth less than the template's own,
+      // and the copy it was carrying lives in the content files anyway. One
+      // bounded repair pass, then the component goes back.
+      let effects = findTemplateEffectsRegressions(
+        scaffold.files,
+        await collectSiteTextFiles(workspace.root),
+      );
+      if (effects.length > 0) {
+        if (roomFor('effects repair')) {
+          announce('Restoring the template’s effects');
+          const feedback = describeTemplateEffectsRegressions(effects);
+          console.info(`[effects] ${feedback.slice(0, 600)}`);
+          await optional('effects repair', () => personalize(feedback));
+          effects = findTemplateEffectsRegressions(
+            scaffold.files,
+            await collectSiteTextFiles(workspace.root),
+          );
+        }
+        if (effects.length > 0) {
+          const paths = effects.map((entry) => entry.component);
+          await restoreScaffoldFiles(workspace.root, scaffold.files, paths);
+          console.warn(
+            `[effects] restored ${paths.join(', ')} from the template: ` +
+              describeTemplateEffectsRegressions(effects).slice(-700),
           );
         }
       }
@@ -3548,6 +3595,49 @@ export class FullSiteBuildWorker {
       }
       recordGate('markup-policy');
 
+      // What the page *does* when nobody clicks anything: the reveal that
+      // plays as a section scrolls in, the column that holds while the page
+      // scrolls past it, the step timeline that advances. A template ships
+      // that layer as markup hooks its own scripts and stylesheets reach for,
+      // and an agent rewriting a section to hold the client's words is
+      // exactly the actor able to leave the scripts running against nothing.
+      // That is not a hypothetical: a delivered portfolio shipped three
+      // IntersectionObservers, the reveal selectors, and a homepage whose
+      // expertise column had been rewritten out of its sticky wrapper.
+      //
+      // The contract is derived from `cleaned.files` — the seed this build
+      // was materialized from, in memory, before the agent ever ran. Nothing
+      // is read from the workspace, so there is no baseline on disk to edit,
+      // and nothing is hard-coded, so a template that changes its effects
+      // changes what it is held to in the same commit. The rule itself is in
+      // `template-effects.ts`, and it only speaks about sections the build
+      // still renders: a homepage with no testimonial section lost nothing.
+      await phase('Checking the template’s effects survived');
+      const effectsManifest = deriveTemplateEffectsManifest(cleaned.files);
+      let effectFindings = findTemplateEffectsFindings(
+        await builtSiteText(),
+        effectsManifest,
+      );
+      if (effectFindings.length > 0) {
+        await say('log', describeTemplateEffectsIssue(effectFindings));
+        await pass(
+          'Putting the template’s effects back',
+          withApproved(describeTemplateEffectsRepair(effectFindings)),
+        );
+        await check();
+        effectFindings = findTemplateEffectsFindings(
+          await builtSiteText(),
+          effectsManifest,
+        );
+      }
+      if (effectFindings.length > 0) {
+        throw new FullSiteBuildFailure(
+          TEMPLATE_EFFECTS_DROPPED,
+          describeTemplateEffectsIssue(effectFindings),
+        );
+      }
+      recordGate('template-effects');
+
       // The last picture check — see `assertNoEmptyImages`.
       await phase('Checking for empty image elements');
       assertNoEmptyImages(await builtSiteText());
@@ -4200,6 +4290,39 @@ export class FullSiteBuildWorker {
       }
       if (markupIssue) {
         throw new FullSiteBuildFailure(GENERATED_HTML_UNSAFE, markupIssue);
+      }
+
+      // And the same gate again over the site's motion, measured against the
+      // site the client already had rather than against the template: the
+      // seed of a change request is their live site's own source, so the rule
+      // reads "this change may not take an effect away", which is what a
+      // client paying for one paragraph expects. A request that removes a
+      // whole section removes its effects with it and is not a finding — see
+      // `template-effects.ts` for why that distinction is drawn by the
+      // section's own classes rather than by asking the agent.
+      await phase('Checking the site’s effects survived the change');
+      const effectsManifest = deriveTemplateEffectsManifest(seeded.files);
+      let effectFindings = findTemplateEffectsFindings(
+        await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
+        effectsManifest,
+      );
+      if (effectFindings.length > 0) {
+        await say('log', describeTemplateEffectsIssue(effectFindings));
+        await pass(
+          'Putting the site’s effects back',
+          describeTemplateEffectsRepair(effectFindings),
+        );
+        await check();
+        effectFindings = findTemplateEffectsFindings(
+          await collectBuiltSiteText(siteRoot, builtOutput ?? undefined),
+          effectsManifest,
+        );
+      }
+      if (effectFindings.length > 0) {
+        throw new FullSiteBuildFailure(
+          TEMPLATE_EFFECTS_DROPPED,
+          describeTemplateEffectsIssue(effectFindings),
+        );
       }
 
       // Same shape as the full build's own last picture check — see

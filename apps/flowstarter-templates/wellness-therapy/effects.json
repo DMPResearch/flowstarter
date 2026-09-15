@@ -1,0 +1,461 @@
+{
+  "schemaVersion": 1,
+  "stateClasses": [
+    "is-observing",
+    "is-open",
+    "is-visible"
+  ],
+  "boundAttributes": [
+    "data-about-reveal",
+    "data-about-stage",
+    "data-blog-reveal",
+    "data-case-reveal",
+    "data-contact-form",
+    "data-contact-success",
+    "data-country-flag",
+    "data-country-input",
+    "data-country-label",
+    "data-country-option",
+    "data-country-panel",
+    "data-country-picker",
+    "data-country-search",
+    "data-country-trigger",
+    "data-phone-number-input",
+    "data-stat-number",
+    "data-stats-section",
+    "data-testimonial-reveal",
+    "data-venn-circle",
+    "data-zigzag-section"
+  ],
+  "sections": [
+    {
+      "component": "src/components/About.astro",
+      "markers": [
+        "about__inner",
+        "about__text"
+      ],
+      "hooks": [
+        "data-about-stage"
+      ],
+      "reveals": [],
+      "sticky": []
+    },
+    {
+      "component": "src/components/CaseStudies.astro",
+      "markers": [
+        "case-studies__column",
+        "case-studies__column--left",
+        "case-studies__column--right",
+        "case-studies__cta",
+        "case-studies__description",
+        "case-studies__inner",
+        "case-studies__intro",
+        "case-studies__list",
+        "case-studies__list-category",
+        "case-studies__list-content",
+        "case-studies__list-description",
+        "case-studies__list-image",
+        "case-studies__list-image-fallback",
+        "case-studies__list-item",
+        "case-studies__list-title",
+        "case-studies__list-title-link",
+        "case-studies__masonry",
+        "case-studies__title"
+      ],
+      "hooks": [
+        "data-case-reveal"
+      ],
+      "reveals": [],
+      "sticky": []
+    },
+    {
+      "component": "src/components/Header.astro",
+      "markers": [
+        "header",
+        "header__cta-wrapper",
+        "header__inner",
+        "header__mobile-toggle",
+        "mobile-nav",
+        "mobile-nav__footer",
+        "mobile-nav__links"
+      ],
+      "hooks": [],
+      "reveals": [
+        "mobile-nav"
+      ],
+      "sticky": []
+    },
+    {
+      "component": "src/components/Stats.astro",
+      "markers": [
+        "stats__inner"
+      ],
+      "hooks": [
+        "data-stats-section"
+      ],
+      "reveals": [],
+      "sticky": []
+    },
+    {
+      "component": "src/components/Testimonial.astro",
+      "markers": [
+        "testimonial__card",
+        "testimonial__column",
+        "testimonial__heading",
+        "testimonial__inner",
+        "testimonial__masonry"
+      ],
+      "hooks": [
+        "data-testimonial-reveal"
+      ],
+      "reveals": [
+        "testimonial__card"
+      ],
+      "sticky": []
+    },
+    {
+      "component": "src/components/about/AboutArticlesSection.astro",
+      "markers": [
+        "about-articles-section",
+        "about-articles-section__body",
+        "about-articles-section__card",
+        "about-articles-section__card-title",
+        "about-articles-section__excerpt",
+        "about-articles-section__grid",
+        "about-articles-section__header",
+        "about-articles-section__heading",
+        "about-articles-section__image",
+        "about-articles-section__title",
+        "about-articles-section__visual"
+      ],
+      "hooks": [
+        "data-about-reveal"
+      ],
+      "reveals": [],
+      "sticky": []
+    },
+    {
+      "component": "src/components/about/AboutBackgroundSection.astro",
+      "markers": [
+        "about-background-section",
+        "about-background-section__content",
+        "about-background-section__media",
+        "about-background-section__meta-text",
+        "about-background-section__meta-title",
+        "about-background-section__reason-list",
+        "about-background-section__why-work",
+        "about-background-story-section",
+        "about-background-story-section__text-grid",
+        "about-background-story-section__title"
+      ],
+      "hooks": [
+        "data-about-reveal",
+        "data-zigzag-section"
+      ],
+      "reveals": [],
+      "sticky": []
+    },
+    {
+      "component": "src/components/about/AboutFreeTimeSection.astro",
+      "markers": [
+        "about-free-time-section",
+        "about-free-time-section__copy",
+        "about-free-time-section__media",
+        "about-free-time-section__text"
+      ],
+      "hooks": [
+        "data-zigzag-section"
+      ],
+      "reveals": [],
+      "sticky": []
+    },
+    {
+      "component": "src/components/about/AboutIntroSection.astro",
+      "markers": [
+        "about-intro-section",
+        "about-intro-section__content",
+        "about-intro-section__heading",
+        "about-intro-section__media",
+        "about-intro-section__text"
+      ],
+      "hooks": [
+        "data-zigzag-section"
+      ],
+      "reveals": [],
+      "sticky": []
+    },
+    {
+      "component": "src/components/about/AboutJourneySection.astro",
+      "markers": [
+        "about-journey-section",
+        "about-journey-section__body",
+        "about-journey-section__dot",
+        "about-journey-section__intro",
+        "about-journey-section__intro-text",
+        "about-journey-section__line",
+        "about-journey-section__list",
+        "about-journey-section__marker",
+        "about-journey-section__meta",
+        "about-journey-section__meta-item",
+        "about-journey-section__meta-label",
+        "about-journey-section__step",
+        "about-journey-section__step-desc",
+        "about-journey-section__step-title",
+        "about-journey-section__step-year",
+        "about-journey-section__title"
+      ],
+      "hooks": [
+        "data-about-reveal"
+      ],
+      "reveals": [],
+      "sticky": []
+    },
+    {
+      "component": "src/components/contact/ContactDetailsPanel.astro",
+      "markers": [
+        "contact-details-panel",
+        "contact-details-panel__block",
+        "contact-details-panel__details",
+        "contact-details-panel__place",
+        "contact-details-panel__place-body",
+        "contact-details-panel__place-label",
+        "contact-details-panel__place-text",
+        "contact-details-panel__text"
+      ],
+      "hooks": [],
+      "reveals": [],
+      "sticky": [
+        "contact-details-panel"
+      ]
+    },
+    {
+      "component": "src/components/contact/ContactFormPanel.astro",
+      "markers": [
+        "contact-form-panel",
+        "contact-form-panel__failure",
+        "contact-form-panel__footer",
+        "contact-form-panel__form",
+        "contact-form-panel__note",
+        "contact-form-panel__submit",
+        "contact-form-panel__success",
+        "contact-form-panel__trap"
+      ],
+      "hooks": [
+        "data-contact-form",
+        "data-contact-success"
+      ],
+      "reveals": [],
+      "sticky": []
+    },
+    {
+      "component": "src/components/design-system/StatItem.astro",
+      "markers": [
+        "ds-stat-item__label",
+        "ds-stat-item__number"
+      ],
+      "hooks": [
+        "data-stat-number"
+      ],
+      "reveals": [
+        "ds-stat-item__number"
+      ],
+      "sticky": []
+    },
+    {
+      "component": "src/components/form/CountryCodeField.astro",
+      "markers": [
+        "country-code-field",
+        "country-code-field__caret",
+        "country-code-field__flag",
+        "country-code-field__label",
+        "country-code-field__option",
+        "country-code-field__options",
+        "country-code-field__panel",
+        "country-code-field__search",
+        "country-code-field__sr-only",
+        "country-code-field__trigger"
+      ],
+      "hooks": [
+        "data-country-input",
+        "data-country-label",
+        "data-country-option",
+        "data-country-panel",
+        "data-country-picker",
+        "data-country-search",
+        "data-country-trigger"
+      ],
+      "reveals": [],
+      "sticky": []
+    },
+    {
+      "component": "src/components/form/PhoneField.astro",
+      "markers": [
+        "phone-field",
+        "phone-field__caret",
+        "phone-field__code-trigger",
+        "phone-field__dial",
+        "phone-field__divider",
+        "phone-field__flag",
+        "phone-field__input-wrap",
+        "phone-field__label",
+        "phone-field__number-input",
+        "phone-field__option",
+        "phone-field__options",
+        "phone-field__panel",
+        "phone-field__search",
+        "phone-field__sr-only"
+      ],
+      "hooks": [
+        "data-country-flag",
+        "data-country-input",
+        "data-country-label",
+        "data-country-option",
+        "data-country-panel",
+        "data-country-picker",
+        "data-country-search",
+        "data-country-trigger",
+        "data-phone-number-input"
+      ],
+      "reveals": [],
+      "sticky": []
+    },
+    {
+      "component": "src/components/shared/AnimatedWordTitle.astro",
+      "markers": [
+        "animated-word-title__line",
+        "animated-word-title__word",
+        "animated-word-title__word--accent"
+      ],
+      "hooks": [],
+      "reveals": [
+        "animated-word-title"
+      ],
+      "sticky": []
+    },
+    {
+      "component": "src/pages/about.astro",
+      "markers": [
+        "about-page"
+      ],
+      "hooks": [],
+      "reveals": [
+        "about-page"
+      ],
+      "sticky": []
+    },
+    {
+      "component": "src/pages/blog.astro",
+      "markers": [
+        "blog-card",
+        "blog-card__body",
+        "blog-card__category",
+        "blog-card__excerpt",
+        "blog-card__image",
+        "blog-card__image-fallback",
+        "blog-card__image-link",
+        "blog-card__read-more",
+        "blog-card__title",
+        "blog-card__title-link",
+        "blog-grid",
+        "blog-hero",
+        "blog-hero__sub",
+        "blog-page"
+      ],
+      "hooks": [
+        "data-blog-reveal"
+      ],
+      "reveals": [],
+      "sticky": []
+    }
+  ],
+  "pages": [
+    {
+      "source": "src/pages/404.astro",
+      "output": "404.html",
+      "sections": [
+        "src/components/Header.astro"
+      ]
+    },
+    {
+      "source": "src/pages/about.astro",
+      "output": "about/index.html",
+      "sections": [
+        "src/components/Header.astro",
+        "src/components/about/AboutArticlesSection.astro",
+        "src/components/about/AboutBackgroundSection.astro",
+        "src/components/about/AboutFreeTimeSection.astro",
+        "src/components/about/AboutIntroSection.astro",
+        "src/components/about/AboutJourneySection.astro",
+        "src/components/shared/AnimatedWordTitle.astro",
+        "src/pages/about.astro"
+      ]
+    },
+    {
+      "source": "src/pages/blog.astro",
+      "output": "blog/index.html",
+      "sections": [
+        "src/components/Header.astro",
+        "src/components/shared/AnimatedWordTitle.astro",
+        "src/pages/blog.astro"
+      ]
+    },
+    {
+      "source": "src/pages/book.astro",
+      "output": "book/index.html",
+      "sections": [
+        "src/components/Header.astro"
+      ]
+    },
+    {
+      "source": "src/pages/case-studies/[slug].astro",
+      "output": null,
+      "sections": [
+        "src/components/Header.astro"
+      ]
+    },
+    {
+      "source": "src/pages/contact.astro",
+      "output": "contact/index.html",
+      "sections": [
+        "src/components/Header.astro",
+        "src/components/contact/ContactDetailsPanel.astro",
+        "src/components/contact/ContactFormPanel.astro",
+        "src/components/form/PhoneField.astro",
+        "src/components/shared/AnimatedWordTitle.astro"
+      ]
+    },
+    {
+      "source": "src/pages/index.astro",
+      "output": "index.html",
+      "sections": [
+        "src/components/About.astro",
+        "src/components/CaseStudies.astro",
+        "src/components/Header.astro",
+        "src/components/Stats.astro",
+        "src/components/Testimonial.astro",
+        "src/components/design-system/StatItem.astro"
+      ]
+    },
+    {
+      "source": "src/pages/services.astro",
+      "output": "services/index.html",
+      "sections": [
+        "src/components/Header.astro",
+        "src/components/shared/AnimatedWordTitle.astro"
+      ]
+    },
+    {
+      "source": "src/pages/work.astro",
+      "output": "work/index.html",
+      "sections": [
+        "src/components/CaseStudies.astro",
+        "src/components/Header.astro",
+        "src/components/shared/AnimatedWordTitle.astro"
+      ]
+    }
+  ],
+  "orphans": {
+    "modules": [],
+    "bindings": []
+  }
+}

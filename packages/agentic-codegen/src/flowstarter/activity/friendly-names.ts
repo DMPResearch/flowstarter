@@ -203,6 +203,7 @@ const GATE_BY_CODE: Record<string, ActivitySubject> = {
   PLACEHOLDER_IMAGE_SHIPPED: 'gate.images',
   PORTRAIT_MISPLACED: 'gate.images',
   GENERATED_HTML_UNSAFE: 'gate.markup',
+  TEMPLATE_EFFECTS_DROPPED: 'gate.markup',
   BUILD_LEASE_LOST: 'gate.build',
   FULL_SITE_BUILD_FAILED: 'gate.build',
   CHANGE_REQUEST_BUILD_FAILED: 'gate.build',

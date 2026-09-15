@@ -11,6 +11,7 @@ import {
   INVENTED_PROJECT,
   PAGE_BUDGET_EXCEEDED,
   PLACEHOLDER_COPY_SHIPPED,
+  TEMPLATE_EFFECTS_DROPPED,
   PreviewGenerationPipeline,
   ProjectState,
   prunedScaffold,
@@ -660,6 +661,136 @@ describe('the full-site build gates its own output', () => {
     expect(calls).not.toContain('store:human-qa');
     // No repair pass for a markup bug like this one: one build pass, then
     // straight to the gate failing the job.
+    expect(feedbacks).toHaveLength(1);
+  });
+
+  /**
+   * The effect layer, end to end through the worker.
+   *
+   * `effectSeed()` is a scaffold in the shape every real template has: a
+   * layout that loads one script module, a script that observes an attribute
+   * and adds a state class, and a section component that renders the
+   * attribute and styles itself off that class. The `dist` each test supplies
+   * is what the "build" emitted, which is the only thing the gate reads.
+   */
+  function effectSeed(): TemplateScaffoldFile[] {
+    const file = (path: string, content: string) => ({
+      path,
+      content,
+      type: 'file' as const,
+    });
+    return [
+      // The template's own homepage is replaced below with one that imports
+      // the effect-carrying section; everything else stays as it ships.
+      ...templateFiles().filter(
+        (entry) => entry.path !== 'src/pages/index.astro',
+      ),
+      file(
+        'src/layouts/Layout.astro',
+        '<html><body><slot /></body>' +
+          "<script>import '../scripts/site.js';</script></html>",
+      ),
+      file(
+        'src/scripts/site.js',
+        "document.querySelectorAll('[data-story-reveal]').forEach((el) => " +
+          "el.classList.add('is-visible'));",
+      ),
+      file(
+        'src/components/Story.astro',
+        '<section class="story" data-story-reveal>' +
+          '<p class="story__line">Copy</p></section>' +
+          '<style>.story.is-visible .story__line { opacity: 1; }</style>',
+      ),
+      file(
+        'src/pages/index.astro',
+        "---\nimport Layout from '../layouts/Layout.astro';\n" +
+          "import Story from '../components/Story.astro';\n---\n" +
+          '<Layout><Story /></Layout>',
+      ),
+    ];
+  }
+
+  const EFFECT_CSS = '.story.is-visible .story__line{opacity:1}';
+
+  it('fails the job with TEMPLATE_EFFECTS_DROPPED when a section keeps its shape and loses its hook', async () => {
+    const calls: string[] = [];
+    const feedbacks: Array<string | undefined> = [];
+    const { worker } = workerFor({
+      calls,
+      feedbacks,
+      seed: effectSeed(),
+      dist: () => ({
+        // The section is still there — same classes, new markup — and the
+        // attribute its script reads is gone. This is the delivered
+        // portfolio's defect, reduced to one page.
+        'index.html':
+          '<section class="story"><p class="story__line">Copy</p></section>',
+        'work/index.html': '<h1>Work</h1>',
+        'about/index.html': '<h1>About</h1>',
+        'contact/index.html': '<h1>Contact</h1>',
+        '_astro/site.css': EFFECT_CSS,
+      }),
+    });
+
+    await expect(worker.run('job-1')).rejects.toThrow(
+      new RegExp(TEMPLATE_EFFECTS_DROPPED),
+    );
+    expect(calls).toContain(`store:failed:${TEMPLATE_EFFECTS_DROPPED}`);
+    expect(calls).not.toContain('store:human-qa');
+    // One build pass, one repair pass carrying the repair brief.
+    expect(feedbacks).toHaveLength(2);
+    expect(feedbacks[1]).toContain('data-story-reveal');
+    expect(feedbacks[1]).toContain('src/components/Story.astro');
+  });
+
+  it('ships the build when the repair pass puts the hook back', async () => {
+    const calls: string[] = [];
+    const feedbacks: Array<string | undefined> = [];
+    let repaired = false;
+    const { worker } = workerFor({
+      calls,
+      feedbacks,
+      seed: effectSeed(),
+      dist: () => {
+        const story = repaired
+          ? '<section class="story" data-story-reveal>' +
+            '<p class="story__line">Copy</p></section>'
+          : '<section class="story"><p class="story__line">Copy</p></section>';
+        repaired = true;
+        return {
+          'index.html': story,
+          'work/index.html': '<h1>Work</h1>',
+          'about/index.html': '<h1>About</h1>',
+          'contact/index.html': '<h1>Contact</h1>',
+          '_astro/site.css': EFFECT_CSS,
+        };
+      },
+    });
+
+    await worker.run('job-1');
+    expect(calls).toContain('store:human-qa');
+    expect(feedbacks).toHaveLength(2);
+  });
+
+  it('says nothing about a section the build did not render at all', async () => {
+    const calls: string[] = [];
+    const feedbacks: Array<string | undefined> = [];
+    const { worker } = workerFor({
+      calls,
+      feedbacks,
+      seed: effectSeed(),
+      dist: () => ({
+        // No story section: an honest editorial decision, not a lost effect.
+        'index.html': '<h1>Calm Path</h1>',
+        'work/index.html': '<h1>Work</h1>',
+        'about/index.html': '<h1>About</h1>',
+        'contact/index.html': '<h1>Contact</h1>',
+        '_astro/site.css': EFFECT_CSS,
+      }),
+    });
+
+    await worker.run('job-1');
+    expect(calls).toContain('store:human-qa');
     expect(feedbacks).toHaveLength(1);
   });
 

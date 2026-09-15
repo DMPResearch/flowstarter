@@ -351,11 +351,6 @@ import { useFormSuccess } from './hooks/useFormSuccess.js';
 // src/pages/about.astro
 {
   useVisibilityClass({
-    selector: '[data-reveal="about-background-title"]',
-    threshold: 0.12,
-    rootMargin: '0px 0px -8% 0px',
-  });
-  useVisibilityClass({
     selector: '[data-zigzag-section]',
     threshold: 0.45,
     rootMargin: '0px 0px -14% 0px',
