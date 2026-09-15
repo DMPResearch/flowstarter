@@ -45,6 +45,10 @@ import {
   UNCLASSIFIED,
   type ScopeClassification,
 } from '@/lib/flowstarter/scope-classifier';
+import {
+  scopeRouteThresholds,
+  type Scope,
+} from '@/lib/flowstarter/scope-route';
 
 /**
  * The prompt's version, bumped by hand whenever SYSTEM_PROMPT changes.
@@ -191,6 +195,27 @@ function cleanEvidence(raw: readonly string[]): string[] {
 }
 
 /**
+ * The one place this module still compares a confidence to a threshold.
+ *
+ * `decideRoute` used to do this itself, against whatever `confidence` a
+ * classifier handed it -- which is how a sigma cosine margin ended up
+ * compared to a bar tuned for this exact number. Now only the tier that owns
+ * this scale computes it, once, at classification time, and hands the answer
+ * down as `decided`; see the module doc on `ScopeClassification.decided`.
+ *
+ * `unclear` is never decided here: the routing rule already asks the
+ * clarifying question for `unclear` at any confidence, so there is nothing
+ * for this flag to change and no reason to compare it to anything.
+ */
+function decidedFor(scope: Scope, confidence: number): boolean {
+  if (scope === 'unclear') return false;
+  const thresholds = scopeRouteThresholds();
+  return scope === 'custom'
+    ? confidence >= thresholds.customAtOrAbove
+    : confidence >= thresholds.standardAtOrAbove;
+}
+
+/**
  * Classify one brief, or say `unclear` and why in the log.
  *
  * Never throws. Every caller of this is on the visitor's critical path between
@@ -219,11 +244,13 @@ export async function llmClassifyScope(
       prompt: trimmed,
     });
 
+    const confidence = clampConfidence(object.confidence);
     const result: ScopeClassification = {
       scope: object.scope,
-      confidence: clampConfidence(object.confidence),
+      confidence,
       evidence: cleanEvidence(object.evidence ?? []),
       classifier: `llm:${SCOPE_PROMPT_VERSION}`,
+      decided: decidedFor(object.scope, confidence),
     };
     remember(key, result);
     noteClassifierSuccess(SCOPE_CLASSIFIER_HEALTH_KEY);

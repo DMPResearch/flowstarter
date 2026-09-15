@@ -15,11 +15,31 @@
  *   rules decide, models phrase.
  *
  * A model (or, later, the local sigma classifier -- see `./scope-classifier`)
- * supplies one verdict and a confidence. It does not decide anything. This
- * module is the decision: a pure function over that verdict, the confidence,
- * the acceptable-use gate's answer, and the visitor's own answer to the one
- * clarifying question. Same inputs, same route, every time, with no IO and no
- * import of the classifier.
+ * supplies one verdict, a confidence, and whether IT has already decided --
+ * `decided` below. It does not decide anything else. This module is the
+ * decision: a pure function over that verdict, `decided`, the acceptable-use
+ * gate's answer, and the visitor's own answer to the one clarifying question.
+ * Same inputs, same route, every time, with no IO and no import of the
+ * classifier.
+ *
+ * ── `decided`, not `confidence`, is what this module compares to anything ──
+ * This was the second bug found alongside the one above. `@flowstarter/
+ * sigma-flowstarter`'s embedding head reports its own calibrated margin as
+ * `confidence` -- a cosine distance in its own scoring space -- and this
+ * module used to compare that number straight to `SCOPE_CUSTOM_CONFIDENCE`
+ * and `SCOPE_STANDARD_CONFIDENCE`, bars tuned for a language model's
+ * self-reported probability. The two are not on the same scale: a confident
+ * sigma verdict reports a margin around 0.07, which never clears a 0.6 or 0.7
+ * bar, so every sigma-classified visitor was asked the clarifying question
+ * regardless of how sure the embedding tier was. `ScopeClassification.decided`
+ * (see `./scope-classifier`) is the fix: each tier reports whether IT has
+ * already decided, on its own calibration, and this module honours that flag
+ * instead of re-deriving one from a number it did not calibrate. The sigma
+ * adapter sets it from the cascade's own guarded outcome; the LLM adapter
+ * (`@/lib/ai/classify-scope`) sets it from the thresholds below, which is the
+ * one place they are still compared to a `confidence` value. This mirrors
+ * `decidedAction` on `PolicyClassification` in `@/lib/policy/acceptable-use`,
+ * the same fix for the same defect on the acceptable-use head.
  *
  * ── The visitor's answer is a rule input, not a hint ───────────────────────
  * This used to be the bug. The clarifying question's answer was appended to
@@ -55,14 +75,21 @@
  * Two numbers, both overridable by ops without a deploy, and neither of them
  * written at a call site:
  *
- *   SCOPE_CUSTOM_CONFIDENCE    below this, a `custom` verdict is not acted on
- *   SCOPE_STANDARD_CONFIDENCE  below this, a `standard` verdict is not acted on
+ *   SCOPE_CUSTOM_CONFIDENCE    below this, the LLM adapter does not decide a
+ *                              `custom` verdict for itself
+ *   SCOPE_STANDARD_CONFIDENCE  below this, the LLM adapter does not decide a
+ *                              `standard` verdict for itself
  *
  * `custom` is held to the higher bar on purpose. Wrongly routing a standard
  * site to a call costs a sale; wrongly routing custom work to the generator
  * costs a generation run and ends with the visitor being told, after fifteen
  * minutes of watching a progress bar, that we built the wrong thing. The first
  * mistake is recoverable in the call. The second is not recoverable at all.
+ *
+ * `scopeRouteThresholds()` stays here, exported, because ops overrides one
+ * pair of env vars for the whole feature and a second copy of the fallback
+ * numbers is how the two silently drift. `decideRoute` below does not call it
+ * any more; only the LLM adapter does, at classification time.
  */
 
 /** What the classifier can say about a brief. See `./scope-classifier`. */
@@ -102,7 +129,12 @@ export type ScopeAnswer = 'site' | 'software' | 'other';
 
 export interface ScopeRouteInput {
   scope: Scope;
-  /** 0..1, as the classifier reported it. Values outside are clamped. */
+  /**
+   * 0..1, as the classifier reported it. Kept for the lead row and the
+   * operator card, not read by this function any more: see the module doc on
+   * why comparing it to a threshold in here was the bug. Values outside 0..1
+   * are the classifier's problem, not this one's.
+   */
   confidence: number;
   /**
    * The acceptable-use gate's verdict, when there is one.
@@ -124,6 +156,19 @@ export interface ScopeRouteInput {
    * conversation.
    */
   alreadyClarified?: boolean;
+  /**
+   * True when the tier that produced `scope` has ALREADY decided, on its own
+   * calibration, that it is confident enough to act on -- see
+   * `ScopeClassification.decided` in `./scope-classifier` for the full story.
+   * This module reads the flag and does not know or care which tier set it or
+   * how.
+   *
+   * Absent or false is "not decided": a `custom` or `standard` verdict
+   * without it is treated exactly like an `unclear` one everywhere this
+   * module would otherwise have acted on it directly -- the visitor is asked,
+   * or, in the disagreement check, the verdict does not outrank their answer.
+   */
+  decided?: boolean;
 }
 
 export interface ScopeRouteDecision {
@@ -246,10 +291,11 @@ function decision(
  *                     left" and hands the visitor to the preview route that
  *                     owns the policy copy. Neither is ever offered a call.
  *   visitor answer    an explicit answer settles the scope, unless the
- *                     classifier confidently says the opposite, which is a
- *                     disagreement rather than a verdict.
+ *                     classifier's own tier has already decided the opposite,
+ *                     which is a disagreement rather than a verdict.
  *   clarified, typed  the second classification acts on whatever it reached.
- *   first pass        a confident verdict acts, anything else asks once.
+ *   first pass        a verdict its own tier has decided acts, anything else
+ *                     asks once.
  */
 export function decideRoute(input: ScopeRouteInput): ScopeRouteDecision {
   const acceptableUse = input.acceptableUse ?? 'allowed';
@@ -280,10 +326,8 @@ export function decideRoute(input: ScopeRouteInput): ScopeRouteDecision {
     return decision('acceptableUseNeedsAHuman', 'self-serve', input.scope);
   }
 
-  const confidence = Math.min(1, Math.max(0, Number(input.confidence) || 0));
-  const thresholds = scopeRouteThresholds();
   const classifierIsSureItIsCustom =
-    input.scope === 'custom' && confidence >= thresholds.customAtOrAbove;
+    input.scope === 'custom' && input.decided === true;
 
   if (input.visitorAnswer === 'software') {
     // Nothing outranks this. Somebody who has just said their customers log
@@ -330,7 +374,7 @@ export function decideRoute(input: ScopeRouteInput): ScopeRouteDecision {
   }
 
   if (input.scope === 'standard') {
-    return confidence >= thresholds.standardAtOrAbove
+    return input.decided === true
       ? decision('standardAboveThreshold', 'self-serve', 'standard')
       : decision('standardBelowThreshold', 'ask-one-more-question', 'unclear');
   }

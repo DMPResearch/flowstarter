@@ -14,7 +14,11 @@
 #   1. Lint  — flowstarter-main, plus a check that no two Supabase migrations
 #      share a version (supabase_migrations.schema_migrations keys by
 #      version alone, so a collision there is a stack-inconsistency bug, not
-#      a style nit — see docs/release-process.md, "Migration versions")
+#      a style nit — see docs/release-process.md, "Migration versions"), plus
+#      a check that no tracked source file carries a literal NUL byte (git
+#      samples a blob for one to decide whether to diff it as text, so a NUL
+#      byte hides that file's diffs from review — see
+#      scripts/check-no-nul-bytes.mjs)
 #   2. Typecheck — flow-design-system + flowstarter-main
 #   3. Unit tests with coverage for flowstarter-main, agentic-codegen and
 #      build-worker (vitest), then the coverage ratchet. Each package's vitest
@@ -70,6 +74,12 @@ jobs:
       # "Migration versions".
       - name: Migration versions — no two files share a version
         run: node scripts/check-migration-versions.mjs
+      # A literal NUL byte in a tracked source file makes git sample it as
+      # binary and render every diff of that file as "Binary files differ",
+      # hiding the change from review -- see scripts/check-no-nul-bytes.mjs
+      # for the defect it was written to catch (`useScopeRoute.ts`).
+      - name: No literal NUL bytes in a tracked source file
+        run: node scripts/check-no-nul-bytes.mjs
   # ── 2. Typecheck ──────────────────────────────────────────────────────────
   typecheck:
     name: Typecheck

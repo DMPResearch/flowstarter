@@ -34,7 +34,7 @@ import type { Scope } from './scope-route';
 
 export interface ScopeClassification {
   scope: Scope;
-  /** 0..1. Implementations clamp; `decideRoute` clamps again. */
+  /** 0..1. Implementations clamp. Not compared to a threshold by `decideRoute` any more -- see `decided`. */
   confidence: number;
   /** Short fragments of the visitor's own words that decided it. */
   evidence: string[];
@@ -44,6 +44,30 @@ export interface ScopeClassification {
    * made it. `llm:<prompt version>` today, `sigma:<model version>` later.
    */
   classifier: string;
+  /**
+   * True when THIS implementation has already decided, on its own
+   * calibration, that `scope` is confident enough to act on -- not a number
+   * for `@/lib/flowstarter/scope-route`'s `decideRoute` to compare against a
+   * threshold.
+   *
+   * `confidence` above is whatever scale the tier that produced it uses: a
+   * cosine margin from `@flowstarter/sigma-flowstarter`'s embedding centroids,
+   * or a language model's self-reported probability, and the two are not
+   * interchangeable. Comparing sigma's margin (around 0.07 for a confident
+   * verdict) to the bars tuned for the model's probability (0.6/0.7) is
+   * exactly the defect this flag exists to make impossible: every
+   * sigma-classified visitor cleared neither bar and was asked the
+   * clarifying question regardless of how sure the embedding tier was.
+   *
+   * Set by `@/lib/ai/classify-scope-sigma`'s adapter from the sigma cascade's
+   * own guarded outcome (see that module) and by `@/lib/ai/classify-scope`'s
+   * adapter from `scopeRouteThresholds()` -- the same bars `decideRoute` used
+   * to compare `confidence` to directly. Absent or false means "not decided":
+   * `decideRoute` treats a `custom`/`standard` verdict exactly like `unclear`
+   * everywhere it would otherwise have acted on it. Mirrors `decidedAction` on
+   * `PolicyClassification` in `@/lib/policy/acceptable-use`.
+   */
+  decided?: boolean;
 }
 
 export type ScopeClassifier = (text: string) => Promise<ScopeClassification>;
@@ -60,6 +84,7 @@ export const UNCLASSIFIED: ScopeClassification = {
   confidence: 0,
   evidence: [],
   classifier: 'none',
+  decided: false,
 };
 
 let override: ScopeClassifier | null = null;

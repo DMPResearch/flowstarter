@@ -1,0 +1,147 @@
+#!/usr/bin/env node
+/**
+ * check-no-nul-bytes.mjs: refuse a literal NUL byte in a tracked source file.
+ *
+ * `apps/flowstarter-main/src/app/(dynamic-pages)/(main-pages)/components/
+ * discovery/useScopeRoute.ts` once had `.join('\0')` written with a literal
+ * NUL byte in the source rather than the two-character escape sequence. Git
+ * has no way to tell that byte apart from an actual binary file: it samples
+ * the first few thousand bytes of a blob for a NUL to decide whether to diff
+ * it as text, so every diff of that file -- in `git diff`, in review, in
+ * `git log -p` -- rendered as `Binary files differ` and hid the change being
+ * reviewed. The file was never binary; a NUL character belongs in a string
+ * literal as `\x00` (or `^@`, or whatever separator is actually intended),
+ * never typed into the file itself.
+ *
+ * This is a repo-wide property, not a one-file fix: anything under version
+ * control that is meant to be read as text should never carry a raw NUL, so
+ * this scans every git-tracked file whose extension marks it as source text
+ * (see EXTENSIONS below) rather than special-casing the one path that found
+ * the bug.
+ *
+ * Usage:
+ *   node scripts/check-no-nul-bytes.mjs
+ *   node scripts/check-no-nul-bytes.mjs --dir path/to/scan
+ *
+ * Exits non-zero and lists every offending file when a NUL byte is found.
+ * Exits zero, silently, otherwise.
+ */
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.join(__dirname, '..');
+
+/**
+ * Extensions treated as source text. Deliberately excludes images, fonts,
+ * video and other formats that are legitimately binary (`.png`, `.svg`,
+ * `.webm`, `.ico`, ...) -- a NUL byte there is not a defect, it is the format.
+ */
+export const TEXT_EXTENSIONS = new Set([
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+  '.mts',
+  '.cts',
+  '.astro',
+  '.sql',
+  '.json',
+  '.yml',
+  '.yaml',
+  '.css',
+  '.scss',
+  '.md',
+  '.mdx',
+  '.html',
+  '.sh',
+]);
+
+/**
+ * @param {string} filename
+ * @returns {boolean} true when this file's extension is one this script scans
+ */
+export function isScannedFile(filename) {
+  return TEXT_EXTENSIONS.has(path.extname(filename));
+}
+
+/**
+ * @param {Buffer} buffer
+ * @returns {boolean}
+ */
+export function hasNulByte(buffer) {
+  return buffer.includes(0x00);
+}
+
+/**
+ * Every git-tracked file under `dir`, relative to `dir`. Tracked rather than
+ * walked: it is exactly the set a diff or a review can ever render, it
+ * already honours `.gitignore`, and it never descends into `node_modules`.
+ *
+ * @param {string} dir
+ * @returns {string[]}
+ */
+function trackedFiles(dir) {
+  const output = execFileSync('git', ['ls-files'], {
+    cwd: dir,
+    encoding: 'utf8',
+  });
+  return output.split('\n').filter(Boolean);
+}
+
+function parseArgs(argv) {
+  const args = { dir: REPO_ROOT };
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === '--dir' && argv[i + 1]) {
+      args.dir = path.resolve(argv[i + 1]);
+      i += 1;
+    }
+  }
+  return args;
+}
+
+function main() {
+  const { dir } = parseArgs(process.argv.slice(2));
+  const candidates = trackedFiles(dir).filter(isScannedFile);
+
+  const offenders = [];
+  for (const relativePath of candidates) {
+    const absolutePath = path.join(dir, relativePath);
+    let buffer;
+    try {
+      buffer = readFileSync(absolutePath);
+    } catch {
+      // A tracked file that is not on disk (a submodule boundary, a case-only
+      // rename mid-flight) has nothing this check can read; skip it rather
+      // than fail the whole run on an unrelated repo-state issue.
+      continue;
+    }
+    if (hasNulByte(buffer)) offenders.push(relativePath);
+  }
+
+  if (offenders.length === 0) {
+    console.log(
+      `check-no-nul-bytes: ${candidates.length} source file(s) scanned in ${path.relative(process.cwd(), dir) || '.'}, no NUL bytes.`,
+    );
+    return;
+  }
+
+  console.error(
+    'check-no-nul-bytes: a literal NUL byte was found in a source file. git samples a blob for a NUL byte to decide whether to diff it as text, so a file with one renders every diff as "Binary files differ" and hides the change from review. Replace the byte with the escape sequence the string actually means (`\\x00`, `\\u0000`, or a real separator character).\n',
+  );
+  for (const file of offenders) {
+    console.error(`  ${file}`);
+  }
+  process.exitCode = 1;
+}
+
+const isMain =
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  main();
+}

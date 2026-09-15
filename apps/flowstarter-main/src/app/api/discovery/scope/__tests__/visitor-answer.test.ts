@@ -204,6 +204,10 @@ describe('a disagreement between the visitor and a confident classifier', () => 
       confidence: 0.99,
       evidence: ['customers log into'],
       classifier: 'llm:test',
+      // 0.99 is what makes this a confident verdict rather than a guess; see
+      // `ScopeClassification.decided` -- `decideRoute` reads this flag now,
+      // not the confidence number, to tell "sure" from "leaning".
+      decided: true,
     }));
     const res = await POST(
       post({
