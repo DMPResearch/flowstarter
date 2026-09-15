@@ -107,6 +107,22 @@ reset_scripts_src() {
   mkdir -p "$ROOT/src/scripts"
 }
 
+BUILD_WORKER_DEST_DIR="$ROOT/opt/build-worker"
+export BUILD_WORKER_DEST_DIR
+
+# All three top-level entries, same as staging-deploy.yml's
+# `tar -C . -cf - supabase -C deploy/hetzner-staging scripts build-worker`.
+run_sync_with_build_worker() {
+  (cd "$ROOT/src" && tar -cf - supabase scripts build-worker) \
+    | REPO_DIR="$REPO_DIR" SCRIPTS_DEST_DIR="$SCRIPTS_DEST_DIR" \
+      BUILD_WORKER_DEST_DIR="$BUILD_WORKER_DEST_DIR" bash "$SCRIPT" 2>&1
+}
+
+reset_build_worker_src() {
+  rm -rf "$ROOT/src/build-worker"
+  mkdir -p "$ROOT/src/build-worker"
+}
+
 # ── A first sync onto an empty host ─────────────────────────────────────────
 echo "sync-supabase.sh: first sync"
 reset_src
@@ -319,6 +335,70 @@ if [ -f "$SCRIPTS_DEST_DIR/hello.sh" ]; then
   ok "a previously installed script is left alone when this sync omits scripts/"
 else
   no "a previously installed script is left alone when this sync omits scripts/"
+fi
+
+# ── The build worker's compose file ─────────────────────────────────────────
+# Installed for the same reason the scripts are: it is a file the box runs and
+# `main` owns. It is deliberately NOT installed into SCRIPTS_DEST_DIR, which
+# sudoers grants by glob and should stay a directory of scripts.
+echo "sync-supabase.sh: build-worker compose install"
+reset_src
+reset_scripts_src
+reset_build_worker_src
+printf 'services:\n  build-worker:\n    image: first\n' \
+  >"$ROOT/src/build-worker/docker-compose.yml"
+# An env EXAMPLE sits beside it in the repo and must never be installed: the
+# real one is /etc/flowstarter/build-worker-staging.env, mode 600.
+printf 'FLOWSTARTER_BUILD_WORKER_SECRET=replace-me\n' \
+  >"$ROOT/src/build-worker/build-worker.env.example"
+out="$(run_sync_with_build_worker)"
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  ok "a sync carrying build-worker/ succeeds"
+else
+  no "a sync carrying build-worker/ succeeds" "$out"
+fi
+if [ -f "$BUILD_WORKER_DEST_DIR/docker-compose.yml" ]; then
+  ok "the compose file lands in BUILD_WORKER_DEST_DIR"
+else
+  no "the compose file lands in BUILD_WORKER_DEST_DIR" "$out"
+fi
+if [ -f "$BUILD_WORKER_DEST_DIR/build-worker.env.example" ]; then
+  no "the env example is not installed" "it was copied to the host"
+else
+  ok "the env example is not installed"
+fi
+assert_contains "$out" "installed build-worker/docker-compose.yml" \
+  "the install is logged with its digest"
+
+echo "sync-supabase.sh: build-worker compose — unchanged content is not rewritten"
+out="$(run_sync_with_build_worker)"
+assert_contains "$out" "already up to date" "an unchanged compose file is left alone"
+
+echo "sync-supabase.sh: build-worker compose — changed content is replaced atomically"
+printf 'services:\n  build-worker:\n    image: second\n' \
+  >"$ROOT/src/build-worker/docker-compose.yml"
+out="$(run_sync_with_build_worker)"
+if grep -q "image: second" "$BUILD_WORKER_DEST_DIR/docker-compose.yml"; then
+  ok "the installed compose file actually changed"
+else
+  no "the installed compose file actually changed" "$(cat "$BUILD_WORKER_DEST_DIR/docker-compose.yml")"
+fi
+if ! ls "$BUILD_WORKER_DEST_DIR"/.docker-compose.yml.*.new >/dev/null 2>&1; then
+  ok "no leftover temp file after the atomic replace"
+else
+  no "no leftover temp file after the atomic replace" "$(ls "$BUILD_WORKER_DEST_DIR")"
+fi
+
+echo "sync-supabase.sh: a tar stream without a top-level build-worker/ entry"
+reset_src
+out="$(run_sync)"
+assert_contains "$out" "no build-worker/ in the tar stream" \
+  "sync-supabase.sh says it skipped the build worker"
+if grep -q "image: second" "$BUILD_WORKER_DEST_DIR/docker-compose.yml"; then
+  ok "a previously installed compose file is left alone when this sync omits it"
+else
+  no "a previously installed compose file is left alone when this sync omits it"
 fi
 
 # ── Refuses to run as non-root ───────────────────────────────────────────────

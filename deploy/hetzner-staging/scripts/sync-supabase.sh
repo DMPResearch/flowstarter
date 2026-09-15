@@ -4,15 +4,16 @@
 # supabase-stack.sh, this script itself, etc.) from the same checkout.
 #
 # Usage (stdin is a tar stream, not an argument):
-#   tar -C . -cf - supabase -C deploy/hetzner-staging scripts | sync-supabase.sh
+#   tar -C . -cf - supabase \
+#     -C deploy/hetzner-staging scripts build-worker | sync-supabase.sh
 #
-# The two `-C` flags give the stream two top-level entries, "supabase" and
-# "scripts", from two different directories of the repo checkout (this is
-# what staging-deploy.yml's "Sync supabase/ and scripts/ to the host" step
-# sends). A stream with only a top-level "supabase" entry -- the older,
-# still-supported form -- is also accepted; the scripts install is skipped
-# in that case, not an error, so a person bootstrapping the box by hand with
-# the one-liner from README.md's "One-time box setup" doesn't need to change
+# The `-C` flags give the stream three top-level entries -- "supabase",
+# "scripts" and "build-worker" -- from two different directories of the repo
+# checkout (this is what staging-deploy.yml's "Sync supabase/ and scripts/ to
+# the host" step sends). A stream carrying only some of them -- the older,
+# still-supported forms -- is also accepted; each install is skipped in that
+# case, not an error, so a person bootstrapping the box by hand with the
+# one-liner from README.md's "One-time box setup" doesn't need to change
 # anything.
 #
 # Reads a tar stream from stdin and makes REPO_DIR/supabase/ match it
@@ -72,6 +73,12 @@ REPO_DIR="${REPO_DIR:-/opt/flowstarter/staging/repo}"
 STAGE_DIR="${REPO_DIR}.supabase.sync"
 STALE_DIR="${REPO_DIR}/supabase.stale"
 SCRIPTS_DEST_DIR="${SCRIPTS_DEST_DIR:-/opt/flowstarter/staging}"
+# The build worker's compose file. It lives beside the editor's rather than in
+# SCRIPTS_DEST_DIR because worker-stack.sh resolves it relative to itself
+# (`$HERE/../build-worker/docker-compose.yml`), exactly as editor-stack.sh
+# resolves the editor's — and because SCRIPTS_DEST_DIR is what sudoers grants
+# by glob, which should stay a directory of scripts and nothing else.
+BUILD_WORKER_DEST_DIR="${BUILD_WORKER_DEST_DIR:-/opt/flowstarter/build-worker}"
 
 require_root() {
   local uid
@@ -189,6 +196,44 @@ install_scripts() {
   fi
 }
 
+# The build worker's compose file, installed the same way and for the same
+# reason the scripts above are: it is a file the box runs and `main` owns, and
+# the two must not be allowed to drift. Same atomic temp-then-rename, so a
+# `worker-stack.sh up` racing this never reads a half-written compose file.
+#
+# Only the compose file. The env file beside it in the repo is an EXAMPLE and
+# is never installed: the real one is /etc/flowstarter/build-worker-staging.env,
+# mode 600, and a deploy lane that could write it could write a secret from a
+# git checkout.
+install_build_worker() {
+  local src_dir="$1" dest_dir="$2"
+  local src="${src_dir}/docker-compose.yml"
+
+  if [[ ! -f "$src" ]]; then
+    echo "sync-supabase.sh: no build-worker/ in the tar stream; leaving ${dest_dir} untouched." >&2
+    return 0
+  fi
+
+  mkdir -p "$dest_dir"
+  local dest_file="${dest_dir}/docker-compose.yml"
+  local new_hash old_hash tmp_file
+  new_hash="$(sha256_cmd "$src" | awk '{print $1}')"
+  if [[ -f "$dest_file" ]]; then
+    old_hash="$(sha256_cmd "$dest_file" | awk '{print $1}')"
+    if [[ "$old_hash" == "$new_hash" ]]; then
+      echo "sync-supabase.sh: build worker compose file already up to date in ${dest_dir}"
+      return 0
+    fi
+  fi
+
+  tmp_file="${dest_dir}/.docker-compose.yml.$$.new"
+  rm -f "$tmp_file"
+  cp "$src" "$tmp_file"
+  chmod 644 "$tmp_file"
+  mv -f "$tmp_file" "$dest_file"
+  echo "sync-supabase.sh: installed build-worker/docker-compose.yml (sha256 ${new_hash:0:12})"
+}
+
 main() {
   require_root
   trap cleanup EXIT
@@ -222,6 +267,7 @@ main() {
   echo "Synced supabase/ into ${REPO_DIR}/supabase"
 
   install_scripts "${STAGE_DIR}/scripts" "$SCRIPTS_DEST_DIR"
+  install_build_worker "${STAGE_DIR}/build-worker" "$BUILD_WORKER_DEST_DIR"
 }
 
 main "$@"

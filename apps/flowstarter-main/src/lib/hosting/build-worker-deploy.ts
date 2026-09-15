@@ -24,6 +24,7 @@ import {
   HttpDeployAgentClient,
   type DeployAgentClient,
 } from './deploy';
+import { resolveFlowstarterEnv } from '../supabase-target';
 import { deployedSiteUrl, type EnvLike } from './site-urls';
 
 /** Minimum length the dispatch secret must have to be usable here. */
@@ -54,8 +55,24 @@ export class ArtifactUrlError extends Error {}
 /**
  * Artifacts are fetched by the deploy-agent, so the URL is attacker-relevant
  * even though the caller is trusted: it decides what bytes land on a host.
- * Production insists on HTTPS; dev allows loopback so the worker can serve its
- * own tarball with no bucket and no certificate.
+ * Production insists on HTTPS; everywhere else allows loopback, so a worker on
+ * the same box can serve its own tarball with no bucket and no certificate.
+ *
+ * The environment is resolved through `resolveFlowstarterEnv`, NOT read off
+ * `NODE_ENV` directly, and the difference is the whole reason this paragraph
+ * exists. Every containerised slot runs `NODE_ENV=production`, staging
+ * included — that is simply what a Next standalone build is — so
+ * `FLOWSTARTER_ENV` is the only thing that can name staging at all (see
+ * `lib/supabase-target.ts`). Reading `NODE_ENV` meant the staging slot took
+ * production's rule and refused the loopback URL of the build worker running
+ * beside it on the same host: a worker on `fs-sites-01` could claim a job,
+ * build it and pass every gate, only to fail at the last step with
+ * "artifactUrl must be https" over a request that never left the machine.
+ *
+ * Production's behaviour is unchanged. `FLOWSTARTER_ENV=production`, or a
+ * plain `NODE_ENV=production` with no `FLOWSTARTER_ENV`, still insists on
+ * HTTPS, because production's artifact URL is meant to be an object store and
+ * a loopback one there is a worker nobody finished configuring.
  */
 export function assertUsableArtifactUrl(
   raw: string,
@@ -76,7 +93,8 @@ export function assertUsableArtifactUrl(
     url.hostname === 'localhost' ||
     url.hostname === '::1' ||
     url.hostname === '[::1]';
-  if (env.NODE_ENV === 'production' || !loopback) {
+  const flowstarterEnv = resolveFlowstarterEnv(env as NodeJS.ProcessEnv);
+  if (flowstarterEnv === 'production' || !loopback) {
     throw new ArtifactUrlError(
       'artifactUrl must be https (plain http is allowed only on loopback outside production)'
     );

@@ -48,6 +48,15 @@ assert_not_contains() {
   fi
 }
 
+assert_status() {
+  local actual="$1" expected="$2" label="$3"
+  if [ "$actual" = "$expected" ]; then
+    ok "$label"
+  else
+    no "$label" "expected exit ${expected}, got ${actual}"
+  fi
+}
+
 # ── A throwaway host ────────────────────────────────────────────────────────
 # One temp dir stands in for /opt/flowstarter/staging, /etc/caddy/platform,
 # /etc/flowstarter and /etc/flowstarter/tls.
@@ -74,6 +83,14 @@ fi
 if [ "$1" = "ps" ] && [ "$2" = "-a" ]; then
   printf '%s\n' "${DOCKER_ANCESTOR_USERS-}"
   exit 0
+fi
+# A registry that cannot serve the tag, and whether this host already has it.
+# Both default to the happy path, so only the two cases below set them.
+if [ "$1" = "pull" ]; then
+  exit "${DOCKER_PULL_EXIT-0}"
+fi
+if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
+  exit "${DOCKER_IMAGE_PRESENT_EXIT-0}"
 fi
 exit 0
 STUB
@@ -172,6 +189,31 @@ assert_contains "$log" "supabase-stack ensure" "pr-73 runs the stack ensure step
 assert_not_contains "$log" "supabase-stack migrate" "pr-73 does not migrate"
 assert_not_contains "$log" "supabase-stack write-env" "pr-73 does not rewrite the keys"
 assert_contains "$log" "env FLOWSTARTER_BUILD_COMMIT=pr-73" "pr-73 exports its own image tag as FLOWSTARTER_BUILD_COMMIT"
+
+# ── The pull, and the one case where a failed pull is not fatal ────────────
+# An operator who built an image ON the box -- which is how the build worker
+# was first brought up on fs-sites-01, from a source tarball rather than from
+# GHCR -- has a tag that exists nowhere to pull it from. So does a redeploy of
+# a tag already on disk while the registry is briefly unreachable. Neither is a
+# reason to refuse; a tag this host has never seen still is.
+echo "deploy-slot.sh: a failed pull is survivable only when the image is already on this host"
+export DOCKER_PULL_EXIT=1
+export DOCKER_IMAGE_PRESENT_EXIT=0
+out="$(run_deploy main ghcr.io/x/y:local-build)"
+rc=$?
+assert_status "$rc" 0 "deploys the local copy when the pull fails but the image is present"
+assert_contains "$out" "already on this host" "says it is using the local copy"
+assert_contains "$out" "Deployed https://staging.flowstarter.dev" "the deploy still completes"
+
+echo "deploy-slot.sh: a failed pull for a tag this host has never seen is fatal"
+export DOCKER_IMAGE_PRESENT_EXIT=1
+out="$(run_deploy main ghcr.io/x/y:typo)"
+rc=$?
+assert_status "$rc" 1 "refuses"
+assert_contains "$out" "could not be pulled and is not on this host" "says why"
+assert_contains "$out" "docker login ghcr.io" "names the likely fix"
+assert_not_contains "$out" "Deployed https://staging.flowstarter.dev" "nothing was deployed"
+unset DOCKER_PULL_EXIT DOCKER_IMAGE_PRESENT_EXIT
 
 # ── Disk retention: preflight and post-deploy (2026-09-15 incident) ────────
 echo "deploy-slot.sh: image retention runs as a preflight and again after a successful deploy"

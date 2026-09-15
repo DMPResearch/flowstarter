@@ -198,6 +198,35 @@ COPY packages ./packages
 # Empty when BUILD_LIBRARY_PREVIEWS was false, which is what staging wants.
 COPY --from=previews /app/apps/flowstarter-main/public/preview ./apps/flowstarter-main/public/preview
 WORKDIR /app
+# ── Route tripwire ──────────────────────────────────────────────────────
+# `next build` compiles whatever routes it finds and says nothing about the
+# ones it does not. That is ordinarily fine and was not fine here: the root
+# `.dockerignore` carried `**/build`, meant for build output, which also
+# matched three Next route segments literally named `build` under `src/`. The
+# image built, passed its health check, and served a plain HTML 404 to the
+# build worker's deploy callback — the route that turns a finished build into
+# a deployed site. Nothing in the pipeline noticed for as long as nothing on
+# the box ever called it.
+#
+# So the presence of a route file is asserted rather than assumed. This costs
+# nothing, runs in the layer that already has the sources, and turns "the
+# context silently dropped a route" back into a failed build. Add to this list
+# any route whose absence would be invisible until a service calls it.
+RUN set -eu; \
+    for route in \
+      apps/flowstarter-main/src/app/api/internal/build/deploy/route.ts \
+      apps/flowstarter-main/src/app/api/internal/policy/scan/route.ts \
+      'apps/flowstarter-main/src/app/api/team/projects/[id]/changes/[changeId]/build/route.ts' \
+      'apps/flowstarter-main/src/app/api/admin/projects/[id]/changes/[changeId]/build/route.ts' \
+    ; do \
+      [ -f "$route" ] || { \
+        echo "missing route in the build context: $route" >&2; \
+        echo "Check the root .dockerignore -- a pattern there is stripping it." >&2; \
+        exit 1; \
+      }; \
+    done; \
+    echo "every asserted route is present in the build context"
+
 ENV NODE_ENV=production
 # NEXT_PUBLIC_* are inlined into the client bundle at build time, so the value
 # passed here decides which database the shipped bundle talks to, and the lane

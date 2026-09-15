@@ -1,0 +1,142 @@
+# The Flowstarter build worker on the Hetzner sites host, staging slot.
+#
+# WHAT WAS MISSING. flowstarter-main writes a row to `flowstarter_agent_jobs`
+# for every paid build, every change request and every operator editor session
+# it ships, then POSTs the job id to FLOWSTARTER_BUILD_WORKER_URL as a nudge.
+# On this box that variable was unset and no worker ran, so the ledger filled
+# up and nothing drained it: every FULL_SITE_BUILD, CHANGE_REQUEST_BUILD and
+# OPERATOR_EDIT_BUILD queued on staging sat unclaimed. Paid builds had only
+# ever run from a developer's Mac. This file is the listener.
+#
+# ── The Docker socket, and why it is here ──────────────────────────────────
+#
+# This container is handed /var/run/docker.sock. That is root on the host, and
+# it is the single most consequential line in this file, so it is stated rather
+# than assumed:
+#
+#   * The worker NEVER runs a client's generated code itself. Validation —
+#     `pnpm install && pnpm run build` over an Astro site a coding agent
+#     wrote — is the one step that executes untrusted code, and
+#     apps/build-worker/src/validator.ts runs each command in its OWN
+#     disposable container: read-only root filesystem, one bind mount (the
+#     site workspace at /site), `--network=none` for everything after the
+#     install, `--cap-drop=ALL --security-opt=no-new-privileges`, a memory cap,
+#     a pids cap, a non-root `--user`, and NO Docker socket. That child is the
+#     boundary that matters, and this socket is what lets the worker ask for
+#     it.
+#   * `FLOWSTARTER_ENV=staging` makes that mandatory, not optional:
+#     apps/build-worker/src/isolation.ts refuses to start in staging or
+#     production with `FLOWSTARTER_BUILD_ISOLATION=native`. So a worker on this
+#     box either has a daemon to talk to or does not run at all. There is no
+#     configuration in which it quietly builds a client's generated code next
+#     to every other client's worktree.
+#   * The trust boundary therefore reads: everything inside THIS container is
+#     code from this repository; everything a client's agent wrote runs one
+#     container further out, with no socket. Anyone widening what runs in here
+#     — a shell tool, an operator-supplied command, a plugin — is widening
+#     access to the host daemon, and should move it into the child container
+#     instead.
+#
+# ── Why the worktrees are a bind mount at an IDENTICAL path ────────────────
+#
+# `docker run --mount=type=bind,source=<path>` is resolved by the DAEMON, on
+# the HOST, not inside the process that asked for it. The worker passes the
+# site workspace's own absolute path as that source. So a worktrees root that
+# existed only inside this container would make the daemon mount a host path
+# that does not exist, and every validation would run against an empty /site —
+# a build failing at `package.json` for a site whose files are plainly there.
+# The mount below therefore uses the same absolute path on both sides, and
+# FLOWSTARTER_REPOSITORY_ROOT / FLOWSTARTER_WORKTREES_ROOT in the env file must
+# point inside it.
+#
+# ── network_mode: host ─────────────────────────────────────────────────────
+#
+# Same reasoning as the app slot next door (../docker-compose.yml): everything
+# this worker talks to is on this box's loopback — the Supabase CLI stack on
+# 127.0.0.1:54321, flowstarter-main on 127.0.0.1:3000 (its deploy callback and
+# its acceptable-use scan) — and everything that talks to the worker is too:
+# the app's dispatch, and the sites deploy-agent on 127.0.0.1:8443, which
+# fetches the packaged tarball straight off this worker's own HTTP port.
+#
+# There is no `ports:` section and there must not be one. What keeps this off
+# the internet is FLOWSTARTER_BUILD_WORKER_HOST=127.0.0.1 in the env file,
+# which binds the listener to loopback; `worker-stack.sh check` asserts it,
+# because with host networking a `0.0.0.0` bind would be a plain open port on
+# this box behind nothing but the Hetzner Cloud Firewall.
+#
+# Install and drive with ../scripts/worker-stack.sh.
+
+name: flowstarter-build-worker
+
+services:
+  build-worker:
+    image: ${BUILD_WORKER_IMAGE:-ghcr.io/dmpresearch/flowstarter-build-worker:main}
+    container_name: ${BUILD_WORKER_CONTAINER:-flowstarter-build-worker-staging}
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - ${BUILD_WORKER_ENV_FILE:-/etc/flowstarter/build-worker-staging.env}
+    environment:
+      NODE_ENV: production
+      # FLOWSTARTER_ENV is deliberately NOT set here. It comes from the env
+      # file, for the same reason the app slot's does: a value under
+      # `environment:` wins over `env_file:` and would pin every future slot,
+      # production included, to whatever this file said. The env file carries
+      # `FLOWSTARTER_ENV=staging`, and that one value is what forces docker
+      # isolation, forbids FLOWSTARTER_BUILD_SKIP_VALIDATION, and decides the
+      # default staging URL template.
+      #
+      # Neither is FLOWSTARTER_BUILD_WORKER_HOST. `check` asserts it is
+      # loopback, and an assertion about a value this file also sets would only
+      # ever be asserting against itself.
+      GIT_AUTHOR_NAME: Flowstarter Build Agent
+      GIT_AUTHOR_EMAIL: build-agent@flowstarter.net
+    # The host's docker group, so the `node` user can open the socket below.
+    # Passed in by worker-stack.sh from `getent group docker` rather than
+    # written here: the gid is a property of the host, not of this repository,
+    # and a hard-coded one fails as an unreadable permission error.
+    group_add:
+      - '${DOCKER_GID:-999}'
+    volumes:
+      # The host daemon. See the header. Read-only on the mount is worth
+      # having even though the API behind it is not read-only — it stops a
+      # stray `chmod`/`chown` on the socket node itself.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # The worker's own state, at one absolute path that means the same thing
+      # on both sides (see the header). Holds, as subdirectories named by the
+      # env file: `repository` (the local sites git repo), `worktrees` (one per
+      # client build, and the path handed to the daemon as a bind source),
+      # `artifacts` (packaged tarballs the deploy-agent fetches back over
+      # loopback) and `output` (the worker-owned copy of a build's output that
+      # every gate reads, which generated code has never had a handle on).
+      - ${BUILD_WORKER_STATE_ROOT:-/srv/flowstarter/build-worker}:${BUILD_WORKER_STATE_ROOT:-/srv/flowstarter/build-worker}
+    # Scratch for git and for whatever a tarball is assembled through. Nothing
+    # under here is ever executed: the one thing that executes is the
+    # disposable validation container, which has a tmpfs of its own.
+    tmpfs:
+      - /tmp:size=1g,mode=1777,noexec,nosuid
+    # Blast radius. One build at a time by default
+    # (FLOWSTARTER_BUILD_CONCURRENCY=1), and the heavy lifting happens in the
+    # child container which carries its own `--memory` and `--pids-limit`
+    # (4g / 1024 by default, see apps/build-worker/README.md). What is capped
+    # here is the worker itself: a Pi coding session holding a whole site in
+    # memory, plus git. 3g leaves room on a 16g box that is also running the
+    # app slot, the editor, Cal.com, the Supabase stack and every client site.
+    mem_limit: ${BUILD_WORKER_MEM_LIMIT:-3g}
+    cpus: ${BUILD_WORKER_CPUS:-4}
+    pids_limit: ${BUILD_WORKER_PIDS_LIMIT:-1024}
+    healthcheck:
+      # The worker's own unauthenticated liveness probe, which also reports
+      # queue depth. Deliberately not /jobs/full-site: a healthcheck that
+      # needed the bearer secret would mean the secret in this file.
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:' + (process.env.FLOWSTARTER_BUILD_WORKER_PORT || 8787) + '/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
