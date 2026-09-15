@@ -1,6 +1,7 @@
 import {
   ajMachine,
   ajWithRateLimit,
+  ajWithRateLimitBotDryRun,
   createBlockedResponse,
   getRateLimitHeaders,
 } from '@/lib/arcjet';
@@ -12,6 +13,8 @@ import {
 import {
   getAllowedRedirectOrigins,
   isSafeRedirectUrl,
+  isRecorderRequestAllowed,
+  RECORDER_HEADER_NAME,
 } from '@flowstarter/platform-config';
 import { NextResponse, type NextRequest } from 'next/server';
 import {
@@ -464,8 +467,34 @@ export default clerkMiddleware(async (auth, req) => {
       const arcjetPolicy = arcjetPolicyFor(pathname);
       if (hasArcjet && arcjetPolicy !== 'none') {
         try {
-          const client =
-            arcjetPolicy === 'machine' ? ajMachine : ajWithRateLimit;
+          // ── Recorder allowance ──────────────────────────────────────────
+          // Our own showcase recorder (Playwright) cannot pass detectBot on
+          // staging: no cookies, no prior navigation, the exact fingerprint
+          // the rule exists to catch. Only the `browser` policy runs
+          // detectBot at all, so this only ever matters there — `machine`
+          // routes have no bot rule to relax, and `none` never reaches here.
+          // See `isRecorderRequestAllowed` (`@flowstarter/platform-config`)
+          // for the full policy: inert in production, constant-time header
+          // comparison. Rate limiting and shield still run at LIVE either
+          // way — only detectBot drops to DRY_RUN, and only for this one
+          // request.
+          const recorderAllowed =
+            arcjetPolicy === 'browser' &&
+            (await isRecorderRequestAllowed(
+              req.headers.get(RECORDER_HEADER_NAME)
+            ));
+          if (recorderAllowed) {
+            logSecurityEventEdge('security.recorder_allowance', {
+              route: pathname,
+              method: req.method,
+            });
+          }
+
+          const client = recorderAllowed
+            ? ajWithRateLimitBotDryRun
+            : arcjetPolicy === 'machine'
+            ? ajMachine
+            : ajWithRateLimit;
           const decision = await client.protect(req);
 
           // Check if request is denied

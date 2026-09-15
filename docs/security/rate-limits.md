@@ -118,6 +118,57 @@ the Clerk session check, for the same reason: a server, not a person). It is
 not repeated as scattered `pathname.startsWith(...)` checks in the
 middleware.
 
+## Recorder allowance
+
+The showcase recorder (Playwright, headless and headed Chrome) cannot pass
+Arcjet's bot rule on staging.flowstarter.dev: no cookies, no prior
+navigation, the exact fingerprint `detectBot` exists to catch. The existing
+E2E bypass (`x-e2e-secret`, checked in `src/middleware.ts` and
+`src/lib/api-auth.ts`) is gated on `NODE_ENV !== 'production'`, and the
+staging Next.js build runs with `NODE_ENV=production` like any deployed
+build, so that bypass never applies there.
+
+A request that carries the header `x-flowstarter-recorder` set to the value
+of `FLOWSTARTER_RECORDER_SECRET`, and is not running with
+`FLOWSTARTER_ENV=production`, runs the `detectBot` rule at `DRY_RUN` for
+that one request instead of `LIVE`. Shield and the sliding-window rate limit
+in the same client keep running at `LIVE`, so the allowance narrows exactly
+one rule and nothing else. Arcjet still evaluates and logs a bot decision
+under `DRY_RUN`, it just never turns into a 403.
+
+The decision is made by `isRecorderRequestAllowed` in
+[`packages/platform-config/src/recorder-allowance.ts`](../../packages/platform-config/src/recorder-allowance.ts),
+wired into `src/middleware.ts` right where the `browser`/`machine` Arcjet
+client is picked (see `ajWithRateLimitBotDryRun` in
+[`src/lib/arcjet.ts`](../../apps/flowstarter-main/src/lib/arcjet.ts)). It
+only ever applies to the `browser` policy: `machine` routes carry no
+`detectBot` rule to relax, and `none` routes skip Arcjet entirely.
+
+Two independent reasons keep this closed in production, not one:
+
+1. `prod.env` never sets `FLOWSTARTER_RECORDER_SECRET`, so the rule is
+   inert there regardless of the header a caller sends.
+2. `isRecorderRequestAllowed` refuses outright whenever
+   `FLOWSTARTER_ENV === "production"`, before it even reads the header, so a
+   secret leaked or accidentally set in a production env file still cannot
+   reopen the gate.
+
+The header comparison itself is constant time (Web Crypto `crypto.subtle`,
+so it runs in the Edge middleware), matching the constant-time comparisons
+used elsewhere in this app (`node:crypto`'s `timingSafeEqual`, e.g.
+`src/lib/webhook-verification.ts`).
+
+Every time the allowance fires, `src/middleware.ts` logs
+`security.recorder_allowance` with the route through the same
+`logSecurityEventEdge` helper that logs every other Arcjet outcome
+(`security.rate_limited`, `security.bot_blocked`, `security.shield_blocked`).
+There is no separate audit path to keep in sync with this one.
+
+Rejecting an Arcjet-wide `DRY_RUN` for all of staging was a deliberate
+choice, not an oversight: staging.flowstarter.dev is a public URL, and a
+blanket dry-run would relax bot detection for every visitor, not only the
+recorder.
+
 ## Startup posture
 
 `src/instrumentation.ts` (security audit 2026-09-13, Claude H2 —
