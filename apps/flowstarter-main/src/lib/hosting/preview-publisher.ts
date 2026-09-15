@@ -60,6 +60,12 @@ import {
 import { NOINDEX_HEADER_VALUE, packPreviewTarball } from './site-archive';
 import type { ArchiveFile } from './site-archive';
 import {
+  checkPreviewArtifactBudget,
+  formatBytes,
+  previewArtifactBudgetBytes,
+} from './preview-artifact-budget';
+import { sendOpsAlert } from '../ops/send-ops-alert';
+import {
   labelFromPreviewHostname,
   previewHostname,
   previewZone,
@@ -328,6 +334,70 @@ export async function publishFunnelPreview(
   // every `agent.client.push()` call below — dry-run or real, URL or bytes —
   // carries it.
   const tarballSha256 = createHash('sha256').update(tarball).digest('hex');
+
+  // BEFORE the upload, not after it. Supabase Storage enforces the
+  // `tenant-assets` bucket's own `file_size_limit` and answers "The object
+  // exceeded the maximum allowed size" — true, useless, and attributable to
+  // nothing: it does not say which limit, by how much, or what to do. A
+  // correct portfolio preview died on that sentence on 2026-09-15 and the
+  // visitor was shown "the build stopped".
+  //
+  // So the ceiling is ours and it is checked here, where the size, the budget
+  // and the remedy can all be named in one string that the row, the log and
+  // the operator's email all carry. The manifest is still written, and the
+  // preview is still claimable: a preview too big to host is exactly as
+  // claimable as one the deploy-agent rejected, and must not cost the visitor
+  // that claim.
+  const budget = checkPreviewArtifactBudget({
+    bytes: tarball.byteLength,
+    budget: previewArtifactBudgetBytes(),
+  });
+  if (!budget.withinBudget) {
+    await persistManifest(null);
+    console.error(
+      `[funnel-previews] preview ${input.previewId} artifact is ` +
+        `${formatBytes(budget.bytes)}, over the ${formatBytes(
+          budget.budget
+        )} budget; not uploading`
+    );
+    // Per template, not per preview: one oversized preview is a curiosity, the
+    // same template family going over every time is the thing worth a person's
+    // attention, and that is the shape the discriminator should collapse to.
+    await sendOpsAlert({
+      event: 'preview_artifact_over_budget',
+      discriminator: input.templateSlug ?? 'unknown-template',
+      title:
+        `Preview artifact over budget: ` +
+        `${formatBytes(budget.bytes)} > ${formatBytes(budget.budget)}` +
+        (input.templateSlug ? ` (${input.templateSlug})` : ''),
+      detail: {
+        previewId: input.previewId,
+        templateSlug: input.templateSlug ?? null,
+        bytes: budget.bytes,
+        budgetBytes: budget.budget,
+        fileCount: deployFiles.length,
+      },
+      ...(input.supabase ? { supabase: input.supabase } : {}),
+    });
+    await markFunnelPreviewDeployment({
+      previewId: input.previewId,
+      hostname,
+      status: 'failed',
+      error: budget.detail,
+      ...(input.supabase ? { supabase: input.supabase } : {}),
+    });
+    return {
+      previewId: input.previewId,
+      slug,
+      hostname,
+      url,
+      expiresAt: expiresAtIso,
+      status: 'failed',
+      detail: budget.detail,
+      artifactPath: null,
+      published: false,
+    };
+  }
 
   const artifactPath = await uploadFunnelPreviewArtifact({
     previewId: input.previewId,

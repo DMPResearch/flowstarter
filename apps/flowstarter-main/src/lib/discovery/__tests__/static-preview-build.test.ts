@@ -97,7 +97,11 @@ async function workspaceWithStubAstro(script: string): Promise<string> {
 const WRITES_DIST = `#!/bin/sh
 test "$1" = "build" || { echo "refused: $*" >&2; exit 3; }
 mkdir -p dist/_astro
-printf '<!doctype html><h1>Built</h1>' > dist/index.html
+# The page points at hero.png, the way a real built page points at everything
+# it serves. Without the reference, \`optimisePreviewDistImages\` drops the file
+# as unreferenced — correctly — and the base64 assertion below would be
+# asserting against a picture no visitor could have loaded either.
+printf '<!doctype html><h1>Built</h1><img src="/hero.png">' > dist/index.html
 printf 'body{color:#111}' > dist/_astro/site.css
 printf '\\x89PNG\\r\\n' > dist/hero.png
 printf '%s' "$FLOWSTARTER_SECRET_PROBE" > dist/leaked.txt

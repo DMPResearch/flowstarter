@@ -44,6 +44,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import type { ArchiveFile } from '@/lib/hosting/site-archive';
+import { optimisePreviewDistImages } from '@/lib/discovery/preview-dist-assets';
 
 /** Where the copies live. One parent so an operator can find and sweep them. */
 export const PREVIEW_BUILD_PARENT = 'flowstarter-preview-builds';
@@ -330,6 +331,23 @@ export interface BuildStaticPreviewInput {
   tailBytes?: number;
   /** Reuse an existing copy (a rebuild after a free edit) instead of copying. */
   existingWorkspaceRoot?: string;
+  /**
+   * Run against the workspace copy after it exists and BEFORE `astro build`.
+   *
+   * This is the seam the funnel's integrations go through, and the ordering is
+   * the whole point of it. The preview pipeline used to inject its contact
+   * form's endpoint into the manifest it returned — *after* this module had
+   * already compiled and the publisher had already deployed — so the hosted
+   * preview served the template's form markup with no capture script anywhere
+   * in it, and a visitor could submit into nothing. An integration that is not
+   * on disk before the build did not happen.
+   *
+   * A throw here fails the build rather than being swallowed: a preview whose
+   * contact form silently did nothing is the defect, and shipping one quietly
+   * because an injector errored would be the same defect with a different
+   * cause.
+   */
+  prepare?: (workspaceRoot: string) => Promise<void>;
 }
 
 /**
@@ -383,6 +401,11 @@ export async function buildStaticPreview(
       });
     }
 
+    // Before the build, always — including a rebuild into an existing copy,
+    // whose `dist/` is about to be replaced by output that must carry the same
+    // integrations the first build did.
+    await input.prepare?.(workspaceRoot);
+
     const distRoot = join(workspaceRoot, 'dist');
     await rm(distRoot, { recursive: true, force: true });
     const astroBin = resolve(
@@ -393,6 +416,20 @@ export async function buildStaticPreview(
       'astro'
     );
     await runAstroBuild(workspaceRoot, astroBin, timeoutMs, errorBudget);
+    // Between the build and reading it back: Astro copies `public/` into
+    // `dist/` verbatim, so without this the artifact carries the template's
+    // unoptimised PNG library — 11.7 MiB of it on the portfolio family, which
+    // is what put a correct preview over the storage bucket's ceiling and
+    // stopped it being hosted at all. Never throws; see the module comment.
+    const optimised = await optimisePreviewDistImages(distRoot);
+    if (optimised.converted.length > 0 || optimised.removed.length > 0) {
+      console.info(
+        `[funnel-previews] preview ${input.projectId} assets: ` +
+          `${optimised.converted.length} image(s) re-encoded to WebP, ` +
+          `${optimised.removed.length} unreferenced dropped, ` +
+          `dist ${optimised.bytesBefore} -> ${optimised.bytesAfter} bytes`
+      );
+    }
     const files = await collectDistFiles(distRoot);
     return { files, workspaceRoot, distRoot, cleanup };
   } catch (error) {
