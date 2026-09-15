@@ -174,10 +174,21 @@ cmd_up() {
   require_validation_image
   ensure_state
   say "deploying $IMAGE"
-  # Pull before `up`, so a registry that is down fails here with its own error
-  # rather than as a compose message about a service that would not start. A
-  # tag already on the host is a no-op.
-  "$DOCKER" pull "$IMAGE" >/dev/null || die "could not pull $IMAGE (is this host logged in to ghcr.io?)"
+  # Pull before `up`, so a registry problem fails here with its own error
+  # rather than as a compose message about a service that would not start.
+  #
+  # A failed pull is fatal only when this host does not already have the image.
+  # The same rule deploy-slot.sh applies, for the same reason: an operator who
+  # built the image ON the box — which is how this worker was first brought up
+  # on fs-sites-01, from a source tarball rather than from GHCR — has a tag
+  # that exists nowhere to pull it from, and a redeploy of a tag already on
+  # disk should survive a registry that is briefly unreachable. A tag this host
+  # has never seen still fails, because `image inspect` will not find it either.
+  if ! "$DOCKER" pull "$IMAGE" >/dev/null 2>&1; then
+    "$DOCKER" image inspect "$IMAGE" >/dev/null 2>&1 \
+      || die "could not pull $IMAGE and it is not on this host. Check the tag, and that this host is logged in to the registry (docker login ghcr.io)."
+    say "could not pull $IMAGE, but it is already on this host; starting the local copy"
+  fi
   compose up -d
   wait_healthy
   cmd_check

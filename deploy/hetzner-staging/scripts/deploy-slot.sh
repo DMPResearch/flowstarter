@@ -274,7 +274,26 @@ else
 fi
 
 echo "Pulling $IMAGE ..."
-docker pull "$IMAGE"
+# A pull failure is only fatal if this host does not already have the image.
+#
+# Two real cases, and neither is a reason to refuse a deploy. An operator
+# building an image ON the box during an incident -- which is how the build
+# worker was first brought up on fs-sites-01, from a source tarball rather
+# than from GHCR -- has an image that exists nowhere to pull it from. And a
+# registry that is momentarily unreachable should not block redeploying a tag
+# already sitting on this disk.
+#
+# It is still a pull first, and still fatal for a tag this host has never
+# seen: a typo'd or never-pushed tag fails here exactly as it did before,
+# because `docker image inspect` will not find it either.
+if ! docker pull "$IMAGE"; then
+  if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    echo "warning: could not pull ${IMAGE}, but it is already on this host; deploying the local copy" >&2
+  else
+    echo "refusing to deploy ${SLOT}: ${IMAGE} could not be pulled and is not on this host. Check the tag, and that this host is logged in to the registry (docker login ghcr.io)." >&2
+    exit 1
+  fi
+fi
 
 echo "Starting $CONTAINER on 127.0.0.1:${HOST_PORT} ..."
 docker compose -p "$PROJECT" -f "$COMPOSE_FILE" up -d --force-recreate --remove-orphans

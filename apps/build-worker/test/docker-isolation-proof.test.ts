@@ -197,7 +197,15 @@ describe.skipIf(!ENABLED)(
       // Succeeds, because the build read this worker's `.env` and the
       // neighbouring workspace's secret as the worker's own user. That is what
       // `FLOWSTARTER_BUILD_ISOLATION` refuses outside development.
-      await expect(validator.validate(site, 'full')).resolves.toBeUndefined();
+      //
+      // `validate` resolves with the exported output directory rather than
+      // `undefined`; asserting the old shape made this half fail for a reason
+      // that had nothing to do with isolation, which nobody noticed because
+      // this file only runs when FLOWSTARTER_BUILD_DOCKER_PROOF=1. What the
+      // assertion has to say is "it did not throw", so it says that.
+      await expect(
+        validator.validate(site, 'full'),
+      ).resolves.toEqual(expect.objectContaining({ outputDir: expect.any(String) }));
       expect(output.join('\n')).toContain('REACHED:');
     }, 120_000);
   },

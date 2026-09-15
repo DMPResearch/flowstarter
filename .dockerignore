@@ -14,6 +14,31 @@ node_modules
 **/.next
 **/dist
 **/build
+# ...but a directory under `src/` called `build` is a Next route segment, not
+# build output, and `**/build` above was silently deleting three of them from
+# every image this repository has ever produced:
+#
+#   src/app/api/internal/build/deploy            the build worker's deploy
+#                                                callback — the route that
+#                                                turns a finished build into a
+#                                                deployed site
+#   src/app/api/team/projects/[id]/changes/[changeId]/build
+#   src/app/api/admin/projects/[id]/changes/[changeId]/build
+#
+# Nothing failed at build time: `next build` simply compiled an app without
+# those routes, the image passed its health check, and the route answered a
+# plain HTML 404 to the one caller that needed it. Found on 2026-09-15 by
+# probing /api/internal/build/deploy on the staging slot while bringing the
+# build worker up on fs-sites-01 — `.next/server/app/api/internal/` contained
+# `policy` and nothing else.
+#
+# The blanket rules stay: stray output anywhere is still worth excluding, and
+# `src/` is the one place where a directory with that name is certainly
+# source. deploy/hetzner-staging/Dockerfile asserts these files are present in
+# the build context, so a future pattern that strips them again fails the
+# image build instead of shipping a quietly incomplete app.
+!**/src/**/build
+!**/src/**/build/**
 **/.cache
 **/*.log
 .local
