@@ -52,6 +52,28 @@
 # Env overrides (locking):
 #   STAGING_LOCK_FILE     default ${STAGING_ROOT}/deploy.lock
 #   STAGING_LOCK_TIMEOUT  seconds to wait for the lock before giving up, default 300
+#
+# Disk retention (2026-09-15 incident: the root disk filled to 100% because
+# nothing ever removed an old per-commit image; see prune-images.sh's header
+# for the full account). Every deploy runs prune-images.sh twice: once here,
+# as a preflight, before anything else, and once more after a successful
+# deploy. Unlike the Supabase-stack/Caddy sections above, neither call is
+# wrapped in the flock: prune-images.sh only ever runs a non-forced
+# `docker rmi` and `docker builder prune`, both of which the daemon itself
+# makes safe to run twice at once (a second `docker rmi` of an already-gone
+# tag just fails, which prune-images.sh already treats as a soft skip; a
+# second `docker builder prune` is a no-op) — nothing here writes shared
+# config the way the Caddy snippet or the Supabase migration state does.
+#
+# Env overrides (disk retention):
+#   PRUNE_IMAGES_SCRIPT      default ${STAGING_ROOT}/prune-images.sh
+#   FLOWSTARTER_DISK_FLOOR_MB   preflight fails below this many MB free,
+#                               after running retention, default 10240 (10
+#                               GiB — see DEFAULT_DISK_FLOOR_MB)
+#   FLOWSTARTER_DISK_CHECK_PATH path `df` is asked about, default / (the
+#                               2026-09-15 incident was the root disk)
+#   See prune-images.sh's own header for FLOWSTARTER_IMAGE_REPO,
+#   FLOWSTARTER_IMAGE_KEEP_COUNT and FLOWSTARTER_OPS_ENV_FILE.
 
 set -euo pipefail
 
@@ -70,8 +92,40 @@ SUPABASE_REPO_DIR="${SUPABASE_REPO_DIR:-${STAGING_ROOT}/repo}"
 STAGING_LOCK_FILE="${STAGING_LOCK_FILE:-${STAGING_ROOT}/deploy.lock}"
 STAGING_LOCK_TIMEOUT="${STAGING_LOCK_TIMEOUT:-300}"
 
+PRUNE_IMAGES_SCRIPT="${PRUNE_IMAGES_SCRIPT:-${STAGING_ROOT}/prune-images.sh}"
+# Named default, not a literal buried in the check below — same reasoning as
+# backup.sh's DEFAULT_KEEP_DAILY/WEEKLY. 10 GiB: room for at least a couple
+# of ~2 GB image pulls plus headroom for the Supabase/Cal stacks and a
+# nightly backup run, on a 150 GB disk.
+DEFAULT_DISK_FLOOR_MB=10240
+FLOWSTARTER_DISK_FLOOR_MB="${FLOWSTARTER_DISK_FLOOR_MB:-$DEFAULT_DISK_FLOOR_MB}"
+FLOWSTARTER_DISK_CHECK_PATH="${FLOWSTARTER_DISK_CHECK_PATH:-/}"
+
 if [[ ! "$SLOT" =~ ^(main|prod|pr-[1-9][0-9]*)$ ]]; then
   echo "invalid slot: $SLOT (expected main, prod or pr-<number>)" >&2
+  exit 1
+fi
+
+# ── Disk retention: preflight ───────────────────────────────────────────────
+# Run the same retention pass a successful deploy runs at the end (below)
+# here too, before anything else, so a box that already needs it gets
+# cleaned before this deploy's own image pull adds to the pile rather than
+# after. Then refuse to proceed if free space is still below the floor once
+# that pass is done: failing here, with a clear message, beats failing later
+# at some unrelated step — a full disk was first noticed, 2026-09-15, as the
+# Supabase stack going unhealthy at "ensure stack", not as a disk error.
+echo "Running image retention (${PRUNE_IMAGES_SCRIPT}) before checking free space on ${FLOWSTARTER_DISK_CHECK_PATH} ..."
+if [[ -x "$PRUNE_IMAGES_SCRIPT" ]]; then
+  "$PRUNE_IMAGES_SCRIPT" || echo "warning: ${PRUNE_IMAGES_SCRIPT} exited non-zero; continuing to the disk check anyway" >&2
+else
+  echo "warning: retention script not found or not executable at ${PRUNE_IMAGES_SCRIPT}; skipping image retention" >&2
+fi
+
+FREE_MB="$(df -Pm "$FLOWSTARTER_DISK_CHECK_PATH" 2>/dev/null | awk 'NR==2 {print $4}')"
+if [[ -z "${FREE_MB:-}" ]]; then
+  echo "warning: could not determine free space on ${FLOWSTARTER_DISK_CHECK_PATH} (df failed or produced no output); continuing without the disk floor check" >&2
+elif [[ "$FREE_MB" -lt "$FLOWSTARTER_DISK_FLOOR_MB" ]]; then
+  echo "refusing to deploy ${SLOT}: only ${FREE_MB} MB free on ${FLOWSTARTER_DISK_CHECK_PATH}, below the ${FLOWSTARTER_DISK_FLOOR_MB} MB floor (FLOWSTARTER_DISK_FLOOR_MB) even after running image retention (${PRUNE_IMAGES_SCRIPT}). Free space by hand before retrying — see README.md, \"Disk\"." >&2
   exit 1
 fi
 
@@ -319,5 +373,17 @@ else
 fi
 
 lock_release
+
+# ── Disk retention: after a successful deploy ───────────────────────────────
+# Reached only once the health gate and the Caddy reload above have both
+# succeeded. Best-effort: a failure here must not turn a successful deploy
+# into a failed one — it will simply catch up on the next deploy's preflight
+# (or the next successful one's own retention pass).
+echo "Running image retention (${PRUNE_IMAGES_SCRIPT}) after a successful deploy ..."
+if [[ -x "$PRUNE_IMAGES_SCRIPT" ]]; then
+  "$PRUNE_IMAGES_SCRIPT" || echo "warning: ${PRUNE_IMAGES_SCRIPT} exited non-zero after deploy; it will catch up on the next deploy" >&2
+else
+  echo "warning: retention script not found or not executable at ${PRUNE_IMAGES_SCRIPT}; skipping image retention" >&2
+fi
 
 echo "Deployed https://${PRIMARY_HOSTNAME} (slot=${SLOT}, port=${HOST_PORT})"

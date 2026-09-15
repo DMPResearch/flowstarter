@@ -32,7 +32,9 @@ breaks. It holds every slot.
 `deploy-slot.sh <slot> <image> [port]` deploys one; `destroy-slot.sh <slot>`
 tears it down. Destroying `prod` additionally needs `DESTROY_PROD=1` in the
 environment, because nothing in CI ever asks for it and a typo should not take
-the site down.
+the site down. Every deploy also runs an image-retention pass, and destroying
+a slot cleans up its own image if nothing else still runs it — see "Disk"
+below.
 
 ### What is different about `prod`
 
@@ -43,6 +45,66 @@ the site down.
   `"target":"local"`. A staging image landed on port 3100 by mistake reports
   `"env":"staging"` and never gets a Caddy snippet.
 - Its Caddy snippet serves two hostnames and 301-redirects `www` to the apex.
+
+## Disk
+
+2026-09-15 incident: the root disk (150 GB) on fs-sites-01 filled to 100%
+because every deploy pulls its own tagged image
+(`ghcr.io/dmpresearch/flowstarter-main:<sha>`, 1.6-2.05 GB each) and nothing
+ever removed an old one — 173 images, 132.6 GB reclaimable by the time
+anyone noticed, cleaned up by hand with `docker image prune -af --filter
+until=1h` plus `docker builder prune -af`. The local Supabase DB container
+went unhealthy on the full disk and every staging deploy lane (`main` and
+every `pr-N`) failed at "ensure stack" — a disk problem was first visible as
+a database problem, which is why the fix lives in the deploy path itself
+rather than in a separate cron job nobody watches.
+
+**`scripts/prune-images.sh`** is that fix. `deploy-slot.sh` runs it twice on
+every deploy: once as a preflight, before anything else (including the
+Supabase-stack steps), and once more after a successful deploy. The
+retention rule: an image is kept if some running container uses it, or if
+it is one of the `FLOWSTARTER_IMAGE_KEEP_COUNT` (default 5, see
+`DEFAULT_IMAGE_KEEP_COUNT` in the script) most recently created images in
+`FLOWSTARTER_IMAGE_REPO` (default `ghcr.io/dmpresearch/flowstarter-main`).
+Everything else in that repo is removed with a non-forced `docker rmi`
+(never `-f` — the daemon itself is the check that nothing else needs it),
+and dangling build cache is pruned alongside it (`docker builder prune`, no
+`-a`, so cache that could still save a future build is left alone). Run it
+by hand any time, with `--dry-run` to see what a real pass would do without
+removing anything:
+
+```bash
+sudo /opt/flowstarter/staging/prune-images.sh --dry-run
+```
+
+The preflight half additionally refuses to deploy — before the image pull,
+before anything touches shared state — if free space on
+`FLOWSTARTER_DISK_CHECK_PATH` (default `/`) is still below
+`FLOWSTARTER_DISK_FLOOR_MB` (default 10240, 10 GiB) once that retention pass
+has run. The post-deploy half is best-effort: a failure there is logged but
+never turns an already-successful deploy into a failed one — the next
+deploy's own preflight (or its own post-deploy pass) catches up regardless.
+
+All four knobs (`FLOWSTARTER_IMAGE_REPO`, `FLOWSTARTER_IMAGE_KEEP_COUNT`,
+`FLOWSTARTER_DISK_FLOOR_MB`, `FLOWSTARTER_DISK_CHECK_PATH`) are named
+variables with defaults, never a literal buried in the deletion or the disk
+check — same pattern as `backup.sh`'s `DEFAULT_KEEP_DAILY`/`WEEKLY`. Set them
+as real environment variables, or write them into an optional
+`/etc/flowstarter/staging-ops.env` (mode 600; nothing writes it but a
+person, unlike `staging.env`/`prod.env`) so an operator can change either
+knob without touching CI or either script — see `prune-images.sh`'s own
+header comment for the exact precedence.
+
+**`destroy-slot.sh`** resolves the image a slot's container was running
+*before* removing the container, then removes that image too, but only if
+no other container (any slot, any state) still references it — same
+non-forced `docker rmi`. So a closed PR's image does not sit on disk until
+`prune-images.sh`'s keep-count eventually gets around to it on its own.
+
+Tests: `scripts/prune-images.test.sh` exercises the retention rule itself
+against a stubbed `docker`; the "image retention" and "image cleanup" cases
+in `scripts/deploy-slot.test.sh` prove `deploy-slot.sh` and `destroy-slot.sh`
+call it at the right points and react correctly to its exit code.
 
 ## Hostnames and DNS
 
@@ -709,6 +771,12 @@ sudo REPO_DIR=/opt/flowstarter/staging/repo /opt/flowstarter/staging/supabase-st
 sudo REPO_DIR=/opt/flowstarter/staging/repo /opt/flowstarter/staging/supabase-stack.sh migrate
 sudo /opt/flowstarter/staging/supabase-stack.sh write-env
 sudo /opt/flowstarter/staging/supabase-stack.sh check
+
+# Optional: override prune-images.sh's/deploy-slot.sh's retention and
+# disk-floor defaults (FLOWSTARTER_IMAGE_KEEP_COUNT, FLOWSTARTER_DISK_FLOOR_MB,
+# etc. — see "Disk" above) without touching CI. Nothing requires this file to
+# exist; skip it to keep the built-in defaults.
+sudo install -m 600 /dev/null /etc/flowstarter/staging-ops.env
 
 # Nightly backups (backup.sh/restore.sh above are already copied by the *.sh
 # glob a few lines up). See docs/operations/backups.md for what is backed up,
