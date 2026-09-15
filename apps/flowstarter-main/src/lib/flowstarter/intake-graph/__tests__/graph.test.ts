@@ -15,6 +15,7 @@ import {
   setIntakeGraphDeps,
   startIntakeGraph,
 } from '../graph';
+import type { IntakeGraphLocale } from '../types';
 
 describe('intake graph', () => {
   beforeEach(() => {
@@ -111,7 +112,7 @@ describe('intake graph', () => {
     expect(next.data.email).toBe('maria@example.com');
     expect(next.data.businessName).toBe('Ionescu Dental');
     expect(next.answered).toEqual(
-      expect.arrayContaining(['fullName', 'email', 'businessName'])
+      expect.arrayContaining(['fullName', 'email', 'businessName']),
     );
     expect(next.ask?.questionId).not.toBe('fullName');
     expect(next.ask?.questionId).not.toBe('email');
@@ -205,15 +206,27 @@ describe('the scripted prompt, with no model in the picture', () => {
     expect(english).toBeTruthy();
     expect(english).not.toContain('landing.discovery');
 
-    // Romanian has no discovery-chat lines yet, so it falls back to English
-    // rather than showing the visitor a key.
-    expect(scriptedPromptFor(EMPTY_DISCOVERY, [], 'ro')).toBe(english);
+    // A locale with no dictionary of its own at all falls back to English
+    // rather than showing the visitor a key. `IntakeGraphLocale` only admits
+    // 'en' | 'ro', so an unsupported code has to be forced past the type
+    // system here — that is the point: it is a locale nothing has ever
+    // translated, not a stand-in for 'ro', which now has its own dictionary
+    // (see the assertion below).
+    const noDictionary = 'fr' as IntakeGraphLocale;
+    expect(scriptedPromptFor(EMPTY_DISCOVERY, [], noDictionary)).toBe(english);
+
+    // Romanian now has its own discovery-chat lines (this funnel's first
+    // question, translated): it must read those, not fall back to English.
+    const romanian = scriptedPromptFor(EMPTY_DISCOVERY, [], 'ro');
+    expect(romanian).toBe('Mai întâi: cum să-ți spun?');
+    expect(romanian).not.toBe(english);
+    expect(romanian).not.toContain('landing.discovery');
   });
 
   it('has nothing left to say once the script is spent', () => {
     resetIntakeGraphDeps();
     expect(
-      scriptedPromptFor(FULLY_ANSWERED, EVERY_QUESTION_ANSWERED)
+      scriptedPromptFor(FULLY_ANSWERED, EVERY_QUESTION_ANSWERED),
     ).toBeNull();
   });
 });
@@ -619,7 +632,7 @@ describe('a question asked back', () => {
     expect(asked.ask?.questionId).toBe('email');
     expect(asked.errorKey).toBeNull();
     expect(asked.ask?.note).toBe(
-      'We use it to send your preview link, nothing else.'
+      'We use it to send your preview link, nothing else.',
     );
     expect(asked.data.email).toBe('');
     expect(asked.answered).toEqual(['fullName']);
