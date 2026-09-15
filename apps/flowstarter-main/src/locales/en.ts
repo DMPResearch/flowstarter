@@ -2434,6 +2434,8 @@ const en = {
   'landing.discovery.stepper.position': 'Step {n} of {total}: {label}',
   'landing.discovery.chat.composerLabel': 'Your answer',
   'landing.discovery.chat.composerPlaceholder': 'Type your answer…',
+  'landing.discovery.chat.composerHint':
+    'Press Enter for a new line. Shift+Enter to send.',
   'landing.discovery.chat.send': 'Send',
   'landing.discovery.chat.done': "That's it",
   'landing.discovery.chat.confirm': 'Looks good, carry on',

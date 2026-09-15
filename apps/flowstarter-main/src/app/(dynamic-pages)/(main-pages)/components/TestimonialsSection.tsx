@@ -40,10 +40,7 @@ export function TestimonialsSection() {
 
       <div className="ls-container">
         <div className="text-center max-w-3xl mx-auto">
-          <SectionEyebrow
-            index="04"
-            label={t('landing.testimonials.eyebrow')}
-          />
+          <SectionEyebrow label={t('landing.testimonials.eyebrow')} />
 
           <h2 className="ls-display mt-7" style={{ textWrap: 'balance' }}>
             <span className="line">

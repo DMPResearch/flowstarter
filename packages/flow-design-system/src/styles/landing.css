@@ -3785,9 +3785,11 @@
 /* ═══════════════════════════════════════════════
    PERSONALITY LAYER
    The flat cream base decides the colour; this decides the craft.
-   Nothing below introduces a gradient, a mesh, a glass fill or a second
-   accent — the personality comes from type, rhythm, hairlines and drawn
-   marks, which is the only kind this page is allowed to have.
+   The one exception is the hero atmosphere (`.ls-hero-atmosphere`): a quiet
+   indigo wash and the brand flow lines, scoped to that section and faded
+   before the next. Nothing else on the page reintroduces a mesh, a glass fill
+   or a second accent — personality still comes from type, rhythm, hairlines
+   and drawn marks.
    Every motion in here collapses under prefers-reduced-motion.
    ═══════════════════════════════════════════════ */
 
@@ -3926,6 +3928,97 @@
   /* A hairline reads louder against near-black than against cream, so the
      dark value is set by eye rather than mirrored from the light one. */
   opacity: 0.028;
+}
+
+/* ── Hero atmosphere ──
+   The flat cream restore took colour out of the page; the hero is allowed a
+   quiet exception: the brand indigo wash and the FlowBackground flow lines,
+   scoped here and faded before the next section. No warm bloom — that is the
+   yellow tint we do not want back. */
+.ls-hero-atmosphere {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  /* Soft exit into the cream below so the atmosphere does not end in a ledge. */
+  mask-image: linear-gradient(
+    to bottom,
+    #000 0%,
+    #000 62%,
+    rgba(0, 0, 0, 0.55) 82%,
+    transparent 100%
+  );
+}
+.ls-hero-atmosphere__wash {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse 90% 55% at 50% -8%,
+    color-mix(in oklab, var(--ls-accent) 14%, transparent) 0%,
+    transparent 68%
+  );
+}
+.ls-hero-atmosphere__bloom {
+  position: absolute;
+  top: -18%;
+  left: 50%;
+  width: 92%;
+  height: 70%;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: radial-gradient(
+    ellipse at center,
+    var(--fs-bloom-core) 0%,
+    var(--fs-bloom-mid) 45%,
+    transparent 72%
+  );
+  opacity: 0.22;
+}
+.ls-hero-atmosphere__secondary {
+  position: absolute;
+  top: 8%;
+  right: -4%;
+  width: 42%;
+  height: 48%;
+  border-radius: 50%;
+  background: radial-gradient(
+    ellipse at center,
+    var(--fs-secondary-bloom) 0%,
+    transparent 65%
+  );
+  opacity: 0.35;
+}
+.ls-hero-atmosphere__lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.14;
+}
+.dark .ls-hero-atmosphere__wash {
+  background: radial-gradient(
+    ellipse 90% 55% at 50% -8%,
+    color-mix(in oklab, var(--ls-accent) 22%, transparent) 0%,
+    transparent 68%
+  );
+}
+.dark .ls-hero-atmosphere__bloom {
+  opacity: 0.3;
+}
+.dark .ls-hero-atmosphere__secondary {
+  opacity: 0.42;
+}
+.dark .ls-hero-atmosphere__lines {
+  opacity: 0.18;
+}
+@media (max-width: 768px) {
+  .ls-hero-atmosphere__bloom {
+    opacity: 0.28;
+  }
+  .ls-hero-atmosphere__lines {
+    opacity: 0.16;
+  }
 }
 
 /* ── Numbered section eyebrows ──

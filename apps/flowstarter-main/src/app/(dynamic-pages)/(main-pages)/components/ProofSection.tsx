@@ -34,7 +34,7 @@ export function ProofSection() {
 
       <div className="ls-container">
         <div className="text-center max-w-3xl mx-auto">
-          <SectionEyebrow index="03" label={t('landing.proof.eyebrow')} />
+          <SectionEyebrow label={t('landing.proof.eyebrow')} />
 
           <h2 className="ls-display mt-7" style={{ textWrap: 'balance' }}>
             <span className="line">{t('landing.proof.headlinePrefix')}</span>

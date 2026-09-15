@@ -11,6 +11,7 @@ import { UserMenu } from '@/components/ui/user-menu';
 import { useI18n } from '@/lib/i18n';
 import { useHeaderState } from '@/app/(dynamic-pages)/(main-pages)/components/hooks/useHeaderState';
 import { useBookingModal } from '@/app/(dynamic-pages)/(main-pages)/components/booking-modal-store';
+import { LANDING_NAV } from '@/app/(dynamic-pages)/(main-pages)/landing-nav';
 type SiteHeaderMode = 'landing' | 'public' | 'auth' | 'app';
 
 interface SiteHeaderProps {
@@ -18,25 +19,40 @@ interface SiteHeaderProps {
   onOpenAppMenu?: () => void;
 }
 
+const HEADER_TRANSPARENT =
+  'border-b border-transparent bg-transparent shadow-none';
+
+const HEADER_FROSTED =
+  'border-b border-gray-200/30 dark:border-white/[0.06] bg-white/72 dark:bg-[rgba(20,22,34,0.72)] backdrop-blur-2xl backdrop-saturate-[1.8] shadow-[0_1px_2px_rgba(0,0,0,0.04)]';
+
+const HEADER_SCROLL_OFFSET = 96;
+
 export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
   const openBookingModal = useBookingModal((s) => s.open);
   const { t: tLanding } = useI18n();
   const {
     isLoaded: headerLoaded,
+    scrolled,
     mobileMenuOpen,
     setMobileMenuOpen,
     activeSection,
   } = useHeaderState();
   const pathname = usePathname();
+  const showFrosted = scrolled || mobileMenuOpen;
 
   const scrollToSection =
     (sectionId: string, closeMobile = false) =>
     (e: MouseEvent<HTMLAnchorElement>) => {
       e.preventDefault();
       if (closeMobile) setMobileMenuOpen(false);
-      document
-        .getElementById(sectionId)
-        ?.scrollIntoView({ behavior: 'smooth' });
+      const el = document.getElementById(sectionId);
+      if (!el) return;
+      const top =
+        el.getBoundingClientRect().top + window.scrollY - HEADER_SCROLL_OFFSET;
+      window.scrollTo({ top, behavior: 'smooth' });
+      if (history.pushState) {
+        history.pushState(null, '', `#${sectionId}`);
+      }
     };
 
   const navLinkClass = (isActive: boolean) =>
@@ -44,8 +60,14 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
       'text-sm transition-colors cursor-pointer',
       isActive
         ? 'text-[var(--fs-ink)] dark:text-white font-semibold'
-        : 'text-[var(--fs-ink-faint)] dark:text-white/72 hover:text-gray-900 dark:hover:text-white',
+        : showFrosted
+          ? 'text-[var(--fs-ink-faint)] dark:text-white/72 hover:text-[var(--fs-ink)] dark:hover:text-white'
+          : 'text-[var(--fs-ink)]/80 dark:text-white/85 hover:text-[var(--fs-ink)] dark:hover:text-white',
     ].join(' ');
+  const chromeIconClass = showFrosted
+    ? 'text-gray-600 dark:text-white'
+    : 'text-[var(--fs-ink)]/75 dark:text-white/85';
+  const logoChromeClass = 'transition-opacity duration-500';
   const mobileNavLinkClass = (isActive: boolean) =>
     [
       'ls-mobile-link group flex items-baseline gap-3 px-1 py-3.5 transition-colors cursor-pointer border-b border-[var(--ls-rule)] last:border-b-0',
@@ -65,48 +87,30 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
         )}
 
         <header
-          className={`ls-theme fixed top-0 left-0 right-0 z-50 border-b border-transparent bg-[var(--fs-bg-base)] shadow-none transition-opacity duration-500 ${
-            headerLoaded ? 'opacity-100' : 'opacity-0'
-          }`}
+          className={`ls-theme fixed top-0 left-0 right-0 z-50 transition-[background-color,border-color,box-shadow,backdrop-filter,opacity] duration-500 ${
+            showFrosted ? HEADER_FROSTED : HEADER_TRANSPARENT
+          } ${headerLoaded ? 'opacity-100' : 'opacity-0'}`}
         >
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-12">
             <div className="flex items-center justify-between h-14 sm:h-16">
               <Link href="/" className="flex items-center gap-2 sm:gap-3 group">
-                <Logo size="md" />
+                <Logo size="md" className={logoChromeClass} />
               </Link>
 
               <nav
                 className="hidden lg:flex items-center gap-6"
                 aria-label="Main navigation"
               >
-                <a
-                  href="#process"
-                  onClick={scrollToSection('process')}
-                  className={navLinkClass(activeSection === 'process')}
-                >
-                  {tLanding('nav.process')}
-                </a>
-                <a
-                  href="#editor-showcase"
-                  onClick={scrollToSection('editor-showcase')}
-                  className={navLinkClass(activeSection === 'editor-showcase')}
-                >
-                  {tLanding('nav.smartEditor')}
-                </a>
-                <a
-                  href="#pricing"
-                  onClick={scrollToSection('pricing')}
-                  className={navLinkClass(activeSection === 'pricing')}
-                >
-                  {tLanding('nav.pricing')}
-                </a>
-                <a
-                  href="#faq"
-                  onClick={scrollToSection('faq')}
-                  className={navLinkClass(activeSection === 'faq')}
-                >
-                  {tLanding('nav.faq')}
-                </a>
+                {LANDING_NAV.map((item) => (
+                  <a
+                    key={item.id}
+                    href={`#${item.id}`}
+                    onClick={scrollToSection(item.id)}
+                    className={navLinkClass(activeSection === item.id)}
+                  >
+                    {tLanding(item.navKey)}
+                  </a>
+                ))}
               </nav>
 
               <div className="flex items-center gap-2 sm:gap-4">
@@ -135,7 +139,7 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
                 >
                   {mobileMenuOpen ? (
                     <svg
-                      className="w-5 h-5 text-gray-600 dark:text-white"
+                      className={`w-5 h-5 transition-colors duration-500 ${chromeIconClass}`}
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
@@ -149,7 +153,7 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
                     </svg>
                   ) : (
                     <svg
-                      className="w-5 h-5 text-gray-600 dark:text-white"
+                      className={`w-5 h-5 transition-colors duration-500 ${chromeIconClass}`}
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
@@ -186,56 +190,21 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
                 </div>
 
                 <div className="ls-mobile-links flex flex-col">
-                  <a
-                    href="#process"
-                    onClick={scrollToSection('process', true)}
-                    className={mobileNavLinkClass(activeSection === 'process')}
-                  >
-                    <span className="ls-mobile-index" aria-hidden="true">
-                      01
-                    </span>
-                    <span className="ls-mobile-link-text">
-                      {tLanding('nav.process')}
-                    </span>
-                  </a>
-                  <a
-                    href="#editor-showcase"
-                    onClick={scrollToSection('editor-showcase', true)}
-                    className={mobileNavLinkClass(
-                      activeSection === 'editor-showcase'
-                    )}
-                  >
-                    <span className="ls-mobile-index" aria-hidden="true">
-                      02
-                    </span>
-                    <span className="ls-mobile-link-text">
-                      {tLanding('nav.smartEditor')}
-                    </span>
-                  </a>
-                  <a
-                    href="#pricing"
-                    onClick={scrollToSection('pricing', true)}
-                    className={mobileNavLinkClass(activeSection === 'pricing')}
-                  >
-                    <span className="ls-mobile-index" aria-hidden="true">
-                      03
-                    </span>
-                    <span className="ls-mobile-link-text">
-                      {tLanding('nav.pricing')}
-                    </span>
-                  </a>
-                  <a
-                    href="#faq"
-                    onClick={scrollToSection('faq', true)}
-                    className={mobileNavLinkClass(activeSection === 'faq')}
-                  >
-                    <span className="ls-mobile-index" aria-hidden="true">
-                      04
-                    </span>
-                    <span className="ls-mobile-link-text">
-                      {tLanding('nav.faq')}
-                    </span>
-                  </a>
+                  {LANDING_NAV.map((item) => (
+                    <a
+                      key={item.id}
+                      href={`#${item.id}`}
+                      onClick={scrollToSection(item.id, true)}
+                      className={mobileNavLinkClass(activeSection === item.id)}
+                    >
+                      <span className="ls-mobile-index" aria-hidden="true">
+                        {item.index}
+                      </span>
+                      <span className="ls-mobile-link-text">
+                        {tLanding(item.navKey)}
+                      </span>
+                    </a>
+                  ))}
                 </div>
 
                 <div className="ls-mobile-actions mt-7 flex flex-col gap-2.5 md:hidden">
@@ -356,13 +325,13 @@ export function SiteHeader({ mode, onOpenAppMenu }: SiteHeaderProps) {
 
   return (
     <header
-      className={`fixed top-0 left-0 right-0 z-50 border-b border-transparent bg-[var(--fs-bg-base)] shadow-none transition-opacity duration-500 ${
-        headerLoaded ? 'opacity-100' : 'opacity-0'
-      }`}
+      className={`fixed top-0 left-0 right-0 z-50 transition-[background-color,border-color,box-shadow,backdrop-filter,opacity] duration-500 ${
+        scrolled ? HEADER_FROSTED : HEADER_TRANSPARENT
+      } ${headerLoaded ? 'opacity-100' : 'opacity-0'}`}
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-12 h-14 sm:h-16 flex items-center justify-between gap-3">
         <Link href="/" className="flex items-center shrink-0">
-          <Logo size="md" />
+          <Logo size="md" className={logoChromeClass} />
         </Link>
 
         <div className="flex items-center gap-1.5 sm:gap-3">

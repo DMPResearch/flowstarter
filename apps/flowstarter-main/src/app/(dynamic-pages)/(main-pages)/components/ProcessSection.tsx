@@ -1,5 +1,7 @@
 import { tServer } from '@/lib/i18n-server';
 import { LANDING_COPY } from '../landing-copy';
+import { landingNavIndex } from '../landing-nav';
+import { SectionEyebrow } from './SectionEyebrow';
 
 export function ProcessSection() {
   const t = tServer as (key: string) => string;
@@ -9,13 +11,18 @@ export function ProcessSection() {
     <section
       id="process"
       data-section="process"
-      className="ls-scope ls-section ls-section--pad"
+      className="ls-scope ls-section ls-section--pad scroll-mt-24"
     >
       <div className="ls-mesh" aria-hidden />{' '}
       <div className="ls-grain" aria-hidden />
       <div className="ls-container">
         <div className="ls-section-intro">
-          <h2 className="ls-display" style={{ textWrap: 'balance' }}>
+          <SectionEyebrow
+            index={landingNavIndex('process')}
+            label={t('landing.process.eyebrow')}
+            align="left"
+          />
+          <h2 className="ls-display mt-7" style={{ textWrap: 'balance' }}>
             <span className="line">{t('landing.process.headlinePrefix')}</span>
             <span className="line flourish mt-2">
               {t('landing.process.headlineFlourish')}

@@ -51,12 +51,12 @@ import type {
   IntakeGraphTurnResult,
 } from '@/lib/flowstarter/intake-graph/types';
 
-/** See `IntakeConversation`'s own copy of this constant for why `min-h-11`. */
+/** See `IntakeConversation`'s own copy of this constant for why `min-h-12`. */
 const composerClass =
-  'min-h-11 w-full flex-1 resize-none rounded-xl border border-[var(--fs-rule)] bg-white px-3.5 py-2.5 text-sm text-[var(--fs-ink)] outline-none transition-[box-shadow,border-color] duration-150 placeholder:text-[var(--fs-ink-faint)] hover:border-[var(--purple-primary)]/30 focus:border-[var(--purple-primary)]/40 focus:shadow-[0_0_0_4px_var(--purple-primary-lightest)] dark:bg-white/[0.03]';
+  'min-h-12 w-full flex-1 resize-none rounded-xl border border-[var(--fs-rule)] bg-white px-5 py-3.5 text-sm text-[var(--fs-ink)] outline-none transition-[box-shadow,border-color] duration-150 placeholder:text-[var(--fs-ink-faint)] hover:border-[var(--purple-primary)]/30 focus:border-[var(--purple-primary)]/40 focus:shadow-[0_0_0_4px_var(--purple-primary-lightest)] dark:bg-white/[0.03]';
 
 /** Send shares the field's height, radius and horizontal padding — see `composerClass`. */
-const composerSendClass = 'h-11 shrink-0 rounded-xl px-3.5';
+const composerSendClass = 'h-12 shrink-0 rounded-xl px-5';
 
 const chipClass =
   'rounded-full border px-3 py-1.5 text-sm font-semibold transition-all border-[var(--fs-rule)] text-[var(--fs-ink)] hover:border-[var(--purple-primary)]/50 hover:bg-[var(--purple-primary)]/[0.06]';
@@ -496,35 +496,42 @@ function TypedAnswer({
   useAutosizeTextarea(composerRef, draft);
 
   return (
-    <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
-      <textarea
-        ref={composerRef}
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault();
-            onSubmit(draft);
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+        <textarea
+          ref={composerRef}
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            // Shift+Enter sends. Plain Enter inserts a new line so longer
+            // answers can be written without fighting the keyboard.
+            if (event.key === 'Enter' && event.shiftKey) {
+              event.preventDefault();
+              onSubmit(draft);
+            }
+          }}
+          rows={1}
+          aria-label={t('landing.discovery.chat.composerLabel')}
+          placeholder={
+            question.placeholderKey
+              ? t(question.placeholderKey)
+              : t('landing.discovery.chat.composerPlaceholder')
           }
-        }}
-        rows={1}
-        aria-label={t('landing.discovery.chat.composerLabel')}
-        placeholder={
-          question.placeholderKey
-            ? t(question.placeholderKey)
-            : t('landing.discovery.chat.composerPlaceholder')
-        }
-        className={composerClass}
-      />
-      <Button
-        variant="primary"
-        size="sm"
-        onClick={() => onSubmit(draft)}
-        disabled={question.required && draft.trim().length === 0}
-        className={composerSendClass}
-      >
-        {t('landing.discovery.chat.send')}
-      </Button>
+          className={composerClass}
+        />
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={() => onSubmit(draft)}
+          disabled={question.required && draft.trim().length === 0}
+          className={composerSendClass}
+        >
+          {t('landing.discovery.chat.send')}
+        </Button>
+      </div>
+      <p className="text-xs text-[var(--fs-ink-faint)]">
+        {t('landing.discovery.chat.composerHint')}
+      </p>
     </div>
   );
 }

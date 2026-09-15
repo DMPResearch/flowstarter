@@ -1,15 +1,12 @@
 /**
- * The section eyebrow, numbered.
+ * The section eyebrow, numbered when it is one of the header destinations.
  *
  * Every section that had one was drawing its own: an inline-flex with two
  * hand-written hairline spans either side of the label, repeated verbatim in
  * eight files with the rule's width and colour inlined as style props. This
- * is that mark, once, with the index the sections never had.
- *
- * The index is the editorial part. A reader who lands mid-page can tell where
- * they are in the argument, and the mono numeral against the sans label is
- * the one place on this page where the two faces meet, which is what gives
- * the line its masthead feel. The rule after it ties the pair together.
+ * is that mark, once. Nav destinations pass the index from `LANDING_NAV`;
+ * other sections keep the masthead line without a number so they cannot
+ * collide with the menu.
  *
  * Server Component: it renders text and a line, and has nothing to hydrate.
  */
@@ -18,19 +15,20 @@ export function SectionEyebrow({
   label,
   align = 'center',
 }: {
-  /** Two digits, set in the mono face. The section's place in the argument. */
-  index: string;
+  /** Two digits from `LANDING_NAV`, set in the mono face. Omit for sections
+   * that are not in the header menu. */
+  index?: string;
   label: string;
   align?: 'center' | 'left';
 }) {
   return (
     <p
-      className={`ls-eyebrow ls-eyebrow--numbered ${
+      className={`ls-eyebrow ${index ? 'ls-eyebrow--numbered' : ''} ${
         align === 'center' ? 'mx-auto' : ''
       }`}
     >
-      <span className="idx">{index}</span>
-      <span className="rule" aria-hidden="true" />
+      {index ? <span className="idx">{index}</span> : null}
+      {index ? <span className="rule" aria-hidden="true" /> : null}
       <span>{label}</span>
     </p>
   );

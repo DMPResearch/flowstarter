@@ -22,6 +22,9 @@ const ro: Record<string, string> = {
     'Serverul existent nu rulează încă',
   'admin.hosting.connectExisting.error.dbError':
     'Înregistrarea serverului nu a putut fi salvată',
+
+  'landing.discovery.chat.composerHint':
+    'Apasă Enter pentru o linie nouă. Shift+Enter pentru a trimite.',
 };
 
 export default ro;
