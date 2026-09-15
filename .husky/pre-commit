@@ -16,14 +16,62 @@
 # pre-existing TypeScript debt (editor-web ~14 errors; some server
 # *.test.ts Effect-context errors) that must be cleared before a strict
 # editor typecheck can be a commit gate. Tracked as a separate task.
+#
+# Lint/format below are scoped to the files this commit actually stages,
+# not flowstarter-main's `src/` tree as a whole, and run inside
+# apps/flowstarter-main so they always resolve that app's own pinned
+# eslint/prettier binaries and its own .prettierignore, never a bare
+# `eslint`/`prettier` off PATH or the repo root's. The old `pnpm run lint`
+# ran `eslint --fix src` unconditionally:
+# every commit that touched flowstarter-main re-fixed every lintable file in
+# the app, and because the repo root pins Prettier 3.x while
+# apps/flowstarter-main pins 2.8.8 (see docs/dev-machine.md, "Prettier
+# version pins", and scripts/check-prettier-pin.mjs), whichever prettier
+# actually got resolved could reformat trailing commas across files the
+# commit never touched — deploy.ts, site-urls.ts, local-fast-edit.ts,
+# publish/route.ts and their tests were hit twice in one day. Running
+# `apps/flowstarter-main/node_modules/.bin/prettier` with that directory as
+# `cwd` means the version (and the .prettierignore) used here can never
+# drift from the app's own pin, regardless of what else is installed or
+# hoisted elsewhere in the workspace. Typecheck
+# and the test suite still run in full below — a staged-files-only scope
+# there would let a change break code it does not directly touch.
 
 STAGED="$(git diff --cached --name-only --diff-filter=ACMR)"
 [ -z "$STAGED" ] && exit 0
 
-if printf '%s\n' "$STAGED" | grep -qE '^(apps/flowstarter-main/|packages/flow-design-system/)'; then
-  echo "▶ pre-commit: flowstarter-main changed — running quality gate"
-  exec pnpm run ci:quality-gate
+if ! printf '%s\n' "$STAGED" | grep -qE '^(apps/flowstarter-main/|packages/flow-design-system/)'; then
+  echo "▶ pre-commit: no flowstarter-main changes — skipping main quality gate"
+  exit 0
 fi
 
-echo "▶ pre-commit: no flowstarter-main changes — skipping main quality gate"
-exit 0
+echo "▶ pre-commit: flowstarter-main changed — running quality gate"
+
+# Mirrors .eslintrc.cjs's own `files` globs (src/**/*.ts(x), e2e/**/*.spec.ts)
+# — just restricted to what's actually staged.
+STAGED_LINT_FILES="$(printf '%s\n' "$STAGED" | grep -E '^apps/flowstarter-main/(src|e2e)/.*\.tsx?$' || true)"
+
+if [ -n "$STAGED_LINT_FILES" ]; then
+  echo "▶ pre-commit: lint/format staged flowstarter-main file(s):"
+  printf '%s\n' "$STAGED_LINT_FILES" | sed 's/^/    /'
+  # Paths relative to apps/flowstarter-main, and both tools run with that
+  # as cwd (not the repo root): .prettierignore's patterns
+  # (src/lib/database.types.ts, src/app/*.css) are resolved relative to
+  # prettier's cwd, not to the file being checked, so invoking it from the
+  # repo root against `apps/flowstarter-main/src/...` paths silently stops
+  # honoring that ignore file — which matters here because
+  # database.types.ts is generated and reformatting it is exactly the kind
+  # of unrelated-file diff this hook exists to stop causing.
+  RELATIVE_LINT_FILES="$(printf '%s\n' "$STAGED_LINT_FILES" | sed 's#^apps/flowstarter-main/##')"
+  # Best-effort auto-fix, same as the old `pnpm run ci:lint` (which ran
+  # eslint with `|| true`) — lint issues it can't fix don't block the
+  # commit, they just don't get silently rewritten into someone else's diff.
+  (cd apps/flowstarter-main && printf '%s\n' "$RELATIVE_LINT_FILES" | ESLINT_USE_FLAT_CONFIG=false xargs node_modules/.bin/eslint --fix) || true
+  (cd apps/flowstarter-main && printf '%s\n' "$RELATIVE_LINT_FILES" | xargs node_modules/.bin/prettier --write) || true
+  printf '%s\n' "$STAGED_LINT_FILES" | xargs git add --
+else
+  echo "▶ pre-commit: no staged flowstarter-main source files to lint"
+fi
+
+echo "▶ pre-commit: typecheck + full test suite"
+pnpm run ci:typecheck && exec pnpm run ci:test

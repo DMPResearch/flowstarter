@@ -68,6 +68,36 @@ bash scripts/dev-bootstrap.sh --check
 bash scripts/dev-doctor.sh
 ```
 
+## Prettier version pins
+
+The repo root pins Prettier `~3.6.2`; `apps/flowstarter-main` pins Prettier
+`^2.8.8`. This is intentional, not drift someone forgot to fix:
+
+- `apps/flowstarter-main` has ~800 files formatted under Prettier 2's
+  defaults (`trailingComma: "es5"`). Prettier 3 changed that default to
+  `"all"`, so bumping the app to 3 without a deliberate, single-commit
+  reformat of its own tree would touch every one of those files as a side
+  effect of an unrelated change.
+- The repo root (and newer workspaces built against it) use Prettier 3
+  already.
+
+Because both versions live in the same `pnpm` install, anything that
+resolves `prettier` by walking up from outside `apps/flowstarter-main` --
+a hoisted `.bin/prettier` (this repo runs with `shamefully-hoist=true`), an
+editor extension pointed at the workspace root, a script that shells out to
+`prettier` by name -- can pick up the root's 3.x instead of the app's own
+2.8.8, and silently add trailing commas to files a commit never meant to
+touch. That is why `.husky/pre-commit` calls
+`apps/flowstarter-main/node_modules/.bin/prettier` explicitly rather than a
+bare `prettier`, and why `pnpm run prettier` at the repo root delegates to
+that same pinned binary for any path under `apps/flowstarter-main` (see
+`scripts/prettier-workspace.mjs`).
+
+`scripts/check-prettier-pin.mjs`, wired into the quality-gate lint job,
+fails the build if either version changes without this section being
+updated to match -- see that script's own header comment for exactly what
+it checks.
+
 ## Worktree gotchas on this machine
 
 These bit us enough times to write down. They apply whenever the dev
