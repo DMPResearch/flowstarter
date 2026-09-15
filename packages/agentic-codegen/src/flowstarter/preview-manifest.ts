@@ -238,6 +238,23 @@ const JSON_KEYED = /^["'][^"']{0,80}["'][ \t]{0,8}:/;
 /** `2026-09-11T21:51:12.985Z`, in a line or on its own. */
 const TIMESTAMP = /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
 
+/**
+ * An HTML tag, opening or closing — `<div …>`, `</div>`, `<script …>`.
+ *
+ * `visibleTextLines` already keeps a *new* derivation from ever handing a tag
+ * to `phraseFromLine` — see this file's header. This is the second line of
+ * defence `isUsablePhrase` exists for: a row stored by a preview captured
+ * before that fix (job `7508bf52`'s own workspace, among others) still holds
+ * `<div class="…" data-flowstarter-lead-capture-slot></div>` as an "approved"
+ * phrase, and `resolveApprovedEdit` in `workflows.ts` hands every usable
+ * stored phrase to the build agent as text that "must survive... exactly as
+ * it is" — which is how the platform's own injected slot markup, not
+ * anything a client wrote, ends up copied verbatim into a rebuilt page.
+ * Bounded quantifier for the same reason `JSON_KEYED` is: this runs over
+ * content nobody trusted before it got here.
+ */
+const HTML_TAG = /<\/?[a-zA-Z][a-zA-Z0-9-]{0,30}(?:[\s/>]|$)/;
+
 /** Whitespace-insensitive, case-insensitive form used for every comparison. */
 export function normalizePhrase(value: string): string {
   return value.replace(/\s+/g, ' ').trim().toLowerCase();
@@ -291,7 +308,10 @@ export function phraseFromLine(line: string): string | null {
  * its own for the 2026-09-12 failure. This is the second, and it is what makes
  * the fix hold for a manifest captured before the path filter existed: the
  * eight stored phrases on workspace `c009105e` are rejected here one by one,
- * without anybody editing the row.
+ * without anybody editing the row. The `HTML_TAG` check does the same job for
+ * job `7508bf52`'s workspace: a markup line stored before `visibleTextLines`
+ * existed is still sitting in that job's row, and this is what stops it being
+ * handed to a build agent as text to preserve verbatim on the next attempt.
  */
 export function isUsablePhrase(value: string): boolean {
   const text = value.trim();
@@ -299,6 +319,7 @@ export function isUsablePhrase(value: string): boolean {
   if (JSON_KEYED.test(text)) return false;
   if (text.includes('://')) return false;
   if (TIMESTAMP.test(text)) return false;
+  if (HTML_TAG.test(text)) return false;
   const letters = text.replace(/[^A-Za-z]/g, '').length;
   if (letters < MIN_PHRASE_LETTERS) return false;
   return true;

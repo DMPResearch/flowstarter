@@ -5,6 +5,7 @@ import {
   GENERIC_HEADINGS,
   INVENTED_PROJECT,
   headingMarkups,
+  isNameShapedHeading,
 } from '../src/flowstarter/invented-project';
 
 /** A built work page carrying the headings under test. */
@@ -117,6 +118,93 @@ describe('findInventedProjects', () => {
     expect(findInventedProjects(files, ['Ereno'])).toEqual([
       { path: 'dist/index.html', heading: 'Northwind Bank' },
     ]);
+  });
+});
+
+/**
+ * Job `7508bf52`, attempt 2 (2026-09-15): a correct site — the client's own
+ * headline, the three real projects, nothing invented — was failed anyway on
+ * "Selected projects" (a section label one word away from three entries
+ * already on `GENERIC_HEADINGS`) and on the closing CTA sentence. Neither
+ * heading is a project name, and the site named exactly the three projects
+ * the brief listed: `Flowstarter`, `Ereno`, `DMPResearch`.
+ */
+describe('the false positive from job 7508bf52', () => {
+  const names = ['Flowstarter', 'Ereno', 'DMPResearch'];
+
+  it('accepts the section label the gate flagged, not on the allowlist by exact string', () => {
+    expect(GENERIC_HEADINGS.has('selected projects')).toBe(false);
+    expect(
+      findInventedProjects([workPage('Selected projects')], names),
+    ).toEqual([]);
+  });
+
+  it('accepts the closing CTA sentence the gate flagged as a candidate name', () => {
+    expect(
+      findInventedProjects(
+        [workPage('A site that earns trust, built fast and supervised by me.')],
+        names,
+      ),
+    ).toEqual([]);
+  });
+
+  it('accepts the three real projects exactly as the brief writes them', () => {
+    expect(
+      findInventedProjects(
+        [workPage('Flowstarter', 'Ereno', 'DMPResearch')],
+        names,
+      ),
+    ).toEqual([]);
+  });
+
+  it('still fails the real invented name from earlier runs', () => {
+    expect(findInventedProjects([workPage('Northwind Bank')], names)).toEqual([
+      { path: 'dist/work/index.html', heading: 'Northwind Bank' },
+    ]);
+  });
+
+  it('still fails a fabricated case study with a result percentage', () => {
+    // The incident this whole gate exists for: a fourth study for a company
+    // nobody has heard of. Short enough to be name-shaped, so the shape
+    // rules alone must not be what stops it — matching the brief still has to.
+    expect(
+      findInventedProjects([workPage('Meridian Home Goods')], names),
+    ).toEqual([
+      { path: 'dist/work/index.html', heading: 'Meridian Home Goods' },
+    ]);
+  });
+
+  it('accepts a Romanian section label built from the same grammar', () => {
+    expect(
+      findInventedProjects([workPage('Proiecte selectate')], names),
+    ).toEqual([]);
+    expect(findInventedProjects([workPage('Lucrări recente')], names)).toEqual(
+      [],
+    );
+  });
+});
+
+describe('isNameShapedHeading', () => {
+  it('rejects terminal punctuation', () => {
+    expect(isNameShapedHeading('Ereno.')).toBe(false);
+    expect(isNameShapedHeading('Is this a project?')).toBe(false);
+  });
+
+  it('rejects a heading outside the configured word-count range', () => {
+    expect(isNameShapedHeading('Flowstarter')).toBe(true);
+    expect(isNameShapedHeading('Word two three four five six seven')).toBe(
+      false,
+    );
+  });
+
+  it('rejects a comma or a finite-verb word as sentence-shaped', () => {
+    expect(isNameShapedHeading('Ereno, a calm inbox')).toBe(false);
+    expect(isNameShapedHeading('This site was built fast')).toBe(false);
+  });
+
+  it('accepts a short noun phrase', () => {
+    expect(isNameShapedHeading('Northwind Bank')).toBe(true);
+    expect(isNameShapedHeading('DMPResearch')).toBe(true);
   });
 });
 

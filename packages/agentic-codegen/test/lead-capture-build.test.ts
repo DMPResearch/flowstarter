@@ -35,16 +35,53 @@ import { applyIntegrationsToWorkspace } from '../src/integrations';
 
 const run = promisify(execFile);
 
+const TEMPLATES_ROOT = join(__dirname, '../../../apps/flowstarter-templates');
+
+function templateDir(template: string): string {
+  return join(TEMPLATES_ROOT, template);
+}
+
 const TEMPLATE = 'creative-portfolio';
-const TEMPLATE_DIR = join(
-  __dirname,
-  '../../../apps/flowstarter-templates',
-  TEMPLATE,
-);
+const TEMPLATE_DIR = templateDir(TEMPLATE);
 const ASTRO_BIN = join(TEMPLATE_DIR, 'node_modules/.bin/astro');
 const TOKEN = 'Kx9-_abcdefghijklmnopqrstuvwxyz0123456789AB';
 
 const installed = existsSync(ASTRO_BIN);
+
+/**
+ * Every template that ships the contact page's lead-capture slot, so a
+ * class-name regression on any one of them is a real-build failure and not
+ * just a string match against a template nobody rebuilt. `demo-coach` has no
+ * `contact.astro` at all and is out of scope for this file.
+ */
+const TEMPLATES_WITH_LEAD_CAPTURE_SLOT = [
+  'creative-portfolio',
+  'dorin-portfolio',
+  'local-trade',
+  'professional-services',
+  'wellness-therapy',
+] as const;
+
+/** Copies `template` into a scratch workspace, borrowing its installed tree. */
+async function scaffoldWorkspace(template: string): Promise<string> {
+  const dir = templateDir(template);
+  const workspace = await mkdtemp(join(tmpdir(), 'lead-capture-build-'));
+  await cp(dir, workspace, {
+    recursive: true,
+    filter: (source) =>
+      !source.includes(`${template}/node_modules`) &&
+      !source.includes(`${template}/dist`) &&
+      !source.includes(`${template}/.astro`),
+  });
+  // Astro resolves from the project root, so the copy borrows the template's
+  // own installed tree rather than running an install here.
+  await symlink(
+    join(dir, 'node_modules'),
+    join(workspace, 'node_modules'),
+    'dir',
+  );
+  return workspace;
+}
 
 const SCENARIOS = [
   {
@@ -64,21 +101,7 @@ describe.skipIf(!installed).each(SCENARIOS)(
     let html = '';
 
     beforeAll(async () => {
-      workspace = await mkdtemp(join(tmpdir(), 'lead-capture-build-'));
-      await cp(TEMPLATE_DIR, workspace, {
-        recursive: true,
-        filter: (source) =>
-          !source.includes(`${TEMPLATE}/node_modules`) &&
-          !source.includes(`${TEMPLATE}/dist`) &&
-          !source.includes(`${TEMPLATE}/.astro`),
-      });
-      // Astro resolves from the project root, so the copy borrows the
-      // template's own installed tree rather than running an install here.
-      await symlink(
-        join(TEMPLATE_DIR, 'node_modules'),
-        join(workspace, 'node_modules'),
-        'dir',
-      );
+      workspace = await scaffoldWorkspace(TEMPLATE);
 
       const applied = await applyIntegrationsToWorkspace(workspace, {
         booking: { provider: 'cal.com', url: null },
@@ -115,6 +138,62 @@ describe.skipIf(!installed).each(SCENARIOS)(
 
     it('leaves no unfilled slot behind', () => {
       expect(html).not.toContain('data-flowstarter-lead-capture-slot');
+    });
+
+    /**
+     * Job `7508bf52`'s built contact page shipped `class="contact-pagelead-
+     * capture"` — `contact-page` and `lead-capture` concatenated with no
+     * separator — instead of either the template's `contact-page__lead-
+     * capture` slot or the injector's own `flowstarter-lead-capture` block
+     * class. The injector never produces that string (`renderLeadCaptureBlock`
+     * in `src/integrations.ts` always writes `flowstarter-lead-capture`
+     * literally); the defect was a corrupted *stored* phrase from before
+     * `isUsablePhrase` rejected markup (see `preview-manifest.test.ts`) being
+     * handed to the build agent as text to reproduce. This asserts the class
+     * a real build actually emits, so a regression in either place fails here
+     * directly rather than only in a unit test over a string nobody built.
+     */
+    it('emits the injector block under its own class, never the malformed concatenation', () => {
+      expect(html).toContain('class="flowstarter-lead-capture"');
+      expect(html).not.toContain('contact-pagelead-capture');
+    });
+  },
+);
+
+/**
+ * Every template's *unmodified* contact page — no lead-capture integration
+ * applied, the scaffold built exactly as `astro build` would build it before
+ * any injector or agent ever touches it — carries the slot under its real
+ * BEM class and its managed-block marker. This is the ground truth
+ * `resolveApprovedEdit` (`workflows.ts`) and the lead-capture injector both
+ * have to agree with: if a template ever regresses to shipping the class
+ * concatenated (`contact-pagelead-capture`) or drops the marker attribute
+ * that makes the slot findable, a real build catches it here.
+ */
+describe.skipIf(!installed).each(TEMPLATES_WITH_LEAD_CAPTURE_SLOT)(
+  'the unmodified %s contact page carries the correct slot class and marker',
+  (template) => {
+    let workspace = '';
+    let html = '';
+
+    beforeAll(async () => {
+      workspace = await scaffoldWorkspace(template);
+      const astroBin = join(workspace, 'node_modules/.bin/astro');
+      await run(astroBin, ['build'], { cwd: workspace });
+      html = await readFile(join(workspace, 'dist/contact/index.html'), 'utf8');
+    }, 180_000);
+
+    afterAll(async () => {
+      if (workspace) await rm(workspace, { recursive: true, force: true });
+    });
+
+    it('ships the BEM class, never the malformed concatenation', () => {
+      expect(html).toContain('class="contact-page__lead-capture"');
+      expect(html).not.toContain('contact-pagelead-capture');
+    });
+
+    it('ships the managed-block marker the injector and the gate both key off', () => {
+      expect(html).toContain('data-flowstarter-lead-capture-slot');
     });
   },
 );
