@@ -24,7 +24,8 @@ export type AlertEvent =
   | 'health_check_failed'
   | 'scope_classifier_failed'
   | 'acceptable_use_classifier_failed'
-  | 'deploy_needs_operator';
+  | 'deploy_needs_operator'
+  | 'preview_artifact_over_budget';
 
 export type AlertSeverity = 'critical' | 'warning';
 
@@ -105,6 +106,20 @@ const RULES: Record<AlertEvent, AlertRule> = {
     severity: 'critical',
     dedupeWindowEnvVar: 'OPS_ALERT_DEPLOY_NEEDS_OPERATOR_DEDUPE_MINUTES',
     defaultDedupeWindowMinutes: 30,
+  },
+  // A generated preview that was correct and could not be stored. Nobody has
+  // paid, so this is not `build_job_failed`'s severity — but it is not nothing
+  // either: the visitor was told "the build stopped" and went away, and a
+  // budget that is too small for a whole template family costs every preview
+  // built from it, silently, until somebody films one. Warning, because the
+  // funnel steps the visitor down to the deterministic demo rather than
+  // breaking. A short window, because the useful signal is *which* previews
+  // are still over, and previews from the same template family are the same
+  // news for an hour.
+  preview_artifact_over_budget: {
+    severity: 'warning',
+    dedupeWindowEnvVar: 'OPS_ALERT_PREVIEW_ARTIFACT_OVER_BUDGET_DEDUPE_MINUTES',
+    defaultDedupeWindowMinutes: 60,
   },
 };
 

@@ -44,6 +44,8 @@ import {
 } from '@/lib/discovery/local-static-preview';
 import { publishFunnelPreview } from '@/lib/hosting/preview-publisher';
 import type { ArchiveFile } from '@/lib/hosting/site-archive';
+import { applyIntegrationsToWorkspace } from '@flowstarter/agentic-codegen';
+import { previewLeadCaptureEndpoint } from '@/lib/flowstarter/lead-capture-scaffold';
 
 /** The phase label the wizard shows while this step runs. */
 export const PUBLISH_PHASE = 'Publishing your live preview';
@@ -158,6 +160,40 @@ export function createFunnelPreviewPublisher(input: {
     brandConfig: {},
   };
 
+  /**
+   * The contact form's endpoint, written into the workspace copy before it is
+   * compiled.
+   *
+   * The same injector the paid build runs (`applyIntegrationsToWorkspace`),
+   * pointed at this preview's own token — so a preview and the site it becomes
+   * cannot end up with two different contact forms, and so the paid build's
+   * unconditional re-run replaces this block in place rather than finding
+   * something it does not recognise.
+   *
+   * It has to happen HERE, on disk, in front of `astro build`. The route
+   * already ran `injectLeadCapturePreviewIntoScaffoldFiles` over the manifest
+   * it stashes for the claim, and that is still right — but it runs after this
+   * publisher has compiled and deployed, so it never touched the site anybody
+   * looks at. The preview recorded on 2026-09-15 served `data-contact-form`,
+   * `data-contact-sent`, `data-contact-error` and the honeypot with zero
+   * occurrences of the capture endpoint in the HTML or in any `_astro/*.js`
+   * bundle: a form a visitor could fill in and submit into nothing.
+   *
+   * What the endpoint then does is deliberate and not a stopgap. A funnel
+   * preview belongs to no workspace, so there is no tenant a lead could be
+   * filed under; `/api/leads/capture/preview.{id}` recognises the shape a real
+   * token provably cannot have and answers 403 with a sentence the injected
+   * script shows the visitor — "This is a preview, so the form cannot send
+   * anything yet. It starts working on the live site." A form that says that
+   * is not a dead form, and it is the same ingress the endpoint applies to
+   * every other request from a client site.
+   */
+  const prepare = async (workspaceRoot: string): Promise<void> => {
+    await applyIntegrationsToWorkspace(workspaceRoot, {
+      leadCapture: { endpoint: previewLeadCaptureEndpoint(input.previewId) },
+    });
+  };
+
   const compile = async (
     workspaceRoot: string,
     templateSlug: string,
@@ -168,6 +204,7 @@ export function createFunnelPreviewPublisher(input: {
       projectId: input.previewId,
       templateSlug,
       workspaceRoot,
+      prepare,
       ...(reuse && build ? { existingWorkspaceRoot: build.workspaceRoot } : {}),
     });
     build = next;
