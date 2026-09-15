@@ -12,7 +12,7 @@ Cleaned up by hand at the time: `docker image prune -af --filter until=1h`,
 
 ## The fix
 
-**PR #175 is open, not yet merged.** It adds:
+**PR #175 merged.** It added:
 
 - `deploy/hetzner-staging/scripts/prune-images.sh` — keeps every image a
   running container uses, plus the `FLOWSTARTER_IMAGE_KEEP_COUNT` (default 5)
@@ -28,17 +28,41 @@ Cleaned up by hand at the time: `docker image prune -af --filter until=1h`,
   other container still uses it, so it does not wait on the keep-count to
   reach it.
 
-Until #175 merges, a full disk on `fs-sites-01` still means running the
-prune commands above by hand and confirming `docker system df` before
-retrying a failed deploy.
-
 ## The rule
 
-Do not let a deploy lane run unbounded image growth again: once #175 is
-merged and deployed, the preflight is what enforces the floor, not a human
-noticing the disk is full. If the floor check itself starts failing deploys
-that should succeed, adjust `FLOWSTARTER_IMAGE_KEEP_COUNT` /
-`FLOWSTARTER_DISK_FLOOR_MB`, do not remove the check.
+Do not let a deploy lane run unbounded image growth again: the preflight is
+what enforces the floor, not a human noticing the disk is full. If the floor
+check itself starts failing deploys that should succeed, adjust
+`FLOWSTARTER_IMAGE_KEEP_COUNT` / `FLOWSTARTER_DISK_FLOOR_MB`, do not remove
+the check.
+
+## The disk filled again anyway, same day
+
+Merging #175 did not put it on the box. `deploy-slot.sh` (like every script
+under `deploy/hetzner-staging/scripts/`) only ever reached `fs-sites-01` via
+a one-time manual `cp` at bootstrap — nothing in CI ever updated it after
+that. So `main` had the retention fix, `staging-deploy.yml` kept "deploying"
+successfully, and the box kept running `deploy-slot.sh` from commit
+`e813c99d1` regardless: no preflight, no retention, no floor check, because
+none of that code was actually running there. The disk filled again, and it
+was found and fixed by hand a second time, the same night.
+
+**The fix for the fix:** `staging-deploy.yml`'s sync step now tars
+`deploy/hetzner-staging/scripts/` alongside `supabase/` on every push to
+`main`, and `sync-supabase.sh` — the one script already allowlisted in
+`/etc/sudoers.d/flowstarter-deploy` (`FLOWSTARTER_SLOTS =
+/opt/flowstarter/staging/*.sh`, which covers installing any script under
+that glob, not just running one) — installs whichever `*.sh` files changed
+into `/opt/flowstarter/staging/`, atomically, only when the content
+actually differs. A "Verify installed scripts match the repo" step right
+after compares sha256 sums between the checkout and the host and fails the
+deploy loudly if they ever disagree again. No sudoers change was needed.
+See `deploy/hetzner-staging/README.md`, "What CI is allowed to run as
+root", and `sync-supabase.sh`'s own header comment.
+
+So: merging a fix to a script under `scripts/` is no longer the end of the
+story by itself, but it also no longer needs a follow-up manual install —
+the very next `staging-deploy` run puts it on the box and proves it did.
 
 See also `docs/dev-machine.md`, "Staging and production on Hetzner", and
 `deploy/hetzner-staging/README.md`.
