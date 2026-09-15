@@ -103,12 +103,21 @@ cmd_status() {
 }
 
 cmd_check() {
-  local published
-  published="$("$DOCKER" port "$CONTAINER" 3773 2>/dev/null || true)"
-  [ -n "$published" ] || die "$CONTAINER publishes no port for 3773"
-  case "$published" in
-    127.0.0.1:*) say "publishing is loopback-only ($published)" ;;
-    *) die "REFUSING: 3773 is published on $published, not 127.0.0.1. Fix the compose file's port prefix and the network's host_binding_ipv4 before going further." ;;
+  # The compose file runs the container with `network_mode: host` (added
+  # 2026-09-15, see the compose file's own comment): the editor's Clerk gate
+  # resolves a browser's identity straight against Supabase, and the only
+  # way a container reaches a host service published on 127.0.0.1 (not
+  # 0.0.0.0), same as the app slots' own local Supabase CLI stack, is to
+  # share the host's network namespace. Under host networking there is no
+  # Docker-level port publish for `docker port` to report, so the loopback
+  # guarantee is asserted the way it is for those app slots: a listening
+  # socket on the host itself, bound to 127.0.0.1 specifically.
+  local listening
+  listening="$(ss -ltn 2>/dev/null | awk '$4 ~ /:3773$/ {print $4}')"
+  [ -n "$listening" ] || die "nothing is listening on port 3773 on this host"
+  case "$listening" in
+    127.0.0.1:3773) say "publishing is loopback-only ($listening)" ;;
+    *) die "REFUSING: 3773 is listening on $listening, not 127.0.0.1:3773. Fix ROUTER_HOST in the compose file's environment block before going further." ;;
   esac
 
   # Length only. The value is never echoed.

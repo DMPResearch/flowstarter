@@ -17,9 +17,34 @@
 #
 # HOW flowstarter-main GETS HERE. On 127.0.0.1:3773, the same port, to the
 # `/__router/*` control plane: materialise a workspace's worktree from the
-# published manifest, commit it and read it back. The app slot runs with
-# `network_mode: host`, so loopback on the box is loopback for it too. That
-# control plane is protected twice over, and both halves matter:
+# published manifest, commit it and read it back.
+#
+# network_mode: host — added 2026-09-15, staging verification. The editor's
+# own Clerk gate (`/api/clerk/me`, `/api/clerk/auto-pair`) resolves a
+# browser's identity straight against Supabase (workspace + membership
+# lookup), independent of the router's materialise call. On this box that
+# means NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321, the same local
+# Supabase CLI stack every staging app slot already reaches — and, exactly
+# like `deploy/hetzner-staging/docker-compose.yml`'s own `flowstarter-staging`
+# service, the only way a container reaches a host service published on
+# 127.0.0.1 (not 0.0.0.0) is to share the host's network namespace. A custom
+# bridge network — what this file used before — cannot: Supabase's Kong
+# gateway is bound to the host's loopback specifically, and a bridge
+# container's gateway IP (172.x.0.1) is a different destination the kernel's
+# bind rejects. `host.docker.internal` (via `extra_hosts: host-gateway`)
+# does not help either — same rejection, different spelling. Verified by
+# hand on fs-sites-01: a bridge-networked container timed out reaching
+# 127.0.0.1:54321 through every route tried; switching to host networking
+# fixed it immediately, matching the reasoning
+# deploy/hetzner-staging/docker-compose.yml already documents for the app
+# slots reaching the same stack.
+#
+# ROUTER_HOST is 127.0.0.1, not 0.0.0.0, because of the network mode change:
+# under `network_mode: host` a 0.0.0.0 bind is not "loopback inside this
+# container's own network namespace", it is every interface on the box,
+# undoing the one guarantee this file exists to keep. The control plane is
+# still protected twice over on top of that loopback bind, and both halves
+# matter:
 #
 #   1. EDITOR_CONTROL_SECRET, compared in constant time. Without one set, the
 #      control routes answer 503 rather than defaulting open.
@@ -30,12 +55,13 @@
 #      cannot remove them. flowstarter-main's own loopback call carries
 #      neither.
 #
-# NOTHING HERE IS PUBLISHED TO THE INTERNET. The port binds 127.0.0.1
-# explicitly, and the compose-created network carries
-# `com.docker.network.bridge.host_binding_ipv4=127.0.0.1` for the same reason
-# the Cal stack next door does: /etc/docker/daemon.json's `{"ip":"127.0.0.1"}`
-# covers only the DEFAULT bridge, and a compose network would otherwise
-# publish on 0.0.0.0.
+# NOTHING HERE IS PUBLISHED TO THE INTERNET. `network_mode: host` means
+# there is no Docker-level port publish to lock to 127.0.0.1 any more, the
+# way the old bridge-network `ports:` line did; the enforcing layer is the
+# same one deploy/hetzner-staging/docker-compose.yml already names for the
+# app slots: the Hetzner Cloud Firewall (inbound 22/80/443 only) plus the
+# ROUTER_HOST=127.0.0.1 bind above. Verify with `nc -z <host> 3773` from
+# somewhere else; it must not connect.
 #
 # IS_SANDBOX=1 IS REQUIRED and lives in the env file. The container runs as
 # root; "Full access" runtime mode makes the Claude Agent SDK pass
@@ -54,12 +80,13 @@ services:
     image: ${EDITOR_IMAGE:-ghcr.io/dmpresearch/flowstarter-editor:main}
     container_name: flowstarter-editor
     restart: unless-stopped
+    network_mode: host
     env_file:
       - ${EDITOR_ENV_FILE:-/etc/flowstarter/editor.env}
     environment:
       NODE_ENV: production
       ROUTER_PORT: '3773'
-      ROUTER_HOST: '0.0.0.0'
+      ROUTER_HOST: '127.0.0.1'
       EDITOR_WORKSPACES_ROOT: /workspaces
       EDITOR_STATE_ROOT: /state
       # The blast-radius caps. A client's editor session is a coding agent
@@ -71,9 +98,10 @@ services:
       EDITOR_CHILD_PORT_START: '4001'
       EDITOR_CHILD_PORT_END: '4400'
       # EDITOR_PUBLIC_DOMAIN, EDITOR_CONTROL_SECRET, CLERK_SECRET_KEY,
-      # ANTHROPIC_API_KEY and IS_SANDBOX all come from the env file, never
-      # from here: `environment:` wins over `env_file:`, and a secret written
-      # in a file that is in git is a secret that is in git.
+      # ANTHROPIC_API_KEY, IS_SANDBOX, NEXT_PUBLIC_SUPABASE_URL and
+      # SUPABASE_SERVICE_ROLE_KEY all come from the env file, never from
+      # here: `environment:` wins over `env_file:`, and a secret written in
+      # a file that is in git is a secret that is in git.
     volumes:
       # Per-workspace source checkouts. Materialised by flowstarter-main
       # through the control plane, from the workspace's published manifest --
@@ -83,8 +111,6 @@ services:
       # Per-workspace editor state (threads, SQLite). Survives a restart, so
       # an operator's conversation is still there after a deploy.
       - editor-state:/state
-    ports:
-      - '127.0.0.1:${EDITOR_HOST_PORT:-3773}:3773'
     mem_limit: ${EDITOR_MEM_LIMIT:-3g}
     # Every child editor process spawns a coding agent, and a coding agent
     # spawns compilers. Without a pid cap one bad session can fork-bomb the
@@ -100,15 +126,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
-    networks:
-      - editor
 
 volumes:
   editor-workspaces:
   editor-state:
-
-networks:
-  editor:
-    driver: bridge
-    driver_opts:
-      com.docker.network.bridge.host_binding_ipv4: '127.0.0.1'
