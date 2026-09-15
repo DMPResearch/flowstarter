@@ -50,6 +50,16 @@ const Schema = z.object({
    * `decideRoute` or the route table.
    */
   locale: z.enum(['en', 'ro']).optional().default('en'),
+  /**
+   * Which of the offered answers the visitor tapped, as a key.
+   *
+   * The key and not the sentence, so the routing rule reads a decided value
+   * rather than matching an English label that a second locale would change.
+   * Anything that is not one of the three is dropped rather than refused: a
+   * stale browser tab posting an older shape must still reach a preview, and
+   * a dropped key degrades to exactly the behaviour of a typed answer.
+   */
+  answerKey: z.enum(['site', 'software', 'other']).optional().catch(undefined),
 });
 
 /**
@@ -100,16 +110,23 @@ export async function POST(req: NextRequest) {
       websiteUrl: parsed.data.websiteUrl,
       clarification: parsed.data.clarification,
       locale: parsed.data.locale,
+      answerKey: parsed.data.answerKey,
     });
-    // `evidence` and `leadId` stay on the server: the evidence is for the
-    // operator's card and the id is an internal handle, and neither is
-    // something the visitor's browser has any use for.
+    // `evidence`, `leadId` and the classifier's own verdict stay on the
+    // server: the evidence is for the operator's card, the id is an internal
+    // handle, and neither is something the visitor's browser has any use for.
+    //
+    // `offerCopy` goes out because the rule, not the screen, decides which
+    // sentence a visitor is shown. A screen that picked its own copy is how
+    // "what you have described is software" ended up on top of a recorded
+    // scope of `unclear`.
     return NextResponse.json(
       {
         route: result.route,
         scope: result.scope,
         questionKey: result.questionKey,
         bookingUrl: result.bookingUrl,
+        offerCopy: result.offerCopy,
       },
       { status: 200, headers: { 'Cache-Control': 'private, no-store' } }
     );

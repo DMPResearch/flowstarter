@@ -7,16 +7,51 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { generateTextMock, insertMock, selectResult } = vi.hoisted(() => ({
-  generateTextMock: vi.fn(),
-  insertMock: vi.fn(),
-  selectResult: { data: [] as unknown[], error: null as unknown },
-}));
+const {
+  generateTextMock,
+  generateObjectMock,
+  insertMock,
+  selectResult,
+  FakeNoObjectGeneratedError,
+} = vi.hoisted(() => {
+  /**
+   * Stands in for the SDK's own class. The seam recognises an unparseable
+   * completion by type, so a mock of `ai` without one would make the recovery
+   * path unreachable from this file.
+   */
+  class FakeNoObjectGeneratedError extends Error {
+    readonly text?: string;
+    readonly usage?: unknown;
+    readonly finishReason?: string;
+    constructor(input: {
+      text?: string;
+      usage?: unknown;
+      finishReason?: string;
+    }) {
+      super('No object generated: could not parse the response.');
+      this.name = 'AI_NoObjectGeneratedError';
+      this.text = input.text;
+      this.usage = input.usage;
+      this.finishReason = input.finishReason;
+    }
+    static isInstance(error: unknown): error is FakeNoObjectGeneratedError {
+      return error instanceof FakeNoObjectGeneratedError;
+    }
+  }
+  return {
+    generateTextMock: vi.fn(),
+    generateObjectMock: vi.fn(),
+    insertMock: vi.fn(),
+    selectResult: { data: [] as unknown[], error: null as unknown },
+    FakeNoObjectGeneratedError,
+  };
+});
 
 vi.mock('ai', () => ({
   generateText: (args: unknown) => generateTextMock(args),
-  generateObject: vi.fn(),
+  generateObject: (args: unknown) => generateObjectMock(args),
   streamText: vi.fn(),
+  NoObjectGeneratedError: FakeNoObjectGeneratedError,
 }));
 
 vi.mock('@/lib/ai/client', () => ({
@@ -36,10 +71,13 @@ vi.mock('@/supabase-clients/server', () => ({
   }),
 }));
 
+import { z } from 'zod';
+
 import {
   LLM_BUDGETS,
   LlmBudgetExceededError,
   callLlm,
+  callLlmObject,
   estimateCostUsd,
   llmActionConfig,
   normalizeLlmUsage,
@@ -68,6 +106,7 @@ function reply(
 
 beforeEach(() => {
   generateTextMock.mockReset();
+  generateObjectMock.mockReset();
   insertMock.mockReset();
   insertMock.mockResolvedValue({ error: null });
   selectResult.data = [];
@@ -406,5 +445,109 @@ describe('usage + cost helpers', () => {
       expect(config.maxTokens, action).toBeGreaterThan(0);
       expect(config.model, action).toMatch(/\//);
     }
+  });
+});
+
+describe('callLlmObject when the provider cannot give a native JSON mode', () => {
+  const Schema = z.object({
+    scope: z.enum(['standard', 'custom', 'unclear']),
+    confidence: z.number(),
+  });
+  /** Verbatim from a real OpenRouter call to anthropic/claude-sonnet-4. */
+  const FENCED =
+    '```json\n{\n  "scope": "standard",\n  "confidence": 0.9\n}\n```';
+
+  it('reads the object the model actually returned inside a fence', async () => {
+    generateObjectMock.mockRejectedValueOnce(
+      new FakeNoObjectGeneratedError({
+        text: FENCED,
+        usage: { inputTokens: 455, outputTokens: 65 },
+        finishReason: 'stop',
+      })
+    );
+
+    const result = await callLlmObject<{ scope: string; confidence: number }>({
+      action: 'classify_scope',
+      workspaceId: null,
+      schema: Schema,
+      prompt: 'a portfolio site',
+    });
+
+    expect(result.object).toEqual({ scope: 'standard', confidence: 0.9 });
+    // Nothing was sent twice: one call in, one call out.
+    expect(generateObjectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('bills the recovered call, because the tokens were spent', async () => {
+    generateObjectMock.mockRejectedValueOnce(
+      new FakeNoObjectGeneratedError({
+        text: FENCED,
+        usage: { inputTokens: 455, outputTokens: 65 },
+        finishReason: 'stop',
+      })
+    );
+
+    await callLlmObject({
+      action: 'classify_scope',
+      workspaceId: null,
+      schema: Schema,
+      prompt: 'a portfolio site',
+    });
+
+    const row = insertMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(row.action).toBe('classify_scope');
+    expect(row.tokens_in).toBe(455);
+    expect(row.tokens_out).toBe(65);
+  });
+
+  it('still throws when the completion carries no object at all', async () => {
+    generateObjectMock.mockRejectedValueOnce(
+      new FakeNoObjectGeneratedError({
+        text: 'I am not able to classify that.',
+        usage: { inputTokens: 100, outputTokens: 8 },
+        finishReason: 'stop',
+      })
+    );
+
+    await expect(
+      callLlmObject({
+        action: 'classify_scope',
+        workspaceId: null,
+        schema: Schema,
+        prompt: 'x',
+      })
+    ).rejects.toThrow('No object generated');
+
+    // And the unreadable call is in the ledger anyway: a ledger that only
+    // shows the calls that parsed understates a broken model.
+    expect(insertMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not swallow a failure that is not a parse failure', async () => {
+    generateObjectMock.mockRejectedValueOnce(new Error('provider is down'));
+    await expect(
+      callLlmObject({
+        action: 'classify_scope',
+        workspaceId: null,
+        schema: Schema,
+        prompt: 'x',
+      })
+    ).rejects.toThrow('provider is down');
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it('leaves a parseable answer completely alone', async () => {
+    generateObjectMock.mockResolvedValueOnce({
+      object: { scope: 'custom', confidence: 0.8 },
+      usage: { inputTokens: 10, outputTokens: 5 },
+      finishReason: 'stop',
+    });
+    const result = await callLlmObject<{ scope: string }>({
+      action: 'classify_scope',
+      workspaceId: null,
+      schema: Schema,
+      prompt: 'x',
+    });
+    expect(result.object.scope).toBe('custom');
   });
 });

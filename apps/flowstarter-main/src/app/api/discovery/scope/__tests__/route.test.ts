@@ -136,6 +136,46 @@ describe('POST /api/discovery/scope', () => {
     );
   });
 
+  it('passes the answer key, which is what the rule decides on', async () => {
+    runScopeGate.mockResolvedValue({
+      route: 'self-serve',
+      scope: 'standard',
+      confidence: 0,
+      evidence: [],
+      rule: 'visitorSaysSite',
+      operatorReview: false,
+    });
+    await POST(
+      post({
+        ...BRIEF,
+        clarification: 'A site that presents my business',
+        answerKey: 'site',
+      })
+    );
+    expect(runScopeGate).toHaveBeenCalledWith(
+      expect.objectContaining({ answerKey: 'site' })
+    );
+  });
+
+  it('drops an answer key it does not recognise rather than refusing', async () => {
+    // A stale tab posting an older shape must still reach a preview. Dropping
+    // it degrades to exactly the behaviour of a typed answer.
+    runScopeGate.mockResolvedValue({
+      route: 'ask-one-more-question',
+      scope: 'unclear',
+      confidence: 0,
+      evidence: [],
+      rule: 'unclear',
+      operatorReview: false,
+      questionKey: 'landing.discovery.scope.question',
+    });
+    const res = await POST(post({ ...BRIEF, answerKey: 'maybe' }));
+    expect(res.status).toBe(200);
+    expect(runScopeGate).toHaveBeenCalledWith(
+      expect.objectContaining({ answerKey: undefined })
+    );
+  });
+
   it('returns the question key when the gate wants one more answer', async () => {
     runScopeGate.mockResolvedValue({
       route: 'ask-one-more-question',

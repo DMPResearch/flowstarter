@@ -459,7 +459,17 @@ export type PolicyRule =
   | 'sensitive_below_floor'
   | 'classifier_failed_closed'
   | 'classifier_failed_open'
-  | 'unknown_category';
+  | 'unknown_category'
+  /**
+   * The two the scope gate opens a review under (`@/lib/flowstarter/
+   * scope-route`). Nothing in `decide()` produces them: the scope decision is
+   * a different rule layer, and these exist so that "a person should read this
+   * brief" has one queue rather than two. The acceptable-use verdict on such a
+   * row is `allow` -- what is in question is what we are being asked to build,
+   * not whether we may build it.
+   */
+  | 'scope_visitor_disagrees_with_classifier'
+  | 'scope_unresolved_after_question';
 
 export interface PolicyVerdict {
   decision: PolicyDecision;

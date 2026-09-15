@@ -38,6 +38,10 @@ import { z } from 'zod';
 
 import { callLlmObject } from './llm';
 import {
+  noteClassifierFailure,
+  noteClassifierSuccess,
+} from './classifier-health';
+import {
   UNCLASSIFIED,
   type ScopeClassification,
 } from '@/lib/flowstarter/scope-classifier';
@@ -87,10 +91,38 @@ const SYSTEM_PROMPT = [
   'Respond with only the JSON object.',
 ].join('\n');
 
+/**
+ * The three scopes, written once. The prompt above documents them and the
+ * schema below accepts them; a second literal list would be the place they
+ * drift apart.
+ */
+const SCOPE_VALUES = ['standard', 'custom', 'unclear'] as const;
+
+/**
+ * Lenient about shape, strict about meaning.
+ *
+ * A model that answers `"Standard"` has given the documented answer with a
+ * capital letter, and refusing it is this system failing on its own
+ * presentation rather than on the classification. So the value is lowercased
+ * and trimmed before the enum decides, the confidence is coerced from the
+ * string some providers emit it as, `evidence` defaults to empty rather than
+ * being required, and unknown keys are dropped (zod's default) instead of
+ * failing the whole object.
+ *
+ * What stays strict: the scope has to be one of the three documented values.
+ * An unrecognised label is not a verdict, and the routing rule must never see
+ * one.
+ */
 const ScopeSchema = z.object({
-  scope: z.enum(['standard', 'custom', 'unclear']),
-  confidence: z.number(),
-  evidence: z.array(z.string()).max(3),
+  scope: z.preprocess(
+    (value) => (typeof value === 'string' ? value.trim().toLowerCase() : value),
+    z.enum(SCOPE_VALUES)
+  ),
+  confidence: z.coerce.number(),
+  // No `.max(3)` here on purpose: a fourth fragment is a model being
+  // talkative, not a classification we should throw away. `cleanEvidence`
+  // below enforces the three the operator card shows.
+  evidence: z.array(z.string()).optional().default([]),
 });
 
 /** Longest fragment kept. The prompt asks for less; this enforces it. */
@@ -194,14 +226,62 @@ export async function llmClassifyScope(
       classifier: `llm:${SCOPE_PROMPT_VERSION}`,
     };
     remember(key, result);
+    noteClassifierSuccess(SCOPE_CLASSIFIER_HEALTH_KEY);
     return result;
   } catch (error) {
     // The brief itself is the visitor's own words and never reaches a log line;
     // only the reason does.
-    console.warn(
-      '[scope] classification failed, routing as unclear:',
+    const reason = error instanceof Error ? error.message : 'unknown error';
+    console.warn('[scope] classification failed, routing as unclear:', reason);
+    await alertIfDown(reason);
+    return UNCLASSIFIED;
+  }
+}
+
+/**
+ * Which classifier the failure run belongs to. One key per head, so the scope
+ * classifier going down does not reset or mask the acceptable-use head's count.
+ */
+export const SCOPE_CLASSIFIER_HEALTH_KEY = 'scope';
+
+/**
+ * Tell an operator once the failures stop looking like a blip.
+ *
+ * Fire and forget, and deliberately not awaited into the visitor's latency:
+ * this runs on the critical path between the last question and the preview,
+ * and an alert that is slow to send must not be slow for them. `sendOpsAlert`
+ * never throws, but the catch is here anyway because the import itself can
+ * fail on a deployment with no Supabase configured, and an alert failing is
+ * never a reason for a classification to fail differently.
+ *
+ * The message carries the provider's reason and the run length, never the
+ * visitor's brief.
+ */
+async function alertIfDown(reason: string): Promise<void> {
+  const { consecutiveFailures, shouldAlert } = noteClassifierFailure(
+    SCOPE_CLASSIFIER_HEALTH_KEY
+  );
+  if (!shouldAlert) return;
+  try {
+    const { sendOpsAlert } = await import('@/lib/ops/send-ops-alert');
+    await sendOpsAlert({
+      event: 'scope_classifier_failed',
+      // One run of failures is one thing happening, whatever the visitor
+      // count: the discriminator names the classifier, not the request.
+      discriminator: SCOPE_CLASSIFIER_HEALTH_KEY,
+      title: 'The scope classifier is not answering',
+      detail: {
+        consecutiveFailures,
+        reason,
+        promptVersion: SCOPE_PROMPT_VERSION,
+        effect:
+          'Every intake is routed as unclear, so no visitor reaches a preview without answering the clarifying question.',
+      },
+    });
+  } catch (error) {
+    console.error(
+      '[scope] could not raise the classifier outage alert:',
       error instanceof Error ? error.message : 'unknown error'
     );
-    return UNCLASSIFIED;
   }
 }

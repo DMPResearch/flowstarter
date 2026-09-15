@@ -25,11 +25,13 @@ import {
   generateObject,
   generateText,
   streamText,
+  NoObjectGeneratedError,
   type LanguageModel,
   type ModelMessage,
 } from 'ai';
 
 import { getModel } from './client';
+import { recoverObject } from './object-repair';
 import { recordGenerationCost, type GenerationKind } from './funnel-cost';
 
 // ---------------------------------------------------------------------------
@@ -645,20 +647,63 @@ export async function callLlm(options: CallLlmOptions): Promise<LlmResult> {
   };
 }
 
-/** Budgeted, logged, cache-primed `generateObject`. */
+interface RawObjectResult<T> {
+  object: T;
+  usage?: unknown;
+  finishReason?: string;
+  providerMetadata?: unknown;
+}
+
+/**
+ * Budgeted, logged, cache-primed `generateObject`, with one deterministic
+ * second chance at reading the answer.
+ *
+ * The retry is not a retry: nothing is sent again and nothing is billed twice.
+ * When the SDK could not parse a completion it already paid for,
+ * `recoverObject` unwraps a markdown fence and re-validates against the
+ * caller's own schema. Anthropic models reached through OpenRouter have no
+ * native json_schema mode, so they answer the SDK's prompt-level instruction
+ * with a fenced object; that is a well-formed answer the SDK's `JSON.parse`
+ * rejects, and every caller's fail-closed branch fired on it. See
+ * `./object-repair` for the raw response this was measured against.
+ *
+ * A completion that genuinely carries no object still throws, unchanged. The
+ * usage row is written either way, because the tokens were spent either way.
+ */
 export async function callLlmObject<T>(
   options: CallLlmOptions & { schema: unknown }
 ): Promise<LlmObjectResult<T>> {
   const prepared = await prepare(options);
-  const result = (await generateObject({
-    ...prepared.args,
-    schema: options.schema,
-  } as Parameters<typeof generateObject>[0])) as unknown as {
-    object: T;
-    usage?: unknown;
-    finishReason?: string;
-    providerMetadata?: unknown;
-  };
+
+  let result: RawObjectResult<T>;
+  try {
+    result = (await generateObject({
+      ...prepared.args,
+      schema: options.schema,
+    } as Parameters<typeof generateObject>[0])) as unknown as RawObjectResult<T>;
+  } catch (error) {
+    if (!NoObjectGeneratedError.isInstance(error)) throw error;
+    const recovered = recoverObject<T>(error.text, options.schema);
+    if (recovered === null) {
+      // Record what the unreadable call cost before handing the failure on:
+      // the tokens are spent, and a ledger that only shows the calls that
+      // parsed is a ledger that understates a broken model.
+      await settle(options, prepared, {
+        usage: error.usage,
+        finishReason: error.finishReason,
+      }).catch(() => undefined);
+      throw error;
+    }
+    console.warn(
+      `[llm] recovered a fenced object the provider mode could not parse action=${options.action} model=${prepared.modelId}`
+    );
+    result = {
+      object: recovered,
+      usage: error.usage,
+      finishReason: error.finishReason,
+    };
+  }
+
   const { usage, costEstimate } = await settle(options, prepared, result);
   return {
     object: result.object,

@@ -112,12 +112,19 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** What the server sends for a custom verdict. The rule picks it, not the UI. */
+const CUSTOM_COPY = {
+  titleKey: 'landing.discovery.scope.offer.title',
+  bodyKey: 'landing.discovery.scope.offer.body',
+};
+
 describe('the routing gate, in the wizard', () => {
   it('spends no generation budget on a custom work brief', async () => {
     scopeReplies = [
       {
         route: 'discovery-call',
         scope: 'custom',
+        offerCopy: CUSTOM_COPY,
         bookingUrl: 'https://cal.flowstarter.dev/darius/discovery-call',
       },
     ];
@@ -173,7 +180,12 @@ describe('the routing gate, in the wizard', () => {
         route: 'ask-one-more-question',
         questionKey: 'landing.discovery.scope.question',
       },
-      { route: 'discovery-call', bookingUrl: null },
+      {
+        route: 'discovery-call',
+        scope: 'custom',
+        offerCopy: CUSTOM_COPY,
+        bookingUrl: null,
+      },
     ];
     const user = renderWizard();
     await walkTheQuickIntake(user);
@@ -198,6 +210,87 @@ describe('the routing gate, in the wizard', () => {
     expect(scopeAnswers[1].clarification).toBe(
       t('landing.discovery.scope.answer.software')
     );
+    // And the key, which is what the rule actually decides on. Sending only
+    // the sentence is why an explicit answer used to change the route and not
+    // the verdict.
+    expect(scopeAnswers[0].answerKey).toBeUndefined();
+    expect(scopeAnswers[1].answerKey).toBe('software');
+  });
+
+  it('sends `site` as the key when the visitor taps the other chip', async () => {
+    scopeReplies = [
+      {
+        route: 'ask-one-more-question',
+        questionKey: 'landing.discovery.scope.question',
+      },
+      { route: 'self-serve', scope: 'standard' },
+    ];
+    const user = renderWizard();
+    await walkTheQuickIntake(user);
+
+    await screen.findByText(t('landing.discovery.scope.question'));
+    await user.click(
+      screen.getByRole('button', {
+        name: t('landing.discovery.scope.answer.site'),
+      })
+    );
+
+    await waitFor(() => {
+      expect(scopeAnswers[1]?.answerKey).toBe('site');
+    });
+    // Run 8's end state, as the visitor experiences it: the answer settles it
+    // and the preview starts.
+    await waitFor(() => {
+      expect(
+        requested.some((url) => url.startsWith('/api/discovery/preview/live'))
+      ).toBe(true);
+    });
+  });
+
+  it('marks a typed answer as neither option', async () => {
+    scopeReplies = [
+      {
+        route: 'ask-one-more-question',
+        questionKey: 'landing.discovery.scope.question',
+      },
+      { route: 'self-serve', scope: 'standard' },
+    ];
+    const user = renderWizard();
+    await walkTheQuickIntake(user);
+
+    await screen.findByText(t('landing.discovery.scope.question'));
+    await user.click(
+      screen.getByRole('button', {
+        name: t('landing.discovery.scope.answer.other'),
+      })
+    );
+    await user.type(
+      screen.getByLabelText(t('landing.discovery.scope.question')),
+      'It is a bit of both, honestly'
+    );
+    await user.click(
+      screen.getByRole('button', { name: t('landing.discovery.scope.send') })
+    );
+
+    await waitFor(() => {
+      expect(scopeAnswers[1]?.answerKey).toBe('other');
+    });
+  });
+
+  it('never asserts custom work on a screen the rule did not name copy for', async () => {
+    // The defensive direction, asserted. A response with no `offerCopy` -- an
+    // older deploy, a truncated body -- must not fall back to the sentence
+    // that tells a visitor they described software.
+    scopeReplies = [{ route: 'discovery-call', bookingUrl: null }];
+    const user = renderWizard();
+    await walkTheQuickIntake(user);
+
+    expect(
+      await screen.findByText(t('landing.discovery.scope.review.title'))
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(t('landing.discovery.scope.offer.body'))
+    ).toBeNull();
   });
 
   it('lets a standard brief through to the preview exactly as before', async () => {

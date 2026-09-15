@@ -43,9 +43,16 @@ import {
 } from './scope-classifier';
 import {
   decideRoute,
+  scopeOfferCopy,
   type AcceptableUse,
+  type Scope,
+  type ScopeAnswer,
+  type ScopeOfferCopy,
   type ScopeRoute,
 } from './scope-route';
+import { CLEAN_CATEGORY, type PolicyRule } from '@/lib/policy/acceptable-use';
+import { recordPolicyOutcome } from '@/lib/policy/review';
+import { createHash } from 'node:crypto';
 
 /**
  * The clarifying question, as a locale key.
@@ -67,6 +74,16 @@ export interface ScopeGateInput {
   /** Present on the second pass only. Its presence is what "clarified" means. */
   clarification?: string;
   /**
+   * Which answer the visitor chose, when they chose one of the two offered.
+   *
+   * The key, not the sentence: the browser sends `site` or `software`, so the
+   * routing rule reads a decided value instead of matching the English label
+   * back out of the clarification text. A visitor who typed their own answer
+   * sends `other` (or nothing), and that text reaches the classifier as
+   * evidence rather than this rule as an answer.
+   */
+  answerKey?: ScopeAnswer;
+  /**
    * Overrides the acceptable-use screen this module would run itself. Only
    * tests pass it; the funnel lets `runScopeGate` do the screening so there is
    * one call and one cached verdict per brief.
@@ -82,13 +99,27 @@ export interface ScopeGateInput {
 
 export interface ScopeGateResult {
   route: ScopeRoute;
-  scope: ScopeClassification['scope'];
+  /**
+   * The scope as the routing rule settled it, not as the classifier reported
+   * it. The visitor's own answer settles it; a classifier that could not
+   * answer does not override one.
+   */
+  scope: Scope;
+  /** What the classifier said on its own, kept for the operator's card. */
+  classifiedScope: Scope;
   confidence: number;
   evidence: string[];
   /** Which rule in `decideRoute` produced the route. */
   rule: string;
+  /** True when an acceptable-use review row was opened for an operator. */
+  operatorReview: boolean;
   /** The locale key of the clarifying question, on `ask-one-more-question`. */
   questionKey?: string;
+  /**
+   * Which copy the discovery-call screen may show, chosen by the rule from the
+   * settled scope. Only present on `discovery-call`.
+   */
+  offerCopy?: ScopeOfferCopy;
   /**
    * Where the visitor books, prefilled. Null on `discovery-call` means this
    * environment has no Cal.com configured and the page will show the contact
@@ -314,32 +345,46 @@ export async function runScopeGate(
   const acceptableUse =
     input.acceptableUse ?? (await screenedVerdict(input, linkTitle));
 
-  const classification = await classifyScope(
-    scopeClassifierText({
-      fullName: input.fullName,
-      email: input.email,
-      description: input.description,
-      instagramUrl: input.instagramUrl,
-      linkedinUrl: input.linkedinUrl,
-      websiteUrl: input.websiteUrl,
-      linkTitle,
-      clarification: input.clarification,
-    })
-  );
+  const classifierText = scopeClassifierText({
+    fullName: input.fullName,
+    email: input.email,
+    description: input.description,
+    instagramUrl: input.instagramUrl,
+    linkedinUrl: input.linkedinUrl,
+    websiteUrl: input.websiteUrl,
+    linkTitle,
+    clarification: input.clarification,
+  });
+  const classification = await classifyScope(classifierText);
 
   const decision = decideRoute({
     scope: classification.scope,
     confidence: classification.confidence,
     acceptableUse,
-    alreadyClarified: Boolean(input.clarification?.trim()),
+    visitorAnswer: input.answerKey,
+    alreadyClarified:
+      Boolean(input.clarification?.trim()) || Boolean(input.answerKey),
   });
+
+  if (decision.operatorReview) {
+    await openScopeReview({
+      rule:
+        decision.rule === 'visitorSaysSiteClassifierSaysCustom'
+          ? 'scope_visitor_disagrees_with_classifier'
+          : 'scope_unresolved_after_question',
+      classification,
+      subject: classifierText,
+    });
+  }
 
   const base: ScopeGateResult = {
     route: decision.route,
-    scope: classification.scope,
+    scope: decision.scope,
+    classifiedScope: classification.scope,
     confidence: classification.confidence,
     evidence: classification.evidence,
     rule: decision.rule,
+    operatorReview: decision.operatorReview,
   };
 
   if (decision.route === 'ask-one-more-question') {
@@ -364,7 +409,62 @@ export async function runScopeGate(
     acceptableUse,
   });
 
-  return { ...base, bookingUrl, leadId };
+  return {
+    ...base,
+    bookingUrl,
+    leadId,
+    offerCopy: scopeOfferCopy(decision.scope),
+  };
+}
+
+/**
+ * Open an acceptable-use review row for a brief nobody could settle.
+ *
+ * The queue is the acceptable-use one on purpose. "Somebody should read this
+ * before we build it" is one question with one answer surface, and a second
+ * table for the scope version of it would be a second queue for an operator to
+ * remember to check. What is in question here is not whether we may build --
+ * the acceptable-use verdict on these rows allows -- it is what we are being
+ * asked to build.
+ *
+ * Never fails the caller. `recordPolicyOutcome` already swallows its own
+ * errors, and a visitor whose review row could not be written must still
+ * reach their preview: this exists so an operator sees the disagreement, not
+ * so the funnel can stop on it.
+ */
+async function openScopeReview(input: {
+  rule: PolicyRule;
+  classification: ScopeClassification;
+  subject: string;
+}): Promise<void> {
+  const tier = input.classification.classifier.startsWith('sigma')
+    ? ('embedding' as const)
+    : input.classification.classifier.startsWith('llm')
+    ? ('llm' as const)
+    : ('unavailable' as const);
+  await recordPolicyOutcome({
+    surface: 'preview',
+    verdict: {
+      decision: 'review',
+      // No policy category applies: the brief is unobjectionable, it is the
+      // scope of the work that nobody could settle.
+      category: CLEAN_CATEGORY,
+      confidence: input.classification.confidence,
+      rule: input.rule,
+      tier,
+      needsHuman: true,
+    },
+    classification: {
+      // The visitor's own words, capped by `scopeClassifierText`, are what an
+      // operator needs to read to settle this by hand.
+      evidence: input.classification.evidence.join(' | '),
+      // The hash identifies the brief without storing it twice, and it is
+      // what the partial unique index dedupes a reloading visitor on.
+      evidenceHash: createHash('sha256').update(input.subject).digest('hex'),
+      promptVersion: input.classification.classifier,
+    },
+    actor: 'scope-gate',
+  });
 }
 
 /**
