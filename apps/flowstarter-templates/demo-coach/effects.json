@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "stateClasses": [],
+  "boundAttributes": [],
+  "sections": [],
+  "pages": [
+    {
+      "source": "src/pages/404.astro",
+      "output": "404.html",
+      "sections": []
+    },
+    {
+      "source": "src/pages/index.astro",
+      "output": "index.html",
+      "sections": []
+    }
+  ],
+  "orphans": {
+    "modules": [],
+    "bindings": []
+  }
+}

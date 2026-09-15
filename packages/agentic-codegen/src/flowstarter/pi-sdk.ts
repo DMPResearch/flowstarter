@@ -1363,7 +1363,14 @@ export async function createBoundedFileTools(
     name: 'write_file',
     label: 'Write workspace file',
     description:
-      'Write one authorized UTF-8 source/content file inside the isolated site workspace.',
+      'Write one authorized UTF-8 source/content file inside the isolated ' +
+      'site workspace. Whole-file writes are for content files. Rewriting a ' +
+      "section component this way replaces the template's markup with yours, " +
+      "and the template's scroll reveals, sticky columns and step timelines " +
+      'are attributes and classes in that markup that its scripts and ' +
+      'stylesheets reach for by name — the TEMPLATE_EFFECTS_DROPPED gate ' +
+      'compares the compiled output against them and fails the build. Put ' +
+      "the client's words in the content files instead, or use edit_file.",
     parameters: Type.Object({
       path: Type.String({ minLength: 1, maxLength: 300 }),
       content: Type.String({ maxLength: MAX_AGENT_FILE_BYTES }),
@@ -1388,7 +1395,10 @@ export async function createBoundedFileTools(
     name: 'edit_file',
     label: 'Edit workspace file',
     description:
-      'Replace one exact unique text fragment in an authorized workspace file.',
+      'Replace one exact unique text fragment in an authorized workspace ' +
+      'file. The right tool for a section component: change the string, the ' +
+      'prop or the value, and leave the element, its class names, its data- ' +
+      'attributes and its <style> block exactly as the template ships them.',
     parameters: Type.Object({
       path: Type.String({ minLength: 1, maxLength: 300 }),
       oldText: Type.String({ minLength: 1, maxLength: MAX_AGENT_FILE_BYTES }),

@@ -23,6 +23,7 @@ import {
   stripBlockComments,
   PreviewGenerationPipeline,
   ProjectState,
+  TEMPLATE_EFFECTS_DROPPED,
   type BrandConfig,
   type BusinessIntakePayload,
   type FullSiteBuildJobStore,
@@ -178,6 +179,134 @@ describe('Flowstarter preview-to-build orchestration', () => {
       'publisher:preview',
     ]);
     await expect(access(previewWorkspace)).rejects.toThrow();
+  });
+
+  it('restores a section the preview agent rewrote out of its own scroll reveal', async () => {
+    // The preview is where the damage starts: the paid build is seeded from
+    // whatever this agent leaves behind, so a section rewritten without its
+    // hook would become the baseline every later gate measures against. One
+    // repair pass, then the template's own component goes back — the same
+    // shape as the stylesheet integrity gate next to it.
+    const STORY =
+      '<section class="story" data-story-reveal>' +
+      '<p class="story__line">Template copy</p></section>' +
+      '<style>.story.is-visible .story__line { opacity: 1; }</style>\n';
+    const REWRITTEN =
+      '<section class="story"><p class="story__line">Calm Path</p></section>\n';
+    const passes: string[] = [];
+    let publishedStory = '';
+
+    const agents = {
+      analyzeBrand: async () => validBrandConfig(),
+      selectTemplate: async () => ({
+        slug: 'wellness-therapy',
+        reason: 'Fits.',
+        matchedSignals: ['therapy'],
+        confidence: 0.9,
+      }),
+      buildPreview: async (input: {
+        workspaceRoot: string;
+        feedback?: string;
+      }) => {
+        passes.push(input.feedback ?? '');
+        await writeFile(
+          join(input.workspaceRoot, 'src/content/site.md'),
+          'Calm Path Therapy preview /assets/portrait.webp',
+          'utf8',
+        );
+        // Both passes rewrite the section: the repair does not take.
+        await writeFile(
+          join(input.workspaceRoot, 'src/components/Story.astro'),
+          REWRITTEN,
+          'utf8',
+        );
+        return { summary: 'done', changedPaths: ['src/content/site.md'] };
+      },
+    } as unknown as PiSdkFlowstarterAgents;
+
+    const library: TemplateLibrary = {
+      search: async () => [],
+      getDetails: async () => ({}),
+      scaffold: async (slug) => ({
+        template: {
+          metadata: {
+            slug,
+            displayName: 'Wellness & Therapy',
+            description: 'Trust-led service template.',
+            category: 'services',
+            useCase: ['therapy'],
+            fileCount: 1,
+            totalLOC: 1,
+          },
+          config: { palettes: [] },
+        },
+        files: [
+          {
+            path: 'src/content/site.md',
+            content: 'Template copy',
+            type: 'file',
+          },
+          {
+            path: 'src/layouts/Layout.astro',
+            content: "<slot /><script>import '../scripts/site.js';</script>\n",
+            type: 'file',
+          },
+          {
+            path: 'src/scripts/site.js',
+            content:
+              "document.querySelectorAll('[data-story-reveal]')" +
+              ".forEach((el) => el.classList.add('is-visible'));\n",
+            type: 'file',
+          },
+          { path: 'src/components/Story.astro', content: STORY, type: 'file' },
+          {
+            path: 'src/pages/index.astro',
+            content:
+              "---\nimport Layout from '../layouts/Layout.astro';\n" +
+              "import Story from '../components/Story.astro';\n---\n" +
+              '<Layout><Story /></Layout>\n',
+            type: 'file',
+          },
+        ],
+      }),
+      close: async () => undefined,
+    };
+
+    const validator: SiteValidator = { validate: async () => undefined };
+    const publisher: PreviewPublisher = {
+      publish: async (input) => {
+        publishedStory = await readFile(
+          join(input.workspaceRoot, 'src/components/Story.astro'),
+          'utf8',
+        );
+        return {
+          previewUrl: 'https://preview.flowstarter.net/calm-path',
+          artifactUrl: 's3://previews/calm-path.tar.gz',
+          files: [],
+        };
+      },
+    };
+
+    await new PreviewGenerationPipeline(
+      agents,
+      library,
+      validator,
+      publisher,
+    ).run({
+      intake: validIntake(),
+      corpus: validCorpus(validIntake().projectId),
+      cachedAssets: [
+        { sourceId: 'image-1', publicPath: '/assets/portrait.webp' },
+      ],
+    });
+
+    // One personalization pass, then one repair pass naming the hook.
+    expect(passes).toHaveLength(2);
+    expect(passes[1]).toContain('data-story-reveal');
+    expect(passes[1]).toContain('src/components/Story.astro');
+    // The repair did not take, so the preview ships the template's markup
+    // rather than a section whose effects no longer run.
+    expect(publishedStory).toBe(STORY);
   });
 
   it('materializes cachedAssetFiles into the workspace and hands them to the agent', async () => {
@@ -854,6 +983,7 @@ describe('Flowstarter preview-to-build orchestration', () => {
       'Checking for placeholder copy',
       'Checking for placeholder images',
       'Checking what the site asks the browser to do',
+      'Checking the template’s effects survived',
       'Checking for empty image elements',
       'Checking the site against the acceptable-use policy',
       'Committing the site',
@@ -3666,6 +3796,118 @@ describe('CHANGE_REQUEST_BUILD: the paid change that used to ship nothing', () =
     }
     return { calls, logs, prompts, savedFiles, error };
   }
+
+  /**
+   * The published site, plus the effect layer every real template has: one
+   * loaded script that observes an attribute, and a section component that
+   * renders it and animates off the class the script adds.
+   */
+  function effectSeed(): Array<{
+    path: string;
+    content: string;
+    type: 'file';
+    encoding?: 'base64';
+  }> {
+    return [
+      ...fiveRouteSeed().filter(
+        (entry) =>
+          entry.path !== 'src/layouts/Base.astro' &&
+          entry.path !== 'src/pages/index.astro',
+      ),
+      {
+        path: 'src/pages/index.astro',
+        content:
+          "---\nimport Base from '../layouts/Base.astro';\n" +
+          "import Story from '../components/Story.astro';\n---\n" +
+          '<Base><h1>Studio</h1><p>Written for this client and signed off ' +
+          'by them before the site went live.</p><Story /></Base>\n',
+        type: 'file',
+      },
+      {
+        path: 'src/layouts/Base.astro',
+        content: "<slot /><script>import '../scripts/site.js';</script>",
+        type: 'file',
+      },
+      {
+        path: 'src/scripts/site.js',
+        content:
+          "document.querySelectorAll('[data-story-reveal]')" +
+          ".forEach((el) => el.classList.add('is-visible'));",
+        type: 'file',
+      },
+      {
+        path: 'src/components/Story.astro',
+        content:
+          '<section class="story" data-story-reveal>' +
+          '<p class="story__line">Copy</p></section>' +
+          '<style>.story.is-visible .story__line { opacity: 1; }</style>',
+        type: 'file',
+      },
+    ];
+  }
+
+  /** A `dist/` for the five routes, with the story section on the homepage. */
+  async function writeEffectDist(root: string, story: string): Promise<void> {
+    await writeDist(root, SEED_ROUTES);
+    await writeFile(
+      join(root, 'dist/index.html'),
+      `<html><body><h1>(home)</h1><p>The work this studio has shipped for ` +
+        'its clients.</p>' +
+        '<img src="/flowstarter-media/cr-b104b1e0.jpg" alt="dashboard">' +
+        `${story}</body></html>`,
+      'utf8',
+    );
+    await mkdir(join(root, 'dist/_astro'), { recursive: true });
+    await writeFile(
+      join(root, 'dist/_astro/site.css'),
+      '.story.is-visible .story__line{opacity:1}',
+      'utf8',
+    );
+  }
+
+  it('refuses a change that rewrote a section out of its own scroll reveal', async () => {
+    // A change request may remove a section; it may not leave the section in
+    // place and take away the attribute its script reads.
+    const { calls, prompts, error } = await runChangeBuild({
+      label: 'cr-effects-dropped',
+      seed: effectSeed(),
+      passes: [
+        async (root) =>
+          writeEffectDist(
+            root,
+            '<section class="story"><p class="story__line">New copy</p></section>',
+          ),
+        async (root) =>
+          writeEffectDist(
+            root,
+            '<section class="story"><p class="story__line">New copy</p></section>',
+          ),
+      ],
+    });
+
+    expect(error?.message).toContain(TEMPLATE_EFFECTS_DROPPED);
+    expect(calls).toContain(`store:failed:${TEMPLATE_EFFECTS_DROPPED}`);
+    expect(calls).not.toContain('store:version-saved');
+    // One pass, one repair pass carrying the repair brief, then the failure.
+    expect(calls.filter((call) => call.startsWith('agent:pass-'))).toHaveLength(
+      2,
+    );
+    expect(prompts[1]).toContain('data-story-reveal');
+  });
+
+  it('ships a change that removed the section outright', async () => {
+    const { calls, error } = await runChangeBuild({
+      label: 'cr-effects-section-removed',
+      seed: effectSeed(),
+      passes: [async (root) => writeEffectDist(root, '')],
+    });
+
+    expect(error).toBeNull();
+    expect(calls).toContain('store:version-saved');
+    expect(calls.filter((call) => call.startsWith('agent:pass-'))).toHaveLength(
+      1,
+    );
+  });
 
   it('ships the gallery request that failed four times on attempt 1', async () => {
     // Jobs 4d4f3a40, f9e68f3c, 9f967a07 and 050d83b3, 2026-09-12: the same
